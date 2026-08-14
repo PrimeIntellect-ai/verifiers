@@ -27,7 +27,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from tempfile import SpooledTemporaryFile
 from typing import Literal
@@ -69,14 +69,24 @@ logger = logging.getLogger(__name__)
 # cap is an artificial bottleneck — a large tool result (e.g. a `cat` of a big file) trips it
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
-_MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
-_KEEPALIVE_INTERVAL_SECONDS = 3
-_STREAM_QUEUE_MAXSIZE = 16
+MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
+KEEPALIVE_INTERVAL_SECONDS = 3
+STREAM_QUEUE_MAXSIZE = 16
 STREAM_MEMORY_BUFFER = 4 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
-# millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
+# millisecond; a larger one (bodies may reach `MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
-_HASH_INLINE_MAX = 1024**2  # 1 MiB
+HASH_INLINE_MAX = 1024**2  # 1 MiB
+# Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
+# 0 on the first attempt, incremented on each retry of the same request.
+RETRY_COUNT_HEADER = "x-stainless-retry-count"
+
+
+def is_retried_request(headers: Mapping[str, str]) -> bool:
+    try:
+        return int(headers.get(RETRY_COUNT_HEADER, 0)) > 0
+    except ValueError:
+        return False
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -87,7 +97,7 @@ async def _request_digest(raw: bytes) -> bytes:
     """Digest a request body for the retry-replay guard. Hash a small body inline; offload a
     large one to a thread so it does not stall every multiplexed rollout on the event loop
     (blake2b releases the GIL, so the thread runs the hash off the loop)."""
-    if len(raw) <= _HASH_INLINE_MAX:
+    if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
 
@@ -215,7 +225,7 @@ class InterceptionServer(Interception):
         return handler
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=_MAX_REQUEST_BODY)
+        app = web.Application(client_max_size=MAX_REQUEST_BODY)
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
@@ -390,17 +400,25 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries. The harness SDK retries a transient failure by
-        # re-sending the byte-identical request; sampling it again would commit a second turn and
-        # fork the graph into a dead-end branch. Two cases, both resolved without re-sampling:
-        #   1. the first attempt already finished -> replay the recorded response;
-        #   2. the first attempt is still computing (a slow turn) -> await it and return its
-        #      result, so a slow turn is safe without an inflated client timeout.
-        # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
-        if session.last_request == req_hash and session.last_response is not None:
+        # Graph atomicity under retries: sampling a marked SDK retry again would commit a
+        # second turn and fork the graph, so serve it the recorded response (or the
+        # still-computing attempt's result). Only marked retries match — a repeated body
+        # alone is no proof of a retry (compaction can legitimately regenerate an identical
+        # request), and a stale replay would loop the rollout.
+        retried = is_retried_request(request.headers)
+        if (
+            retried
+            and session.last_request == req_hash
+            and session.last_response is not None
+        ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
+        if session.last_request == req_hash:
+            # A fresh attempt supersedes the recorded response for the same body: drop it
+            # so this attempt's own retries coalesce or re-run instead of replaying the
+            # previous turn.
+            session.last_request = None
+            session.last_response = None
 
         try:
             model_request = dialect.parse_request(body)
@@ -429,7 +447,7 @@ class InterceptionServer(Interception):
 
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            if (inflight := session.inflight.get(req_hash)) is not None:
+            if retried and (inflight := session.inflight.get(req_hash)) is not None:
                 return await coalesced(inflight)
             fut = asyncio.get_running_loop().create_future()
             session.inflight[req_hash] = fut
@@ -792,7 +810,7 @@ class InterceptionServer(Interception):
             on_done = parser.on_done
             # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-                maxsize=_STREAM_QUEUE_MAXSIZE
+                maxsize=STREAM_QUEUE_MAXSIZE
             )
             ready = asyncio.Event()
             producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
@@ -806,7 +824,7 @@ class InterceptionServer(Interception):
                 await resp.prepare(request)
                 while True:
                     try:
-                        async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
+                        async with asyncio.timeout(KEEPALIVE_INTERVAL_SECONDS):
                             await ready.wait()
                     except TimeoutError:
                         # Don't terminate an empty event; some SSE clients try to JSON-decode it.
