@@ -1,10 +1,10 @@
 """Eval CLI entrypoint."""
 
 import asyncio
+import json
 import logging
 import shutil
 import sys
-import tomllib
 
 from pydantic_config import cli
 
@@ -14,7 +14,6 @@ from verifiers.v1.cli.output import (
     TRACES_FILE,
     config_digest,
     output_path,
-    saved_config_digest,
     saved_config_path,
     write_config,
 )
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval @ <run-dir>/configs/eval.toml --resume   (re-run the run's missing/errored rollouts)"
+    "       uv run eval @ <run-dir>/configs/eval.json --resume   (re-run the run's missing/errored rollouts)"
 )
 
 
@@ -86,24 +85,16 @@ def main(argv: list[str] | None = None) -> None:
         )
     if config.resume:
         # A resumed eval is only trustworthy under the exact config that produced the
-        # existing rollouts — anything else silently mixes incomparable results. The
-        # saved config carries the digest of the in-memory resolved config, so the check
-        # also covers explicit-None settings TOML cannot represent.
+        # existing rollouts — anything else silently mixes incomparable results. Saved
+        # configs are full JSON dumps (nulls included), so the comparison is exact.
         saved_path = saved_config_path(run_path)
         if saved_path is None:
             raise SystemExit(
                 f"--resume: no saved config under {run_path} - not a run dir"
             )
-        saved_digest = saved_config_digest(saved_path)
-        if saved_digest is None:
-            raise SystemExit(
-                f"--resume: {saved_path} has no digest - not a resolved run config"
-            )
-        if saved_digest != config_digest(config):
-            with plugin_errors():
-                saved = config_type.model_validate(
-                    tomllib.loads(saved_path.read_text())
-                )
+        with plugin_errors():
+            saved = config_type.model_validate(json.loads(saved_path.read_text()))
+        if config_digest(saved) != config_digest(config):
             saved_dump = saved.model_dump(mode="json")
             current_dump = config.model_dump(mode="json")
             changed = sorted(
@@ -111,13 +102,11 @@ def main(argv: list[str] | None = None) -> None:
                 for key in set(saved_dump) | set(current_dump)
                 if saved_dump.get(key) != current_dump.get(key)
             )
-            if changed:
-                hint = f"it differs in [{', '.join(changed)}] - re-run with `uv run eval @ {saved_path} --resume`"
-            else:
-                hint = "explicitly-None settings differ (TOML cannot store them) - re-pass them, e.g. `-c None`"
             raise SystemExit(
-                f"--resume requires the exact config the run was started with - {hint}, "
-                "or start a fresh run (resumed rollouts would not be comparable)"
+                f"--resume requires the exact config the run was started with - it "
+                f"differs in [{', '.join(changed)}]. Resumed rollouts would not be "
+                f"comparable; re-run with `uv run eval @ {saved_path} --resume`, or "
+                "start a fresh run"
             )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")

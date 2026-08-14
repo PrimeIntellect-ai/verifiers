@@ -662,7 +662,6 @@ async def test_replay_round_trip(run_v1, tmp_path):
     typed rebuild fails and the trace-only `@reward` silently stops running (the
     wire-narrowing regression). Trace-only rewards are deterministic given the transcript,
     so all three generations must agree."""
-    import tomllib
     from pathlib import Path
 
     from verifiers.v1.cli.output import saved_config_path
@@ -683,7 +682,9 @@ async def test_replay_round_trip(run_v1, tmp_path):
     async def replay(source_dir: Path, out: Path):
         # The CLI's layering, minus the argv plumbing: the saved run's config is the base
         # (`ReplayConfig` ignores its eval-only keys), the source's output_dir is dropped.
-        data = tomllib.loads(saved_config_path(source_dir).read_text())
+        import json
+
+        data = json.loads(saved_config_path(source_dir).read_text())
         data.pop("output_dir", None)
         config = ReplayConfig(**{**data, "rich": False})
         (trace,) = await run_replay(config, source_dir, out)

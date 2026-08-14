@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info(
-            "wrote config to %s", write_config(config, output_path(config), "gepa.toml")
+            "wrote config to %s", write_config(config, output_path(config), "gepa.json")
         )
         return
 
