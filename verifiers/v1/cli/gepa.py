@@ -70,7 +70,9 @@ def main(argv: list[str] | None = None) -> None:
             "drive a multi-agent interaction — only eval runs those"
         )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
-        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        logger.info(
+            "wrote config to %s", write_config(config, output_path(config), "gepa.toml")
+        )
         return
 
     # A named run directory is never silently reused: a second run writing into it

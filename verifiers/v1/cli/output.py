@@ -11,6 +11,7 @@ before the episode atom (one bare trace per line) are still readable:
 """
 
 import asyncio
+import hashlib
 import json
 from functools import cache
 from pathlib import Path
@@ -26,8 +27,40 @@ from verifiers.v1.utils.aio import run_shielded
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
 
-CONFIG_FILE = "config.toml"
-"""Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
+CONFIG_DIR = "configs"
+"""Directory inside a run dir holding its resolved config (one `<cli>.toml`, re-runnable
+via `@ <run-dir>/configs/<cli>.toml`)."""
+
+DIGEST_PREFIX = "# digest: "
+"""Comment line prepended to a saved config: the digest of the in-memory resolved config.
+Comments are not config — this is provenance, letting `--resume` verify the invocation
+against what actually ran, including explicit-None settings TOML cannot represent."""
+
+
+def config_digest(config: BaseModel) -> str:
+    """Canonical hash of a resolved config's full model dump (nulls included)."""
+    dump = config.model_dump(mode="json")
+    canonical = json.dumps(dump, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def saved_config_path(run_dir: Path) -> Path | None:
+    """The run's saved resolved config (`configs/<cli>.toml`), None if absent."""
+    candidates = (
+        sorted((run_dir / CONFIG_DIR).glob("*.toml"))
+        if (run_dir / CONFIG_DIR).is_dir()
+        else []
+    )
+    return candidates[0] if candidates else None
+
+
+def saved_config_digest(path: Path) -> str | None:
+    """The digest recorded when the config was saved, None for a file without one."""
+    first = path.read_text().split("\n", 1)[0]
+    return (
+        first.removeprefix(DIGEST_PREFIX) if first.startswith(DIGEST_PREFIX) else None
+    )
+
 
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.
 type_adapter = cache(TypeAdapter)
@@ -41,21 +74,27 @@ def output_path(config: EvalConfig) -> Path:
     return config.output_dir / config.run.dir
 
 
-def write_config(config: BaseModel, results_dir: Path) -> Path:
-    """Write the run's resolved `config.toml` (re-readable via `@ config.toml`); return its
-    path. mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
-    nulls TOML can't represent."""
-    results_dir.mkdir(parents=True, exist_ok=True)
+def write_config(
+    config: BaseModel, results_dir: Path, filename: str = "eval.toml"
+) -> Path:
+    """Write the run's resolved config to `configs/<filename>` (re-readable via
+    `@ <path>`); return its path. mode="json" makes values TOML-friendly (Path -> str,
+    etc.); exclude_none drops the nulls TOML can't represent — the prepended digest
+    comment still covers them (see `DIGEST_PREFIX`)."""
+    config_dir = results_dir / CONFIG_DIR
+    config_dir.mkdir(parents=True, exist_ok=True)
     toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
-    config_path = results_dir / CONFIG_FILE
-    config_path.write_text(toml)
+    config_path = config_dir / filename
+    config_path.write_text(f"{DIGEST_PREFIX}{config_digest(config)}\n{toml}")
     return config_path
 
 
-def save_config(config: BaseModel, results_dir: Path) -> None:
-    """Set up the run's output dir: write `config.toml` and start a fresh (empty)
+def save_config(
+    config: BaseModel, results_dir: Path, filename: str = "eval.toml"
+) -> None:
+    """Set up the run's output dir: write the resolved config and start a fresh (empty)
     `traces.jsonl`. Call once up front, before episodes start landing."""
-    write_config(config, results_dir)
+    write_config(config, results_dir, filename)
     (results_dir / TRACES_FILE).write_text(
         ""
     )  # fresh; appended to as rollouts complete

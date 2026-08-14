@@ -21,10 +21,10 @@ from pydantic_config import cli
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
-    CONFIG_FILE,
     append_trace,
     read_episodes,
     save_config,
+    saved_config_path,
     write_config,
 )
 from verifiers.v1.cli.resolve import narrow_taskset_config
@@ -63,7 +63,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # Refuse multi-agent up front, from the SOURCE run's saved config — the replay
     # layer's taskset is overridable and must not decide what the run was.
     # Everything below may assume plain single-agent episodes.
-    saved = tomllib.loads((source / CONFIG_FILE).read_text())
+    source_config = saved_config_path(source)
+    if source_config is None:
+        raise SystemExit(f"no saved config under {source} - not a run dir")
+    saved = tomllib.loads(source_config.read_text())
     saved_env = saved.get("env") or {}
     saved_taskset = saved.get("taskset") or saved_env.get("taskset") or {}
     env_cls = vf.environment_class(
@@ -126,7 +129,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         for _ in range(config.num_rescores)
     ]
 
-    save_config(config, out)
+    save_config(config, out, "replay.toml")
     logger.info(
         "replay: re-scoring %d trace(s) x%d from %s -> %s",
         len(traces),
@@ -201,9 +204,9 @@ def main(argv: list[str] | None = None) -> None:
         cli(ReplayConfig)  # full, typed pydantic-config option help
         return
     source = Path(argv.pop(0))
-    config_path = source / CONFIG_FILE
-    if not config_path.exists():
-        raise SystemExit(f"{USAGE}\nno config.toml in {source}")
+    config_path = saved_config_path(source)
+    if config_path is None:
+        raise SystemExit(f"{USAGE}\nno saved config under {source} - not a run dir")
 
     layered = ["@", str(config_path), *argv]
     config_type = _narrow(config_path)
@@ -222,7 +225,7 @@ def main(argv: list[str] | None = None) -> None:
     level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:
         setup_logging(level)
-        logger.info("wrote config to %s", write_config(config, out))
+        logger.info("wrote config to %s", write_config(config, out, "replay.toml"))
         return
 
     log_file = str(out / "replay.log")

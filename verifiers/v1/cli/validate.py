@@ -192,7 +192,7 @@ def write_summary(results_dir: Path, summary: Mapping[str, Any]) -> None:
 
 
 def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
-    write_config(config, results_dir)
+    write_config(config, results_dir, "validate.toml")
     (results_dir / RESULTS_FILE).write_text("")
     write_summary(results_dir, summarize([], total, validation_mode(config)))
 

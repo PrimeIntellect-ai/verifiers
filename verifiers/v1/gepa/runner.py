@@ -51,8 +51,8 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     run_dir = output_path(config) if config.save_results else None
     if run_dir is not None:
         save_config(
-            config, run_dir
-        )  # config.toml + a fresh traces.jsonl (like run_eval)
+            config, run_dir, "gepa.toml"
+        )  # resolved config + a fresh traces.jsonl (like run_eval)
         logger.info("results: %s", run_dir)
 
     # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
