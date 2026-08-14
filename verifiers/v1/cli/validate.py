@@ -485,8 +485,10 @@ def main(argv: list[str] | None = None) -> None:
     # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
     # other write into it would overwrite the previous run's results.
     if config.clean and not config.resume and out.exists():
-        if not out.resolve().is_relative_to(config.output_dir.resolve()):
-            raise SystemExit("--clean requires run.dir to remain under output_dir")
+        output_dir = config.output_dir.resolve()
+        resolved_out = out.resolve()
+        if resolved_out == output_dir or not resolved_out.is_relative_to(output_dir):
+            raise SystemExit("--clean requires run.dir to name a child of output_dir")
         shutil.rmtree(out)
     results_file = out / RESULTS_FILE
     if not config.resume and results_file.exists() and results_file.stat().st_size > 0:
