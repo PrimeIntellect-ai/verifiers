@@ -108,8 +108,9 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                 # because the teardown ran out the clock.
                 async with AsyncExitStack() as boxes:
                     async with asyncio.timeout(grader.data.timeout.scoring):
-                        box = await boxes.enter_async_context(provision_runtime(config))
-                        box.env = dict(grader.runtime_env())
+                        box = await boxes.enter_async_context(
+                            provision_runtime(config, env=grader.runtime_env())
+                        )
                         await box.prepare_setup()
                         await grader.setup(box)
                         # Artifacts first, tests second: an artifact entry pointing
