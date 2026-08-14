@@ -6,9 +6,10 @@ every registered dialect's `routes` (see `dialects.DIALECTS`), so a request's fo
 from the endpoint the program's SDK posts to — the harness declares nothing.
 
 The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
-dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
-A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
-exception is `apply_overrides` (impose the eval's model + sampling in this format's shape).
+dialect-owned `StreamParser` incrementally assembles a response copy for the trace. Training clients
+render the canonical request and ask the dialect to serialize the completed canonical response.
+A dialect therefore owns both wire -> vf (`parse_request`/`parse_response`/`stream_parser`) and the
+small vf -> wire surface needed for renderer-backed inference (`serialize_response`/stream events).
 """
 
 import json
@@ -213,6 +214,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return self.response_type.model_validate(raw)
 
     @abstractmethod
+    def serialize_response(self, response: Response, model: str) -> dict:
+        """Serialize a renderer-backed canonical response in this dialect's native shape."""
+
+    @abstractmethod
     def rewrite_request(self, body: ReqT, before: Request, after: Request) -> None:
         """Patch rewritten user/tool messages into the native conversation."""
 
@@ -221,8 +226,30 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Replace the native assistant response with inert text."""
 
     @abstractmethod
-    def stream_events(self, raw: dict) -> list[bytes]:
-        """Serialize a rewritten response as a minimal native SSE stream."""
+    def stream_events(
+        self,
+        raw: dict,
+        *,
+        include_start: bool = True,
+        sequence_number: int = 0,
+    ) -> list[bytes]:
+        """Serialize a completed or rewritten response as a minimal native SSE stream."""
+
+    @abstractmethod
+    def stream_start(self, body: ReqT, *, sequence_number: int = 0) -> list[bytes]:
+        """Start a buffered native stream before generation has completed."""
+
+    @abstractmethod
+    def stream_heartbeat(self, body: ReqT, *, sequence_number: int = 0) -> bytes:
+        """One valid, non-content protocol event while buffered generation is in flight.
+
+        Unlike an SSE comment, this reaches clients whose liveness watchdog resets only after
+        decoding an API event. It must not change the assistant content assembled by the client.
+        """
+
+    def stream_error(self, message: str, *, sequence_number: int = 0) -> bytes:
+        """A streamed error in the default OpenAI-compatible envelope."""
+        return f"data: {json.dumps(self.error_body(message))}\n\n".encode()
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:

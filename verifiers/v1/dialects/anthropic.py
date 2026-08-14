@@ -1,9 +1,9 @@
 """The Anthropic Messages dialect (claude-code and friends).
 
-Request parsing maps Anthropic content blocks onto the typed messages; response parsing reads
-the content blocks of a `Message`. Relay-only: the eval client forwards the program's native JSON to a
-`/v1/messages` endpoint (auth is `x-api-key`, not Bearer) and this dialect parses a copy for the
-trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded.
+Request parsing maps Anthropic content blocks onto typed messages; response parsing reads the
+content blocks of a `Message`. Eval clients relay native bytes; renderer-backed clients render the
+canonical request and this dialect serializes their completed response back to native events.
+`count_tokens` is relayed as native JSON (an `aux_route`), never recorded.
 """
 
 import json
@@ -49,6 +49,11 @@ STOP_REASONS = {
     "max_tokens": "length",
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
+}
+FINISH_REASONS = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
 }
 # Claude may reorder mixed thinking block types between a response and its replay.
 THINKING = ("redacted_thinking", "thinking")
@@ -548,6 +553,58 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 
+    def serialize_response(self, response: Response, model: str) -> dict:
+        blocks: list[dict] = []
+        if response.message.reasoning_content is not None:
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": response.message.reasoning_content,
+                    "signature": "",
+                }
+            )
+        if response.message.content is not None or not (
+            response.message.reasoning_content or response.message.tool_calls
+        ):
+            blocks.append({"type": "text", "text": response.message.content or ""})
+        for call in response.message.tool_calls or []:
+            try:
+                tool_input = json.loads(call.arguments)
+            except json.JSONDecodeError:
+                tool_input = {"_raw": call.arguments}
+            if not isinstance(tool_input, dict):
+                tool_input = {"value": tool_input}
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": tool_input,
+                }
+            )
+        usage = {
+            "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+            "output_tokens": response.usage.completion_tokens if response.usage else 0,
+        }
+        if response.usage and response.usage.cached_input_tokens is not None:
+            usage["cache_read_input_tokens"] = response.usage.cached_input_tokens
+        if response.usage and response.usage.reasoning_tokens is not None:
+            usage["output_tokens_details"] = {
+                "thinking_tokens": response.usage.reasoning_tokens
+            }
+        return {
+            "id": response.id or "msg_vf_intercept",
+            "content": blocks,
+            "model": response.model or model,
+            "role": "assistant",
+            "stop_reason": FINISH_REASONS.get(
+                response.finish_reason or "stop", "end_turn"
+            ),
+            "stop_sequence": None,
+            "type": "message",
+            "usage": usage,
+        }
+
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         original = [
             m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
@@ -603,43 +660,111 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         raw["stop_reason"] = "end_turn"
         raw["stop_sequence"] = None
 
-    def stream_events(self, raw: dict) -> list[bytes]:
+    def stream_events(
+        self,
+        raw: dict,
+        *,
+        include_start: bool = True,
+        sequence_number: int = 0,
+    ) -> list[bytes]:
         def event(kind: str, payload: dict) -> bytes:
             return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
 
-        text = raw["content"][0]["text"]
         head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
         if isinstance(usage := head.get("usage"), dict):
             head["usage"] = {**usage, "output_tokens": 0}
-        return [
-            event("message_start", {"type": "message_start", "message": head}),
-            event(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            ),
-            event(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": text},
-                },
-            ),
-            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                    "usage": raw.get("usage") or {},
-                },
-            ),
-            event("message_stop", {"type": "message_stop"}),
-        ]
+        events = (
+            [event("message_start", {"type": "message_start", "message": head})]
+            if include_start
+            else []
+        )
+        for index, block in enumerate(raw.get("content") or []):
+            kind = block.get("type")
+            if kind == "thinking":
+                start = {**block, "thinking": "", "signature": ""}
+                delta = {
+                    "type": "thinking_delta",
+                    "thinking": block.get("thinking", ""),
+                }
+            elif kind == "tool_use":
+                start = {**block, "input": {}}
+                delta = {
+                    "type": "input_json_delta",
+                    "partial_json": json.dumps(block.get("input") or {}),
+                }
+            else:
+                start = {**block, "text": ""}
+                delta = {"type": "text_delta", "text": block.get("text", "")}
+            events.extend(
+                [
+                    event(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": start,
+                        },
+                    ),
+                    event(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": delta,
+                        },
+                    ),
+                    event(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": index},
+                    ),
+                ]
+            )
+        events.extend(
+            [
+                event(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {
+                            "stop_reason": raw.get("stop_reason") or "end_turn",
+                            "stop_sequence": raw.get("stop_sequence"),
+                        },
+                        "usage": raw.get("usage") or {},
+                    },
+                ),
+                event("message_stop", {"type": "message_stop"}),
+            ]
+        )
+        return events
+
+    def stream_start(
+        self, body: MessageCreateParams, *, sequence_number: int = 0
+    ) -> list[bytes]:
+        head = {
+            "id": "msg_vf_intercept",
+            "content": [],
+            "model": body.get("model", ""),
+            "role": "assistant",
+            "stop_reason": None,
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        payload = {"type": "message_start", "message": head}
+        return [f"event: message_start\ndata: {json.dumps(payload)}\n\n".encode()]
+
+    def stream_heartbeat(
+        self, body: MessageCreateParams, *, sequence_number: int = 0
+    ) -> bytes:
+        # The Anthropic SDK consumes `ping` internally and does not yield it to callers.
+        # A no-op message delta reaches SDK-level watchdogs without changing content.
+        payload = {"type": "message_delta", "delta": {}, "usage": {"output_tokens": 0}}
+        return f"event: message_delta\ndata: {json.dumps(payload)}\n\n".encode()
+
+    def stream_error(self, message: str, *, sequence_number: int = 0) -> bytes:
+        return (
+            f"event: error\ndata: {json.dumps(self.error_body(message))}\n\n"
+        ).encode()
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)

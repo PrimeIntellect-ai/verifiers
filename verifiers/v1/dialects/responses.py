@@ -2,9 +2,9 @@
 
 Request parsing walks the `input` items, folding each run of assistant-side items (reasoning /
 assistant message / function or custom tool call) into one typed assistant message; response
-parsing reads the `output` items. Relay-only: the eval client forwards the program's bytes to a
-`/responses` endpoint and this dialect parses a copy for the trace. Server-side statefulness
-(`previous_response_id`) is not emulated — the endpoint owns it.
+parsing reads the `output` items. Eval clients relay native bytes; renderer-backed clients render
+the canonical request and this dialect serializes their completed response back to native events.
+Server-side statefulness (`previous_response_id`) is not emulated — the endpoint owns it.
 """
 
 import json
@@ -602,6 +602,83 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
 
+    def serialize_response(self, response: Response, model: str) -> dict:
+        output: list[dict] = []
+        if response.message.reasoning_content is not None:
+            output.append(
+                {
+                    "id": "rs_vf_intercept",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": response.message.reasoning_content,
+                        }
+                    ],
+                    "type": "reasoning",
+                    "status": "completed",
+                }
+            )
+        if response.message.content is not None or not (
+            response.message.reasoning_content or response.message.tool_calls
+        ):
+            output.append(
+                {
+                    "id": "msg_vf_intercept",
+                    "content": [
+                        {
+                            "annotations": [],
+                            "text": response.message.content or "",
+                            "type": "output_text",
+                        }
+                    ],
+                    "role": "assistant",
+                    "status": "completed",
+                    "type": "message",
+                }
+            )
+        for index, call in enumerate(response.message.tool_calls or []):
+            output.append(
+                {
+                    "arguments": call.arguments,
+                    "call_id": call.id,
+                    "id": f"fc_vf_intercept_{index}",
+                    "name": call.name,
+                    "status": "completed",
+                    "type": "function_call",
+                }
+            )
+        usage = None
+        if response.usage:
+            usage = {
+                "input_tokens": response.usage.input_tokens,
+                "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": response.usage.cached_input_tokens or 0,
+                },
+                "output_tokens": response.usage.completion_tokens,
+                "output_tokens_details": {
+                    "reasoning_tokens": response.usage.reasoning_tokens or 0
+                },
+                "total_tokens": response.usage.total_tokens,
+            }
+        status = "incomplete" if response.finish_reason == "length" else "completed"
+        return {
+            "id": response.id or "resp_vf_intercept",
+            "created_at": response.created,
+            "error": None,
+            "incomplete_details": {"reason": "max_output_tokens"}
+            if status == "incomplete"
+            else None,
+            "model": response.model or model,
+            "object": "response",
+            "output": output,
+            "parallel_tool_calls": True,
+            "status": status,
+            "tool_choice": "auto",
+            "tools": [],
+            "usage": usage,
+        }
+
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         original = [
             m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
@@ -684,39 +761,188 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         if "output_text" in raw:
             raw["output_text"] = text
 
-    def stream_events(self, raw: dict) -> list[bytes]:
-        item = raw["output"][0]
-        part = item["content"][0]
-        common = {"output_index": 0, "item_id": item["id"], "content_index": 0}
+    def stream_events(
+        self,
+        raw: dict,
+        *,
+        include_start: bool = True,
+        sequence_number: int = 0,
+    ) -> list[bytes]:
         head = {
             **raw,
             "status": "in_progress",
             "output": [],
             "completed_at": None,
         }
-        events = [
-            ("response.created", {"response": head}),
-            (
-                "response.output_item.added",
-                {"output_index": 0, "item": {**item, "content": []}},
-            ),
-            (
-                "response.content_part.added",
-                {**common, "part": {**part, "text": ""}},
-            ),
-            ("response.output_text.delta", {**common, "delta": part["text"]}),
-            ("response.output_text.done", {**common, "text": part["text"]}),
-            ("response.content_part.done", {**common, "part": part}),
-            ("response.output_item.done", {"output_index": 0, "item": item}),
-            ("response.completed", {"response": raw}),
-        ]
+        events: list[tuple[str, dict]] = (
+            [("response.created", {"response": head})] if include_start else []
+        )
+        for output_index, item in enumerate(raw.get("output") or []):
+            kind = item.get("type")
+            added = dict(item)
+            if kind == "message":
+                added["content"] = []
+            elif kind == "reasoning":
+                added["summary"] = []
+            elif kind == "function_call":
+                added["arguments"] = ""
+            events.append(
+                (
+                    "response.output_item.added",
+                    {"output_index": output_index, "item": added},
+                )
+            )
+            if kind == "message":
+                for content_index, part in enumerate(item.get("content") or []):
+                    common = {
+                        "output_index": output_index,
+                        "item_id": item["id"],
+                        "content_index": content_index,
+                    }
+                    events.extend(
+                        [
+                            (
+                                "response.content_part.added",
+                                {**common, "part": {**part, "text": ""}},
+                            ),
+                            (
+                                "response.output_text.delta",
+                                {
+                                    **common,
+                                    "delta": part.get("text", ""),
+                                    "logprobs": [],
+                                },
+                            ),
+                            (
+                                "response.output_text.done",
+                                {
+                                    **common,
+                                    "text": part.get("text", ""),
+                                    "logprobs": [],
+                                },
+                            ),
+                            ("response.content_part.done", {**common, "part": part}),
+                        ]
+                    )
+            elif kind == "reasoning":
+                for summary_index, part in enumerate(item.get("summary") or []):
+                    common = {
+                        "output_index": output_index,
+                        "item_id": item["id"],
+                        "summary_index": summary_index,
+                    }
+                    events.extend(
+                        [
+                            (
+                                "response.reasoning_summary_part.added",
+                                {**common, "part": {**part, "text": ""}},
+                            ),
+                            (
+                                "response.reasoning_summary_text.delta",
+                                {**common, "delta": part.get("text", "")},
+                            ),
+                            (
+                                "response.reasoning_summary_text.done",
+                                {**common, "text": part.get("text", "")},
+                            ),
+                            (
+                                "response.reasoning_summary_part.done",
+                                {**common, "part": part},
+                            ),
+                        ]
+                    )
+            elif kind == "function_call":
+                common = {
+                    "output_index": output_index,
+                    "item_id": item["id"],
+                }
+                events.extend(
+                    [
+                        (
+                            "response.function_call_arguments.delta",
+                            {**common, "delta": item.get("arguments", "")},
+                        ),
+                        (
+                            "response.function_call_arguments.done",
+                            {
+                                **common,
+                                "arguments": item.get("arguments", ""),
+                                "name": item.get("name", ""),
+                            },
+                        ),
+                    ]
+                )
+            events.append(
+                (
+                    "response.output_item.done",
+                    {"output_index": output_index, "item": item},
+                )
+            )
+        terminal = (
+            "response.incomplete"
+            if raw.get("status") == "incomplete"
+            else "response.completed"
+        )
+        events.append((terminal, {"response": raw}))
         return [
             *(
                 f"data: {json.dumps({'type': kind, 'sequence_number': i, **data})}\n\n".encode()
-                for i, (kind, data) in enumerate(events)
+                for i, (kind, data) in enumerate(events, start=sequence_number)
             ),
             b"data: [DONE]\n\n",
         ]
+
+    def stream_start(
+        self, body: ResponseCreateParams, *, sequence_number: int = 0
+    ) -> list[bytes]:
+        response = {
+            "id": "resp_vf_intercept",
+            "created_at": 0,
+            "model": body.get("model", ""),
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": True,
+            "status": "in_progress",
+            "tool_choice": "auto",
+            "tools": [],
+        }
+        event = {
+            "type": "response.created",
+            "sequence_number": sequence_number,
+            "response": response,
+        }
+        return [f"data: {json.dumps(event)}\n\n".encode()]
+
+    def stream_heartbeat(
+        self, body: ResponseCreateParams, *, sequence_number: int = 0
+    ) -> bytes:
+        response = {
+            "id": "resp_vf_intercept",
+            "created_at": 0,
+            "model": body.get("model", ""),
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": True,
+            "status": "in_progress",
+            "tool_choice": "auto",
+            "tools": [],
+        }
+        event = {
+            "type": "response.in_progress",
+            "sequence_number": sequence_number,
+            "response": response,
+        }
+        return f"data: {json.dumps(event)}\n\n".encode()
+
+    def stream_error(self, message: str, *, sequence_number: int = 0) -> bytes:
+        event = {
+            "type": "error",
+            "sequence_number": sequence_number,
+            "code": "server_error",
+            "message": message,
+            "param": None,
+        }
+        return f"data: {json.dumps(event)}\n\n".encode()
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

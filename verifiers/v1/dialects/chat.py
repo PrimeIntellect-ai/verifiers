@@ -505,6 +505,49 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
+    def serialize_response(self, response: Response, model: str) -> dict:
+        message: dict = {"role": "assistant", "content": response.message.content}
+        if response.message.reasoning_content is not None:
+            message["reasoning_content"] = response.message.reasoning_content
+        if response.message.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in response.message.tool_calls
+            ]
+        usage: dict | None = None
+        if response.usage:
+            usage = {
+                "completion_tokens": response.usage.completion_tokens,
+                "prompt_tokens": response.usage.input_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+            if response.usage.reasoning_tokens is not None:
+                usage["completion_tokens_details"] = {
+                    "reasoning_tokens": response.usage.reasoning_tokens
+                }
+            if response.usage.cached_input_tokens is not None:
+                usage["prompt_tokens_details"] = {
+                    "cached_tokens": response.usage.cached_input_tokens
+                }
+        return {
+            "id": response.id or "vf-intercept",
+            "object": "chat.completion",
+            "created": response.created,
+            "model": response.model or model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
+            "usage": usage,
+        }
+
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         for native, original, rewritten in zip(
             body.get("messages", []), before.messages, after.messages, strict=True
@@ -524,7 +567,13 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
                 choice["finish_reason"] = "stop"
                 choice.pop("logprobs", None)
 
-    def stream_events(self, raw: dict) -> list[bytes]:
+    def stream_events(
+        self,
+        raw: dict,
+        *,
+        include_start: bool = True,
+        sequence_number: int = 0,
+    ) -> list[bytes]:
         choice = (raw.get("choices") or [{}])[0]
         chunk = {
             **{key: value for key, value in raw.items() if key != "choices"},
@@ -539,6 +588,30 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
             ],
         }
         return [f"data: {json.dumps(chunk)}\n\n".encode(), b"data: [DONE]\n\n"]
+
+    def stream_start(
+        self, body: CompletionCreateParams, *, sequence_number: int = 0
+    ) -> list[bytes]:
+        return [self.stream_heartbeat(body, sequence_number=sequence_number)]
+
+    def stream_heartbeat(
+        self, body: CompletionCreateParams, *, sequence_number: int = 0
+    ) -> bytes:
+        # An empty delta is observable to SDK-level watchdogs but contributes no text.
+        chunk = {
+            "id": "vf-intercept",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": body.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": ""},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        return f"data: {json.dumps(chunk)}\n\n".encode()
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
