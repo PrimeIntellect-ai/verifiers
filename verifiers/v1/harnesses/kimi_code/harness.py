@@ -39,7 +39,7 @@ env \
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.34.0", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default="0.36.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Kimi Code release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
