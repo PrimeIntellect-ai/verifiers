@@ -22,13 +22,10 @@ class RhoHarnessConfig(HarnessConfig):
     context at depth 1; every subagent turn spends the same trace turn budget."""
 
     compact_tool: bool = False
-    """Offer a zero-param `compact` tool that schedules a context checkpoint before the
-    next work turn (Codex `new_context` precedent). Enabling it also discloses the
-    current context-token figure each turn — a model can only time compaction well if
-    it can see the clock."""
-
-    effort: str = ""
-    """Reasoning effort forwarded to the model (empty = provider default)."""
+    """Add a zero-param `compact` tool to the surface: it schedules a context checkpoint
+    before the next work turn (Codex `new_context` precedent). Enabling it also
+    discloses the current context-token figure each turn — a model can only time
+    compaction well if it can see the clock."""
 
     context_budget_tokens: int = 150_000
     """Prompt-token threshold that triggers checkpoint compaction. A training knob, not
@@ -52,8 +49,12 @@ class RhoHarness(Harness[RhoHarnessConfig]):
 
     def tool_surface(self) -> list[str]:
         # Seat shaping goes through the base `disabled_tools`: a ptc-style service
-        # seat is disabled_tools=["read", "write", "edit"].
-        return [name for name in NATIVE_TOOLS if name not in (self.config.disabled_tools or [])]
+        # seat is disabled_tools=["read", "write", "edit"]. `--tools` is the one
+        # channel for what the seat offers — compact rides it like everything else.
+        tools = [name for name in NATIVE_TOOLS if name not in (self.config.disabled_tools or [])]
+        if self.config.compact_tool:
+            tools.append("compact")
+        return tools
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -82,17 +83,17 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         else:
             # A resumed segment's prompt is the accreted conversation; hand Messages
             # over through a file (base64 images can exceed exec limits).
-            path = f".rho-messages-{trace.id}.json"
+            path = f".vf-initial-messages-{trace.id}.json"
             await runtime.write(
                 path, json.dumps([message_to_wire(m) for m in prompt]).encode()
             )
             args.append(f"--initial-messages-file={path}")
-        if self.config.effort:
-            args.append(f"--effort={self.config.effort}")
+        # One effort channel: the framework's sampling config (which interception
+        # overlays on every call anyway); no rho-only knob to fight it.
+        if ctx.sampling.reasoning_effort:
+            args.append(f"--effort={ctx.sampling.reasoning_effort}")
         if self.config.subagents:
             args.append("--subagents")
-        if self.config.compact_tool:
-            args.append("--compact-tool")
         # One cap, owned by the framework: the box spends the budget it is measured
         # against instead of walking into a refused call.
         if trace.agent is not None and trace.agent.config.max_turns:

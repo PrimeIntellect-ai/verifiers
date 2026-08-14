@@ -27,6 +27,13 @@ The transcript is append-only between compaction boundaries: assistant messages 
 included) are re-sent complete, and the only rewriting event is Codex-style checkpoint
 compaction — triggered by the token budget, a context overflow, or the model's own
 `compact` tool call.
+
+Deliberate absences (known, may be wanted later, not built yet):
+- Parallel tool calls: multiple calls in one turn execute sequentially, and the kernel
+  bridge is a serial stdio channel — code-side `gather` over tools needs bridge
+  multiplexing (frame ids), one coherent upgrade with interception-side concurrency.
+- Background tools: no `background`/yield machinery (Codex's session+wait stack); the
+  documented answer for long-running processes is bash: nohup, redirect to a file, read.
 """
 
 import argparse
@@ -157,11 +164,15 @@ RESUME_NOTE = (
 
 def assemble_messages(system: str, prompt: str, initial: list[dict] | None) -> list[dict]:
     """The loop's starting transcript. A resumed segment replays the exchange's
-    conversation (system messages dropped — the harness rebuilds its own system prompt
-    every segment); a fresh one opens with the task prompt."""
+    conversation: a LEADING system message is the previous segment's harness-built
+    system prompt and is replaced by the fresh rebuild; any later explicit system
+    messages survive (the base `Harness.resume` contract). A fresh segment opens
+    with the task prompt."""
     head = {"role": "system", "content": system}
     if initial is not None:
-        return [head, *(m for m in initial if m.get("role") != "system")]
+        if initial and initial[0].get("role") == "system":
+            initial = initial[1:]
+        return [head, *initial]
     return [head, {"role": "user", "content": prompt}]
 
 
@@ -190,13 +201,8 @@ def render_history(messages: list[dict]) -> str:
 
 
 def write_diagnostics(phase: str, **values) -> None:
-    path = Path(RUNTIME_DIAGNOSTICS)
-    current = {}
-    if path.exists():
-        with contextlib.suppress(Exception):
-            current = json.loads(path.read_text())
-    current |= {"phase": phase, "python": platform.python_version(), **values}
-    path.write_text(json.dumps(current, sort_keys=True))
+    payload = {"phase": phase, "python": platform.python_version(), **values}
+    Path(RUNTIME_DIAGNOSTICS).write_text(json.dumps(payload, sort_keys=True))
 
 
 # --------------------------------------------------------------------------------------
@@ -215,27 +221,27 @@ def _spill(text: str, label: str) -> str:
     return str(path)
 
 
-def _clamp_lines(lines: list[str]) -> tuple[list[str], int]:
-    clamped, hits = [], 0
-    for line in lines:
-        if len(line) > MAX_LINE_CHARS:
-            clamped.append(line[:MAX_LINE_CHARS] + f" …[line clipped, {len(line)} chars total]")
-            hits += 1
-        else:
-            clamped.append(line)
-    return clamped, hits
-
-
 def cap_output(text: str, label: str = "output") -> str:
     """Bound execution output (bash, run_code): keep the tail, spill the full text."""
     if not text.strip():
         return "(no output)"
-    lines, clipped = _clamp_lines(text.splitlines())
+    lines = text.splitlines()
     total = len(lines)
-    kept = lines[-MAX_LINES:]
-    while len(kept) > 1 and sum(len(line) + 1 for line in kept) > MAX_BYTES:
-        kept = kept[1:]
-    if len(kept) == total and not clipped and sum(len(line) + 1 for line in kept) <= MAX_BYTES:
+    # Walk the tail window backwards, clamping and accumulating until the byte
+    # budget fills — one pass over at most MAX_LINES lines, however big the text.
+    kept: list[str] = []
+    size = 0
+    clipped = False
+    for line in reversed(lines[-MAX_LINES:]):
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + f" …[line clipped, {len(line)} chars total]"
+            clipped = True
+        if kept and size + len(line) + 1 > MAX_BYTES:
+            break
+        size += len(line) + 1
+        kept.append(line)
+    kept.reverse()
+    if len(kept) == total and not clipped:
         return "\n".join(kept)
     path = _spill(text, label)
     start = total - len(kept) + 1
@@ -253,25 +259,29 @@ READ_LEDGER: set[str] = set()
 """Paths read this rollout; write consults it before overwriting an existing file."""
 
 
-def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
+def _resolve(path: str, cwd: Path | None) -> Path:
     p = Path(path)
-    if not p.is_absolute():
-        p = (cwd or Path.cwd()) / p
+    return p if p.is_absolute() else (cwd or Path.cwd()) / p
+
+
+def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
+    p = _resolve(path, cwd)
     if not p.exists():
         return f"{path} not found"
     if p.is_dir():
         entries = sorted(e.name + ("/" if e.is_dir() else "") for e in p.iterdir())
         return f"{path} is a directory ({len(entries)} entries) — use bash ls; first entries: " + ", ".join(entries[:20])
-    head = p.open("rb").read(8)
+    with p.open("rb") as f:
+        head = f.read(8)
     for magic, mime in IMAGE_MAGIC.items():
         if head.startswith(magic):
-            data = p.read_bytes()
-            if len(data) > MAX_IMAGE_BYTES:
-                return f"{path} is a {mime} of {len(data)} bytes — over the {MAX_IMAGE_BYTES} byte image cap"
+            size = p.stat().st_size
+            if size > MAX_IMAGE_BYTES:
+                return f"{path} is a {mime} of {size} bytes — over the {MAX_IMAGE_BYTES} byte image cap"
             READ_LEDGER.add(str(p))
-            encoded = base64.b64encode(data).decode()
+            encoded = base64.b64encode(p.read_bytes()).decode()
             return [
-                {"type": "text", "text": f"{path} ({mime}, {len(data)} bytes)"},
+                {"type": "text", "text": f"{path} ({mime}, {size} bytes)"},
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}},
             ]
 
@@ -286,16 +296,22 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
     window: list[str] = []
     budget = MAX_BYTES
     clipped_mid_line = False
+    more_follows = False
     with p.open("r", encoding="utf-8", errors="replace") as f:
         for i, line in enumerate(f, start=1):
             total = i
-            if i < offset or len(window) >= limit or budget <= 0:
+            if i < offset:
                 continue
+            if len(window) >= limit or budget <= 0:
+                # The window is full: one extra line proves more follows, and the
+                # scan stops — paging a huge file must not decode its whole tail.
+                more_follows = True
+                break
             line = line.rstrip("\n")
             if len(line) > MAX_LINE_CHARS:
                 line = line[:MAX_LINE_CHARS] + " …[line clipped, use bash to see the rest]"
             if len(line) + 1 > budget:
-                window.append(line[: max(0, budget)])
+                window.append(line[:budget])
                 budget = 0
                 clipped_mid_line = True
                 continue
@@ -309,17 +325,15 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
         return f"offset {offset} is past the end of {path} — {total} lines total"
     end = offset + len(window) - 1
     body = "\n".join(window)
-    if end < total or clipped_mid_line:
+    if more_follows or clipped_mid_line:
         # Resume ON the clipped line when the byte cap cut it short, else the next line.
         resume = end if clipped_mid_line else end + 1
-        return body + f"\n[Showing lines {offset}-{end} of {total}. Use offset={resume} to continue.]"
+        return body + f"\n[Showing lines {offset}-{end}; more of the file follows. Use offset={resume} to continue.]"
     return body
 
 
 def run_write(path: str, content: str, cwd: Path | None = None) -> str:
-    p = Path(path)
-    if not p.is_absolute():
-        p = (cwd or Path.cwd()) / p
+    p = _resolve(path, cwd)
     if p.exists() and p.stat().st_size > 0 and str(p) not in READ_LEDGER:
         return (
             f"refusing to overwrite {path}: it exists and was never read this session — "
@@ -334,9 +348,7 @@ def run_write(path: str, content: str, cwd: Path | None = None) -> str:
 def run_edit(path: str, edits, cwd: Path | None = None) -> str:
     if not isinstance(edits, list) or not edits:
         return "edits must be a non-empty array of {oldText, newText}"
-    p = Path(path)
-    if not p.is_absolute():
-        p = (cwd or Path.cwd()) / p
+    p = _resolve(path, cwd)
     if not p.exists():
         return f"{path} not found"
     try:
@@ -422,19 +434,19 @@ def send(frame):
 
 def bridge(kind, payload):
     send({"call": {"kind": kind, **payload}})
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            os._exit(0)
-        frame = json.loads(line)
-        if "result" in frame:
-            return frame["result"]
-        if "error" in frame:
-            err = frame["error"]
-            exc = getattr(builtins, err.get("type", ""), None)
-            if isinstance(exc, type) and issubclass(exc, BaseException):
-                raise exc(err.get("message", ""))
-            raise RuntimeError(err.get("message", ""))
+    line = sys.stdin.readline()
+    if not line:
+        os._exit(0)
+    frame = json.loads(line)
+    if "result" in frame:
+        return frame["result"]
+    err = frame.get("error")
+    if err is None:
+        raise RuntimeError(f"unexpected bridge frame: {frame!r}")
+    exc = getattr(builtins, err.get("type", ""), None)
+    if isinstance(exc, type) and issubclass(exc, BaseException):
+        raise exc(err.get("message", ""))
+    raise RuntimeError(err.get("message", ""))
 
 
 class App:
@@ -476,8 +488,9 @@ def init(payload):
     NS["completion"] = completion
 
     if payload.get("subagents"):
-        def agent(prompt, schema=None, effort=None, tools=None):
-            return bridge("agent", {"prompt": prompt, "schema": schema, "effort": effort, "tools": tools})
+        def agent(prompt, schema=None, effort=None, tools=None, session=None):
+            return bridge("agent", {"prompt": prompt, "schema": schema, "effort": effort,
+                                    "tools": tools, "session": session})
 
         NS["agent"] = agent
     send({"initialized": True})
@@ -658,10 +671,7 @@ class Kernel:
         )
 
     async def close(self) -> None:
-        if self._proc is not None and self._proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                self._proc.kill()
-        self._proc = None
+        self._mark_dead("")
 
 
 class BridgeError(Exception):
@@ -675,9 +685,6 @@ class BridgeError(Exception):
 # --------------------------------------------------------------------------------------
 # MCP: pooled clients, retried sessions, docs-on-disk, decoy-aware dispatch
 # --------------------------------------------------------------------------------------
-
-TOOL_DISCOVERY: dict[str, int] = {}
-
 
 def mcp_clients(config: dict) -> dict[str, httpx.AsyncClient]:
     return {
@@ -699,12 +706,10 @@ def _only_cause(error: Exception) -> Exception:
 
 @contextlib.asynccontextmanager
 async def mcp_session(http_client: httpx.AsyncClient, url: str):
-    from contextlib import AsyncExitStack
-
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
-    stack = AsyncExitStack()
+    stack = contextlib.AsyncExitStack()
     cancelled: BaseException | None = None
     try:
         read, write, *_ = await stack.enter_async_context(streamable_http_client(url, http_client=http_client))
@@ -736,22 +741,29 @@ async def with_retry(call):
 
 
 async def connect_mcp(config: dict, clients: dict):
-    """Enumerate tools; return (dispatch {(app, verb) -> (server, raw, params)}, servers, docs)."""
+    """Enumerate tools across all servers concurrently (startup pays the slowest
+    tunnel, not the sum); return (dispatch {(app, verb) -> (server, raw, params)},
+    docs, catalog ref)."""
     dispatch: dict[tuple[str, str], tuple[str, str, list[str]]] = {}
-    servers, docs = {}, {}
+    docs: dict = {}
     catalog_server: tuple[str, str] | None = None
-    for name, spec in config.get("mcpServers", {}).items():
-        servers[name] = spec
+    servers = list(config.get("mcpServers", {}).items())
 
-        async def list_tools(name: str = name, spec: dict = spec):
-            async with mcp_session(clients[name], spec["url"]) as session:
-                return (await session.list_tools()).tools
+    async def list_tools(name: str, spec: dict):
+        async with mcp_session(clients[name], spec["url"]) as session:
+            return (await session.list_tools()).tools
 
-        for tool in await with_retry(list_tools):
+    listed = await asyncio.gather(
+        *(with_retry(lambda name=name, spec=spec: list_tools(name, spec)) for name, spec in servers)
+    )
+    for (name, _spec), tools in zip(servers, listed):
+        for tool in tools:
             if tool.name == DISCOVERY_CATALOG:
                 # The box's own channel: read once at startup, never bound or documented.
                 catalog_server = (name, tool.name)
                 continue
+            # Wire contract with task authors: tools are named <app>_<verb> (first
+            # underscore splits); a verb-less name lands in the shared `misc` app.
             bare = tool.name.split("_", 1)[1] if tool.name.startswith("tools_") else tool.name
             app, _, verb = bare.partition("_")
             if not verb:
@@ -769,7 +781,7 @@ async def connect_mcp(config: dict, clients: dict):
                     f"{' — ' + s['description'] if s.get('description') else ''}"
                 )
             docs[(app, verb)] = "\n".join(lines) + "\n"
-    return dispatch, servers, docs, catalog_server
+    return dispatch, docs, catalog_server
 
 
 def mcp_content(result):
@@ -972,6 +984,20 @@ def validate_schema(value, schema) -> str | None:
     return None
 
 
+def schema_suffix(lead: str, schema) -> str:
+    return f"\n\n{lead} only valid JSON matching this schema (no prose, no code fences):\n" + json.dumps(schema)
+
+
+def parse_reply(text: str, schema) -> tuple[object, str | None]:
+    """Parse a schema-bound model reply; returns (value, None) or (None, problem)."""
+    try:
+        value = json.loads(strip_fences(text))
+    except Exception:  # noqa: BLE001 - malformed JSON is retried with feedback
+        return None, "the reply was not valid JSON"
+    problem = validate_schema(value, schema)
+    return (value, None) if problem is None else (None, problem)
+
+
 class Driver:
     """Owns the client, kernel, MCP dispatch, and both loops (main + subagents)."""
 
@@ -989,9 +1015,13 @@ class Driver:
         self.dispatch: dict = {}
         self.servers: dict = {}
         self.clients: dict = {}
-        self.served_apps: set[str] = set()
         self.documented_apps: set[str] = set()
+        self.tool_discovery: dict[str, int] = {}
         self.subagents_spawned = 0
+        self.sessions: dict[str, dict] = {}
+        """Named persistent subagents: session name -> {"messages", "tools"}. A
+        continued session appends the new prompt and keeps its context — the caller
+        pays for the delta, not a re-briefing — and extends the same trace branch."""
         self.compactions = 0
         self.compaction_pending = False
         self.just_compacted = False
@@ -1001,11 +1031,15 @@ class Driver:
 
     # --- setup ------------------------------------------------------------------
 
+    @property
+    def served_apps(self) -> set[str]:
+        return {app for app, _ in self.dispatch}
+
     async def setup(self) -> None:
         config = json.loads(self.args.mcp_config) if self.args.mcp_config else {}
+        self.servers = config.get("mcpServers", {})
         self.clients = mcp_clients(config)
-        self.dispatch, self.servers, docs, catalog_ref = await connect_mcp(config, self.clients)
-        self.served_apps = {app for app, _ in self.dispatch}
+        self.dispatch, docs, catalog_ref = await connect_mcp(config, self.clients)
         apps_payload = {}
         for (app, verb), (_, _, params) in self.dispatch.items():
             apps_payload.setdefault(app, {})[verb] = params
@@ -1014,7 +1048,7 @@ class Driver:
             catalog = await call_mcp_raw(self.servers, self.clients, server, raw, {})
             write_catalog_docs(self.box, catalog)
             self.documented_apps = set(catalog)
-            TOOL_DISCOVERY.update(
+            self.tool_discovery.update(
                 decoy_calls=0,
                 surface_apps=len(catalog),
                 surface_tools=sum(len(e["verbs"]) for e in catalog.values()),
@@ -1032,7 +1066,7 @@ class Driver:
 
     # --- bridge handlers ----------------------------------------------------------
 
-    async def handle_call(self, call: dict, depth: int = 0):
+    async def handle_call(self, call: dict, depth: int):
         kind = call.get("kind")
         if kind == "mcp":
             return await self.do_mcp(call.get("app", ""), call.get("verb", ""), call.get("args") or {})
@@ -1044,7 +1078,8 @@ class Driver:
             if depth > 0:
                 raise BridgeError("RuntimeError", "subagents cannot spawn subagents (depth 1)")
             return await self.do_agent(
-                call.get("prompt", ""), call.get("schema"), call.get("effort"), call.get("tools")
+                call.get("prompt", ""), call.get("schema"), call.get("effort"),
+                call.get("tools"), call.get("session"),
             )
         raise BridgeError("RuntimeError", f"unknown bridge call {kind!r}")
 
@@ -1056,7 +1091,7 @@ class Driver:
                     "AttributeError", f"{app} has no {verb!r} tool — its tools are documented in ./tools/{app}/"
                 )
             if app in self.documented_apps:
-                TOOL_DISCOVERY["decoy_calls"] = TOOL_DISCOVERY.get("decoy_calls", 0) + 1
+                self.tool_discovery["decoy_calls"] = self.tool_discovery.get("decoy_calls", 0) + 1
                 raise BridgeError(
                     "NameError",
                     f"no such app in this workspace: {app!r} — it is documented, but this workspace "
@@ -1074,12 +1109,7 @@ class Driver:
         messages = []
         if system:
             messages.append({"role": "system", "content": str(system)})
-        body = str(prompt)
-        if schema:
-            body += (
-                "\n\nRespond with only valid JSON matching this schema (no prose, no code fences):\n"
-                + json.dumps(schema)
-            )
+        body = str(prompt) + (schema_suffix("Respond with", schema) if schema else "")
         messages.append({"role": "user", "content": body})
         problem = "no attempts left"
         for attempt in range(2):
@@ -1091,19 +1121,14 @@ class Driver:
             text = completion.choices[0].message.content or ""
             if not schema:
                 return text
-            try:
-                value = json.loads(strip_fences(text))
-            except Exception:  # noqa: BLE001 - malformed JSON is retried with feedback
-                problem = "the reply was not valid JSON"
-            else:
-                problem = validate_schema(value, schema)
-                if problem is None:
-                    return value
+            value, problem = parse_reply(text, schema)
+            if problem is None:
+                return value
             messages.append({"role": "assistant", "content": text})
             messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
         raise BridgeError("ValueError", f"completion did not return JSON matching the schema: {problem}")
 
-    async def do_agent(self, prompt: str, schema, effort, tools):
+    async def do_agent(self, prompt: str, schema, effort, tools, session=None):
         remaining = self.budget.remaining
         if remaining is not None and remaining < SPAWN_RESERVE_TURNS:
             raise BridgeError(
@@ -1112,48 +1137,47 @@ class Driver:
                 "finish the task directly",
             )
         self.subagents_spawned += 1
-        allowed = [t for t in self.tools if t != "compact"]
-        if tools is not None:
-            unknown = [t for t in tools if t not in allowed]
-            if unknown:
-                raise BridgeError("ValueError", f"unknown subagent tools: {unknown} (available: {allowed})")
-            allowed = [t for t in allowed if t in tools]
-        body = str(prompt)
-        if schema:
-            body += (
-                "\n\nYour final message must be only valid JSON matching this schema "
-                "(no prose, no code fences):\n" + json.dumps(schema)
-            )
-        messages = [
-            {"role": "system", "content": self.subagent_system_prompt()},
-            {"role": "user", "content": body},
-        ]
+        body = str(prompt) + (schema_suffix("Your final message must be", schema) if schema else "")
+        if session and session in self.sessions:
+            # Continue the named session: same transcript, same tool surface — the
+            # follow-up rides the context already paid for.
+            stored = self.sessions[session]
+            messages, allowed = stored["messages"], stored["tools"]
+            messages.append({"role": "user", "content": body})
+        else:
+            allowed = [t for t in self.tools if t != "compact"]
+            if tools is not None:
+                unknown = [t for t in tools if t not in allowed]
+                if unknown:
+                    raise BridgeError("ValueError", f"unknown subagent tools: {unknown} (available: {allowed})")
+                allowed = [t for t in allowed if t in tools]
+            messages = [
+                {"role": "system", "content": self.subagent_system_prompt()},
+                {"role": "user", "content": body},
+            ]
+            if session:
+                self.sessions[session] = {"messages": messages, "tools": allowed}
         final = await self.run_loop(
             messages,
             tools=allowed,
             depth=1,
             # No per-spawn ceiling: allocation is the policy's call; the shared budget
             # binds, minus the reserve that keeps the parent able to act.
-            max_turns=None if self.budget.remaining is None else self.budget.remaining - 2,
-            effort=effort or self.args.effort,
+            max_turns=None if self.budget.remaining is None else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
+            effort=effort,
         )
         if final is None:
             return None
         if not schema:
             return final
         for _ in range(2):
-            try:
-                value = json.loads(strip_fences(final))
-            except Exception:  # noqa: BLE001 - malformed JSON is retried with feedback
-                problem = "the reply was not valid JSON"
-            else:
-                problem = validate_schema(value, schema)
-                if problem is None:
-                    return value
+            value, problem = parse_reply(final, schema)
+            if problem is None:
+                return value
             if self.budget.remaining is not None and self.budget.remaining < 1:
                 break
             messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
-            final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort or self.args.effort)
+            final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort)
             if final is None:
                 break
         raise BridgeError("ValueError", "subagent did not return JSON matching the schema")
@@ -1217,9 +1241,11 @@ class Driver:
             lines.append("`completion(prompt, schema=None)` makes one standalone model call from code.")
             if self.args.subagents:
                 lines.append(
-                    "`agent(prompt, schema=None, effort=None, tools=None)` runs a subagent with a "
-                    "blank context and returns its final message (parsed when schema is given); "
-                    "give it complete, self-contained instructions."
+                    "`agent(prompt, schema=None, effort=None, tools=None, session=None)` runs a "
+                    "subagent with a blank context and returns its final message (parsed when "
+                    "schema is given); give it complete, self-contained instructions. Pass a "
+                    "session name to make it persistent: later calls with the same name continue "
+                    "that subagent's conversation instead of starting over."
                 )
         if "compact" in tools:
             lines.append(
@@ -1239,7 +1265,7 @@ class Driver:
     # --- compaction -------------------------------------------------------------------
 
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
-        keep = 2 if messages and messages[0].get("role") == "system" else 1
+        keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
         SPILL_DIR.mkdir(parents=True, exist_ok=True)
         history_path = str(SPILL_DIR / f"history-{self.compactions + 1}.txt")
         Path(history_path).write_text(render_history(messages[keep:]))
@@ -1290,15 +1316,17 @@ class Driver:
         value = effort if effort is not None else self.args.effort
         return {"reasoning_effort": value} if value else {}
 
-    def _notices(self, depth: int) -> str:
+    def _notices(self) -> str:
+        """Root-loop notices, appended to the turn's last tool result — the observation
+        channel, never the system prompt, so every request extends the one before."""
         notices = []
-        if depth == 0 and self.args.disclose_budget and self.budget.max_turns is not None:
+        if self.args.disclose_budget and self.budget.max_turns is not None:
             spent = self.budget.spent
             notices.append(
                 f"[harness] Turn budget: {spent}/{self.budget.max_turns} used, "
                 f"{self.budget.max_turns - spent} remaining."
             )
-        if depth == 0 and self.args.compact_tool and self.last_prompt_tokens:
+        if "compact" in self.tools and self.last_prompt_tokens:
             notices.append(
                 f"[harness] Context: ~{self.last_prompt_tokens} prompt tokens "
                 f"(checkpoint threshold {self.args.context_budget_tokens})."
@@ -1342,6 +1370,9 @@ class Driver:
                 if depth == 0 and is_overflow_error(error) and not overflow_retried:
                     # A work turn rejected for context length forces a compaction and
                     # retries exactly once. The refused call cost nothing — refund it.
+                    # (Assumes the interception server's ledger also skipped the refused
+                    # call; if that ever drifts, the box just walks into the refused
+                    # call the mirror was meant to avoid — degraded, not wrong.)
                     self.budget.spent -= 1
                     overflow_retried = True
                     self.compaction_pending = True
@@ -1381,18 +1412,21 @@ class Driver:
                     out = await self.execute_tool(tc.function.name, arguments, depth)
                 content = out if isinstance(out, list) else str(out)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
-            if isinstance(messages[-1]["content"], str):
-                messages[-1]["content"] += self._notices(depth)
             if depth == 0:
-                write_diagnostics(
-                    "loop",
-                    turns=self.budget.spent,
-                    compactions=self.compactions,
-                    peak_prompt_tokens=self.peak_prompt_tokens,
-                    subagents=self.subagents_spawned,
-                    **({"tool_discovery": dict(TOOL_DISCOVERY)} if TOOL_DISCOVERY else {}),
-                )
+                if isinstance(messages[-1]["content"], str):
+                    messages[-1]["content"] += self._notices()
+                self.write_stats("loop")
         return final
+
+    def write_stats(self, phase: str) -> None:
+        write_diagnostics(
+            phase,
+            turns=self.budget.spent,
+            compactions=self.compactions,
+            peak_prompt_tokens=self.peak_prompt_tokens,
+            subagents=self.subagents_spawned,
+            **({"tool_discovery": dict(self.tool_discovery)} if self.tool_discovery else {}),
+        )
 
     async def close(self) -> None:
         if self.kernel is not None:
@@ -1418,7 +1452,6 @@ def parse_args():
     p.add_argument("--effort", default="")
     p.add_argument("--tools", default="read,write,edit,bash,run_code")
     p.add_argument("--subagents", action="store_true")
-    p.add_argument("--compact-tool", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
     p.add_argument("--max-turns", type=int, default=None)
     p.add_argument("--disclose-budget", action="store_true")
@@ -1431,27 +1464,20 @@ async def main() -> None:
     driver = Driver(args)
     try:
         await driver.setup()
-        tools = list(driver.tools)
-        if args.compact_tool:
-            tools.append("compact")
         initial = None
         if args.initial_messages_file:
-            initial = json.loads(Path(args.initial_messages_file).read_text())
-        system = driver.system_prompt_base(tools)
+            path = Path(args.initial_messages_file)
+            initial = json.loads(path.read_text())
+            path.unlink(missing_ok=True)
+        system = driver.system_prompt_base(driver.tools)
         if initial is not None and "run_code" in driver.tools:
             system += "\n\n" + RESUME_NOTE
         if args.system_prompt:
             system += "\n\n" + args.system_prompt
         messages = assemble_messages(system, args.prompt, initial)
-        await driver.run_loop(messages, tools=tools, depth=0, max_turns=args.max_turns)
-        write_diagnostics(
-            "complete",
-            turns=driver.budget.spent,
-            compactions=driver.compactions,
-            peak_prompt_tokens=driver.peak_prompt_tokens,
-            subagents=driver.subagents_spawned,
-            **({"tool_discovery": dict(TOOL_DISCOVERY)} if TOOL_DISCOVERY else {}),
-        )
+        # The turn budget, not this call, is the authority on stopping.
+        await driver.run_loop(messages, tools=driver.tools, depth=0, max_turns=None)
+        driver.write_stats("complete")
     finally:
         await driver.close()
 
