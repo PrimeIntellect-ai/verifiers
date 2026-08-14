@@ -1,15 +1,18 @@
 """Eval CLI entrypoint."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import shutil
 import sys
+import tomllib
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -27,6 +30,12 @@ USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
     "       uv run eval @ <run-dir>/config.toml --resume   (re-run the run's missing/errored rollouts)"
 )
+
+
+def config_digest(config_dict: dict) -> str:
+    """Canonical hash of a resolved config, as saved to (or parsed from) config.toml."""
+    canonical = json.dumps(config_dict, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -76,6 +85,27 @@ def main(argv: list[str] | None = None) -> None:
             "re-run its missing/errored rollouts, overwrite it with --clean, or pick "
             "another --run.name"
         )
+    if config.resume:
+        # A resumed eval is only trustworthy under the exact config that produced the
+        # existing rollouts — anything else silently mixes incomparable results.
+        saved_path = run_path / CONFIG_FILE
+        if not saved_path.exists():
+            raise SystemExit(
+                f"--resume: no {CONFIG_FILE} in {run_path} - not an eval run dir"
+            )
+        saved = tomllib.loads(saved_path.read_text())
+        current = json.loads(config.model_dump_json(exclude_none=True))
+        if config_digest(saved) != config_digest(current):
+            changed = sorted(
+                key
+                for key in set(saved) | set(current)
+                if saved.get(key) != current.get(key)
+            )
+            raise SystemExit(
+                f"--resume requires the exact config the run was started with - it differs "
+                f"in [{', '.join(changed)}]. Resumed rollouts would not be comparable; "
+                f"re-run with `uv run eval @ {saved_path} --resume`, or start a fresh run"
+            )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
