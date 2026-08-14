@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> None:
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
     # slots, so it's in-process only (`server + rich` is rejected at config validation).
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
-    log_file = str(output_path(config) / "eval.log")
+    log_file = str(output_path(config) / "logs" / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
     if config.rich:
         setup_logging(level, log_file=log_file, console=False)

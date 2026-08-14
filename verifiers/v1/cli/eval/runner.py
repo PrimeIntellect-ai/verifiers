@@ -136,7 +136,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     # Spawned processes inherit no logging — hand them the main process's setup so
     # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
-    log_file = str(output_path(config) / "eval.log")
+    log_file = str(output_path(config) / "logs" / "eval.log")
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
     # Death pipe: serve_env self-terminates if this process dies abruptly — we keep

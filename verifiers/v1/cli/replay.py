@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("wrote config to %s", write_config(config, out, "replay.json"))
         return
 
-    log_file = str(out / "replay.log")
+    log_file = str(out / "logs" / "replay.log")
     if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         logging.lastResort = None

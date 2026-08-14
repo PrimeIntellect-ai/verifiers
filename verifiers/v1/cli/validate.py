@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
-LOG_FILE = "validate.log"
+LOG_FILE = "logs/validate.log"
 FINAL_REASONS = frozenset({"valid", "invalid"})
 REASONS = ("valid", "invalid", "error", "timeout")
 
