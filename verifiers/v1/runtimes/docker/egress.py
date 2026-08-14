@@ -380,8 +380,8 @@ class EgressProxy:
                 dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
                 if (
                     upstream_proxy is None
-                    or not self.policy.allow_non_global
                     or not upstream_proxy.remote_dns
+                    or (not self.policy.allow_non_global and not framework)
                 ):
                     target_addresses = await asyncio.wait_for(
                         asyncio.get_running_loop().getaddrinfo(
