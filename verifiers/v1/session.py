@@ -117,6 +117,13 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    last_request: bytes | None = None
+    """Digest of the most recently served request body. Together with `last_response`, this
+    replays the common SDK retry of the latest completed exchange without re-sampling it."""
+    last_response: dict | None = None
+    """The response returned for `last_request`, replayed verbatim on a retry."""
+    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
