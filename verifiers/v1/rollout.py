@@ -173,10 +173,11 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
-    def _restore_runtime_env(self) -> None:
+    def _release_borrowed_runtime(self) -> None:
         if self._previous_runtime_env is not None and self.runtime is not None:
             self.runtime.env = self._previous_runtime_env
             self._previous_runtime_env = None
+            self.runtime.borrow_lock.release()
 
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
@@ -185,11 +186,8 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
-        runtime_env = self.task.runtime_env()
         if self._owns_runtime:
-            self.runtime = make_runtime(
-                self.runtime_config, name=self.trace.id, env=runtime_env
-            )
+            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self.runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
@@ -198,9 +196,6 @@ class Rollout:
                 "down by its owner; keep the provisioning context open for every run "
                 "placed into the box"
             )
-        else:
-            self._previous_runtime_env = dict(self.runtime.env)
-            self.runtime.env = {**self.runtime.env, **runtime_env}
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info
@@ -212,6 +207,15 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
+            runtime_env = dict(self.task.runtime_env())
+            if self._owns_runtime:
+                runtime.env = runtime_env
+            else:
+                await runtime.borrow_lock.acquire()
+                self._previous_runtime_env = runtime.env
+                # The owner's defaults return after the borrow; they do not belong to
+                # this task and must not flow into its processes.
+                runtime.env = runtime_env
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
@@ -433,7 +437,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
-        self._restore_runtime_env()
+        self._release_borrowed_runtime()
         if self._owns_runtime and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -515,7 +519,7 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
-            self._restore_runtime_env()
+            self._release_borrowed_runtime()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
