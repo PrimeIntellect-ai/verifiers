@@ -138,6 +138,7 @@ class ModalRuntime(Runtime):
                     # (e.g. SWE task images) never starts the keep-alive and the sandbox dies.
                     image=modal.Image.from_registry(self.config.image).entrypoint([]),
                     workdir=self.config.workdir,
+                    env=self.env,
                     cpu=self.config.cpu,
                     memory=int(self.config.memory * 1024),  # Modal memory is MB
                     gpu=self.config.gpu,
@@ -172,7 +173,7 @@ class ModalRuntime(Runtime):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
-                *argv, workdir=self.config.workdir, env=env
+                *argv, workdir=self.config.workdir, env=self.process_env(env)
             )
             # Drain both pipes concurrently so a large stderr can't deadlock stdout.
             stdout, stderr = await asyncio.gather(
@@ -203,7 +204,7 @@ class ModalRuntime(Runtime):
                 pidfile,
                 *argv,
                 workdir=self.config.workdir,
-                env=env,
+                env=self.process_env(env),
                 text=False,
             )
             loop = asyncio.get_running_loop()

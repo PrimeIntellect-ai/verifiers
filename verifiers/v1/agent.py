@@ -547,7 +547,9 @@ class Agent:
             if task is not None
             else self.runtime_config
         )
-        async with provision_runtime(config) as runtime:
+        async with provision_runtime(
+            config, env=task.runtime_env() if task is not None else None
+        ) as runtime:
             yield runtime
 
 

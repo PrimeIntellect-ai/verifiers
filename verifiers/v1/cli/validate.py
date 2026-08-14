@@ -227,6 +227,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
         name=f"validate-gold-{task.data.idx}-{uuid4().hex[:8]}",
+        env=task.runtime_env(),
     )
     setup_timeout = (
         config.timeout.setup
@@ -270,6 +271,7 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
         name=f"validate-setup-{task.data.idx}-{uuid4().hex[:8]}",
+        env=task.runtime_env(),
     )
     setup_timeout = (
         config.timeout.setup

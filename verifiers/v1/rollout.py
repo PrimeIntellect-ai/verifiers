@@ -81,6 +81,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._owns_runtime = runtime is None
+        self._previous_runtime_env: dict[str, str] | None = None
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -172,6 +173,11 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
+    def _restore_runtime_env(self) -> None:
+        if self._previous_runtime_env is not None and self.runtime is not None:
+            self.runtime.env = self._previous_runtime_env
+            self._previous_runtime_env = None
+
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
         (or borrow) the runtime, run task + harness setup, bring up the
@@ -179,8 +185,11 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
+        runtime_env = self.task.runtime_env()
         if self._owns_runtime:
-            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
+            self.runtime = make_runtime(
+                self.runtime_config, name=self.trace.id, env=runtime_env
+            )
         elif self.runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
@@ -189,6 +198,9 @@ class Rollout:
                 "down by its owner; keep the provisioning context open for every run "
                 "placed into the box"
             )
+        else:
+            self._previous_runtime_env = dict(self.runtime.env)
+            self.runtime.env = {**self.runtime.env, **runtime_env}
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info
@@ -421,6 +433,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
+        self._restore_runtime_env()
         if self._owns_runtime and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -502,6 +515,7 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
+            self._restore_runtime_env()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

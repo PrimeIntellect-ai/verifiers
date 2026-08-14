@@ -47,21 +47,28 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
     return SubprocessRuntime
 
 
-def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
+def make_runtime(
+    config: RuntimeConfig,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+) -> Runtime:
     runtime = _runtime_cls(config)(config, name)
+    runtime.env = dict(env or {})
     register(runtime)
     return runtime
 
 
 @asynccontextmanager
 async def provision_runtime(
-    config: RuntimeConfig, name: str | None = None
+    config: RuntimeConfig,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> AsyncIterator[Runtime]:
     """Provision a box from `config` and tear it down on exit.
 
     `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
     it has to reach `stop()` (which is safe on a partially-started runtime)."""
-    runtime = make_runtime(config, name)
+    runtime = make_runtime(config, name, env)
     try:
         await runtime.start()
         yield runtime

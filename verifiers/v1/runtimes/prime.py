@@ -191,6 +191,7 @@ class PrimeRuntime(Runtime):
                         docker_image=self.config.image,
                         vm=self.config.vm,
                         guaranteed=self.config.guaranteed,
+                        environment_vars=self.env,
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
@@ -270,7 +271,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
-                env=env,
+                env=self.process_env(env),
                 poll_interval=1,
             )
         except (
@@ -296,7 +297,7 @@ class PrimeRuntime(Runtime):
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=env,
+                env=self.process_env(env),
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
@@ -328,7 +329,7 @@ class PrimeRuntime(Runtime):
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
-                env=env,
+                env=self.process_env(env),
             )
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
