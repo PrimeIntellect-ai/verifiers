@@ -32,9 +32,11 @@ USAGE = (
 )
 
 
-def config_digest(config_dict: dict) -> str:
-    """Canonical hash of a resolved config, as saved to (or parsed from) config.toml."""
-    canonical = json.dumps(config_dict, sort_keys=True, separators=(",", ":"))
+def config_digest(config: EvalConfig) -> str:
+    """Canonical hash of a resolved config. Hashes the model dump (not the raw TOML), so
+    the saved config compares through the same schema the invocation resolved through."""
+    dump = config.model_dump(mode="json", exclude_none=True)
+    canonical = json.dumps(dump, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -93,13 +95,15 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"--resume: no {CONFIG_FILE} in {run_path} - not an eval run dir"
             )
-        saved = tomllib.loads(saved_path.read_text())
-        current = json.loads(config.model_dump_json(exclude_none=True))
-        if config_digest(saved) != config_digest(current):
+        with plugin_errors():
+            saved = config_type.model_validate(tomllib.loads(saved_path.read_text()))
+        if config_digest(saved) != config_digest(config):
+            saved_dump = saved.model_dump(mode="json", exclude_none=True)
+            current_dump = config.model_dump(mode="json", exclude_none=True)
             changed = sorted(
                 key
-                for key in set(saved) | set(current)
-                if saved.get(key) != current.get(key)
+                for key in set(saved_dump) | set(current_dump)
+                if saved_dump.get(key) != current_dump.get(key)
             )
             raise SystemExit(
                 f"--resume requires the exact config the run was started with - it differs "
