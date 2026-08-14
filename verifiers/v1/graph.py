@@ -563,11 +563,13 @@ def _commit_turn(
     # ids and keeps the message-hash prefix.
     prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
-    if tokens is not None:
-        # The original path produced this inference, so prefer it on a tie. A commit-time
-        # re-resolution wins only when a concurrent turn added a longer token-identical prefix.
-        best = -1
-        for candidate in (original, turn) if original is not None else (turn,):
+    # The original path produced this inference, so prefer it on a tie. A commit-time
+    # re-resolution wins only when a concurrent turn added a longer matching prefix.
+    best = -1
+    for candidate in (original, turn) if original is not None else (turn,):
+        keep = len(candidate.prefix_node_ids)
+        off = candidate.path_len
+        if tokens is not None:
             # Compare node by node against the prompt_ids slice at the running offset (C-level
             # list ==, short-circuits at the first divergent node) — no full concatenation.
             keep = 0
@@ -578,10 +580,10 @@ def _commit_turn(
                     break
                 off += len(node_tokens)
                 keep += 1
-            if keep > best:
-                prefix = candidate.prefix_node_ids[:keep]
-                path_len = off
-                best = keep
+        if keep > best:
+            prefix = candidate.prefix_node_ids[:keep]
+            path_len = off
+            best = keep
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
