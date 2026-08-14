@@ -184,7 +184,10 @@ def _eval_config(
             "reasoning_effort": reasoning_effort,
         },
         rich=False,
-        output_dir=output_dir,
+        # Tests treat the given directory as the run dir itself: split it into the
+        # grouping dir + run.dir so `output_path` resolves back to it exactly.
+        output_dir=output_dir.parent,
+        run={"dir": output_dir.name},
         **({"serve": {"pool": pool}} if pool else {}),
         model=CI_MODEL,
     )
