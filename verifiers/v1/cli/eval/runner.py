@@ -44,7 +44,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     plan = [(task, config.num_rollouts) for task in tasks]
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
-    if config.resume is not None:
+    if config.resume:
         keys = [task.hash for task in tasks]
         finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
@@ -168,7 +168,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         ]
         out = output_path(config)
         finished: list[Episode] = []
-        if config.resume is not None:
+        if config.resume:
             keys = [task.hash for task in tasks]
             finished, owed = resume.load(out, keys, config.num_rollouts)
             counts = distribute(keys, owed, config.num_rollouts)

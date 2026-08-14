@@ -4,13 +4,10 @@ import asyncio
 import logging
 import shutil
 import sys
-from pathlib import Path
 
-from pydantic import AliasChoices, Field
-from pydantic_config import BaseConfig, cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.eval.resume import load_resume_config
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
 from verifiers.v1.cli.resolve import (
@@ -20,7 +17,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.cli.eval import EvalConfig, RunConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -28,31 +25,8 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (re-run a previous run's missing/errored rollouts)"
+    "       uv run eval @ <run-dir>/config.toml --resume   (re-run the run's missing/errored rollouts)"
 )
-
-
-class ResumeArgs(BaseConfig):
-    """The arguments `--resume` takes: the run to resume, located as
-    `output_dir / (run.dir or run.name)`. The run's saved config is then loaded
-    verbatim, so nothing else may be passed."""
-
-    run: RunConfig = Field(default_factory=RunConfig)
-    output_dir: Path = Field(
-        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
-    )
-
-
-def resume_command(config: EvalConfig) -> str:
-    """The `--resume` invocation that targets this config's run dir."""
-    parts = ["uv run eval --resume"]
-    if config.run.dir != config.run.name:
-        parts.append(f"--run.dir {config.run.dir}")
-    else:
-        parts.append(f"--run.name {config.run.name}")
-    if config.output_dir != Path("outputs"):
-        parts.append(f"-o {config.output_dir}")
-    return " ".join(parts)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -66,65 +40,46 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    # re-run a previous run's missing/errored rollouts, in place
-    if any(arg == "--resume" or arg.startswith("--resume=") for arg in argv):
-        if any(arg.startswith("--resume=") for arg in argv):
-            raise SystemExit(
-                f"{USAGE}\n--resume takes no value - the run is located by name"
-            )
-        rest = [arg for arg in argv if arg != "--resume"]
-        if rest and not rest[0].startswith("-"):
-            raise SystemExit(f"{USAGE}\n--resume locates the run by name, not by path")
-        with plugin_errors():
-            sys.argv = [sys.argv[0], *rest]
-            args = cli(ResumeArgs)
-        leaf = args.run.dir or args.run.name
-        if leaf is None:
-            raise SystemExit(
-                f"{USAGE}\n--resume needs --run.name <name> (or --run.dir <dir>)"
-            )
-        config = load_resume_config(args.output_dir / leaf)
-    else:
-        # An env-block flag (or a since-moved flat axis) skips the usage gate so the
-        # typed parse renders its did-you-mean instead of a bare usage line.
-        typed_axis = any(
-            a.startswith(("--env.", "--taskset.", "--harness.", "--serve."))
-            for a in argv
-        )
-        if (
-            not extract_id(argv, "env.taskset")
-            and not references_config_file(argv)
-            and not typed_axis
-        ):
-            raise SystemExit(
-                USAGE
-            )  # need a taskset (positional / --env.taskset.id) or a @ file.toml
+    # An env-block flag (or a since-moved flat axis) skips the usage gate so the
+    # typed parse renders its did-you-mean instead of a bare usage line.
+    typed_axis = any(
+        a.startswith(("--env.", "--taskset.", "--harness.", "--serve.")) for a in argv
+    )
+    if (
+        not extract_id(argv, "env.taskset")
+        and not references_config_file(argv)
+        and not typed_axis
+    ):
+        raise SystemExit(
+            USAGE
+        )  # need a taskset (positional / --env.taskset.id) or a @ file.toml
 
-        with plugin_errors():
-            config_type = narrow_config(EvalConfig, argv)
-            sys.argv = [
-                sys.argv[0],
-                *argv,
-            ]  # let prime-pydantic-config render help/errors
-            config = cli(config_type)
-        # A named run directory is reused only by `--resume` or wiped by `--clean`: any
-        # other write into it — the dry-run config.toml included, which would clobber the
-        # config `--resume` reloads — would overwrite the previous run.
-        run_path = output_path(config)
-        if config.clean and run_path.exists():
-            if not run_path.resolve().is_relative_to(config.output_dir.resolve()):
-                raise SystemExit("--clean requires run.dir to remain under output_dir")
-            shutil.rmtree(run_path)
-        traces_file = run_path / TRACES_FILE
-        if traces_file.exists() and traces_file.stat().st_size > 0:
-            raise SystemExit(
-                f"run directory {run_path} already contains results - resume it with "
-                f"`{resume_command(config)}`, overwrite it with --clean, or pick another --run.name"
-            )
-        if config.dry_run:  # resolved + validated; write it to the output dir and exit
-            setup_logging("DEBUG" if config.verbose else "INFO")
-            logger.info("wrote config to %s", write_config(config, output_path(config)))
-            return
+    with plugin_errors():
+        config_type = narrow_config(EvalConfig, argv)
+        sys.argv = [
+            sys.argv[0],
+            *argv,
+        ]  # let prime-pydantic-config render help/errors
+        config = cli(config_type)
+    # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
+    # other write into it — the dry-run config.toml included, which would clobber the
+    # config a resume typically re-runs — would overwrite the previous run.
+    run_path = output_path(config)
+    if config.clean and not config.resume and run_path.exists():
+        if not run_path.resolve().is_relative_to(config.output_dir.resolve()):
+            raise SystemExit("--clean requires run.dir to remain under output_dir")
+        shutil.rmtree(run_path)
+    traces_file = run_path / TRACES_FILE
+    if not config.resume and traces_file.exists() and traces_file.stat().st_size > 0:
+        raise SystemExit(
+            f"run directory {run_path} already contains results - append --resume to "
+            "re-run its missing/errored rollouts, overwrite it with --clean, or pick "
+            "another --run.name"
+        )
+    if config.dry_run:  # resolved + validated; write it to the output dir and exit
+        setup_logging("DEBUG" if config.verbose else "INFO")
+        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
     # slots, so it's in-process only (`server + rich` is rejected at config validation).

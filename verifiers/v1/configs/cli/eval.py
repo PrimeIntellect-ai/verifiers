@@ -111,10 +111,11 @@ class EvalConfig(BaseConfig):
     )
     """Directory that groups related runs. The run itself (config.toml + traces.jsonl)
     writes to `output_dir / run.name`."""
-    resume: Path | None = Field(None, exclude=True)
-    """Set by `--resume <dir>`: re-run missing or errored rollouts, appending to that
-    run's own results. The run's saved config is loaded verbatim, so `--resume` takes
-    no other arguments. Excluded from the saved config."""
+    resume: bool = Field(False, exclude=True)
+    """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
+    run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
+    run's own config — e.g. `uv run eval @ <run-dir>/config.toml --resume`. Excluded
+    from the saved config."""
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):

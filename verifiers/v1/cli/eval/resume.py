@@ -34,7 +34,7 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"
         )
     config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
-    config.resume = resume_dir
+    config.resume = True
     config.output_dir = resume_dir.parent
     config.run.dir = resume_dir.name
     return config
