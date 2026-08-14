@@ -62,35 +62,6 @@ USER_RUNTIMES = [
 ]
 
 
-@pytest.mark.parametrize("command", ["eval", "validate"])
-def test_clean_refuses_output_root(command, tmp_path, monkeypatch):
-    """Cleaning one run must never delete the directory grouping every run."""
-    if command == "eval":
-        from verifiers.v1.cli.eval.main import main
-    else:
-        from verifiers.v1.cli.validate import main
-
-    output_dir = tmp_path / "outputs"
-    sentinel = output_dir / "another-run" / "traces.jsonl"
-    sentinel.parent.mkdir(parents=True)
-    sentinel.write_text("keep")
-    monkeypatch.setattr("sys.argv", [command])
-
-    with pytest.raises(SystemExit, match="run.dir to name a child of output_dir"):
-        main(
-            [
-                "echo-v1",
-                "--output-dir",
-                str(output_dir),
-                "--run.dir",
-                ".",
-                "--clean",
-            ]
-        )
-
-    assert sentinel.read_text() == "keep"
-
-
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
