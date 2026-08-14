@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 from pydantic_config import cli
 
@@ -26,8 +27,39 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
+    "       uv run eval --resume <run-dir>   (re-run a previous run's missing/errored rollouts)\n"
+    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (same, located by run name)"
 )
+
+
+def bare_resume_dir(rest: list[str]) -> Path:
+    """Resolve a bare ``--resume``: the run dir is ``output_dir / (run.dir or run.name)``."""
+    values: dict[str, str] = {}
+    output_dir = Path("outputs")
+    i = 0
+    while i < len(rest):
+        key, _, value = rest[i].partition("=")
+        if key not in ("--run.name", "--run.dir", "--output-dir", "-o"):
+            raise SystemExit(
+                f"{USAGE}\nbare --resume locates the run by name and takes only --run.name, "
+                f"--run.dir, and --output-dir, got {rest[i]!r}"
+            )
+        if not value:
+            if i + 1 >= len(rest):
+                raise SystemExit(f"{USAGE}\n{key} needs a value")
+            i += 1
+            value = rest[i]
+        if key in ("--output-dir", "-o"):
+            output_dir = Path(value)
+        else:
+            values[key] = value
+        i += 1
+    leaf = values.get("--run.dir") or values.get("--run.name")
+    if leaf is None:
+        raise SystemExit(
+            f"{USAGE}\nbare --resume needs --run.name <name> (or --run.dir <dir>)"
+        )
+    return output_dir / leaf
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -41,12 +73,14 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    resume_dir, rest = split_resume(argv, "eval")
+    resume_dir, rest = split_resume(argv, "eval", allow_bare=True)
     # re-run a previous run's missing/errored rollouts, in place
     if resume_dir is not None:
-        if rest:
+        if resume_dir is True:  # bare --resume: locate the run dir by name
+            resume_dir = bare_resume_dir(rest)
+        elif rest:
             raise SystemExit(
-                f"{USAGE}\n--resume re-runs a saved config verbatim and takes no other arguments"
+                f"{USAGE}\n--resume <dir> re-runs a saved config verbatim and takes no other arguments"
             )
         config = load_resume_config(resume_dir)
     else:

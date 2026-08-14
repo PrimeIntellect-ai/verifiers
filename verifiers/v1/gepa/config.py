@@ -90,4 +90,6 @@ class GEPAConfig(BaseConfig):
     def auto_setup_run_name(self):
         if self.run.name is None:
             self.run.name = default_run_name(self.env, self.model)
+        if self.run.dir is None:
+            self.run.dir = self.run.name
         return self

@@ -16,8 +16,9 @@ from verifiers.v1.utils.install import env_name
 
 
 def default_run_name(env: EnvConfig, model: str) -> str:
-    """The auto-generated run name: `<env>--<model>--<harness>`, a descriptive leaf
-    for the run directory `output_dir / run.name`."""
+    """The auto-generated run name: `<env>--<model>--<harness>--<short-id>`, a
+    descriptive leaf for the run directory `output_dir / run.name`. The short-id
+    suffix keeps repeated invocations from colliding."""
     taskset = env.taskset
     name = taskset.name if taskset.id else "no-taskset"
     if taskset.id and env.id:
@@ -26,13 +27,18 @@ def default_run_name(env: EnvConfig, model: str) -> str:
         name = f"{env_name(env.id)}+{name}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
-    return f"{name}--{model.replace('/', '--')}--{harness or 'default'}"
+    return (
+        f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
+    )
 
 
 class RunConfig(BaseConfig):
     name: str | None = None
-    """Run name — the run writes to `output_dir / name`. Auto-generated as
-    `<env>--<model>--<harness>` when unset."""
+    """Run name. Auto-generated as `<env>--<model>--<harness>--<short-id>` when unset."""
+
+    dir: str | None = None
+    """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
+    set it only when the directory should differ from the display name."""
 
     # Not config: the id is minted per process (never user-set) and stamped on traces
     # and the platform upload. TODO: fetch it from the Prime SDK once runs are
@@ -145,4 +151,6 @@ class EvalConfig(BaseConfig):
     def auto_setup_run_name(self):
         if self.run.name is None:
             self.run.name = default_run_name(self.env, self.model)
+        if self.run.dir is None:
+            self.run.dir = self.run.name
         return self

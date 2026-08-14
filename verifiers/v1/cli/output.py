@@ -34,10 +34,11 @@ type_adapter = cache(TypeAdapter)
 
 
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `output_dir / run.name` — the same grouping convention as
-    training. The run name is auto-generated (`<env>--<model>--<harness>`) unless set."""
-    assert config.run.name is not None
-    return config.output_dir / config.run.name
+    """Where this run writes: `output_dir / run.dir` — the same grouping convention as
+    training. The run directory defaults to the auto-generated run name
+    (`<env>--<model>--<harness>--<short-id>`)."""
+    assert config.run.dir is not None
+    return config.output_dir / config.run.dir
 
 
 def write_config(config: BaseModel, results_dir: Path) -> Path:
