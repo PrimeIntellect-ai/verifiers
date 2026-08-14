@@ -9,13 +9,13 @@ always runs in-process, since its adapter protocol is itself synchronous (see
 `GEPAAdapter`)."""
 
 from pathlib import Path
-from uuid import uuid4
 
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
@@ -35,9 +35,9 @@ class GEPAConfig(BaseConfig):
     def _resolve_env(cls, data):
         return resolve_env_field(data, narrowed_env_annotation(cls))
 
-    uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
-    """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
-    Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run identity: `run.name` names the run directory under `output_dir`; auto-generated
+    like an eval's when unset."""
     model: str = Field(
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
@@ -75,14 +75,21 @@ class GEPAConfig(BaseConfig):
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max rollouts in flight at once, across the whole run."""
-    output_dir: Path | None = Field(
-        None, validation_alias=AliasChoices("output_dir", "o")
+    output_dir: Path = Field(
+        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write results (config.toml + the streamed traces.jsonl, alongside GEPA's own
-    candidates.json / run_log.json). None = a fresh per-run dir under
-    `outputs/<env>--<model>--<harness>/<uuid>` (via `output_path`)."""
+    """Directory that groups related runs. The run (config.toml + the streamed traces.jsonl,
+    alongside GEPA's own candidates.json / run_log.json) writes to `output_dir / run.name`."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the
     saved config so re-running `@ config.toml` runs for real."""
+
+    @model_validator(mode="after")
+    def auto_setup_run_name(self):
+        if self.run.name is None:
+            self.run.name = default_run_name(self.env, self.model)
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        return self

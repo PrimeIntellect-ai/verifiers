@@ -44,7 +44,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     plan = [(task, config.num_rollouts) for task in tasks]
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
-    if config.resume is not None:
+    if config.resume:
         keys = [task.hash for task in tasks]
         finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
@@ -73,7 +73,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         for trace in episode.traces:
-            trace.record_run(EvalRunInfo(id=config.uuid))
+            trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -136,7 +136,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     # Spawned processes inherit no logging — hand them the main process's setup so
     # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
-    log_file = str(output_path(config) / "eval.log")
+    log_file = str(output_path(config) / "logs" / "eval.log")
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
     # Death pipe: serve_env self-terminates if this process dies abruptly — we keep
@@ -168,7 +168,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         ]
         out = output_path(config)
         finished: list[Episode] = []
-        if config.resume is not None:
+        if config.resume:
             keys = [task.hash for task in tasks]
             finished, owed = resume.load(out, keys, config.num_rollouts)
             counts = distribute(keys, owed, config.num_rollouts)
@@ -206,7 +206,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     **payload,
                 )
             for trace in episode.traces:
-                trace.record_run(EvalRunInfo(id=config.uuid))
+                trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
             return [episode]
 

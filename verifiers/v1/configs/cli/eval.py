@@ -3,7 +3,7 @@
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
@@ -12,6 +12,41 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.install import env_name
+
+
+def default_run_name(env: EnvConfig, model: str) -> str:
+    """The auto-generated run name: `<env>--<model>--<harness>--<short-id>`, a
+    descriptive leaf for the run directory `output_dir / run.name`. The short-id
+    suffix keeps repeated invocations from colliding."""
+    taskset = env.taskset
+    name = taskset.name if taskset.id else "no-taskset"
+    if taskset.id and env.id:
+        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
+        # not share a name with a plain `gsm8k` one.
+        name = f"{env_name(env.id)}+{name}"
+    # Every seat's resolved harness, distinct, in role order.
+    harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
+    slug = (
+        f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
+    )
+    return slug.lower()
+
+
+class RunConfig(BaseConfig):
+    name: str | None = None
+    """Run name. Auto-generated as `<env>--<model>--<harness>--<short-id>` when unset."""
+
+    dir: str | None = None
+    """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
+    set it only when the directory should differ from the display name."""
+
+    # TODO: fetch the id from the Prime SDK once runs are registered there.
+    _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+
+    @property
+    def id(self) -> str:
+        return self._id
 
 
 class EvalConfig(BaseConfig):
@@ -21,9 +56,9 @@ class EvalConfig(BaseConfig):
     serve: ServeConfig = ServeConfig()
     """How the env is hosted under `--server`: the worker pool, each worker's episode
     bound. Ignored by an in-process run."""
-    uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
-    """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
-    Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run identity: `run.name` names the run directory under `output_dir`, `run.id` is
+    stamped on traces."""
     model: str = Field(
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
@@ -58,6 +93,9 @@ class EvalConfig(BaseConfig):
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the saved
     config so re-running `@ config.toml` (or resuming/replaying the dir) actually runs."""
+    clean: bool = Field(False, exclude=True)
+    """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
+    previous run's results. Excluded from the saved config."""
     rich: bool = True
     """Show a live dashboard instead of per-rollout logs (in-process only; an unset
     `rich` defaults off under `--server`)."""
@@ -68,15 +106,16 @@ class EvalConfig(BaseConfig):
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
     `$PRIME_API_KEY` or `prime login`."""
-    output_dir: Path | None = Field(
-        None, validation_alias=AliasChoices("output_dir", "o")
+    output_dir: Path = Field(
+        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
-    under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
-    resume: Path | None = Field(None, exclude=True)
-    """Set by `--resume <dir>`: re-run missing or errored rollouts, appending to that
-    run's own results. The run's saved config is loaded verbatim, so `--resume` takes
-    no other arguments. Excluded from the saved config."""
+    """Directory that groups related runs. The run itself (config.toml + traces.jsonl)
+    writes to `output_dir / run.name`."""
+    resume: bool = Field(False, exclude=True)
+    """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
+    run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
+    run's own config — e.g. `uv run eval @ <run-dir>/config.toml --resume`. Excluded
+    from the saved config."""
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):
@@ -110,3 +149,11 @@ class EvalConfig(BaseConfig):
     @classmethod
     def _resolve_env(cls, data):
         return resolve_env_field(data, narrowed_env_annotation(cls))
+
+    @model_validator(mode="after")
+    def auto_setup_run_name(self):
+        if self.run.name is None:
+            self.run.name = default_run_name(self.env, self.model)
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        return self

@@ -145,6 +145,8 @@ class EvalRunInfo(BaseModel):
     type: Literal["eval"] = "eval"
 
     id: str
+    name: str | None = None
+    """Human-readable run name, consumer-stamped."""
     step: int | None = None
 
 
@@ -152,6 +154,8 @@ class TrainRunInfo(BaseModel):
     type: Literal["train"] = "train"
 
     id: str
+    name: str | None = None
+    """Human-readable run name, consumer-stamped."""
     step: int | None = None
 
 

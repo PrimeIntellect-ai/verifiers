@@ -11,63 +11,75 @@ before the episode atom (one bare trace per line) are still readable:
 """
 
 import asyncio
+import hashlib
 import json
 from functools import cache
 from pathlib import Path
 
-import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.install import env_name
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
 
-CONFIG_FILE = "config.toml"
-"""Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
+CONFIG_DIR = "configs"
+"""Directory inside a run dir holding its resolved config (one `<cli>.json`, re-runnable
+via `@ <run-dir>/configs/<cli>.json`). Resolved configs are JSON, not TOML: JSON keeps
+nulls, so explicit None settings round-trip exactly on re-parse."""
+
+
+def config_digest(config: BaseModel) -> str:
+    """Canonical hash of a resolved config's full model dump (nulls included)."""
+    dump = config.model_dump(mode="json")
+    canonical = json.dumps(dump, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def saved_config_path(run_dir: Path) -> Path | None:
+    """The run's saved resolved config (`configs/<cli>.json`), None if absent."""
+    candidates = (
+        sorted((run_dir / CONFIG_DIR).glob("*.json"))
+        if (run_dir / CONFIG_DIR).is_dir()
+        else []
+    )
+    return candidates[0] if candidates else None
+
 
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.
 type_adapter = cache(TypeAdapter)
 
 
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `outputs/<env>--<model>--<harness>/<uuid>` (or the explicit
-    `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
-    if config.output_dir is not None:
-        return config.output_dir
-    taskset = config.env.taskset
-    env = taskset.name if taskset.id else "no-taskset"
-    if taskset.id and config.env.id:
-        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
-        # not share a parent dir with a plain `gsm8k` one.
-        env = f"{env_name(config.env.id)}+{env}"
-    # Every seat's resolved harness, distinct, in role order.
-    harness = "+".join(
-        dict.fromkeys(h.name for h in config.env.agent_harnesses().values())
-    )
-    name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
-    return Path("outputs") / name / config.uuid
+    """Where this run writes: `output_dir / run.dir` — the same grouping convention as
+    training. The run directory defaults to the auto-generated run name
+    (`<env>--<model>--<harness>--<short-id>`)."""
+    assert config.run.dir is not None
+    return config.output_dir / config.run.dir
 
 
-def write_config(config: BaseModel, results_dir: Path) -> Path:
-    """Write the run's resolved `config.toml` (re-readable via `@ config.toml`); return its
-    path. mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
-    nulls TOML can't represent."""
-    results_dir.mkdir(parents=True, exist_ok=True)
-    toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
-    config_path = results_dir / CONFIG_FILE
-    config_path.write_text(toml)
+def write_config(
+    config: BaseModel, results_dir: Path, filename: str = "eval.json"
+) -> Path:
+    """Write the run's resolved config to `configs/<filename>` (re-readable via
+    `@ <path>`); return its path. The full model dump is written, nulls included, so the
+    file round-trips exactly."""
+    config_dir = results_dir / CONFIG_DIR
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / filename
+    config_path.write_text(json.dumps(config.model_dump(mode="json"), indent=2))
     return config_path
 
 
-def save_config(config: BaseModel, results_dir: Path) -> None:
-    """Set up the run's output dir: write `config.toml` and start a fresh (empty)
+def save_config(
+    config: BaseModel, results_dir: Path, filename: str = "eval.json"
+) -> None:
+    """Set up the run's output dir: write the resolved config and start a fresh (empty)
     `traces.jsonl`. Call once up front, before episodes start landing."""
-    write_config(config, results_dir)
+    write_config(config, results_dir, filename)
     (results_dir / TRACES_FILE).write_text(
         ""
     )  # fresh; appended to as rollouts complete

@@ -14,7 +14,7 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -69,8 +69,20 @@ def main(argv: list[str] | None = None) -> None:
             "gepa optimizes one agent's prompt against per-trace rewards and can't "
             "drive a multi-agent interaction — only eval runs those"
         )
+    # A named run directory is never silently reused: any write into it — the dry-run
+    # config included, which would destroy the existing traces' config provenance —
+    # would overwrite the previous run.
+    traces_file = output_path(config) / TRACES_FILE
+    if traces_file.exists() and traces_file.stat().st_size > 0:
+        raise SystemExit(
+            f"run directory {output_path(config)} already contains results - "
+            "pick another --run.name or delete it"
+        )
+
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
-        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        logger.info(
+            "wrote config to %s", write_config(config, output_path(config), "gepa.json")
+        )
         return
 
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out run still

@@ -14,7 +14,12 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
-from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime, PrimeRuntimeInfo
+from verifiers.v1.runtimes.prime import (
+    PrimeConfig,
+    PrimeRuntime,
+    PrimeRuntimeInfo,
+    set_base_sandbox_labels,
+)
 from verifiers.v1.runtimes.subprocess import (
     SubprocessConfig,
     SubprocessRuntime,
@@ -93,4 +98,5 @@ __all__ = [
     "make_runtime",
     "provision_runtime",
     "runtime_is_local",
+    "set_base_sandbox_labels",
 ]

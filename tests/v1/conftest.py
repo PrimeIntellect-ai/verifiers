@@ -184,7 +184,8 @@ def _eval_config(
             "reasoning_effort": reasoning_effort,
         },
         rich=False,
-        output_dir=output_dir,
+        output_dir=output_dir.parent,
+        run={"dir": output_dir.name},
         **({"serve": {"pool": pool}} if pool else {}),
         model=CI_MODEL,
     )

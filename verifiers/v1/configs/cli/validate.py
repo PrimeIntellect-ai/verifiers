@@ -6,6 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.cli.eval import RunConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
@@ -19,9 +20,9 @@ class CheckTimeoutConfig(BaseConfig):
 
 
 class ValidateConfig(BaseConfig):
-    uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
-    """Auto-generated run id — the default output directory leaf. Excluded from the
-    saved config so re-running it starts a fresh run."""
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run identity: `run.name` auto-generates as `<taskset>--validate--<short-id>` and
+    names the run directory under `output_dir`."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     runtime: RuntimeConfig = PrimeConfig()
     """Where each task's validation hooks run."""
@@ -46,18 +47,31 @@ class ValidateConfig(BaseConfig):
     """Log at debug level instead of the default info."""
     rich: bool = True
     """Show a live dashboard (one row per task) instead of per-task log lines."""
-    output_dir: Path | None = Field(
-        None, validation_alias=AliasChoices("output_dir", "o")
+    output_dir: Path = Field(
+        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write config.toml, results.jsonl, summary.json, and validate.log. None
-    creates a fresh run under outputs/<taskset>--validate/<uuid>."""
-    resume: Path | None = Field(None, exclude=True)
-    """Set by --resume: re-run missing, errored, and timed-out tasks in this directory.
-    The saved config is replayed verbatim, so resume takes no other arguments."""
+    """Directory that groups related runs. The run (config.toml, results.jsonl,
+    summary.json, validate.log) writes to `output_dir / run.dir`."""
+    resume: bool = Field(False, exclude=True)
+    """Re-run the run's missing, errored, and timed-out tasks in place. The run dir comes
+    from the resolved config (`output_dir / run.dir`), so resume with the run's own
+    config — e.g. `uv run validate @ <run-dir>/config.toml --resume`. Excluded from the
+    saved config."""
+    clean: bool = Field(False, exclude=True)
+    """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
+    previous run's results. Excluded from the saved config."""
 
     @property
     def name(self) -> str:
         return self.taskset.name
+
+    @model_validator(mode="after")
+    def auto_setup_run_name(self):
+        if self.run.name is None:
+            self.run.name = f"{self.name}--validate--{uuid4().hex[:8]}".lower()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        return self
 
     @model_validator(mode="after")
     def _validate_only(self):

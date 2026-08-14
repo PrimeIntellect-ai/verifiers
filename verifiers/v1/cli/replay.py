@@ -10,10 +10,10 @@ cross-trace `score()` can't run offline.
 
 import asyncio
 import contextlib
+import json
 import logging
 import sys
 import time
-import tomllib
 from pathlib import Path
 
 from pydantic_config import cli
@@ -21,10 +21,10 @@ from pydantic_config import cli
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
-    CONFIG_FILE,
     append_trace,
     read_episodes,
     save_config,
+    saved_config_path,
     write_config,
 )
 from verifiers.v1.cli.resolve import narrow_taskset_config
@@ -47,7 +47,7 @@ USAGE = (
 def _narrow(config_path: Path) -> type[ReplayConfig]:
     """Narrow replay config to the saved taskset's config type. The source may be
     an eval run (taskset on the [env] block) or an earlier replay (root taskset)."""
-    data = tomllib.loads(config_path.read_text())
+    data = json.loads(config_path.read_text())
     taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
     taskset_id = taskset.get("id")
     return narrow_taskset_config(ReplayConfig, taskset_id)
@@ -63,7 +63,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # Refuse multi-agent up front, from the SOURCE run's saved config — the replay
     # layer's taskset is overridable and must not decide what the run was.
     # Everything below may assume plain single-agent episodes.
-    saved = tomllib.loads((source / CONFIG_FILE).read_text())
+    source_config = saved_config_path(source)
+    if source_config is None:
+        raise SystemExit(f"no saved config under {source} - not a run dir")
+    saved = json.loads(source_config.read_text())
     saved_env = saved.get("env") or {}
     saved_taskset = saved.get("taskset") or saved_env.get("taskset") or {}
     env_cls = vf.environment_class(
@@ -126,7 +129,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         for _ in range(config.num_rescores)
     ]
 
-    save_config(config, out)
+    save_config(config, out, "replay.json")
     logger.info(
         "replay: re-scoring %d trace(s) x%d from %s -> %s",
         len(traces),
@@ -201,15 +204,15 @@ def main(argv: list[str] | None = None) -> None:
         cli(ReplayConfig)  # full, typed pydantic-config option help
         return
     source = Path(argv.pop(0))
-    config_path = source / CONFIG_FILE
-    if not config_path.exists():
-        raise SystemExit(f"{USAGE}\nno config.toml in {source}")
+    config_path = saved_config_path(source)
+    if config_path is None:
+        raise SystemExit(f"{USAGE}\nno saved config under {source} - not a run dir")
 
     layered = ["@", str(config_path), *argv]
     config_type = _narrow(config_path)
     sys.argv = [sys.argv[0], *layered]
     config = cli(config_type)
-    source_out = tomllib.loads(config_path.read_text()).get("output_dir")
+    source_out = json.loads(config_path.read_text()).get("output_dir")
     # Clear the source run's output_dir unless the user overrode it.
     if config.output_dir is None or str(config.output_dir) == str(source_out):
         config = config.model_copy(update={"output_dir": None})
@@ -222,10 +225,10 @@ def main(argv: list[str] | None = None) -> None:
     level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:
         setup_logging(level)
-        logger.info("wrote config to %s", write_config(config, out))
+        logger.info("wrote config to %s", write_config(config, out, "replay.json"))
         return
 
-    log_file = str(out / "replay.log")
+    log_file = str(out / "logs" / "replay.log")
     if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         logging.lastResort = None

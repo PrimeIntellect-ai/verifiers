@@ -1,9 +1,8 @@
 """Resume an interrupted eval: reload its finished rollouts and run only the rest.
 
-`--resume <dir>` reloads the run's saved config verbatim (so it takes no other
-flags) and writes back into the same dir. `load` keeps the good saved rollouts and
-re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
-redone).
+`--resume` re-enters the run dir the resolved config points at and writes back into
+it. `load` keeps the good saved rollouts and re-runs what's owed: missing rollouts
+(never written) and errored ones (dropped and redone).
 
 A saved rollout is matched to a selected task by content: `task_key` hashes the
 task's wire data. Tasks with identical data are interchangeable, a task whose data
@@ -11,32 +10,16 @@ changed since the interrupted run re-runs, and nothing depends on `data.idx`.
 """
 
 import json
-import tomllib
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
-from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.cli.output import TRACES_FILE, sniff_episode
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.task import task_key
 from verifiers.v1.trace import WireTrace
-
-
-def load_resume_config(resume_dir: Path) -> EvalConfig:
-    """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
-    output dir so the resumed rollouts append to the same `traces.jsonl`."""
-    config_path = resume_dir / CONFIG_FILE
-    if not config_path.exists():
-        raise SystemExit(
-            f"--resume: no config.toml in {resume_dir} - not an eval output dir"
-        )
-    config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
-    config.resume = resume_dir
-    config.output_dir = resume_dir
-    return config
 
 
 def load(
