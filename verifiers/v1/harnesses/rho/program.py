@@ -144,8 +144,25 @@ HISTORY_PROMPT_NOTE = (
 )
 HISTORY_FRAMING_NOTE = (
     "\n\nThe full transcript this summary replaced is at {path} — grep it (bash) if a "
-    "detail you need is missing from the summary."
+    "detail you need is missing from the summary. Work from evidence: the workspace is "
+    "authoritative — inspect the current state of files before relying on the summary "
+    "or the history."
 )
+
+RESUME_NOTE = (
+    "This session continues an earlier exchange: run_code variables from previous "
+    "segments are gone; files, ./tools/, and /tmp/.rho artifacts are intact."
+)
+
+
+def assemble_messages(system: str, prompt: str, initial: list[dict] | None) -> list[dict]:
+    """The loop's starting transcript. A resumed segment replays the exchange's
+    conversation (system messages dropped — the harness rebuilds its own system prompt
+    every segment); a fresh one opens with the task prompt."""
+    head = {"role": "system", "content": system}
+    if initial is not None:
+        return [head, *(m for m in initial if m.get("role") != "system")]
+    return [head, {"role": "user", "content": prompt}]
 
 
 def render_history(messages: list[dict]) -> str:
@@ -1396,6 +1413,7 @@ def parse_args():
     p.add_argument("--model", required=True)
     p.add_argument("--system-prompt", default="")
     p.add_argument("--prompt", default="")
+    p.add_argument("--initial-messages-file", default="")
     p.add_argument("--mcp-config", default="")
     p.add_argument("--effort", default="")
     p.add_argument("--tools", default="read,write,edit,bash,run_code")
@@ -1416,13 +1434,15 @@ async def main() -> None:
         tools = list(driver.tools)
         if args.compact_tool:
             tools.append("compact")
+        initial = None
+        if args.initial_messages_file:
+            initial = json.loads(Path(args.initial_messages_file).read_text())
         system = driver.system_prompt_base(tools)
+        if initial is not None and "run_code" in driver.tools:
+            system += "\n\n" + RESUME_NOTE
         if args.system_prompt:
             system += "\n\n" + args.system_prompt
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": args.prompt},
-        ]
+        messages = assemble_messages(system, args.prompt, initial)
         await driver.run_loop(messages, tools=tools, depth=0, max_turns=args.max_turns)
         write_diagnostics(
             "complete",

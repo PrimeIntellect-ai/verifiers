@@ -5,6 +5,7 @@ from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -43,7 +44,9 @@ class RhoHarnessConfig(HarnessConfig):
 class RhoHarness(Harness[RhoHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = False
+    # A resumed segment relaunches on the accreted conversation: the kernel namespace
+    # is fresh (stated to the model), files and the tools tree persist on the runtime.
+    SUPPORTS_RESUME = True
     EXECUTES_CODE = True
     NEEDS_CONTAINER = True
 
@@ -65,16 +68,25 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_text_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(data)
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt or ''}",
-            f"--prompt={prompt or ''}",
             "--tools=" + ",".join(self.tool_surface()),
             f"--context-budget-tokens={self.config.context_budget_tokens}",
         ]
+        if isinstance(prompt, str) or prompt is None:
+            args.append(f"--prompt={prompt or ''}")
+        else:
+            # A resumed segment's prompt is the accreted conversation; hand Messages
+            # over through a file (base64 images can exceed exec limits).
+            path = f".rho-messages-{trace.id}.json"
+            await runtime.write(
+                path, json.dumps([message_to_wire(m) for m in prompt]).encode()
+            )
+            args.append(f"--initial-messages-file={path}")
         if self.config.effort:
             args.append(f"--effort={self.config.effort}")
         if self.config.subagents:
