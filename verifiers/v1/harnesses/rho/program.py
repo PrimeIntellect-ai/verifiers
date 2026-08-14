@@ -81,9 +81,11 @@ IMAGE_MAGIC = {
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 MAX_TURNS = 250
-MAX_COMPACTIONS = 8
 SUBAGENT_MAX_TURNS = 40
 """Per-spawn ceiling on a subagent's own loop; the shared trace budget binds first."""
+MAX_SUBAGENTS = 100
+"""Runaway-loop backstop, not a budget: the turn budget is the real bound on subagent
+work (every subagent turn spends it), so this sits far above any real rollout."""
 
 TUNNEL_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 TUNNEL_POOL = httpx.Limits(max_connections=16, max_keepalive_connections=16, keepalive_expiry=900.0)
@@ -977,6 +979,8 @@ class Driver:
         self.subagents_spawned = 0
         self.compactions = 0
         self.compaction_pending = False
+        self.just_compacted = False
+        self.auto_compact_disabled = False
         self.last_prompt_tokens = 0
         self.peak_prompt_tokens = 0
 
@@ -1085,9 +1089,9 @@ class Driver:
         raise BridgeError("ValueError", f"completion did not return JSON matching the schema: {problem}")
 
     async def do_agent(self, prompt: str, schema, effort, tools):
-        if self.subagents_spawned >= self.args.max_subagents:
+        if self.subagents_spawned >= MAX_SUBAGENTS:
             raise BridgeError(
-                "RuntimeError", f"subagent cap reached ({self.args.max_subagents} per session)"
+                "RuntimeError", f"subagent backstop reached ({MAX_SUBAGENTS} per session)"
             )
         self.subagents_spawned += 1
         allowed = [t for t in self.tools if t != "compact"]
@@ -1216,14 +1220,10 @@ class Driver:
 
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2 if messages and messages[0].get("role") == "system" else 1
-        prompt = COMPACTION_PROMPT
-        history_path = ""
-        if self.args.history_file:
-            SPILL_DIR.mkdir(parents=True, exist_ok=True)
-            history_path = str(SPILL_DIR / f"history-{self.compactions + 1}.txt")
-            Path(history_path).write_text(render_history(messages[keep:]))
-            prompt += HISTORY_PROMPT_NOTE
-        request = [*messages, {"role": "user", "content": prompt}]
+        SPILL_DIR.mkdir(parents=True, exist_ok=True)
+        history_path = str(SPILL_DIR / f"history-{self.compactions + 1}.txt")
+        Path(history_path).write_text(render_history(messages[keep:]))
+        request = [*messages, {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE}]
         while True:
             try:
                 completion = await self.client.chat.completions.create(
@@ -1245,21 +1245,22 @@ class Driver:
         usage = getattr(completion, "usage", None)
         if usage and usage.prompt_tokens:
             self.peak_prompt_tokens = max(self.peak_prompt_tokens, usage.prompt_tokens)
-        framing = COMPACTION_FRAMING + "\n\n" + summary
-        if history_path:
-            framing += HISTORY_FRAMING_NOTE.format(path=history_path)
+        framing = COMPACTION_FRAMING + "\n\n" + summary + HISTORY_FRAMING_NOTE.format(path=history_path)
         messages[:] = [*messages[:keep], {"role": "user", "content": framing}]
         self.last_prompt_tokens = 0
         self.compactions += 1
         self.compaction_pending = False
+        self.just_compacted = True
 
     def should_checkpoint(self) -> bool:
-        if self.compactions >= self.args.max_compactions:
-            return False
+        # An explicit `compact` call is always honored; the automatic trigger stops once
+        # a compaction proved ineffective (see the guard in `run_loop`) — no count cap,
+        # matching Codex, because the turn budget is the real bound.
         if self.compaction_pending:
             return True
         return bool(
-            self.args.context_budget_tokens
+            not self.auto_compact_disabled
+            and self.args.context_budget_tokens
             and self.last_prompt_tokens >= self.args.context_budget_tokens
         )
 
@@ -1280,8 +1281,7 @@ class Driver:
         if depth == 0 and self.args.compact_tool and self.last_prompt_tokens:
             notices.append(
                 f"[harness] Context: ~{self.last_prompt_tokens} prompt tokens "
-                f"(checkpoint threshold {self.args.context_budget_tokens}, "
-                f"{self.args.max_compactions - self.compactions} checkpoints left)."
+                f"(checkpoint threshold {self.args.context_budget_tokens})."
             )
         return ("\n\n" + "\n".join(notices)) if notices else ""
 
@@ -1315,12 +1315,7 @@ class Driver:
                     **self._effort_kwargs(effort),
                 )
             except Exception as error:
-                if (
-                    depth == 0
-                    and is_overflow_error(error)
-                    and not overflow_retried
-                    and self.compactions < self.args.max_compactions
-                ):
+                if depth == 0 and is_overflow_error(error) and not overflow_retried:
                     # A work turn rejected for context length forces a compaction and
                     # retries exactly once. The refused call cost nothing — refund it.
                     self.budget.spent -= 1
@@ -1334,6 +1329,16 @@ class Driver:
             if usage and usage.prompt_tokens and depth == 0:
                 self.last_prompt_tokens = usage.prompt_tokens
                 self.peak_prompt_tokens = max(self.peak_prompt_tokens, usage.prompt_tokens)
+                if self.just_compacted:
+                    # The first work turn after a checkpoint is the effectiveness probe:
+                    # still over the threshold means the protected prefix itself is too
+                    # big — further automatic compaction would loop without shrinking.
+                    self.just_compacted = False
+                    if (
+                        self.args.context_budget_tokens
+                        and usage.prompt_tokens >= self.args.context_budget_tokens
+                    ):
+                        self.auto_compact_disabled = True
             msg = completion.choices[0].message
             # Append complete — reasoning included. The transcript is append-only.
             messages.append(msg.model_dump(exclude_none=True))
@@ -1388,11 +1393,8 @@ def parse_args():
     p.add_argument("--effort", default="")
     p.add_argument("--tools", default="read,write,edit,bash,run_code")
     p.add_argument("--subagents", action="store_true")
-    p.add_argument("--max-subagents", type=int, default=16)
     p.add_argument("--compact-tool", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
-    p.add_argument("--history-file", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--max-compactions", type=int, default=MAX_COMPACTIONS)
     p.add_argument("--max-turns", type=int, default=MAX_TURNS)
     p.add_argument("--disclose-budget", action="store_true")
     return p.parse_args()
