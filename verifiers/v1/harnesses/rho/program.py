@@ -80,12 +80,10 @@ IMAGE_MAGIC = {
 }
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
-MAX_TURNS = 250
-SUBAGENT_MAX_TURNS = 40
-"""Per-spawn ceiling on a subagent's own loop; the shared trace budget binds first."""
-MAX_SUBAGENTS = 100
-"""Runaway-loop backstop, not a budget: the turn budget is the real bound on subagent
-work (every subagent turn spends it), so this sits far above any real rollout."""
+SPAWN_RESERVE_TURNS = 3
+"""Refuse to delegate when fewer turns than this remain: a subagent can spend the whole
+shared budget, but the parent must keep enough to act on the result. A reserve, not a
+cap — the box imposes no limits of its own; the framework's turn budget is the bound."""
 
 TUNNEL_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 TUNNEL_POOL = httpx.Limits(max_connections=16, max_keepalive_connections=16, keepalive_expiry=900.0)
@@ -915,19 +913,19 @@ class TurnBudget:
     """One counter for every model call this rollout makes — work turns, compactions,
     completions, subagent turns — mirroring the framework's single per-trace cap."""
 
-    def __init__(self, max_turns: int):
-        self.max_turns = max_turns
+    def __init__(self, max_turns: int | None):
+        self.max_turns = max_turns  # None = no cap set by the framework: unbounded
         self.spent = 0
 
     def take(self) -> bool:
-        if self.spent >= self.max_turns:
+        if self.max_turns is not None and self.spent >= self.max_turns:
             return False
         self.spent += 1
         return True
 
     @property
-    def remaining(self) -> int:
-        return self.max_turns - self.spent
+    def remaining(self) -> int | None:
+        return None if self.max_turns is None else self.max_turns - self.spent
 
 
 def is_overflow_error(error: Exception) -> bool:
@@ -1089,9 +1087,12 @@ class Driver:
         raise BridgeError("ValueError", f"completion did not return JSON matching the schema: {problem}")
 
     async def do_agent(self, prompt: str, schema, effort, tools):
-        if self.subagents_spawned >= MAX_SUBAGENTS:
+        remaining = self.budget.remaining
+        if remaining is not None and remaining < SPAWN_RESERVE_TURNS:
             raise BridgeError(
-                "RuntimeError", f"subagent backstop reached ({MAX_SUBAGENTS} per session)"
+                "RuntimeError",
+                f"not enough turn budget left to delegate ({remaining} turns remain) — "
+                "finish the task directly",
             )
         self.subagents_spawned += 1
         allowed = [t for t in self.tools if t != "compact"]
@@ -1114,7 +1115,9 @@ class Driver:
             messages,
             tools=allowed,
             depth=1,
-            max_turns=min(SUBAGENT_MAX_TURNS, self.budget.remaining),
+            # No per-spawn ceiling: allocation is the policy's call; the shared budget
+            # binds, minus the reserve that keeps the parent able to act.
+            max_turns=None if self.budget.remaining is None else self.budget.remaining - 2,
             effort=effort or self.args.effort,
         )
         if final is None:
@@ -1130,7 +1133,7 @@ class Driver:
                 problem = validate_schema(value, schema)
                 if problem is None:
                     return value
-            if self.budget.remaining < 1:
+            if self.budget.remaining is not None and self.budget.remaining < 1:
                 break
             messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
             final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort or self.args.effort)
@@ -1272,7 +1275,7 @@ class Driver:
 
     def _notices(self, depth: int) -> str:
         notices = []
-        if depth == 0 and self.args.disclose_budget:
+        if depth == 0 and self.args.disclose_budget and self.budget.max_turns is not None:
             spent = self.budget.spent
             notices.append(
                 f"[harness] Turn budget: {spent}/{self.budget.max_turns} used, "
@@ -1290,7 +1293,7 @@ class Driver:
         messages: list[dict],
         tools: list[str],
         depth: int,
-        max_turns: int,
+        max_turns: int | None,
         effort: str | None = None,
     ) -> str | None:
         """Drive one agent loop. Returns the final assistant text (None if none)."""
@@ -1298,10 +1301,14 @@ class Driver:
         local_turns = 0
         final: str | None = None
         overflow_retried = False
-        while local_turns < max_turns:
+        while max_turns is None or local_turns < max_turns:
             # A checkpoint is a model call on the same budget: only spend one while the
             # work turn it protects still fits under the cap.
-            if depth == 0 and self.should_checkpoint() and self.budget.remaining > 1:
+            if (
+                depth == 0
+                and self.should_checkpoint()
+                and (self.budget.remaining is None or self.budget.remaining > 1)
+            ):
                 if not self.budget.take():
                     break
                 await self.checkpoint(messages, tool_schemas)
@@ -1395,7 +1402,7 @@ def parse_args():
     p.add_argument("--subagents", action="store_true")
     p.add_argument("--compact-tool", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
-    p.add_argument("--max-turns", type=int, default=MAX_TURNS)
+    p.add_argument("--max-turns", type=int, default=None)
     p.add_argument("--disclose-budget", action="store_true")
     return p.parse_args()
 
