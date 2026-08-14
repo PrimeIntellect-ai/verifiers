@@ -48,6 +48,7 @@ AGENTIC_PLACEMENTS = [
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
+    pair("nac", "docker", "nac-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -83,6 +84,7 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
+    pair("nac", "docker", "nac-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]
@@ -258,8 +260,11 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
-    if harness.id != "kimi-code":
+    # NAC intentionally forks worker conversations from its orchestrator conversation.
+    if harness.id not in {"kimi-code", "nac"}:
         assert trace.num_branches == 1
+    elif harness.id == "nac":
+        assert trace.num_branches > 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]

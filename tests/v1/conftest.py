@@ -24,7 +24,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
-harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `openclaw` / `codex` /
+harnesses `null` / `bash` / `rlm` / `kimi_code` / `nac` / `pi` / `pool` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
@@ -71,7 +71,7 @@ def tool_runtime(request) -> dict:
 
 
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
-# `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
+# `kimi-code` / `nac` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
 # dependencies at rollout.
 # `compact` (an example harness) and `terminus-2` (drives the host tmux) are excluded from e2e.
 @pytest.fixture
