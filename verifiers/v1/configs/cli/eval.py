@@ -27,9 +27,10 @@ def default_run_name(env: EnvConfig, model: str) -> str:
         name = f"{env_name(env.id)}+{name}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
-    return (
+    slug = (
         f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
     )
+    return slug.lower()
 
 
 class RunConfig(BaseConfig):
@@ -40,9 +41,7 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # Not config: the id is minted per process (never user-set) and stamped on traces
-    # and the platform upload. TODO: fetch it from the Prime SDK once runs are
-    # registered there.
+    # TODO: fetch the id from the Prime SDK once runs are registered there.
     _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
 
     @property
@@ -94,6 +93,9 @@ class EvalConfig(BaseConfig):
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the saved
     config so re-running `@ config.toml` (or resuming/replaying the dir) actually runs."""
+    clean: bool = Field(False, exclude=True)
+    """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
+    previous run's results. Excluded from the saved config."""
     rich: bool = True
     """Show a live dashboard instead of per-rollout logs (in-process only; an unset
     `rich` defaults off under `--server`)."""

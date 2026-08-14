@@ -17,18 +17,11 @@ def distribute(
     return counts
 
 
-def split_resume(
-    argv: list[str], command: str, *, allow_bare: bool = False
-) -> tuple[Path | bool | None, list[str]]:
-    """Pull ``--resume [<dir>]`` from argv, returning the dir and other arguments.
-
-    With ``allow_bare``, a ``--resume`` without a value returns ``True`` — the caller
-    resolves the run dir from the remaining arguments (e.g. ``--run.name``)."""
+def split_resume(argv: list[str], command: str) -> tuple[Path | None, list[str]]:
+    """Pull ``--resume <dir>`` from argv, returning the dir and other arguments."""
     for i, arg in enumerate(argv):
         if arg == "--resume":
-            if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
-                if allow_bare:
-                    return True, argv[:i] + argv[i + 1 :]
+            if i + 1 >= len(argv):
                 raise SystemExit(
                     f"--resume needs an output dir: uv run {command} --resume <dir>"
                 )

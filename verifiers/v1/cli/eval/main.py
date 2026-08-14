@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import shutil
 import sys
 from pathlib import Path
 
-from pydantic_config import cli
+from pydantic import AliasChoices, Field
+from pydantic_config import BaseConfig, cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.resume import load_resume_config
@@ -18,8 +20,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.resume import split_resume
-from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig, RunConfig
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -27,39 +28,31 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval --resume <run-dir>   (re-run a previous run's missing/errored rollouts)\n"
-    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (same, located by run name)"
+    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (re-run a previous run's missing/errored rollouts)"
 )
 
 
-def bare_resume_dir(rest: list[str]) -> Path:
-    """Resolve a bare ``--resume``: the run dir is ``output_dir / (run.dir or run.name)``."""
-    values: dict[str, str] = {}
-    output_dir = Path("outputs")
-    i = 0
-    while i < len(rest):
-        key, _, value = rest[i].partition("=")
-        if key not in ("--run.name", "--run.dir", "--output-dir", "-o"):
-            raise SystemExit(
-                f"{USAGE}\nbare --resume locates the run by name and takes only --run.name, "
-                f"--run.dir, and --output-dir, got {rest[i]!r}"
-            )
-        if not value:
-            if i + 1 >= len(rest):
-                raise SystemExit(f"{USAGE}\n{key} needs a value")
-            i += 1
-            value = rest[i]
-        if key in ("--output-dir", "-o"):
-            output_dir = Path(value)
-        else:
-            values[key] = value
-        i += 1
-    leaf = values.get("--run.dir") or values.get("--run.name")
-    if leaf is None:
-        raise SystemExit(
-            f"{USAGE}\nbare --resume needs --run.name <name> (or --run.dir <dir>)"
-        )
-    return output_dir / leaf
+class ResumeArgs(BaseConfig):
+    """The arguments `--resume` takes: the run to resume, located as
+    `output_dir / (run.dir or run.name)`. The run's saved config is then loaded
+    verbatim, so nothing else may be passed."""
+
+    run: RunConfig = Field(default_factory=RunConfig)
+    output_dir: Path = Field(
+        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
+    )
+
+
+def resume_command(config: EvalConfig) -> str:
+    """The `--resume` invocation that targets this config's run dir."""
+    parts = ["uv run eval --resume"]
+    if config.run.dir != config.run.name:
+        parts.append(f"--run.dir {config.run.dir}")
+    else:
+        parts.append(f"--run.name {config.run.name}")
+    if config.output_dir != Path("outputs"):
+        parts.append(f"-o {config.output_dir}")
+    return " ".join(parts)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -73,16 +66,20 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    resume_dir, rest = split_resume(argv, "eval", allow_bare=True)
     # re-run a previous run's missing/errored rollouts, in place
-    if resume_dir is not None:
-        if resume_dir is True:  # bare --resume: locate the run dir by name
-            resume_dir = bare_resume_dir(rest)
-        elif rest:
+    if "--resume" in argv:
+        rest = [arg for arg in argv if arg != "--resume"]
+        if rest and not rest[0].startswith("-"):
+            raise SystemExit(f"{USAGE}\n--resume locates the run by name, not by path")
+        with plugin_errors():
+            sys.argv = [sys.argv[0], *rest]
+            args = cli(ResumeArgs)
+        leaf = args.run.dir or args.run.name
+        if leaf is None:
             raise SystemExit(
-                f"{USAGE}\n--resume <dir> re-runs a saved config verbatim and takes no other arguments"
+                f"{USAGE}\n--resume needs --run.name <name> (or --run.dir <dir>)"
             )
-        config = load_resume_config(resume_dir)
+        config = load_resume_config(args.output_dir / leaf)
     else:
         # An env-block flag (or a since-moved flat axis) skips the usage gate so the
         # typed parse renders its did-you-mean instead of a bare usage line.
@@ -110,8 +107,10 @@ def main(argv: list[str] | None = None) -> None:
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))
             return
-    # A named run directory is reused only by `--resume`: a second run writing into it
-    # would overwrite its results.
+    # A named run directory is reused only by `--resume` or wiped by `--clean`: a second
+    # run writing into it would overwrite its results.
+    if config.clean and config.resume is None and output_path(config).exists():
+        shutil.rmtree(output_path(config))
     traces_file = output_path(config) / TRACES_FILE
     if (
         config.resume is None
@@ -120,7 +119,7 @@ def main(argv: list[str] | None = None) -> None:
     ):
         raise SystemExit(
             f"run directory {output_path(config)} already contains results - resume it with "
-            f"`uv run eval --resume {output_path(config)}`, pick another --run.name, or delete it"
+            f"`{resume_command(config)}`, overwrite it with --clean, or pick another --run.name"
         )
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
