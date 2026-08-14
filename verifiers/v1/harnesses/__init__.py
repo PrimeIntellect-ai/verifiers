@@ -8,6 +8,10 @@ from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarnessConfig,
 )
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
+from verifiers.v1.harnesses.grok_build import (
+    GrokBuildHarness,
+    GrokBuildHarnessConfig,
+)
 from verifiers.v1.harnesses.hermes_agent import (
     HermesAgentHarness,
     HermesAgentHarnessConfig,
@@ -33,6 +37,8 @@ __all__ = [
     "ClaudeCodeHarnessConfig",
     "CodexHarness",
     "CodexHarnessConfig",
+    "GrokBuildHarness",
+    "GrokBuildHarnessConfig",
     "HermesAgentHarness",
     "HermesAgentHarnessConfig",
     "KimiCodeHarness",
