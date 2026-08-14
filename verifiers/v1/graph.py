@@ -315,6 +315,7 @@ class PendingTurn:
     prompt: list[Message]
     prefix_node_ids: list[int]
     path_len: int
+    node_count: int
 
     @property
     def tail_start(self) -> int:
@@ -370,7 +371,15 @@ class PendingTurn:
 
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
-        assistant_id = _commit_turn(self, response)
+        # Parallel requests can share a prefix that another request commits while this one
+        # is in flight. Resolve again so the later response joins that prefix instead of
+        # materializing a duplicate root from its stale pre-inference snapshot.
+        turn = (
+            self
+            if len(self.trace.nodes) == self.node_count
+            else prepare_turn(self.trace, self.prompt)
+        )
+        assistant_id = _commit_turn(turn, response)
         if tools:
             self.trace.tools = tools
         return assistant_id
@@ -422,6 +431,7 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
         prompt=prompt,
         prefix_node_ids=prefix_node_ids,
         path_len=path_len,
+        node_count=len(trace.nodes),
     )
 
 

@@ -232,6 +232,65 @@ def test_renderer_level_break_forks_by_token_id():
     ]
 
 
+def test_parallel_turns_rebase_shared_prefix_at_commit():
+    def response(content, prompt_ids, completion_id, message_spans):
+        return vf.Response(
+            id=content,
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content=content),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=prompt_ids,
+                completion_ids=[completion_id],
+                message_spans=message_spans,
+            ),
+        )
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    system = vf.SystemMessage(content="shared worker system")
+    worker_a = vf.UserMessage(content="worker A")
+    worker_b = vf.UserMessage(content="worker B")
+
+    # Both requests resolve before either response commits, as they do during parallel
+    # inference. The second commit must discover the root created by the first.
+    turn_a = graph.prepare_turn(trace, [system, worker_a])
+    turn_b = graph.prepare_turn(trace, [system, worker_b])
+    turn_a.commit(response("A1", [1, 2, 3, 4], 5, [(0, 2), (2, 3)]))
+    turn_b.commit(response("B1", [1, 2, 6, 7], 8, [(0, 2), (2, 3)]))
+
+    roots = [node for node in trace.nodes if node.parent is None]
+    assert len(roots) == 1
+    assert trace.num_branches == 2
+
+    graph.prepare_turn(
+        trace,
+        [
+            system,
+            worker_a,
+            vf.AssistantMessage(content="A1"),
+            vf.UserMessage(content="continue A"),
+        ],
+    ).commit(
+        response(
+            "A2",
+            [1, 2, 3, 4, 5, 9, 10],
+            11,
+            [(0, 2), (2, 3), (3, 5), (5, 6)],
+        )
+    )
+
+    assert len([node for node in trace.nodes if node.parent is None]) == 1
+    assert trace.num_branches == 2
+    assert sorted(branch.token_ids for branch in trace.branches) == [
+        [1, 2, 3, 4, 5, 9, 10, 11],
+        [1, 2, 6, 7, 8],
+    ]
+
+
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     task = vf.TaskData(idx=0, prompt="few-shot")
     trace = vf.Trace(
