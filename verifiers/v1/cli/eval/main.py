@@ -20,7 +20,6 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.resume import split_resume
 from verifiers.v1.configs.cli.eval import EvalConfig, RunConfig
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
@@ -29,8 +28,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval --resume <run-dir>   (re-run a previous run's missing/errored rollouts)\n"
-    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (same, located by run name)"
+    "       uv run eval --resume --run.name <name> [-o <output-dir>]   (re-run a previous run's missing/errored rollouts)"
 )
 
 
@@ -68,24 +66,24 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    resume_target, rest = split_resume(argv, "eval", allow_bare=True)
     # re-run a previous run's missing/errored rollouts, in place
-    if resume_target is not None:
-        if resume_target is True:  # bare --resume: locate the run dir by name
-            with plugin_errors():
-                sys.argv = [sys.argv[0], *rest]
-                args = cli(ResumeArgs)
-            leaf = args.run.dir or args.run.name
-            if leaf is None:
-                raise SystemExit(
-                    f"{USAGE}\n--resume needs a run dir, --run.name, or --run.dir"
-                )
-            resume_target = args.output_dir / leaf
-        elif rest:
+    if any(arg == "--resume" or arg.startswith("--resume=") for arg in argv):
+        if any(arg.startswith("--resume=") for arg in argv):
             raise SystemExit(
-                f"{USAGE}\n--resume <dir> re-runs a saved config verbatim and takes no other arguments"
+                f"{USAGE}\n--resume takes no value - the run is located by name"
             )
-        config = load_resume_config(resume_target)
+        rest = [arg for arg in argv if arg != "--resume"]
+        if rest and not rest[0].startswith("-"):
+            raise SystemExit(f"{USAGE}\n--resume locates the run by name, not by path")
+        with plugin_errors():
+            sys.argv = [sys.argv[0], *rest]
+            args = cli(ResumeArgs)
+        leaf = args.run.dir or args.run.name
+        if leaf is None:
+            raise SystemExit(
+                f"{USAGE}\n--resume needs --run.name <name> (or --run.dir <dir>)"
+            )
+        config = load_resume_config(args.output_dir / leaf)
     else:
         # An env-block flag (or a since-moved flat axis) skips the usage gate so the
         # typed parse renders its did-you-mean instead of a bare usage line.
