@@ -7,7 +7,7 @@ import json
 import tarfile
 from pathlib import Path
 
-from verifiers.v1.acp import ACPConfig, ACPHarness, ACPHarnessSession
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
@@ -19,8 +19,9 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 NATIVE_TOOLS = ("read", "write", "edit", "bash", "run_code")
 
 RUNTIME_DIAGNOSTICS = "/tmp/.rho/runtime.json"
-"""Where the program leaves its stats (mirrors program.py); picked up onto the trace
-when the session closes. The program rewrites it after every segment."""
+"""Where the program leaves its stats (mirrors program.py); picked up onto the trace at
+cleanup. The program rewrites it after every segment — one process per rollout, so the
+counters are cumulative."""
 
 
 class RhoHarnessConfig(HarnessConfig):
@@ -40,17 +41,6 @@ class RhoHarnessConfig(HarnessConfig):
     practiced. 0 disables (tests only)."""
 
 
-class RhoHarnessSession(ACPHarnessSession):
-    async def close(self) -> None:
-        # Diagnostics ride the session's end; failures must never mask teardown.
-        if not self._closed:
-            with contextlib.suppress(Exception):
-                picked = await self.runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
-                if picked.exit_code == 0 and picked.stdout.strip():
-                    self.trace.info["rho"] = json.loads(picked.stdout)
-        await super().close()
-
-
 class RhoHarness(ACPHarness[RhoHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
@@ -59,7 +49,6 @@ class RhoHarness(ACPHarness[RhoHarnessConfig]):
     SUPPORTS_RESUME = True
     EXECUTES_CODE = True
     NEEDS_CONTAINER = True
-    SESSION_CLASS = RhoHarnessSession
 
     def tool_surface(self) -> list[str]:
         # Seat shaping goes through the base `disabled_tools`: a ptc-style service
@@ -93,8 +82,9 @@ class RhoHarness(ACPHarness[RhoHarnessConfig]):
         # starts once per rollout, so this always runs on a fresh workspace. One tarball,
         # one upload, one extraction: a per-file loop costs 2N gateway round-trips on
         # the prime runtime.
-        task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
-        if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
+        if (raw := getattr(data, "dir", None)) and (
+            inputs := Path(raw) / "inputs"
+        ).is_dir():
             buffer = io.BytesIO()
 
             def build_tar() -> None:
@@ -114,19 +104,14 @@ class RhoHarness(ACPHarness[RhoHarnessConfig]):
                 )
         env = {
             **self.config.resolved_env,
-            # The program pops RHO_* on startup so the secret never reaches the
-            # kernel's or bash's inherited environment.
+            # The program pops RHO_* on startup, so the secret never reaches bash
+            # children (the kernel builds its env from an allowlist regardless).
             "RHO_BASE_URL": endpoint,
             "RHO_API_KEY": secret,
             "RHO_MODEL": ctx.model,
             "RHO_TOOLS": ",".join(self.tool_surface()),
             "RHO_CONTEXT_BUDGET_TOKENS": str(self.config.context_budget_tokens),
         }
-        if system_prompt:
-            # A file, not an env value: task system prompts can exceed env limits.
-            path = f".vf-rho-system-{trace.id}"
-            await runtime.write(path, system_prompt.encode())
-            env["RHO_SYSTEM_PROMPT_FILE"] = path
         # One effort channel: the framework's sampling config (which interception
         # overlays on every call anyway); no rho-only knob to fight it.
         if ctx.sampling.reasoning_effort:
@@ -135,14 +120,26 @@ class RhoHarness(ACPHarness[RhoHarnessConfig]):
             env["RHO_SUBAGENTS"] = "1"
         # One cap, owned by the framework: the box spends the budget it is measured
         # against instead of walking into a refused call. The budget spans the whole
-        # session — every segment's turns draw on it.
+        # session — every segment's turns draw on it — and the session opens on a
+        # fresh trace, so the full allowance is the remaining allowance.
         if trace.agent is not None and trace.agent.config.max_turns:
-            env["RHO_MAX_TURNS"] = str(
-                max(0, trace.agent.config.max_turns - trace.num_turns)
-            )
+            env["RHO_MAX_TURNS"] = str(trace.agent.config.max_turns)
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        # system_prompt stays out of ACPConfig: the runner would fold it into the first
-        # prompt's text blocks, while rho builds its own system message from the file.
-        return ACPConfig(env=env, command=[*program], prompt=prompt)
+        # The task system prompt rides session_meta, NOT ACPConfig.system_prompt: the
+        # runner folds the latter into the first prompt's text blocks, while rho builds
+        # its own system message at session/new.
+        return ACPConfig(
+            env=env,
+            command=program,
+            prompt=prompt,
+            session_meta={"system_prompt": system_prompt} if system_prompt else None,
+        )
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        # Diagnostics ride the rollout's end — the session is closed by now, but the
+        # runtime outlives it (the RLM harness relies on the same ordering). Failures
+        # must never mask teardown.
+        with contextlib.suppress(Exception):
+            trace.info["rho"] = json.loads(await runtime.read(RUNTIME_DIAGNOSTICS))

@@ -28,8 +28,8 @@ The program is an ACP agent: the harness's runner spawns it once per rollout, se
 builds the driver and its MCP surface, and each session/prompt runs one loop segment on
 the same conversation — kernel namespace, named agent() sessions, and the transcript all
 persist across segments. Config rides RHO_* environment variables, popped on read so the
-API secret never reaches the kernel's or bash's inherited environment; the final reply of
-each segment goes back as an agent message chunk.
+API secret never reaches bash's inherited environment (the kernel builds its env from an
+allowlist); the final reply of each segment goes back as an agent message chunk.
 
 The transcript is append-only between compaction boundaries: assistant messages (reasoning
 included) are re-sent complete, and the only rewriting event is Codex-style checkpoint
@@ -144,7 +144,7 @@ TOOLS_DIR = "tools"
 DISCOVERY_CATALOG = "tools_catalog"
 RUNTIME_DIAGNOSTICS = "/tmp/.rho/runtime.json"
 """Box-side stats, inside the one harness-owned dir (mirrored in harness.py).
-Per-segment and last-write-wins on resume — cumulative truth lives on the trace."""
+Rewritten after every segment; one process per rollout, so counters are cumulative."""
 
 OVERFLOW_PATTERNS = (
     "context length",
@@ -188,7 +188,7 @@ COMPACTION_FRAMING = (
 TRANSCRIPT_PATH = SPILL_DIR / "transcript.txt"
 """The live transcript: every root-loop message is appended here as it happens, so the
 model can grep its own history at any time — not only after a checkpoint. One stable
-path per runtime, surviving compactions and resumed segments."""
+path per runtime, surviving compactions and later prompt segments."""
 
 # With the transcript file, the summary is licensed to be tight: raw data stays
 # greppable, so the checkpoint carries decisions and state, not hedged payloads.
@@ -248,9 +248,13 @@ def write_diagnostics(phase: str, **values) -> None:
 # --------------------------------------------------------------------------------------
 
 
+def image_part(mime: str, encoded: str) -> dict:
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+
+
 def _spill(text: str, label: str) -> str:
-    # mkstemp, not a counter: the counter resets per process, and a resumed segment
-    # (or a shared /tmp) would overwrite files an earlier transcript still names.
+    # mkstemp, not a counter: a counter would overwrite files an earlier transcript
+    # still names when /tmp is shared across rollouts on one runtime.
     SPILL_DIR.mkdir(parents=True, exist_ok=True)
     fd, path = tempfile.mkstemp(dir=SPILL_DIR, prefix=f"{label}-", suffix=".txt")
     os.write(fd, text.encode())
@@ -325,10 +329,7 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
         encoded = base64.b64encode(p.read_bytes()).decode()
         return [
             {"type": "text", "text": f"{path} ({mime}, {size} bytes)"},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{encoded}"},
-            },
+            image_part(mime, encoded),
         ]
 
     try:
@@ -791,15 +792,12 @@ class BridgeError(Exception):
 # --------------------------------------------------------------------------------------
 
 
-def mcp_clients(config: dict) -> dict[str, httpx.AsyncClient]:
+def mcp_clients(servers: dict[str, str]) -> dict[str, httpx.AsyncClient]:
     return {
         name: httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=TUNNEL_TIMEOUT,
-            limits=TUNNEL_POOL,
-            headers=spec.get("headers") or None,
+            follow_redirects=True, timeout=TUNNEL_TIMEOUT, limits=TUNNEL_POOL
         )
-        for name, spec in config.get("mcpServers", {}).items()
+        for name in servers
     }
 
 
@@ -847,26 +845,26 @@ async def with_retry(call):
             return await call()
 
 
-async def connect_mcp(config: dict, clients: dict):
+async def connect_mcp(servers: dict[str, str], clients: dict):
     """Enumerate tools across all servers concurrently (startup pays the slowest
     tunnel, not the sum); return (dispatch {(app, verb) -> (server, raw, params)},
     docs, catalog ref)."""
     dispatch: dict[tuple[str, str], tuple[str, str, list[str]]] = {}
     docs: dict = {}
     catalog_server: tuple[str, str] | None = None
-    servers = list(config.get("mcpServers", {}).items())
+    entries = list(servers.items())
 
-    async def list_tools(name: str, spec: dict):
-        async with mcp_session(clients[name], spec["url"]) as session:
+    async def list_tools(name: str, url: str):
+        async with mcp_session(clients[name], url) as session:
             return (await session.list_tools()).tools
 
     listed = await asyncio.gather(
         *(
-            with_retry(lambda name=name, spec=spec: list_tools(name, spec))
-            for name, spec in servers
+            with_retry(lambda name=name, url=url: list_tools(name, url))
+            for name, url in entries
         )
     )
-    for (name, _spec), tools in zip(servers, listed):
+    for (name, _url), tools in zip(entries, listed):
         for tool in tools:
             if tool.name == DISCOVERY_CATALOG:
                 # The box's own channel: read once at startup, never bound or documented.
@@ -915,9 +913,7 @@ def mcp_content(result):
 
 async def call_mcp_raw(servers, clients, server_name, raw_name, arguments):
     async def call():
-        async with mcp_session(
-            clients[server_name], servers[server_name]["url"]
-        ) as session:
+        async with mcp_session(clients[server_name], servers[server_name]) as session:
             return await session.call_tool(raw_name, arguments)
 
     result = await with_retry(call)
@@ -948,9 +944,9 @@ def _safe_component(name: str) -> str:
 
 def _fresh_tools_root(box: Path) -> Path:
     """Recreate the docs tree from nothing each time it is written. The tree is
-    harness-owned; on a resumed segment the previous segment's model code may have
-    replaced parts of it (a symlink at tools/<app> would route writes outside the
-    box), so nothing pre-existing is trusted or followed."""
+    harness-owned but the path may be occupied by image- or task-supplied content
+    (a symlink at tools/<app> would route writes outside the box), so nothing
+    pre-existing is trusted or followed."""
     root = box / TOOLS_DIR
     if root.is_symlink():
         root.unlink()
@@ -1177,7 +1173,7 @@ class Driver:
         )
         self.budget = TurnBudget(config.max_turns)
         self.box = Path.cwd()
-        self.tools: list[str] = list(config.tools)
+        self.tools: list[str] = config.tools
         self.kernel: Kernel | None = None
         self.apps_payload: dict = {}
         self.dispatch: dict = {}
@@ -1187,6 +1183,8 @@ class Driver:
         self.tool_discovery: dict[str, int] = {}
         self.subagents_spawned = 0
         self.completions = 0
+        self.messages: list[dict] = []
+        """The root conversation — one list for the whole rollout, grown per segment."""
         self.transcript_pos = 0
         """Messages of the root loop already appended to the live transcript file."""
         self.sessions: dict[str, dict] = {}
@@ -1206,10 +1204,10 @@ class Driver:
     def served_apps(self) -> set[str]:
         return {app for app, _ in self.dispatch}
 
-    async def setup(self, mcp_config: dict) -> None:
-        self.servers = mcp_config.get("mcpServers", {})
-        self.clients = mcp_clients(mcp_config)
-        self.dispatch, docs, catalog_ref = await connect_mcp(mcp_config, self.clients)
+    async def setup(self, servers: dict[str, str]) -> None:
+        self.servers = servers
+        self.clients = mcp_clients(servers)
+        self.dispatch, docs, catalog_ref = await connect_mcp(servers, self.clients)
         apps_payload = {}
         for (app, verb), (_, _, params) in self.dispatch.items():
             apps_payload.setdefault(app, {})[verb] = params
@@ -1813,12 +1811,13 @@ class Driver:
 @dataclass
 class Config:
     """The RHO_* environment contract with the harness (ACPConfig.env reaches the
-    runner, which spawns this program with an inherited environment)."""
+    runner, which spawns this program with an inherited environment). Values are
+    popped on read, so the secret never reaches bash children — spawned long after
+    this runs — and the kernel builds its env from an allowlist regardless."""
 
     base_url: str
     api_key: str
     model: str
-    system_prompt: str
     effort: str
     tools: list[str]
     subagents: bool
@@ -1828,12 +1827,6 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         env = os.environ
-        system_prompt = ""
-        if path := env.pop("RHO_SYSTEM_PROMPT_FILE", ""):
-            # A file, not an env value: task system prompts can exceed env limits.
-            file = Path(path)
-            system_prompt = file.read_text()
-            file.unlink(missing_ok=True)
         # Defaults below are manual-run conveniences; the harness always sets these.
         raw_tools = env.pop("RHO_TOOLS", "read,write,edit,bash,run_code")
         max_turns = env.pop("RHO_MAX_TURNS", "")
@@ -1841,7 +1834,6 @@ class Config:
             base_url=env.pop("RHO_BASE_URL"),
             api_key=env.pop("RHO_API_KEY"),
             model=env.pop("RHO_MODEL"),
-            system_prompt=system_prompt,
             effort=env.pop("RHO_EFFORT", ""),
             tools=[name for name in raw_tools.split(",") if name],
             subagents=env.pop("RHO_SUBAGENTS", "") == "1",
@@ -1858,8 +1850,10 @@ def blocks_to_content(blocks: list) -> str | list[dict]:
         if isinstance(block, TextContentBlock):
             parts.append({"type": "text", "text": block.text})
         elif isinstance(block, ImageContentBlock):
-            url = block.uri or f"data:{block.mime_type};base64,{block.data}"
-            parts.append({"type": "image_url", "image_url": {"url": url}})
+            if block.uri:
+                parts.append({"type": "image_url", "image_url": {"url": block.uri}})
+            else:
+                parts.append(image_part(block.mime_type, block.data))
         else:
             kind = getattr(block, "type", type(block).__name__)
             raise TypeError(f"unsupported prompt content block: {kind!r}")
@@ -1877,7 +1871,6 @@ class RhoAgent(Agent):
         self.config = config
         self.conn: Client | None = None
         self.driver: Driver | None = None
-        self.messages: list[dict] = []
 
     def on_connect(self, conn: Client) -> None:
         self.conn = conn
@@ -1895,33 +1888,29 @@ class RhoAgent(Agent):
     async def new_session(
         self, cwd, additional_directories=None, mcp_servers=None, **kwargs
     ) -> NewSessionResponse:
-        mcp_config = {
-            "mcpServers": {
-                server.name: {"url": url}
-                for server in mcp_servers or []
-                if (url := getattr(server, "url", None))
-            }
-        }
-        self.driver = Driver(self.config)
-        await self.driver.setup(mcp_config)
-        system = self.driver.system_prompt_base(
-            self.driver.tools, advertise_agent=self.config.subagents
+        driver = self.driver = Driver(self.config)
+        await driver.setup({server.name: server.url for server in mcp_servers or []})
+        system = driver.system_prompt_base(
+            driver.tools, advertise_agent=self.config.subagents
         )
         system += "\n\n" + TRANSCRIPT_SYSTEM_NOTE.format(path=TRANSCRIPT_PATH)
-        if self.config.system_prompt:
-            system += "\n\n" + self.config.system_prompt
-        self.messages = [{"role": "system", "content": system}]
-        self.driver.append_transcript(self.messages)
-        self.driver.write_stats("ready")
+        # The task system prompt rides session_meta (the runner's `(system)` prompt
+        # block is a fallback for agents without a system-prompt channel of their own).
+        if task_system := kwargs.get("system_prompt"):
+            system += "\n\n" + task_system
+        driver.messages = [{"role": "system", "content": system}]
+        driver.append_transcript(driver.messages)
+        driver.write_stats("ready")
         return NewSessionResponse(session_id="rho")
 
     async def prompt(self, session_id, prompt, **kwargs) -> PromptResponse:
         assert self.conn is not None and self.driver is not None
-        self.messages.append({"role": "user", "content": blocks_to_content(prompt)})
-        self.driver.append_transcript(self.messages)
+        messages = self.driver.messages
+        messages.append({"role": "user", "content": blocks_to_content(prompt)})
+        self.driver.append_transcript(messages)
         # The turn budget, not this call, is the authority on stopping.
         final = await self.driver.run_loop(
-            self.messages, tools=self.driver.tools, depth=0, max_turns=None
+            messages, tools=self.driver.tools, depth=0, max_turns=None
         )
         self.driver.write_stats("segment")
         await self.conn.session_update(
