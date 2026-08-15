@@ -22,6 +22,7 @@ def pair(a: str, b: str, id: str, *extra_marks):
 CHAT_PLACEMENTS = [
     pair("null", "subprocess", "null-harness-in-subprocess"),
     pair("bash", "docker", "bash-harness-in-docker"),
+    pair("rho", "docker", "rho-harness-in-docker"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
@@ -38,6 +39,7 @@ CHAT_PLACEMENTS = [
 # remote row per provider.
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
+    pair("rho", "docker", "rho-harness-in-docker"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
