@@ -45,6 +45,7 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
+    HarnessError,
     OverlongPromptError,
     ProviderError,
     RolloutError,
@@ -150,6 +151,7 @@ class InterceptionServer(Interception):
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.tool_sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
@@ -180,20 +182,24 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def register(self, session: RolloutSession) -> tuple[str, str]:
-        """Register separate capabilities for model inference and private task state, and
-        assign the session its server-owned model client."""
+    def register(self, session: RolloutSession) -> tuple[str, str, str]:
+        """Register separate model, task-state, and tool-interception capabilities."""
         session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
+        tool_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
+        self.tool_sessions[tool_secret] = session
         self.state_routes[session.trace.id] = session
-        return model_secret, state_secret
+        return model_secret, state_secret, tool_secret
 
-    def unregister(self, model_secret: str, state_secret: str) -> None:
+    def unregister(
+        self, model_secret: str, state_secret: str, tool_secret: str
+    ) -> None:
         session = self.sessions.pop(model_secret, None)
         self.state_sessions.pop(state_secret, None)
+        self.tool_sessions.pop(tool_secret, None)
         if session is not None:
             self.state_routes.pop(session.trace.id, None)
             # The rollout concluded; its trace is sealed. Cancel straggler handlers
@@ -203,11 +209,11 @@ class InterceptionServer(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        model_secret, state_secret = self.register(session)
+        model_secret, state_secret, tool_secret = self.register(session)
         try:
-            yield self.base_url, model_secret, state_secret
+            yield self.base_url, model_secret, state_secret, tool_secret
         finally:
-            self.unregister(model_secret, state_secret)
+            self.unregister(model_secret, state_secret, tool_secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -231,7 +237,7 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
-        # Tool servers use a state-only capability; the model bearer cannot reach these.
+        # Auxiliary services use capabilities separate from the model bearer.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
         app.router.add_post("/tool", self.handle_tool)
@@ -293,7 +299,7 @@ class InterceptionServer(Interception):
         return mediated, capabilities
 
     async def handle_tool(self, request: web.Request) -> web.Response:
-        session = self.sessions.get(
+        session = self.tool_sessions.get(
             request.headers.get("Authorization", "").removeprefix("Bearer ")
         )
         if session is None:
@@ -305,14 +311,34 @@ class InterceptionServer(Interception):
             return web.json_response(
                 {"action": "stop", "reason": session.trace.stop_condition}
             )
+        if session.fatal_error is not None:
+            return web.json_response({"error": str(session.fatal_error)}, status=409)
         try:
             hook = ToolHookRequest.model_validate_json(await request.read())
-            return web.json_response(
-                await session.handle_tool(hook.phase, hook.message)
-            )
+            async with session.tool_interception_lock:
+                if session.released:
+                    return web.json_response({"error": "rollout concluded"}, status=409)
+                if session.stopped:
+                    return web.json_response(
+                        {"action": "stop", "reason": session.trace.stop_condition}
+                    )
+                if session.fatal_error is not None:
+                    return web.json_response(
+                        {"error": str(session.fatal_error)}, status=409
+                    )
+                decision = await session.handle_tool(
+                    hook.phase, hook.message, hook.rewrite
+                )
+            return web.json_response(decision)
         except RolloutError as error:
-            session.error = error
+            session.fatal_error = error
             return web.json_response({"error": str(error)}, status=400)
+        except Exception as error:  # noqa: BLE001 - malformed native-hook traffic is fatal
+            failure = HarnessError(
+                f"tool interception failed: {type(error).__name__}: {error}"
+            )
+            session.fatal_error = failure
+            return web.json_response({"error": str(failure)}, status=400)
 
     def record_call(
         self,
@@ -402,6 +428,19 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
+        if session.released:
+            return web.json_response(
+                dialect.error_body("rollout concluded"), status=409
+            )
+        if session.stopped:
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
+                status=400,
+            )
+        if session.fatal_error is not None:
+            return web.json_response(
+                dialect.error_body(str(session.fatal_error)), status=400
+            )
         # Graph atomicity under retries: sampling a marked SDK retry again would commit a
         # second turn and fork the graph, so serve it the recorded response (or the
         # still-computing attempt's result). Only marked retries match — a repeated body
@@ -426,15 +465,6 @@ class InterceptionServer(Interception):
             model_request = dialect.parse_request(body)
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
-        if session.released:
-            return web.json_response(
-                dialect.error_body("rollout concluded"), status=409
-            )
-        if session.stopped:
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
-                status=400,
-            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             logger.debug(
@@ -475,8 +505,8 @@ class InterceptionServer(Interception):
             )
             if request_rewrites:
                 session.trace.request_rewrites.extend(request_rewrites)
-                if stopped is None:
-                    dialect.rewrite_request(body, original_request, model_request)
+            if stopped is None and model_request != original_request:
+                dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
             finish_inflight()
             return self._fail(session, dialect, error)
@@ -513,7 +543,13 @@ class InterceptionServer(Interception):
             finish_inflight()
             return self._fail(session, dialect, error)
 
-        inspect_response = bool(session.response_interceptors or session.response_stops)
+        # A native hook may run as soon as its SDK sees a complete tool-use block,
+        # before the terminal stream event. Buffering keeps the hook behind commit().
+        inspect_response = bool(
+            session.response_interceptors
+            or session.response_stops
+            or session.native_tool_interception
+        )
         if streaming:
             return await self._stream(
                 request,
@@ -589,7 +625,7 @@ class InterceptionServer(Interception):
                             status=400,
                         )
                     node = turn.commit(call_response, model_request.tools)
-                    session.consume_prepared(turn.tail)
+                    session.consume_prepared(turn)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
                         session.trace.stop(stopped)
@@ -772,7 +808,7 @@ class InterceptionServer(Interception):
                         status=409 if session.released else 400,
                     )
                 node = turn.commit(response, model_request.tools)
-                session.consume_prepared(turn.tail)
+                session.consume_prepared(turn)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if stopped is not None:
                     buffered.close()
@@ -880,7 +916,7 @@ class InterceptionServer(Interception):
                 response = parser.finish()
                 if not session.released and not session.stopped:
                     node = turn.commit(response, model_request.tools)
-                    session.consume_prepared(turn.tail)
+                    session.consume_prepared(turn)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
                 elif session.stopped:
                     with contextlib.suppress(ConnectionResetError):

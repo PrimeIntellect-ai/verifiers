@@ -5,6 +5,7 @@ from pathlib import Path
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -34,8 +35,8 @@ class BashHarnessConfig(HarnessConfig):
 
     search: bool = False
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
-    eval environment; the key is handed to the program over argv (like the interception secret) so
-    the agent's `bash` subprocesses don't inherit it."""
+    eval environment; the key is handed to the program over argv so the agent's `bash` subprocesses
+    don't inherit it."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
@@ -58,6 +59,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
         tool_interception_url: str | None = None,
+        tool_interception_secret: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         fragments = [BASH_SYSTEM_PROMPT]
@@ -77,6 +79,16 @@ class BashHarness(Harness[BashHarnessConfig]):
         ]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+            assert tool_interception_secret is not None
+            if not runtime.supports_live_processes:
+                raise HarnessError(
+                    "Bash tool interception requires a runtime with live process support"
+                )
+            tool_interception_secret_bytes = tool_interception_secret.encode()
+            args.append(
+                "--tool-interception-secret-bytes="
+                f"{len(tool_interception_secret_bytes)}"
+            )
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
@@ -124,4 +136,8 @@ class BashHarness(Harness[BashHarnessConfig]):
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env, activate=False
         )
+        if tool_interception_url:
+            return await runtime.run_with_input(
+                [*program, *args], env, tool_interception_secret_bytes
+            )
         return await runtime.run_program([*program, *args], env)

@@ -21,6 +21,7 @@ from acp import (
     spawn_agent_process,
     text_block,
 )
+from acp.connection import StreamDirection, StreamEvent
 from acp.schema import (
     AgentMessageChunk,
     AllowedOutcome,
@@ -30,22 +31,55 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCall,
+    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+TOOL_INTERCEPTION_UNAVAILABLE = "Tool interception is unavailable."
 
 
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
+        self.prompt_error: str | None = None
+        self.tool_calls: dict[str, str] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
+        self.prompt_error = None
+        self.tool_calls = {}
+
+    def observe_stream(self, event: StreamEvent) -> None:
+        if event.direction is not StreamDirection.INCOMING:
+            return
+        message = event.message
+        params = message.get("params")
+        if message.get("method") != "session/update" or not isinstance(params, dict):
+            return
+        update = params.get("update")
+        if (
+            not isinstance(update, dict)
+            or update.get("sessionUpdate") != "tool_call_update"
+        ):
+            return
+        raw_output = update.get("rawOutput")
+        details = raw_output.get("details") if isinstance(raw_output, dict) else None
+        if (
+            isinstance(details, dict)
+            and details.get("toolInterceptionUnavailable") is True
+        ):
+            self.prompt_error = TOOL_INTERCEPTION_UNAVAILABLE
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        if isinstance(update, AgentMessageChunk) and isinstance(
+        if isinstance(update, ToolCall):
+            self.tool_calls[update.tool_call_id] = update.status or "pending"
+        elif isinstance(update, ToolCallUpdate):
+            if update.status:
+                self.tool_calls[update.tool_call_id] = update.status
+        elif isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
             message_id = getattr(update, "message_id", None)
@@ -128,10 +162,27 @@ async def prompt(
         raise ValueError("ACP prompt has no content")
     client.reset()
     try:
-        await connection.prompt(session_id=session_id, prompt=blocks)
+        response = await connection.prompt(session_id=session_id, prompt=blocks)
     except RequestError as error:
+        if client.prompt_error:
+            raise RuntimeError(client.prompt_error) from error
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+
+    if client.prompt_error:
+        raise RuntimeError(client.prompt_error)
+    tool_statuses = list(client.tool_calls.values())
+    completed_tool_turn = (
+        config.get("allow_empty_tool_reply", False)
+        and response.stop_reason == "end_turn"
+        and bool(tool_statuses)
+        and all(status in ("completed", "failed") for status in tool_statuses)
+    )
+    if not client.visible_reply.strip() and not completed_tool_turn:
+        raise RuntimeError(
+            "ACP agent produced no visible reply "
+            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+        )
     return client.visible_reply
 
 
@@ -159,6 +210,7 @@ class ACPSession:
                     *command[1:],
                     env=os.environ.copy(),
                     transport_kwargs={"stderr": None},
+                    observers=[self.client.observe_stream],
                 )
             )
             self.connection = agent_process[0]
@@ -167,6 +219,8 @@ class ACPSession:
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
+            if auth := config.get("auth"):
+                await self.connection.authenticate(**auth)
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
