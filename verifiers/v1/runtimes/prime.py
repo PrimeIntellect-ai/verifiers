@@ -263,7 +263,7 @@ class PrimeRuntime(Runtime):
             policy.get("deny"),
         )
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             result = await self._client.run_background_job(
                 self.info.id,
@@ -283,7 +283,7 @@ class PrimeRuntime(Runtime):
             stderr=result.stderr or "",
         )
 
-    async def open_process(
+    async def _open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         if not self.config.vm:
@@ -319,7 +319,7 @@ class PrimeRuntime(Runtime):
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
 
-    async def run_background(
+    async def _run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"

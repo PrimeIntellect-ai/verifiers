@@ -169,7 +169,7 @@ class ModalRuntime(Runtime):
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
                 *argv, workdir=self.config.workdir, env=env
@@ -189,7 +189,7 @@ class ModalRuntime(Runtime):
             stderr=stderr or "",
         )
 
-    async def open_process(
+    async def _open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         pidfile = f".vf-process-{uuid.uuid4().hex}.pid"
@@ -245,7 +245,7 @@ class ModalRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"modal live process failed to start: {e}") from e
 
-    async def run_background(
+    async def _run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # `&` backgrounds inside the sandbox; the job returns immediately, the process

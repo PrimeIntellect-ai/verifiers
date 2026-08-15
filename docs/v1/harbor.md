@@ -80,6 +80,20 @@ resource_multiplier = 2.0
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
+## Environment variables
+
+`[environment.env]` is resolved against the host and applied to the box itself, so everything that runs there sees it: the healthcheck, harness setup, the agent's own commands, the collect hooks, and the verifier. Values are literals or Harbor's `${VAR}` / `${VAR:-default}` templates; a template with no host value and no default fails the rollout in setup, as `harbor run` does.
+
+Only the raw templates become task data. Resolution happens in the worker at setup time, so a resolved secret never reaches `traces.jsonl`.
+
+`[verifier.env]` still applies to the verifier alone and, as in Harbor, wins where both name the same key. A separate verifier box gets its own environment's `env` — `[verifier.environment].env` when one is declared, otherwise the `[environment].env` its fresh copy inherits.
+
+## Healthchecks
+
+`[environment.healthcheck]` runs after `environment/` is staged and before the harness is provisioned — Harbor's own ordering, where agent setup follows the probe. Docker `HEALTHCHECK` semantics are preserved: failures within `start_period_sec` are retried every `start_interval_sec` and never counted, and after that grace period `retries` consecutive failures (each bounded by `timeout_sec`, spaced by `interval_sec`) give up. Giving up fails the rollout during setup, so the agent never starts against a box that never came up.
+
+Harbor probes the agent's environment only, so a healthcheck on a separate verifier environment is not run; one written into `[verifier.environment]` explicitly logs a warning.
+
 ## Network policies
 
 Harbor's effective agent network policy is applied to Docker or Prime VM harness

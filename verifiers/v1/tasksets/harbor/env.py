@@ -109,6 +109,10 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                 async with AsyncExitStack() as boxes:
                     async with asyncio.timeout(grader.data.timeout.scoring):
                         box = await boxes.enter_async_context(provision_runtime(config))
+                        # The verifier environment's own `env`, resolved into the box
+                        # before anything runs there — the solver's `setup` did the
+                        # same for its box, and this box never sees that hook.
+                        grader._apply_env(box)
                         await box.prepare_setup()
                         # Artifacts first, tests second: an artifact entry pointing
                         # into /tests must not survive staging, which wipes and
