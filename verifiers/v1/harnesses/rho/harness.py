@@ -51,7 +51,11 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         # Seat shaping goes through the base `disabled_tools`: a ptc-style service
         # seat is disabled_tools=["read", "write", "edit"]. `--tools` is the one
         # channel for what the seat offers — compact rides it like everything else.
-        tools = [name for name in NATIVE_TOOLS if name not in (self.config.disabled_tools or [])]
+        tools = [
+            name
+            for name in NATIVE_TOOLS
+            if name not in (self.config.disabled_tools or [])
+        ]
         if self.config.compact_tool:
             tools.append("compact")
         return tools
@@ -98,13 +102,19 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         # against instead of walking into a refused call. A resumed segment gets the
         # REMAINING allowance — the trace has already spent turns against the cap.
         if trace.agent is not None and trace.agent.config.max_turns:
-            args.append(f"--max-turns={max(0, trace.agent.config.max_turns - trace.num_turns)}")
+            args.append(
+                f"--max-turns={max(0, trace.agent.config.max_turns - trace.num_turns)}"
+            )
         if self.config.disclose_budget:
             args.append("--disclose-budget")
         if mcp_urls:
             args.append(
                 "--mcp-config="
-                + json.dumps({"mcpServers": {n: {"url": u} for n, u in mcp_urls.items()}})
+                + json.dumps(
+                    {"mcpServers": {n: {"url": u} for n, u in mcp_urls.items()}}
+                )
             )
-        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+        program = await runtime.prepare_uv_script(
+            PROGRAM_SOURCE, self.config.resolved_env
+        )
         return await runtime.run_program([*program, *args], self.config.resolved_env)

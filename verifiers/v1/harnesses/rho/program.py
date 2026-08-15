@@ -94,7 +94,9 @@ shared budget, but the parent must keep enough to act on the result. A reserve, 
 cap — the box imposes no limits of its own; the framework's turn budget is the bound."""
 
 TUNNEL_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
-TUNNEL_POOL = httpx.Limits(max_connections=16, max_keepalive_connections=16, keepalive_expiry=900.0)
+TUNNEL_POOL = httpx.Limits(
+    max_connections=16, max_keepalive_connections=16, keepalive_expiry=900.0
+)
 """Everything the box talks to is the host reached back through the runtime's tunnel,
 where opening a connection is the slow part (measured 3-16s, up to 55s). Pool for the
 whole rollout so that cost is paid per rollout, not per call."""
@@ -163,7 +165,9 @@ RESUME_NOTE = (
 )
 
 
-def assemble_messages(system: str, prompt: str, initial: list[dict] | None) -> list[dict]:
+def assemble_messages(
+    system: str, prompt: str, initial: list[dict] | None
+) -> list[dict]:
     """The loop's starting transcript. A resumed segment replays the exchange's
     conversation: a LEADING system message is the previous segment's harness-built
     system prompt and is replaced by the fresh rebuild; any later explicit system
@@ -272,7 +276,10 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
         return f"{path} not found"
     if p.is_dir():
         entries = sorted(e.name + ("/" if e.is_dir() else "") for e in p.iterdir())
-        return f"{path} is a directory ({len(entries)} entries) — use bash ls; first entries: " + ", ".join(entries[:20])
+        return (
+            f"{path} is a directory ({len(entries)} entries) — use bash ls; first entries: "
+            + ", ".join(entries[:20])
+        )
     with p.open("rb") as f:
         head = f.read(8)
     for magic, mime in IMAGE_MAGIC.items():
@@ -284,7 +291,10 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
             encoded = base64.b64encode(p.read_bytes()).decode()
             return [
                 {"type": "text", "text": f"{path} ({mime}, {size} bytes)"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                },
             ]
 
     try:
@@ -311,7 +321,9 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
                 break
             line = line.rstrip("\n")
             if len(line) > MAX_LINE_CHARS:
-                line = line[:MAX_LINE_CHARS] + " …[line clipped, use bash to see the rest]"
+                line = (
+                    line[:MAX_LINE_CHARS] + " …[line clipped, use bash to see the rest]"
+                )
             if len(line) + 1 > budget:
                 window.append(line[:budget])
                 budget = 0
@@ -330,7 +342,10 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
     if more_follows or clipped_mid_line:
         # Resume ON the clipped line when the byte cap cut it short, else the next line.
         resume = end if clipped_mid_line else end + 1
-        return body + f"\n[Showing lines {offset}-{end}; more of the file follows. Use offset={resume} to continue.]"
+        return (
+            body
+            + f"\n[Showing lines {offset}-{end}; more of the file follows. Use offset={resume} to continue.]"
+        )
     return body
 
 
@@ -362,7 +377,9 @@ def run_edit(path: str, edits, cwd: Path | None = None) -> str:
     for i, edit in enumerate(edits):
         old, new = edit.get("oldText"), edit.get("newText")
         if not isinstance(old, str) or not old or not isinstance(new, str):
-            return f"edits[{i}]: oldText must be a non-empty string and newText a string"
+            return (
+                f"edits[{i}]: oldText must be a non-empty string and newText a string"
+            )
         count = original.count(old)
         if count != 1:
             return f"edits[{i}]: oldText must appear exactly once in the original {path} (found {count})"
@@ -407,7 +424,10 @@ def run_bash(command: str, timeout=None, cwd: Path | None = None) -> str:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         out, _ = proc.communicate()
-        return cap_output((out or "") + f"\n[command timed out after {timeout:g}s and was killed]", "bash")
+        return cap_output(
+            (out or "") + f"\n[command timed out after {timeout:g}s and was killed]",
+            "bash",
+        )
     text = out or "(no output)"
     if proc.returncode != 0:
         text += f"\n[exit code {proc.returncode}]"
@@ -549,7 +569,15 @@ except BaseException:
     send({"fatal": traceback.format_exc()})
 '''
 
-KERNEL_ENV_KEEP = ("PATH", "HOME", "LANG", "TERM", "TMPDIR", "PYTHONPATH", "VIRTUAL_ENV")
+KERNEL_ENV_KEEP = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "TMPDIR",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+)
 # No UV_ prefix: UV_INDEX_<NAME>_PASSWORD and credential-bearing index URLs ride it.
 KERNEL_ENV_PREFIXES = ("LC_", "XDG_")
 
@@ -576,7 +604,9 @@ class Kernel:
         if self._proc is not None and self._proc.returncode is None:
             return
         if self._runner_path is None:
-            fd, self._runner_path = tempfile.mkstemp(prefix=".rho-runner-", suffix=".py")
+            fd, self._runner_path = tempfile.mkstemp(
+                prefix=".rho-runner-", suffix=".py"
+            )
             os.write(fd, RUNNER_SOURCE.encode())
             os.close(fd)
         self._proc = await asyncio.create_subprocess_exec(
@@ -630,10 +660,15 @@ class Kernel:
             budget -= time.monotonic() - started
             if frame is None:
                 self._mark_dead("kernel died running your cell")
-                return restart_note + "[kernel died running this cell — fresh kernel next call: variables lost, files intact.]"
+                return (
+                    restart_note
+                    + "[kernel died running this cell — fresh kernel next call: variables lost, files intact.]"
+                )
             if "fatal" in frame:
                 self._mark_dead("kernel crashed")
-                return restart_note + cap_output(f"[kernel crashed]\n{frame['fatal']}", "run_code")
+                return restart_note + cap_output(
+                    f"[kernel crashed]\n{frame['fatal']}", "run_code"
+                )
             if "call" in frame:
                 # Bridge time is the tool's, not the cell's: clock paused.
                 try:
@@ -642,7 +677,14 @@ class Kernel:
                 except BridgeError as e:
                     self._send({"error": {"type": e.type, "message": str(e)}})
                 except Exception as e:  # noqa: BLE001 - bridge failures raise inside the kernel
-                    self._send({"error": {"type": "RuntimeError", "message": f"{type(e).__name__}: {e}"}})
+                    self._send(
+                        {
+                            "error": {
+                                "type": "RuntimeError",
+                                "message": f"{type(e).__name__}: {e}",
+                            }
+                        }
+                    )
                 continue
             if "done" in frame:
                 done = frame["done"]
@@ -658,7 +700,9 @@ class Kernel:
         try:
             deadline = time.monotonic() + KERNEL_KILL_GRACE
             while True:
-                frame = await self._read_frame(timeout=max(0.1, deadline - time.monotonic()))
+                frame = await self._read_frame(
+                    timeout=max(0.1, deadline - time.monotonic())
+                )
                 if frame is None:
                     break
                 if "done" in frame:
@@ -695,6 +739,7 @@ class BridgeError(Exception):
 # MCP: pooled clients, retried sessions, docs-on-disk, decoy-aware dispatch
 # --------------------------------------------------------------------------------------
 
+
 def mcp_clients(config: dict) -> dict[str, httpx.AsyncClient]:
     return {
         name: httpx.AsyncClient(
@@ -721,7 +766,9 @@ async def mcp_session(http_client: httpx.AsyncClient, url: str):
     stack = contextlib.AsyncExitStack()
     cancelled: BaseException | None = None
     try:
-        read, write, *_ = await stack.enter_async_context(streamable_http_client(url, http_client=http_client))
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(url, http_client=http_client)
+        )
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         yield session
@@ -763,7 +810,10 @@ async def connect_mcp(config: dict, clients: dict):
             return (await session.list_tools()).tools
 
     listed = await asyncio.gather(
-        *(with_retry(lambda name=name, spec=spec: list_tools(name, spec)) for name, spec in servers)
+        *(
+            with_retry(lambda name=name, spec=spec: list_tools(name, spec))
+            for name, spec in servers
+        )
     )
     for (name, _spec), tools in zip(servers, listed):
         for tool in tools:
@@ -773,7 +823,11 @@ async def connect_mcp(config: dict, clients: dict):
                 continue
             # Wire contract with task authors: tools are named <app>_<verb> (first
             # underscore splits); a verb-less name lands in the shared `misc` app.
-            bare = tool.name.split("_", 1)[1] if tool.name.startswith("tools_") else tool.name
+            bare = (
+                tool.name.split("_", 1)[1]
+                if tool.name.startswith("tools_")
+                else tool.name
+            )
             app, _, verb = bare.partition("_")
             if not verb:
                 app, verb = "misc", bare
@@ -810,7 +864,9 @@ def mcp_content(result):
 
 async def call_mcp_raw(servers, clients, server_name, raw_name, arguments):
     async def call():
-        async with mcp_session(clients[server_name], servers[server_name]["url"]) as session:
+        async with mcp_session(
+            clients[server_name], servers[server_name]["url"]
+        ) as session:
             return await session.call_tool(raw_name, arguments)
 
     result = await with_retry(call)
@@ -824,10 +880,18 @@ async def call_mcp_raw(servers, clients, server_name, raw_name, arguments):
 def _safe_component(name: str) -> str:
     """Doc-tree names come from the task's MCP server; keep them single path components.
     README is reserved for the tree's own summaries at both levels."""
-    if not name or name in (".", "..") or "/" in name or "\\" in name or name.startswith("."):
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or name.startswith(".")
+    ):
         raise ValueError(f"unsafe tool doc path component: {name!r}")
     if name.upper() == "README":
-        raise ValueError("app/verb name 'README' is reserved for the doc tree's summaries")
+        raise ValueError(
+            "app/verb name 'README' is reserved for the doc tree's summaries"
+        )
     return name
 
 
@@ -904,7 +968,11 @@ def build_tool_schemas(tools: list[str]) -> list[dict]:
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": {"type": "object", "properties": properties, "required": required},
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
             },
         }
 
@@ -935,7 +1003,10 @@ def build_tool_schemas(tools: list[str]) -> list[dict]:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}},
+                        "properties": {
+                            "oldText": {"type": "string"},
+                            "newText": {"type": "string"},
+                        },
                         "required": ["oldText", "newText"],
                     },
                 },
@@ -947,7 +1018,10 @@ def build_tool_schemas(tools: list[str]) -> list[dict]:
             "Run a shell command in the workspace. No default timeout.",
             {
                 "command": {"type": "string"},
-                "timeout": {"type": "number", "description": "seconds (optional, no default)"},
+                "timeout": {
+                    "type": "number",
+                    "description": "seconds (optional, no default)",
+                },
             },
             ["command"],
         ),
@@ -1024,7 +1098,10 @@ def validate_schema(value, schema) -> str | None:
 
 
 def schema_suffix(lead: str, schema) -> str:
-    return f"\n\n{lead} only valid JSON matching this schema (no prose, no code fences):\n" + json.dumps(schema)
+    return (
+        f"\n\n{lead} only valid JSON matching this schema (no prose, no code fences):\n"
+        + json.dumps(schema)
+    )
 
 
 def parse_reply(text: str, schema) -> tuple[object, str | None]:
@@ -1101,7 +1178,9 @@ class Driver:
             self.documented_apps = set(self.served_apps)
         reserved = {"json", "completion", "agent"} & set(apps_payload)
         if reserved:
-            raise ValueError(f"app names collide with run_code globals: {sorted(reserved)}")
+            raise ValueError(
+                f"app names collide with run_code globals: {sorted(reserved)}"
+            )
         self.apps_payload = apps_payload
         if "run_code" in self.tools:
             self.kernel = Kernel(
@@ -1113,17 +1192,26 @@ class Driver:
     async def handle_call(self, call: dict, depth: int):
         kind = call.get("kind")
         if kind == "mcp":
-            return await self.do_mcp(call.get("app", ""), call.get("verb", ""), call.get("args") or {})
+            return await self.do_mcp(
+                call.get("app", ""), call.get("verb", ""), call.get("args") or {}
+            )
         if kind == "completion":
-            return await self.do_completion(call.get("prompt", ""), call.get("schema"), call.get("system"))
+            return await self.do_completion(
+                call.get("prompt", ""), call.get("schema"), call.get("system")
+            )
         if kind == "agent":
             if not self.args.subagents:
                 raise BridgeError("NameError", "agent() is not enabled in this session")
             if depth > 0:
-                raise BridgeError("RuntimeError", "subagents cannot spawn subagents (depth 1)")
+                raise BridgeError(
+                    "RuntimeError", "subagents cannot spawn subagents (depth 1)"
+                )
             return await self.do_agent(
-                call.get("prompt", ""), call.get("schema"), call.get("effort"),
-                call.get("tools"), call.get("session"),
+                call.get("prompt", ""),
+                call.get("schema"),
+                call.get("effort"),
+                call.get("tools"),
+                call.get("session"),
             )
         raise BridgeError("RuntimeError", f"unknown bridge call {kind!r}")
 
@@ -1132,28 +1220,36 @@ class Driver:
         if entry is None:
             if app in self.served_apps:
                 raise BridgeError(
-                    "AttributeError", f"{app} has no {verb!r} tool — its tools are documented in ./tools/{app}/"
+                    "AttributeError",
+                    f"{app} has no {verb!r} tool — its tools are documented in ./tools/{app}/",
                 )
             if app in self.documented_apps:
-                self.tool_discovery["decoy_calls"] = self.tool_discovery.get("decoy_calls", 0) + 1
+                self.tool_discovery["decoy_calls"] = (
+                    self.tool_discovery.get("decoy_calls", 0) + 1
+                )
                 raise BridgeError(
                     "NameError",
                     f"no such app in this workspace: {app!r} — it is documented, but this workspace "
                     "has no such integration; the work has to go through an app that is connected",
                 )
             raise BridgeError(
-                "NameError", f"no tool named {app}.{verb!r} — explore ./tools/<app>/ and call <app>.<verb>(...)"
+                "NameError",
+                f"no tool named {app}.{verb!r} — explore ./tools/<app>/ and call <app>.<verb>(...)",
             )
         server, raw, _ = entry
         return await call_mcp_raw(self.servers, self.clients, server, raw, arguments)
 
     async def do_completion(self, prompt: str, schema, system):
         if not self.budget.take():
-            raise BridgeError("RuntimeError", "turn budget exhausted — no model calls left")
+            raise BridgeError(
+                "RuntimeError", "turn budget exhausted — no model calls left"
+            )
         messages = []
         if system:
             messages.append({"role": "system", "content": str(system)})
-        body = str(prompt) + (schema_suffix("Respond with", schema) if schema is not None else "")
+        body = str(prompt) + (
+            schema_suffix("Respond with", schema) if schema is not None else ""
+        )
         messages.append({"role": "user", "content": body})
         problem = "no attempts left"
         for attempt in range(2):
@@ -1169,8 +1265,16 @@ class Driver:
             if problem is None:
                 return value
             messages.append({"role": "assistant", "content": text})
-            messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
-        raise BridgeError("ValueError", f"completion did not return JSON matching the schema: {problem}")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"{problem}. Reply with only the corrected JSON.",
+                }
+            )
+        raise BridgeError(
+            "ValueError",
+            f"completion did not return JSON matching the schema: {problem}",
+        )
 
     async def do_agent(self, prompt: str, schema, effort, tools, session=None):
         remaining = self.budget.remaining
@@ -1181,30 +1285,49 @@ class Driver:
                 "finish the task directly",
             )
         self.subagents_spawned += 1
-        body = str(prompt) + (schema_suffix("Your final message must be", schema) if schema is not None else "")
+        body = str(prompt) + (
+            schema_suffix("Your final message must be", schema)
+            if schema is not None
+            else ""
+        )
         if session and session in self.sessions:
             # Continue the named session: same transcript, tool surface, and kernel —
             # the follow-up rides the context already paid for.
             stored = self.sessions[session]
-            messages, allowed, kernel = stored["messages"], stored["tools"], stored["kernel"]
+            messages, allowed, kernel = (
+                stored["messages"],
+                stored["tools"],
+                stored["kernel"],
+            )
             messages.append({"role": "user", "content": body})
         else:
             allowed = [t for t in self.tools if t != "compact"]
             if tools is not None:
                 unknown = [t for t in tools if t not in allowed]
                 if unknown:
-                    raise BridgeError("ValueError", f"unknown subagent tools: {unknown} (available: {allowed})")
+                    raise BridgeError(
+                        "ValueError",
+                        f"unknown subagent tools: {unknown} (available: {allowed})",
+                    )
                 allowed = [t for t in allowed if t in tools]
             # A subagent gets its own kernel: agent() is only reachable from inside a
             # parent cell, whose kernel is blocked in bridge() — routing sub-cells to
             # it would corrupt the frame stream. Blank context means blank namespace.
-            kernel = Kernel({"apps": self.apps_payload, "subagents": False}) if "run_code" in allowed else None
+            kernel = (
+                Kernel({"apps": self.apps_payload, "subagents": False})
+                if "run_code" in allowed
+                else None
+            )
             messages = [
                 {"role": "system", "content": self.subagent_system_prompt(allowed)},
                 {"role": "user", "content": body},
             ]
             if session:
-                self.sessions[session] = {"messages": messages, "tools": allowed, "kernel": kernel}
+                self.sessions[session] = {
+                    "messages": messages,
+                    "tools": allowed,
+                    "kernel": kernel,
+                }
         try:
             final = await self.run_loop(
                 messages,
@@ -1212,7 +1335,9 @@ class Driver:
                 depth=1,
                 # No per-spawn ceiling: allocation is the policy's call; the shared budget
                 # binds, minus the reserve that keeps the parent able to act.
-                max_turns=None if self.budget.remaining is None else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
+                max_turns=None
+                if self.budget.remaining is None
+                else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
                 effort=effort,
                 kernel=kernel,
             )
@@ -1227,29 +1352,53 @@ class Driver:
                     return value
                 if self.budget.remaining is not None and self.budget.remaining < 1:
                     break
-                messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
-                final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort, kernel=kernel)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"{problem}. Reply with only the corrected JSON.",
+                    }
+                )
+                final = await self.run_loop(
+                    messages,
+                    tools=[],
+                    depth=1,
+                    max_turns=1,
+                    effort=effort,
+                    kernel=kernel,
+                )
                 if final is None:
                     break
             if final is not None:
                 value, problem = parse_reply(final, schema)
                 if problem is None:
                     return value
-            raise BridgeError("ValueError", f"subagent did not return JSON matching the schema: {problem}")
+            raise BridgeError(
+                "ValueError",
+                f"subagent did not return JSON matching the schema: {problem}",
+            )
         finally:
             if kernel is not None and not session:
                 await kernel.close()
 
     # --- native tool dispatch -------------------------------------------------------
 
-    async def execute_tool(self, name: str, arguments: dict, depth: int, kernel: Kernel | None = None):
+    async def execute_tool(
+        self, name: str, arguments: dict, depth: int, kernel: Kernel | None = None
+    ):
         if name == "read":
             return await asyncio.to_thread(
-                run_read, arguments.get("path", ""), arguments.get("offset"), arguments.get("limit"), self.box
+                run_read,
+                arguments.get("path", ""),
+                arguments.get("offset"),
+                arguments.get("limit"),
+                self.box,
             )
         if name == "write":
             return await asyncio.to_thread(
-                run_write, arguments.get("path", ""), arguments.get("content", ""), self.box
+                run_write,
+                arguments.get("path", ""),
+                arguments.get("content", ""),
+                self.box,
             )
         if name == "edit":
             return await asyncio.to_thread(
@@ -1257,13 +1406,17 @@ class Driver:
             )
         if name == "bash":
             return await asyncio.to_thread(
-                run_bash, arguments.get("command", ""), arguments.get("timeout"), self.box
+                run_bash,
+                arguments.get("command", ""),
+                arguments.get("timeout"),
+                self.box,
             )
         if name == "run_code":
             kernel = kernel if kernel is not None else self.kernel
             assert kernel is not None
             return await kernel.run_cell(
-                arguments.get("code", ""), lambda call: self.handle_call(call, depth=depth)
+                arguments.get("code", ""),
+                lambda call: self.handle_call(call, depth=depth),
             )
         if name == "compact" and depth == 0:
             self.compaction_pending = True
@@ -1272,7 +1425,9 @@ class Driver:
 
     # --- prompts --------------------------------------------------------------------
 
-    def system_prompt_base(self, tools: list[str], advertise_agent: bool | None = None) -> str:
+    def system_prompt_base(
+        self, tools: list[str], advertise_agent: bool | None = None
+    ) -> str:
         parts = ["You are an agent operating in a minimal harness."]
         lines = []
         if "read" in tools:
@@ -1297,7 +1452,9 @@ class Driver:
                     "Service tools are documented as files under ./tools/<app>/<verb> (explore with "
                     "bash) and pre-bound in run_code as <app>.<verb>(...) returning Python objects."
                 )
-            lines.append("`completion(prompt, schema=None)` makes one standalone model call from code.")
+            lines.append(
+                "`completion(prompt, schema=None)` makes one standalone model call from code."
+            )
             if self.args.subagents if advertise_agent is None else advertise_agent:
                 lines.append(
                     "`agent(prompt, schema=None, effort=None, tools=None, session=None)` runs a "
@@ -1328,7 +1485,10 @@ class Driver:
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
         history_path = _spill(render_history(messages[keep:]), "history")
-        request = [*messages, {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE}]
+        request = [
+            *messages,
+            {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE},
+        ]
         while True:
             try:
                 completion = await self.client.chat.completions.create(
@@ -1346,7 +1506,9 @@ class Driver:
                 # parallel tool calls never leaves orphaned tool messages behind.
                 if is_overflow_error(error) and len(request) > keep + 2:
                     del request[keep]
-                    while keep < len(request) - 1 and request[keep].get("role") == "tool":
+                    while (
+                        keep < len(request) - 1 and request[keep].get("role") == "tool"
+                    ):
                         del request[keep]
                     continue
                 raise
@@ -1354,7 +1516,12 @@ class Driver:
         usage = getattr(completion, "usage", None)
         if usage and usage.prompt_tokens:
             self.peak_prompt_tokens = max(self.peak_prompt_tokens, usage.prompt_tokens)
-        framing = COMPACTION_FRAMING + "\n\n" + summary + HISTORY_FRAMING_NOTE.format(path=history_path)
+        framing = (
+            COMPACTION_FRAMING
+            + "\n\n"
+            + summary
+            + HISTORY_FRAMING_NOTE.format(path=history_path)
+        )
         messages[:] = [*messages[:keep], {"role": "user", "content": framing}]
         self.last_prompt_tokens = 0
         self.compactions += 1
@@ -1451,7 +1618,9 @@ class Driver:
             usage = getattr(completion, "usage", None)
             if usage and usage.prompt_tokens and depth == 0:
                 self.last_prompt_tokens = usage.prompt_tokens
-                self.peak_prompt_tokens = max(self.peak_prompt_tokens, usage.prompt_tokens)
+                self.peak_prompt_tokens = max(
+                    self.peak_prompt_tokens, usage.prompt_tokens
+                )
                 if self.just_compacted:
                     # The first work turn after a checkpoint is the effectiveness probe:
                     # still over the threshold means the protected prefix itself is too
@@ -1480,13 +1649,17 @@ class Driver:
                     out = f"invalid tool arguments ({e}) — send a JSON object matching the tool's schema"
                 else:
                     try:
-                        out = await self.execute_tool(tc.function.name, arguments, depth, kernel)
+                        out = await self.execute_tool(
+                            tc.function.name, arguments, depth, kernel
+                        )
                     except BridgeError as e:
                         out = f"{tc.function.name} failed: {e}"
                     except Exception as e:  # noqa: BLE001 - tool faults are observations, not rollout failures
                         out = f"{tc.function.name} failed: {type(e).__name__}: {e}"
                 content = out if isinstance(out, list) else str(out)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                messages.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": content}
+                )
             if depth == 0:
                 if isinstance(messages[-1]["content"], str):
                     messages[-1]["content"] += self._notices()
@@ -1500,7 +1673,11 @@ class Driver:
             compactions=self.compactions,
             peak_prompt_tokens=self.peak_prompt_tokens,
             subagents=self.subagents_spawned,
-            **({"tool_discovery": dict(self.tool_discovery)} if self.tool_discovery else {}),
+            **(
+                {"tool_discovery": dict(self.tool_discovery)}
+                if self.tool_discovery
+                else {}
+            ),
         )
 
     async def close(self) -> None:
