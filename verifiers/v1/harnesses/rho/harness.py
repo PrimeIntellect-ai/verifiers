@@ -1,7 +1,10 @@
 """Rho: pi's four tools plus run_code — services, sub-LLM calls, and subagents live in code."""
 
+import asyncio
 import contextlib
+import io
 import json
+import tarfile
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
@@ -17,8 +20,9 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 NATIVE_TOOLS = ("read", "write", "edit", "bash", "run_code")
 
-RUNTIME_DIAGNOSTICS = "/tmp/.rho-runtime.json"
-"""Where the program leaves its stats (mirrors program.py); picked up onto the trace."""
+RUNTIME_DIAGNOSTICS = "/tmp/.rho/runtime.json"
+"""Where the program leaves its stats (mirrors program.py); picked up onto the trace.
+Per-segment, last-write-wins on resume — cumulative truth lives on the trace itself."""
 
 
 class RhoHarnessConfig(HarnessConfig):
@@ -81,13 +85,30 @@ class RhoHarness(Harness[RhoHarnessConfig]):
     ) -> None:
         # Stage the task's `inputs/` tree into the workspace — the file-based taskset
         # convention — on the FIRST segment only: a resumed segment's workspace is the
-        # model's work in progress, and re-staging would clobber it.
+        # model's work in progress, and re-staging would clobber it. One tarball, one
+        # upload, one extraction: a per-file loop costs 2N gateway round-trips on the
+        # prime runtime, minutes of startup for large trees. (The tarball is built in
+        # memory — an accepted limit of the convention; inputs are task-sized.)
         if messages is None:
             task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
             if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
-                for path in sorted(p for p in inputs.rglob("*") if p.is_file()):
-                    relative = path.relative_to(inputs).as_posix()
-                    await runtime.write(f"inputs/{relative}", path.read_bytes())
+                buffer = io.BytesIO()
+
+                def build_tar() -> None:
+                    with tarfile.open(fileobj=buffer, mode="w") as tar:
+                        tar.add(inputs, arcname="inputs")
+
+                await asyncio.to_thread(build_tar)
+                archive = f".vf-inputs-{trace.id}.tar"
+                await runtime.write(archive, buffer.getvalue())
+                result = await runtime.run(
+                    ["sh", "-c", f"tar -xf {archive} && rm -f {archive}"], {}
+                )
+                if result.exit_code != 0:
+                    raise RuntimeError(
+                        f"inputs staging failed (exit {result.exit_code}): "
+                        f"{result.stderr.strip()[-300:]}"
+                    )
         try:
             await super().run(
                 ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages

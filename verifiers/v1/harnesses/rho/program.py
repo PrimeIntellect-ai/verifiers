@@ -28,12 +28,21 @@ included) are re-sent complete, and the only rewriting event is Codex-style chec
 compaction — triggered by the token budget, a context overflow, or the model's own
 `compact` tool call.
 
+Two standing recovery stores: the live transcript (every root-loop message appended to
+one greppable file as it happens; subagent transcripts land beside it under agents/) and
+spill files (full payloads named by truncation footers, whose pointers ride inside the
+transcript). `agent()` supports named persistent sessions — transcript, tool surface,
+and kernel continue across calls; sessions survive checkpoints but die with the segment
+(per-process state), and the boundary prompts say so.
+
 Deliberate absences (known, may be wanted later, not built yet):
 - Parallel tool calls: multiple calls in one turn execute sequentially, and the kernel
   bridge is a serial stdio channel — code-side `gather` over tools needs bridge
   multiplexing (frame ids), one coherent upgrade with interception-side concurrency.
 - Background tools: no `background`/yield machinery (Codex's session+wait stack); the
   documented answer for long-running processes is bash: nohup, redirect to a file, read.
+- Session compaction: a session that outgrows the model context is refused with a fact
+  (start a fresh session), not compacted — subagent loops have no checkpoint machinery.
 """
 
 import argparse
@@ -44,6 +53,7 @@ import itertools
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -114,7 +124,9 @@ whole rollout so that cost is paid per rollout, not per call."""
 MCP_CALL_ATTEMPTS = 6
 TOOLS_DIR = "tools"
 DISCOVERY_CATALOG = "tools_catalog"
-RUNTIME_DIAGNOSTICS = "/tmp/.rho-runtime.json"
+RUNTIME_DIAGNOSTICS = "/tmp/.rho/runtime.json"
+"""Box-side stats, inside the one harness-owned dir (mirrored in harness.py).
+Per-segment and last-write-wins on resume — cumulative truth lives on the trace."""
 
 OVERFLOW_PATTERNS = (
     "context length",
@@ -162,25 +174,33 @@ path per runtime, surviving compactions and resumed segments."""
 
 # With the transcript file, the summary is licensed to be tight: raw data stays
 # greppable, so the checkpoint carries decisions and state, not hedged payloads.
-HISTORY_PROMPT_NOTE = (
+TRANSCRIPT_PROMPT_NOTE = (
     "\nThe full transcript you are summarizing will remain available to the next LLM in a "
     "file it can grep, so keep the summary tight and targeted — decisions, state, and next "
-    "steps. Raw data, long outputs, and exact quotes can be recovered from the file."
+    "steps. Raw data and exact quotes can be recovered from the file, or from the spill "
+    "files its truncation footers name."
 )
-HISTORY_FRAMING_NOTE = (
+TRANSCRIPT_FRAMING_NOTE = (
     "\n\nThe full transcript (including everything this summary replaced) is at {path} — "
-    "grep it (bash) if a detail you need is missing from the summary. Work from evidence: "
+    "grep it if a detail you need is missing from the summary. Work from evidence: "
     "the workspace is authoritative — inspect the current state of files before relying "
     "on the summary or the history."
 )
 TRANSCRIPT_SYSTEM_NOTE = (
-    "Your full transcript so far is appended to {path} — grep it (bash) to recover "
+    "Your full transcript so far is appended to {path} — read or grep it to recover "
     "earlier details, tool outputs, or exact quotes at any time."
+)
+SESSIONS_CHECKPOINT_CLAUSE = (
+    " Named agent() sessions also persist across this compaction."
+)
+SESSIONS_RESUME_CLAUSE = (
+    " Named agent() sessions from previous segments are gone too — reusing a session "
+    "name now starts a fresh subagent."
 )
 
 RESUME_NOTE = (
     "This session continues an earlier exchange: run_code variables from previous "
-    "segments are gone; files, ./tools/, and /tmp/.rho artifacts are intact."
+    "segments are gone; files, ./tools/, and {dir} artifacts are intact."
 )
 
 
@@ -201,7 +221,7 @@ def assemble_messages(
 
 
 def render_history(messages: list[dict]) -> str:
-    """Render discarded transcript messages as greppable role-tagged text."""
+    """Render messages as greppable role-tagged text (the transcript file format)."""
     blocks = []
     for m in messages:
         role = m.get("role", "?")
@@ -225,6 +245,7 @@ def render_history(messages: list[dict]) -> str:
 
 
 def write_diagnostics(phase: str, **values) -> None:
+    SPILL_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"phase": phase, "python": platform.python_version(), **values}
     Path(RUNTIME_DIAGNOSTICS).write_text(json.dumps(payload, sort_keys=True))
 
@@ -232,8 +253,6 @@ def write_diagnostics(phase: str, **values) -> None:
 # --------------------------------------------------------------------------------------
 # Output bounding: three ceilings, tail-kept, spill to a named path
 # --------------------------------------------------------------------------------------
-
-_spill_counter = 0
 
 
 def _spill(text: str, label: str) -> str:
@@ -246,7 +265,7 @@ def _spill(text: str, label: str) -> str:
     return path
 
 
-def cap_output(text: str, label: str = "output") -> str:
+def cap_output(text: str, label: str) -> str:
     """Bound execution output (bash, run_code): keep the tail, spill the full text."""
     if not text.strip():
         return "(no output)"
@@ -305,7 +324,10 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
     if mime is not None:
         size = p.stat().st_size
         if size > MAX_IMAGE_BYTES:
-            return f"{path} is a {mime} of {size} bytes — over the {MAX_IMAGE_BYTES} byte image cap"
+            return (
+                f"{path} is a {mime} of {size} bytes — over the {MAX_IMAGE_BYTES} byte "
+                "image cap; downscale it first (bash or run_code)"
+            )
         READ_LEDGER.add(str(p))
         encoded = base64.b64encode(p.read_bytes()).decode()
         return [
@@ -341,7 +363,8 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
             line = line.rstrip("\n")
             if len(line) > MAX_LINE_CHARS:
                 line = (
-                    line[:MAX_LINE_CHARS] + " …[line clipped, use bash to see the rest]"
+                    line[:MAX_LINE_CHARS]
+                    + " …[line clipped; read the file to see the rest]"
                 )
             if len(line) + 1 > budget:
                 window.append(line[:budget])
@@ -620,28 +643,34 @@ def kernel_env() -> dict[str, str]:
     }
 
 
+_RUNNER_PATH: str | None = None
+
+
+def _shared_runner_path() -> str:
+    """One runner file per process — RUNNER_SOURCE is constant, every kernel execs it."""
+    global _RUNNER_PATH
+    if _RUNNER_PATH is None:
+        fd, _RUNNER_PATH = tempfile.mkstemp(prefix=".rho-runner-", suffix=".py")
+        os.write(fd, RUNNER_SOURCE.encode())
+        os.close(fd)
+    return _RUNNER_PATH
+
+
 class Kernel:
     """Driver side of the kernel: lifecycle, cells, and the paused-clock timeout."""
 
     def __init__(self, init_payload: dict):
         self._init_payload = init_payload
         self._proc: asyncio.subprocess.Process | None = None
-        self._runner_path: str | None = None
         self._death_note = ""
 
     async def _ensure(self) -> None:
         if self._proc is not None and self._proc.returncode is None:
             return
-        if self._runner_path is None:
-            fd, self._runner_path = tempfile.mkstemp(
-                prefix=".rho-runner-", suffix=".py"
-            )
-            os.write(fd, RUNNER_SOURCE.encode())
-            os.close(fd)
         self._proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-u",
-            self._runner_path,
+            _shared_runner_path(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -986,7 +1015,7 @@ def write_catalog_docs(box: Path, catalog: dict) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Tool schemas (wire surface): five small tools, conditionally advertised
+# Tool schemas (wire surface): the native tools plus compact, conditionally advertised
 # --------------------------------------------------------------------------------------
 
 
@@ -1018,7 +1047,7 @@ def build_tool_schemas(tools: list[str]) -> list[dict]:
         ),
         "write": fn(
             "write",
-            "Write a file (creates parent directories, overwrites).",
+            "Write a file (creates parent directories; overwrites only files already read this session).",
             {"path": {"type": "string"}, "content": {"type": "string"}},
             ["path", "content"],
         ),
@@ -1164,6 +1193,7 @@ class Driver:
         self.documented_apps: set[str] = set()
         self.tool_discovery: dict[str, int] = {}
         self.subagents_spawned = 0
+        self.completions = 0
         self.transcript_pos = 0
         """Messages of the root loop already appended to the live transcript file."""
         self.sessions: dict[str, dict] = {}
@@ -1271,6 +1301,7 @@ class Driver:
         return await call_mcp_raw(self.servers, self.clients, server, raw, arguments)
 
     async def do_completion(self, prompt: str, schema, system):
+        self.completions += 1
         if not self.budget.take():
             raise BridgeError(
                 "RuntimeError", "turn budget exhausted — no model calls left"
@@ -1315,7 +1346,6 @@ class Driver:
                 f"not enough turn budget left to delegate ({remaining} turns remain) — "
                 "finish the task directly",
             )
-        self.subagents_spawned += 1
         body = str(prompt) + (
             schema_suffix("Your final message must be", schema)
             if schema is not None
@@ -1323,15 +1353,23 @@ class Driver:
         )
         if session and session in self.sessions:
             # Continue the named session: same transcript, tool surface, and kernel —
-            # the follow-up rides the context already paid for.
+            # the follow-up rides the context already paid for. The surface is locked
+            # at creation (the stored system prompt was built from it).
             stored = self.sessions[session]
             messages, allowed, kernel = (
                 stored["messages"],
                 stored["tools"],
                 stored["kernel"],
             )
+            if tools is not None and sorted(tools) != sorted(allowed):
+                raise BridgeError(
+                    "ValueError",
+                    f"session {session!r} already has tool surface {allowed}; "
+                    "tools cannot change on continuation",
+                )
             messages.append({"role": "user", "content": body})
         else:
+            self.subagents_spawned += 1
             allowed = [t for t in self.tools if t != "compact"]
             if tools is not None:
                 unknown = [t for t in tools if t not in allowed]
@@ -1360,18 +1398,30 @@ class Driver:
                     "kernel": kernel,
                 }
         try:
-            final = await self.run_loop(
-                messages,
-                tools=allowed,
-                depth=1,
-                # No per-spawn ceiling: allocation is the policy's call; the shared budget
-                # binds, minus the reserve that keeps the parent able to act.
-                max_turns=None
-                if self.budget.remaining is None
-                else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
-                effort=effort,
-                kernel=kernel,
-            )
+            try:
+                final = await self.run_loop(
+                    messages,
+                    tools=allowed,
+                    depth=1,
+                    # No per-spawn ceiling: allocation is the policy's call; the shared budget
+                    # binds, minus the reserve that keeps the parent able to act.
+                    max_turns=None
+                    if self.budget.remaining is None
+                    else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
+                    effort=effort,
+                    kernel=kernel,
+                )
+            except Exception as error:
+                # Subagent loops have no compaction by design: an outgrown context is
+                # a fact with a recovery path, not a raw provider error in the cell.
+                if is_overflow_error(error):
+                    who = f"session {session!r}" if session else "the subagent"
+                    raise BridgeError(
+                        "RuntimeError",
+                        f"{who} has outgrown the model context — start a new session "
+                        "with a fresh, self-contained brief",
+                    ) from error
+                raise
             if final is None:
                 return None
             if schema is None:
@@ -1413,8 +1463,22 @@ class Driver:
                 f"subagent did not return JSON matching the schema: {problem}",
             )
         finally:
+            self.save_agent_transcript(session, messages)
             if kernel is not None and not session:
                 await kernel.close()
+
+    def save_agent_transcript(self, session: str | None, messages: list[dict]) -> None:
+        """Persist a subagent's full conversation under the agents/ recovery store.
+
+        One mechanism, three affordances: subagent work is recoverable (the one
+        otherwise-lossy channel), `ls` of the directory lists sessions, and a session
+        name survives compaction even when the summary drops it."""
+        name = session or f"anon-{self.subagents_spawned}"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip(".") or "agent"
+        with contextlib.suppress(Exception):
+            agents_dir = SPILL_DIR / "agents"
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            (agents_dir / f"{safe}.txt").write_text(render_history(messages))
 
     # --- native tool dispatch -------------------------------------------------------
 
@@ -1457,13 +1521,11 @@ class Driver:
         if name == "compact" and depth == 0:
             self.compaction_pending = True
             return "[context checkpoint scheduled before your next turn]"
-        return f"unknown tool {name}"
+        return f"unknown tool {name} — available: {', '.join(self.tools)}"
 
     # --- prompts --------------------------------------------------------------------
 
-    def system_prompt_base(
-        self, tools: list[str], advertise_agent: bool | None = None
-    ) -> str:
+    def system_prompt_base(self, tools: list[str], advertise_agent: bool) -> str:
         parts = ["You are an agent operating in a minimal harness."]
         lines = []
         if "read" in tools:
@@ -1489,13 +1551,14 @@ class Driver:
                     "bash) and pre-bound in run_code as <app>.<verb>(...) returning Python objects."
                 )
             lines.append(
-                "`completion(prompt, schema=None)` makes one standalone model call from code."
+                "`completion(prompt, schema=None, system=None)` makes one standalone model call from code."
             )
-            if self.args.subagents if advertise_agent is None else advertise_agent:
+            if advertise_agent:
                 lines.append(
                     "`agent(prompt, schema=None, effort=None, tools=None, session=None)` runs a "
                     "subagent with a blank context and returns its final message (parsed when "
-                    "schema is given); give it complete, self-contained instructions. Pass a "
+                    "schema is given); give it complete, self-contained instructions; its full "
+                    "transcript is saved under /tmp/.rho/agents/. Pass a "
                     "session name to make it persistent: later calls with the same name continue "
                     "that subagent's conversation instead of starting over."
                 )
@@ -1528,14 +1591,34 @@ class Driver:
             f.write(render_history(new) + "\n")
         self.transcript_pos = len(messages)
 
+    def mark_replayed(self, messages: list[dict]) -> None:
+        """Position the transcript pointer for a resumed segment: the replayed
+        conversation is already on disk from earlier segments; only what follows the
+        last assistant/tool message (the caller-injected turns) is new. With none
+        present, only the trailing injected message is appended."""
+        last = max(
+            (
+                i
+                for i, m in enumerate(messages)
+                if m.get("role") in ("assistant", "tool")
+            ),
+            default=len(messages) - 2,
+        )
+        self.transcript_pos = last + 1
+
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
-        self.append_transcript(
-            messages
-        )  # everything summarized-away is already on disk
+        # Normally a no-op — per-turn appends already persisted everything; kept as
+        # a safety net so the file's completeness never depends on call-site order.
+        self.append_transcript(messages)
         request = [
             *messages,
-            {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE},
+            {
+                "role": "user",
+                "content": COMPACTION_PROMPT
+                + TRANSCRIPT_PROMPT_NOTE
+                + (SESSIONS_CHECKPOINT_CLAUSE if self.sessions else ""),
+            },
         ]
         while True:
             try:
@@ -1568,7 +1651,7 @@ class Driver:
             COMPACTION_FRAMING
             + "\n\n"
             + summary
-            + HISTORY_FRAMING_NOTE.format(path=TRANSCRIPT_PATH)
+            + TRANSCRIPT_FRAMING_NOTE.format(path=TRANSCRIPT_PATH)
         )
         messages[:] = [*messages[:keep], {"role": "user", "content": framing}]
         # The rebuilt prefix is already on disk; only the framing+summary is new.
@@ -1636,8 +1719,7 @@ class Driver:
                 and self.should_checkpoint()
                 and (self.budget.remaining is None or self.budget.remaining > 1)
             ):
-                if not self.budget.take():
-                    break
+                self.budget.take()  # cannot fail: the guard ensured remaining > 1
                 await self.checkpoint(messages, tool_schemas)
             if not self.budget.take():
                 break
@@ -1667,11 +1749,12 @@ class Driver:
             overflow_retried = False
             local_turns += 1
             usage = getattr(completion, "usage", None)
-            if usage and usage.prompt_tokens and depth == 0:
-                self.last_prompt_tokens = usage.prompt_tokens
+            if usage and usage.prompt_tokens:
                 self.peak_prompt_tokens = max(
                     self.peak_prompt_tokens, usage.prompt_tokens
                 )
+            if usage and usage.prompt_tokens and depth == 0:
+                self.last_prompt_tokens = usage.prompt_tokens
                 if self.just_compacted:
                     # The first work turn after a checkpoint is the effectiveness probe:
                     # still over the threshold means the protected prefix itself is too
@@ -1721,12 +1804,19 @@ class Driver:
         return final
 
     def write_stats(self, phase: str) -> None:
+        transcript_bytes = 0
+        with contextlib.suppress(OSError):
+            transcript_bytes = TRANSCRIPT_PATH.stat().st_size
         write_diagnostics(
             phase,
             turns=self.budget.spent,
             compactions=self.compactions,
+            auto_compact_disabled=self.auto_compact_disabled,
             peak_prompt_tokens=self.peak_prompt_tokens,
             subagents=self.subagents_spawned,
+            completions=self.completions,
+            sessions=sorted(self.sessions),
+            transcript_bytes=transcript_bytes,
             **(
                 {"tool_discovery": dict(self.tool_discovery)}
                 if self.tool_discovery
@@ -1759,6 +1849,7 @@ def parse_args():
     p.add_argument("--initial-messages-file", default="")
     p.add_argument("--mcp-config", default="")
     p.add_argument("--effort", default="")
+    # Defaults below are manual-run conveniences; the harness always passes these.
     p.add_argument("--tools", default="read,write,edit,bash,run_code")
     p.add_argument("--subagents", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
@@ -1778,25 +1869,17 @@ async def main() -> None:
             path = Path(args.initial_messages_file)
             initial = json.loads(path.read_text())
             path.unlink(missing_ok=True)
-        system = driver.system_prompt_base(driver.tools)
+        system = driver.system_prompt_base(driver.tools, advertise_agent=args.subagents)
         system += "\n\n" + TRANSCRIPT_SYSTEM_NOTE.format(path=TRANSCRIPT_PATH)
         if initial is not None and "run_code" in driver.tools:
-            system += "\n\n" + RESUME_NOTE
+            system += "\n\n" + RESUME_NOTE.format(dir=SPILL_DIR)
+            if args.subagents:
+                system += SESSIONS_RESUME_CLAUSE
         if args.system_prompt:
             system += "\n\n" + args.system_prompt
         messages = assemble_messages(system, args.prompt, initial)
         if initial is not None:
-            # Replayed conversation is already on disk from earlier segments; persist
-            # only what follows the last assistant/tool message (the injected turns).
-            last = max(
-                (
-                    i
-                    for i, m in enumerate(messages)
-                    if m.get("role") in ("assistant", "tool")
-                ),
-                default=0,
-            )
-            driver.transcript_pos = last + 1
+            driver.mark_replayed(messages)
         driver.append_transcript(messages)
         # The turn budget, not this call, is the authority on stopping.
         await driver.run_loop(messages, tools=driver.tools, depth=0, max_turns=None)
