@@ -44,6 +44,7 @@ import itertools
 import json
 import os
 import platform
+import shutil
 import signal
 import subprocess
 import sys
@@ -821,20 +822,38 @@ async def call_mcp_raw(servers, clients, server_name, raw_name, arguments):
 
 
 def _safe_component(name: str) -> str:
-    """Doc-tree names come from the task's MCP server; keep them single path components."""
+    """Doc-tree names come from the task's MCP server; keep them single path components.
+    README is reserved for the tree's own summaries at both levels."""
     if not name or name in (".", "..") or "/" in name or "\\" in name or name.startswith("."):
         raise ValueError(f"unsafe tool doc path component: {name!r}")
+    if name.upper() == "README":
+        raise ValueError("app/verb name 'README' is reserved for the doc tree's summaries")
     return name
 
 
+def _fresh_tools_root(box: Path) -> Path:
+    """Recreate the docs tree from nothing each time it is written. The tree is
+    harness-owned; on a resumed segment the previous segment's model code may have
+    replaced parts of it (a symlink at tools/<app> would route writes outside the
+    box), so nothing pre-existing is trusted or followed."""
+    root = box / TOOLS_DIR
+    if root.is_symlink():
+        root.unlink()
+    elif root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    return root
+
+
 def write_tool_docs(box: Path, docs: dict) -> None:
+    root = _fresh_tools_root(box)
     for (app, verb), text in docs.items():
-        d = box / TOOLS_DIR / _safe_component(app)
+        d = root / _safe_component(app)
         d.mkdir(parents=True, exist_ok=True)
         (d / _safe_component(verb)).write_text(text)
     if docs:
         app, verb = next(iter(docs))
-        (box / TOOLS_DIR / "README").write_text(
+        (root / "README").write_text(
             "Each file under ./tools/<app>/<verb> documents one tool. The <app> names are "
             "pre-bound globals in run_code — call them directly; nothing to import.\n"
             "Worked example:\n"
@@ -848,7 +867,7 @@ def write_catalog_docs(box: Path, catalog: dict) -> None:
     """The discovery mode's doc tree: the whole documented surface, served or not."""
     if not catalog:
         return
-    root = box / TOOLS_DIR
+    root = _fresh_tools_root(box)
     for app, entry in sorted(catalog.items()):
         directory = root / _safe_component(app)
         directory.mkdir(parents=True, exist_ok=True)
