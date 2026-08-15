@@ -44,7 +44,11 @@ class RhoHarnessConfig(HarnessConfig):
     disclose_budget: bool = False
     """Append the remaining-turn-budget line to each turn's last tool result. Off for
     solver seats: a visible clock is pacing information the task never granted. On for
-    synthesis seats, so a round consolidates instead of truncating at the cap."""
+    synthesis seats, so a round consolidates instead of truncating at the cap.
+
+    Discloses the FRAMEWORK's cap (`AgentConfig.max_turns`), the only turn limit that
+    exists — when the framework sets none, there is no budget and nothing is shown.
+    On a resumed segment the figures are this segment's remaining allowance."""
 
 
 class RhoHarness(Harness[RhoHarnessConfig]):
