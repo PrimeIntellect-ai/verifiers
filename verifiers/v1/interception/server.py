@@ -402,12 +402,17 @@ class InterceptionServer(Interception):
         )
         # Graph atomicity under retries: sampling a marked SDK retry again would commit a
         # second turn and fork the graph, so serve it the recorded response (or the
-        # still-computing attempt's result). Only marked retries match — a repeated body
-        # alone is no proof of a retry (compaction can legitimately regenerate an identical
-        # request), and a stale replay would loop the rollout.
+        # still-computing attempt's result). Only marked retries whose body identifies one
+        # fresh logical request match — compaction can legitimately regenerate an identical
+        # body, and correlating its retries to another request would serve the wrong turn.
         retried = is_retried_request(request.headers)
+        if not retried:
+            session.request_generations[req_hash] = (
+                session.request_generations.get(req_hash, 0) + 1
+            )
+        unambiguous_retry = retried and session.request_generations.get(req_hash) == 1
         if (
-            retried
+            unambiguous_retry
             and session.last_request == req_hash
             and session.last_response is not None
         ):
@@ -447,7 +452,10 @@ class InterceptionServer(Interception):
 
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            if retried and (inflight := session.inflight.get(req_hash)) is not None:
+            if (
+                unambiguous_retry
+                and (inflight := session.inflight.get(req_hash)) is not None
+            ):
                 return await coalesced(inflight)
             fut = asyncio.get_running_loop().create_future()
             session.inflight[req_hash] = fut

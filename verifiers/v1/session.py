@@ -122,6 +122,9 @@ class RolloutSession:
     replays the common SDK retry of the latest completed exchange without re-sampling it."""
     last_response: dict | None = None
     """The response returned for `last_request`, replayed verbatim on a retry."""
+    request_generations: dict[bytes, int] = field(default_factory=dict)
+    """Fresh logical request count by body digest. Retry replay is safe only while a digest
+    identifies exactly one request."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
     """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
     released: bool = False
