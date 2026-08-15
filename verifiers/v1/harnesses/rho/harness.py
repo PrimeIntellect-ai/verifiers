@@ -14,7 +14,6 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -67,54 +66,6 @@ class RhoHarness(Harness[RhoHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
-    async def run(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages | None = None,
-    ) -> None:
-        # Stage the task's `inputs/` tree into the workspace — the file-based taskset
-        # convention — on the FIRST segment only: a resumed segment's workspace is the
-        # model's work in progress, and re-staging would clobber it. One tarball, one
-        # upload, one extraction: a per-file loop costs 2N gateway round-trips on the
-        # prime runtime, minutes of startup for large trees. (The tarball is built in
-        # memory — an accepted limit of the convention; inputs are task-sized.)
-        if messages is None:
-            task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
-            if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
-                buffer = io.BytesIO()
-
-                def build_tar() -> None:
-                    with tarfile.open(fileobj=buffer, mode="w") as tar:
-                        tar.add(inputs, arcname="inputs")
-
-                await asyncio.to_thread(build_tar)
-                archive = f".vf-inputs-{trace.id}.tar"
-                await runtime.write(archive, buffer.getvalue())
-                result = await runtime.run(
-                    ["sh", "-c", f"tar -xf {archive} && rm -f {archive}"], {}
-                )
-                if result.exit_code != 0:
-                    raise RuntimeError(
-                        f"inputs staging failed (exit {result.exit_code}): "
-                        f"{result.stderr.strip()[-300:]}"
-                    )
-        try:
-            await super().run(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
-            )
-        finally:
-            # Diagnostics must never mask the actual rollout result.
-            with contextlib.suppress(Exception):
-                result = await runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
-                if result.exit_code == 0 and result.stdout.strip():
-                    trace.info["rho"] = json.loads(result.stdout)
-
     async def launch(
         self,
         ctx: ModelContext,
@@ -126,6 +77,30 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        # Stage the task's `inputs/` tree — the file-based taskset convention — on the
+        # first segment only (a Messages prompt is a resumed segment whose workspace is
+        # work in progress). One tarball, one upload, one extraction: a per-file loop
+        # costs 2N gateway round-trips on the prime runtime.
+        if isinstance(prompt, str) or prompt is None:
+            task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
+            if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
+                buffer = io.BytesIO()
+
+                def build_tar() -> None:
+                    with tarfile.open(fileobj=buffer, mode="w") as tar:
+                        tar.add(inputs, arcname="inputs")
+
+                await asyncio.to_thread(build_tar)
+                archive = f".vf-inputs-{trace.id}.tar"
+                await runtime.write(archive, buffer.getvalue())
+                staged = await runtime.run(
+                    ["sh", "-c", f"tar -xf {archive} && rm -f {archive}"], {}
+                )
+                if staged.exit_code != 0:
+                    raise RuntimeError(
+                        f"inputs staging failed (exit {staged.exit_code}): "
+                        f"{staged.stderr.strip()[-300:]}"
+                    )
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
@@ -167,4 +142,10 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        return await runtime.run_program([*program, *args], self.config.resolved_env)
+        result = await runtime.run_program([*program, *args], self.config.resolved_env)
+        # Diagnostics ride the segment's end; failures must never mask its result.
+        with contextlib.suppress(Exception):
+            picked = await runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
+            if picked.exit_code == 0 and picked.stdout.strip():
+                trace.info["rho"] = json.loads(picked.stdout)
+        return result
