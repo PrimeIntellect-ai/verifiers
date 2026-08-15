@@ -84,9 +84,19 @@ IMAGE_MAGIC = {
     b"\xff\xd8\xff": "image/jpeg",
     b"\x89PNG": "image/png",
     b"GIF8": "image/gif",
-    b"RIFF": "image/webp",
 }
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def image_mime(head: bytes) -> str | None:
+    for magic, mime in IMAGE_MAGIC.items():
+        if head.startswith(magic):
+            return mime
+    # RIFF alone matches WAV/AVI too; webp needs the form type at offset 8.
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
 
 SPAWN_RESERVE_TURNS = 3
 """Refuse to delegate when fewer turns than this remain: a subagent can spend the whole
@@ -281,21 +291,21 @@ def run_read(path: str, offset=None, limit=None, cwd: Path | None = None):
             + ", ".join(entries[:20])
         )
     with p.open("rb") as f:
-        head = f.read(8)
-    for magic, mime in IMAGE_MAGIC.items():
-        if head.startswith(magic):
-            size = p.stat().st_size
-            if size > MAX_IMAGE_BYTES:
-                return f"{path} is a {mime} of {size} bytes — over the {MAX_IMAGE_BYTES} byte image cap"
-            READ_LEDGER.add(str(p))
-            encoded = base64.b64encode(p.read_bytes()).decode()
-            return [
-                {"type": "text", "text": f"{path} ({mime}, {size} bytes)"},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
-                },
-            ]
+        head = f.read(12)
+    mime = image_mime(head)
+    if mime is not None:
+        size = p.stat().st_size
+        if size > MAX_IMAGE_BYTES:
+            return f"{path} is a {mime} of {size} bytes — over the {MAX_IMAGE_BYTES} byte image cap"
+        READ_LEDGER.add(str(p))
+        encoded = base64.b64encode(p.read_bytes()).decode()
+        return [
+            {"type": "text", "text": f"{path} ({mime}, {size} bytes)"},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+            },
+        ]
 
     try:
         offset = max(1, int(offset)) if offset is not None else 1
@@ -369,7 +379,10 @@ def run_edit(path: str, edits, cwd: Path | None = None) -> str:
     if not p.exists():
         return f"{path} not found"
     try:
-        original = p.read_text()
+        # newline="" preserves the file's own line endings: a localized edit must not
+        # silently rewrite CRLF to LF across every untouched line.
+        with p.open("r", newline="") as f:
+            original = f.read()
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"could not read {path}: {e}"
 
@@ -397,7 +410,8 @@ def run_edit(path: str, edits, cwd: Path | None = None) -> str:
         cursor = end
     result.append(original[cursor:])
     try:
-        p.write_text("".join(result))
+        with p.open("w", newline="") as f:
+            f.write("".join(result))
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"could not write {path}: {e}"
     READ_LEDGER.add(str(p))
@@ -423,7 +437,13 @@ def run_bash(command: str, timeout=None, cwd: Path | None = None) -> str:
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
+        try:
+            # Bounded: a descendant that escaped the process group can hold the
+            # stdout pipe open forever; the tool must return regardless.
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.stdout.close()
+            out = ""
         return cap_output(
             (out or "") + f"\n[command timed out after {timeout:g}s and was killed]",
             "bash",
@@ -1350,7 +1370,12 @@ class Driver:
                 value, problem = parse_reply(final, schema)
                 if problem is None:
                     return value
-                if self.budget.remaining is not None and self.budget.remaining < 1:
+                # Correction retries honor the same reserve as the spawn: they must
+                # not drain the turns kept for the parent to act on the result.
+                if (
+                    self.budget.remaining is not None
+                    and self.budget.remaining < SPAWN_RESERVE_TURNS
+                ):
                     break
                 messages.append(
                     {
