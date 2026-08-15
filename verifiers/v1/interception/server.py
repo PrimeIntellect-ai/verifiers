@@ -406,7 +406,11 @@ class InterceptionServer(Interception):
         # fresh logical request match — compaction can legitimately regenerate an identical
         # body, and correlating its retries to another request would serve the wrong turn.
         retried = is_retried_request(request.headers)
-        if not retried:
+        if retried:
+            # The original attempt may fail before its body reaches this handler, making a
+            # marked retry the first server-visible copy of the logical request.
+            session.request_generations.setdefault(req_hash, 1)
+        else:
             session.request_generations[req_hash] = (
                 session.request_generations.get(req_hash, 0) + 1
             )
