@@ -2,12 +2,14 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
 # ///
-"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
+"""Keep harness credentials out of local tool subprocess environments."""
 
 import argparse
 import asyncio
 import json
+import os
 import subprocess
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -107,8 +109,8 @@ def format_results(results, query: str) -> str:
 def run_search(query: str, api_key: str, num_results: int = 5) -> str:
     """Serper Google web search -> formatted organic results.
 
-    The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    The key arrives as an argument handed in by the harness over argv instead of from
+    `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
     The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
     raising out of the chat loop and killing the rollout."""
     if not api_key:
@@ -133,7 +135,7 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str) -> tuple[str, bool]:
     try:
         result = subprocess.run(
             ["bash", "-c", command],
@@ -142,9 +144,9 @@ def run_bash(command: str) -> str:
             timeout=3600,
             check=False,
         )
-        return result.stdout + result.stderr
+        return result.stdout + result.stderr, result.returncode != 0
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
-        return f"error: {e}"
+        return f"error: {e}", True
 
 
 def run_edit(path: str, old_str: str, new_str: str) -> str:
@@ -286,7 +288,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
-) -> str | list[dict]:
+) -> tuple[str | list[dict], bool]:
     """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
     The result is converted outside the retry so a conversion failure fails once."""
     server_name, raw = dispatch[name]
@@ -296,7 +298,7 @@ async def call_mcp(
             return await session.call_tool(raw, arguments)
 
     result = await with_retry(call)
-    return mcp_content_to_chat_content(result.content)
+    return mcp_content_to_chat_content(result.content), result.isError
 
 
 async def run_tool_hook(
@@ -309,7 +311,7 @@ async def run_tool_hook(
     response = await client.post(
         url,
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"phase": phase, "message": message},
+        json={"phase": phase, "rewrite": {}, "message": message},
     )
     response.raise_for_status()
     decision = response.json()
@@ -328,6 +330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-secret-bytes", type=int, default=0)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -336,6 +339,17 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
+    tool_interception_secret = ""
+    if args.tool_interception_secret_bytes:
+        secret_payload = sys.stdin.buffer.read(args.tool_interception_secret_bytes)
+        if len(secret_payload) != args.tool_interception_secret_bytes:
+            raise RuntimeError("Bash interception credential handoff ended early")
+        tool_interception_secret = secret_payload.decode()
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(devnull, sys.stdin.fileno())
+        finally:
+            os.close(devnull)
     initial = []
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)
@@ -390,7 +404,7 @@ async def main() -> None:
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
+                    tool_interception_secret,
                     "before",
                     tool_message,
                 )
@@ -401,14 +415,16 @@ async def main() -> None:
                 tool_args = json.loads(call.function.arguments or "{}")
             except json.JSONDecodeError as e:
                 content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
+                failed = True
             else:
                 # Valid JSON can still be a non-object (`[]`, `42`, `null`).
                 if not isinstance(tool_args, dict):
                     content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
+                    failed = True
                 elif name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
+                    content, failed = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash":
-                    content = await asyncio.to_thread(
+                    content, failed = await asyncio.to_thread(
                         run_bash, tool_args.get("command", "")
                     )
                 elif name == "edit" and args.edit:
@@ -418,6 +434,7 @@ async def main() -> None:
                         tool_args.get("old_str"),
                         tool_args.get("new_str"),
                     )
+                    failed = content.startswith("error:")
                 elif name == "search" and args.search:
                     content = await asyncio.to_thread(
                         run_search,
@@ -425,16 +442,18 @@ async def main() -> None:
                         args.serper_key,
                         tool_args.get("num_results", 5),
                     )
+                    failed = content.startswith(("Error:", "search failed"))
                 else:
                     content = f"error: unknown tool {name!r}"
+                    failed = True
             tool_message["content"] = content
             if args.tool_interception_url:
                 assert tool_client is not None
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
-                    "after",
+                    tool_interception_secret,
+                    "after_failure" if failed else "after",
                     tool_message,
                 )
                 if decision["action"] == "rewrite":

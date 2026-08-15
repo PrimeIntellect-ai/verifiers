@@ -8,6 +8,11 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
+from verifiers.v1.interception.tool import (
+    HERMES_TOOL_HOOK_SOURCE,
+    install_tool_hook,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -26,6 +31,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -94,6 +100,43 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             prompt=prompt,
             system_prompt=system_prompt,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        trace: Trace,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        if self.config.version != "0.19.0":
+            raise HarnessError(
+                "Hermes Agent tool interception is verified only for version 0.19.0"
+            )
+        home = config.env["HERMES_HOME"]
+        config.env["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
+        config.env["HERMES_SAFE_MODE"] = "0"
+        plugin = f"{home}/plugins/verifiers-interception"
+        config.env.update(
+            await install_tool_hook(
+                runtime,
+                f"{plugin}/__init__.py",
+                url,
+                secret,
+                HERMES_TOOL_HOOK_SOURCE,
+            )
+        )
+        manifest = (
+            "name: verifiers-interception\n"
+            'version: "1"\n'
+            "hooks:\n"
+            "  - transform_tool_result\n"
+        )
+        await runtime.write(f"{plugin}/plugin.yaml", manifest.encode())
+        config_path = f"{home}/config.yaml"
+        settings = json.loads((await runtime.read(config_path)).decode())
+        settings["plugins"] = {"enabled": ["verifiers-interception"]}
+        await runtime.write(config_path, json.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f"/tmp/vf-hermes/{trace.id}"], {})

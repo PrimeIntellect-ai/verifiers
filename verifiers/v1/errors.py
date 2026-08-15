@@ -10,9 +10,9 @@ Four mechanisms, each in one place:
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
-3. Surfacing (`session.RolloutSession.error`): a model or tool call fails behind the harness
-   subprocess and comes back as HTTP, so the interception server stashes the real error there and
-   the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
+3. Surfacing (`session.RolloutSession.error` / `fatal_error`): a model or tool call fails behind
+   the harness subprocess and comes back as HTTP, so the interception server stashes the real
+   error and the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
 4. Capture (`Rollout`, mirrored by the env-server): the one place that records a failure (typed
    or not) onto the trace and never lets it cancel sibling rollouts. A bad rollout is data, not a
    crash.

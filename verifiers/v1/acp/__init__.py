@@ -41,6 +41,7 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
+    auth: JsonObject | None = None
     allow_empty_tool_reply: bool = False
 
 
@@ -65,6 +66,19 @@ class ACPHarness(Harness[ConfigT]):
     ) -> ACPConfig:
         pass
 
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        trace: Trace,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        raise HarnessError(
+            f"harness {self.config.id!r} advertises tool interception without "
+            "configuring a native hook"
+        )
+
     async def session(
         self,
         ctx: ModelContext,
@@ -74,6 +88,8 @@ class ACPHarness(Harness[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
+        tool_interception_secret: str | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             raise HarnessError(
@@ -82,6 +98,13 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
+        # Node's native fetch honors the runtime's authenticated proxy only when opted in.
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        if tool_interception_url is not None:
+            assert tool_interception_secret is not None
+            await self.configure_tool_interception(
+                config, trace, runtime, tool_interception_url, tool_interception_secret
+            )
         return ACPHarnessSession(
             self,
             ctx,
@@ -215,6 +238,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "auth": self.config.auth,
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
         }
         async with self._lock:
