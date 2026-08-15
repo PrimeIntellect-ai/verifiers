@@ -330,7 +330,7 @@ class InterceptionServer(Interception):
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         app.router.add_get("/v1/models", self.handle_models)
-        # Tool servers use a state-only capability; the model bearer cannot reach these.
+        # Auxiliary services use capabilities separate from the model bearer.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
         app.router.add_post("/tool", self.handle_tool)

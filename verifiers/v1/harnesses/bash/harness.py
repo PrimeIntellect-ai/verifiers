@@ -5,6 +5,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
@@ -71,6 +72,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
         tool_interception_url: str | None = None,
+        tool_interception_secret: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         fragments = [BASH_SYSTEM_PROMPT]
@@ -83,8 +85,19 @@ class BashHarness(Harness[BashHarnessConfig]):
         )
         env = {**self.config.resolved_env}
         args = ["--bash"]
+        tool_interception_secret_bytes = None
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+            assert tool_interception_secret is not None
+            if not runtime.supports_live_processes:
+                raise HarnessError(
+                    "Bash tool interception requires a runtime with live process support"
+                )
+            tool_interception_secret_bytes = tool_interception_secret.encode()
+            args.append(
+                "--tool-interception-secret-bytes="
+                f"{len(tool_interception_secret_bytes)}"
+            )
         if self.config.compaction is not None:
             args.append("--compaction")
             threshold = self.config.compaction.summarize_at_tokens
@@ -124,4 +137,5 @@ class BashHarness(Harness[BashHarnessConfig]):
             extra_args=args,
             env=env,
             activate=False,
+            stdin=tool_interception_secret_bytes,
         )

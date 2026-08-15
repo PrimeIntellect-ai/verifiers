@@ -10,7 +10,9 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception.tool import install_tool_hook
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -25,6 +27,7 @@ PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.25.0"
 ACP_VERSION = "0.0.33"
+PI_VERSION = "0.84.1"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
@@ -46,7 +49,7 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.84.1", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=PI_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
@@ -60,6 +63,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -201,3 +205,37 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        trace: Trace,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        if self.config.version != PI_VERSION:
+            raise HarnessError(
+                f"Pi tool interception is verified only for version {PI_VERSION}"
+            )
+        agent_dir = config.env["PI_CODING_AGENT_DIR"]
+        hook_path = f"{agent_dir}/tool-hook.mjs"
+        config.env.update(await install_tool_hook(runtime, hook_path, url, secret))
+        wrapper = f"{agent_dir}/pi-intercept"
+        command = shlex.join(
+            [config.env["PI_ACP_PI_COMMAND"], "--extension", hook_path]
+        )
+        await runtime.write(wrapper, f'#!/bin/sh\nexec {command} "$@"\n'.encode())
+        chmod = await runtime.run(["chmod", "+x", wrapper], {})
+        if chmod.exit_code != 0:
+            raise RuntimeError(
+                f"failed to make Pi hook wrapper executable: {chmod.stderr.strip()[-500:]}"
+            )
+        config.env["PI_ACP_PI_COMMAND"] = wrapper
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        result = await runtime.run(["rm", "-rf", f".vf-pi-agent-{trace.id}"], {})
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"failed to clean up Pi agent directory: {result.stderr.strip()[-500:]}"
+            )

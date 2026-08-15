@@ -98,7 +98,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(ctx, trace, runtime, mcp_urls)
         return ACPConfig(
             env=env,
             command=[
@@ -109,6 +109,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            auth={
+                "method_id": "gateway",
+                "gateway": {
+                    "baseUrl": endpoint,
+                    "headers": {"Authorization": f"Bearer {secret}"},
+                    "providerName": "Verifiers",
+                },
+            },
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
@@ -127,8 +135,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
-        endpoint: str,
-        secret: str,
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
@@ -192,18 +198,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             **self.config.resolved_env,
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps(
-                {
-                    "methodId": "gateway",
-                    "_meta": {
-                        "gateway": {
-                            "baseUrl": endpoint,
-                            "headers": {"Authorization": f"Bearer {secret}"},
-                            "providerName": "Verifiers",
-                        }
-                    },
-                }
-            ),
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }

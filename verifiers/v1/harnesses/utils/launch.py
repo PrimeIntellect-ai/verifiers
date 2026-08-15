@@ -49,6 +49,7 @@ async def launch_chat_program(
     extra_args: Sequence[str] = (),
     env: dict[str, str] | None = None,
     activate: bool = True,
+    stdin: bytes | None = None,
 ) -> ProgramResult:
     """Prepare and run a standalone chat program with the shared wire arguments."""
     args = [
@@ -84,5 +85,7 @@ async def launch_chat_program(
         source, config.resolved_env, activate=activate
     )
     return await runtime.run_program(
-        [*program, *args], env if env is not None else {**config.resolved_env}
+        [*program, *args],
+        env if env is not None else {**config.resolved_env},
+        stdin=stdin,
     )

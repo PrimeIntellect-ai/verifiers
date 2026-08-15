@@ -123,6 +123,8 @@ class Rollout:
             ],
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
+            native_tool_interception=harness.SUPPORTS_TOOL_INTERCEPTION
+            and any(boundary is Request for boundary, _ in [*interceptors, *stops]),
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -244,6 +246,7 @@ class Rollout:
                 base_url,
                 model_secret,
                 state_secret,
+                tool_secret,
             ) = await self._stack.enter_async_context(
                 serve_interception(
                     self._interception,
@@ -268,7 +271,10 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-            async with boundary(HarnessError, "opening harness session"):
+            async with (
+                boundary(HarnessError, "opening harness session"),
+                asyncio.timeout_at(setup_deadline),
+            ):
                 harness_data = self.trace.task.data
                 if (
                     self._session.request_interceptors
@@ -311,7 +317,10 @@ class Rollout:
                     )
                 if not self._session.stopped:
                     session_kwargs = (
-                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        {
+                            "tool_interception_url": f"{runtime.host_url(base_url)}/tool",
+                            "tool_interception_secret": tool_secret,
+                        }
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
                             self._session.request_interceptors
@@ -394,7 +403,7 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
                 return False
-            real = self._session.error
+            real = self._session.fatal_error or self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)
@@ -412,6 +421,9 @@ class Rollout:
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
+        if self._session.fatal_error is not None:
+            self.fail(self._session.fatal_error)
+            return False
         self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that

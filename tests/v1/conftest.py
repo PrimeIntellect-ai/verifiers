@@ -33,6 +33,7 @@ CI runs deterministic tests across the Python matrix and the remaining live E2Es
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,16 +82,22 @@ def harness(request) -> HarnessConfig:
 
 
 def pytest_configure(config) -> None:
-    """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
-    inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
-    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
-    resolves there too — an installed example package (e.g. `glossary`) already would."""
-    fixtures = str(Path(__file__).parent / "fixtures")
-    existing = os.environ.get("PYTHONPATH", "")
-    if fixtures not in existing.split(os.pathsep):
-        os.environ["PYTHONPATH"] = (
-            f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
-        )
+    """Expose test fixtures and the uninstalled interception example to this test run.
+
+    Self-launching tool servers inherit `PYTHONPATH` but not pytest's in-process
+    `pythonpath`, so keep both import paths aligned.
+    """
+    sources = [
+        str(Path(__file__).parent / "fixtures"),
+        str(Path(__file__).parents[2] / "environments" / "tool_interception"),
+    ]
+    existing = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+    for source in reversed(sources):
+        if source not in sys.path:
+            sys.path.insert(0, source)
+        if source not in existing:
+            existing.insert(0, source)
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, existing))
 
 
 def pytest_collection_modifyitems(config, items) -> None:

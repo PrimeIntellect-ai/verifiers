@@ -22,6 +22,7 @@ from acp import (
     spawn_agent_process,
     text_block,
 )
+from acp.connection import StreamDirection, StreamEvent
 from acp.schema import (
     AgentMessageChunk,
     AllowedOutcome,
@@ -31,9 +32,12 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCall,
+    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+TOOL_INTERCEPTION_UNAVAILABLE = "Tool interception is unavailable."
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,8 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.prompt_error: str | None = None
+        self.tool_calls: dict[str, str] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -58,6 +64,8 @@ class VerifiersACPClient(Client):
         self.stop_reason = None
         self.response_metadata = {}
         self.update_metadata = []
+        self.prompt_error = None
+        self.tool_calls = {}
 
     def turn_result(self) -> ACPTurn:
         return ACPTurn(
@@ -67,13 +75,39 @@ class VerifiersACPClient(Client):
             update_metadata=self.update_metadata,
         )
 
+    def observe_stream(self, event: StreamEvent) -> None:
+        if event.direction is not StreamDirection.INCOMING:
+            return
+        message = event.message
+        params = message.get("params")
+        if message.get("method") != "session/update" or not isinstance(params, dict):
+            return
+        update = params.get("update")
+        if (
+            not isinstance(update, dict)
+            or update.get("sessionUpdate") != "tool_call_update"
+        ):
+            return
+        raw_output = update.get("rawOutput")
+        details = raw_output.get("details") if isinstance(raw_output, dict) else None
+        if (
+            isinstance(details, dict)
+            and details.get("toolInterceptionUnavailable") is True
+        ):
+            self.prompt_error = TOOL_INTERCEPTION_UNAVAILABLE
+
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
         if metadata:
             self.update_metadata.append(metadata)
-        if isinstance(update, AgentMessageChunk) and isinstance(
+        if isinstance(update, ToolCall):
+            self.tool_calls[update.tool_call_id] = update.status or "pending"
+        elif isinstance(update, ToolCallUpdate):
+            if update.status:
+                self.tool_calls[update.tool_call_id] = update.status
+        elif isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
             message_id = getattr(update, "message_id", None)
@@ -160,8 +194,24 @@ async def prompt(
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
     except RequestError as error:
+        if client.prompt_error:
+            raise RuntimeError(client.prompt_error) from error
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+    if client.prompt_error:
+        raise RuntimeError(client.prompt_error)
+    tool_statuses = list(client.tool_calls.values())
+    completed_tool_turn = (
+        config.get("allow_empty_tool_reply", False)
+        and response.stop_reason == "end_turn"
+        and bool(tool_statuses)
+        and all(status in ("completed", "failed") for status in tool_statuses)
+    )
+    if not client.visible_reply.strip() and not completed_tool_turn:
+        raise RuntimeError(
+            "ACP agent produced no visible reply "
+            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+        )
     return client.turn_result()
 
 
@@ -189,6 +239,7 @@ class ACPSession:
                     *command[1:],
                     env=os.environ.copy(),
                     transport_kwargs={"stderr": None},
+                    observers=[self.client.observe_stream],
                 )
             )
             self.connection = agent_process[0]
@@ -197,6 +248,8 @@ class ACPSession:
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
+            if auth := config.get("auth"):
+                await self.connection.authenticate(**auth)
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),

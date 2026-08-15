@@ -135,6 +135,15 @@ class TraceTask(BaseModel, Generic[DataT]):
 
 class InterceptRecord(BaseModel):
     handler: str
+    boundary: Literal["request", "tool"] = "request"
+    phase: Literal["before", "after"] | None = None
+
+
+class ToolPolicyEvent(BaseModel):
+    """A native tool-hook policy execution."""
+
+    tool_call_id: str
+    phase: Literal["before", "after", "after_failure"]
 
 
 class Reward(BaseModel):
@@ -402,9 +411,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     from the renderer that tokenized this trace, stamped at turn commit. Applied to a
     branch's `token_ids` by `Branch.mm_token_type_ids`; empty for text-only renderers."""
     request_rewrites: list[InterceptRecord] = Field(default_factory=list)
-    """Request changes made by `@intercept`, in execution order."""
+    """Request changes made by `@intercept`, including native tool-hook rewrites."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    tool_policy_events: list[ToolPolicyEvent] = Field(default_factory=list)
+    """Native tool-hook policy executions, in execution order."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
