@@ -1,5 +1,6 @@
 """Rho: pi's four tools plus run_code — services, sub-LLM calls, and subagents live in code."""
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -10,10 +11,14 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Messages
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 NATIVE_TOOLS = ("read", "write", "edit", "bash", "run_code")
+
+RUNTIME_DIAGNOSTICS = "/tmp/.rho-runtime.json"
+"""Where the program leaves its stats (mirrors program.py); picked up onto the trace."""
 
 
 class RhoHarnessConfig(HarnessConfig):
@@ -62,6 +67,37 @@ class RhoHarness(Harness[RhoHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+
+    async def run(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+        messages: Messages | None = None,
+    ) -> None:
+        # Stage the task's `inputs/` tree into the workspace — the file-based taskset
+        # convention — on the FIRST segment only: a resumed segment's workspace is the
+        # model's work in progress, and re-staging would clobber it.
+        if messages is None:
+            task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
+            if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
+                for path in sorted(p for p in inputs.rglob("*") if p.is_file()):
+                    relative = path.relative_to(inputs).as_posix()
+                    await runtime.write(f"inputs/{relative}", path.read_bytes())
+        try:
+            await super().run(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
+            )
+        finally:
+            # Diagnostics must never mask the actual rollout result.
+            with contextlib.suppress(Exception):
+                result = await runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
+                if result.exit_code == 0 and result.stdout.strip():
+                    trace.info["rho"] = json.loads(result.stdout)
 
     async def launch(
         self,
