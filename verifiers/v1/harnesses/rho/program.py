@@ -1684,12 +1684,6 @@ class Driver:
         """Root-loop notices, appended to the turn's last tool result — the observation
         channel, never the system prompt, so every request extends the one before."""
         notices = []
-        if self.args.disclose_budget and self.budget.max_turns is not None:
-            spent = self.budget.spent
-            notices.append(
-                f"[harness] Turn budget: {spent}/{self.budget.max_turns} used, "
-                f"{self.budget.max_turns - spent} remaining."
-            )
         if "compact" in self.tools and self.last_prompt_tokens:
             notices.append(
                 f"[harness] Context: ~{self.last_prompt_tokens} prompt tokens "
@@ -1854,7 +1848,6 @@ def parse_args():
     p.add_argument("--subagents", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
     p.add_argument("--max-turns", type=int, default=None)
-    p.add_argument("--disclose-budget", action="store_true")
     return p.parse_args()
 
 

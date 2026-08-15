@@ -41,15 +41,6 @@ class RhoHarnessConfig(HarnessConfig):
     just a safety net: compacting earlier than the physical limit is how the skill gets
     practiced. 0 disables (tests only)."""
 
-    disclose_budget: bool = False
-    """Append the remaining-turn-budget line to each turn's last tool result. Off for
-    solver seats: a visible clock is pacing information the task never granted. On for
-    synthesis seats, so a round consolidates instead of truncating at the cap.
-
-    Discloses the FRAMEWORK's cap (`AgentConfig.max_turns`), the only turn limit that
-    exists — when the framework sets none, there is no budget and nothing is shown.
-    On a resumed segment the figures are this segment's remaining allowance."""
-
 
 class RhoHarness(Harness[RhoHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
@@ -166,8 +157,6 @@ class RhoHarness(Harness[RhoHarnessConfig]):
             args.append(
                 f"--max-turns={max(0, trace.agent.config.max_turns - trace.num_turns)}"
             )
-        if self.config.disclose_budget:
-            args.append("--disclose-budget")
         if mcp_urls:
             args.append(
                 "--mcp-config="
