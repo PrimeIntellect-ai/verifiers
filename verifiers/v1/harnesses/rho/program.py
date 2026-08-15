@@ -155,18 +155,27 @@ COMPACTION_FRAMING = (
     "model, use the information in this summary to assist with your own analysis:"
 )
 
-# With a history file, the summary is licensed to be tight: raw data stays greppable, so
-# the checkpoint carries decisions and state instead of hedging with carried payloads.
+TRANSCRIPT_PATH = SPILL_DIR / "transcript.txt"
+"""The live transcript: every root-loop message is appended here as it happens, so the
+model can grep its own history at any time — not only after a checkpoint. One stable
+path per runtime, surviving compactions and resumed segments."""
+
+# With the transcript file, the summary is licensed to be tight: raw data stays
+# greppable, so the checkpoint carries decisions and state, not hedged payloads.
 HISTORY_PROMPT_NOTE = (
     "\nThe full transcript you are summarizing will remain available to the next LLM in a "
     "file it can grep, so keep the summary tight and targeted — decisions, state, and next "
     "steps. Raw data, long outputs, and exact quotes can be recovered from the file."
 )
 HISTORY_FRAMING_NOTE = (
-    "\n\nThe full transcript this summary replaced is at {path} — grep it (bash) if a "
-    "detail you need is missing from the summary. Work from evidence: the workspace is "
-    "authoritative — inspect the current state of files before relying on the summary "
-    "or the history."
+    "\n\nThe full transcript (including everything this summary replaced) is at {path} — "
+    "grep it (bash) if a detail you need is missing from the summary. Work from evidence: "
+    "the workspace is authoritative — inspect the current state of files before relying "
+    "on the summary or the history."
+)
+TRANSCRIPT_SYSTEM_NOTE = (
+    "Your full transcript so far is appended to {path} — grep it (bash) to recover "
+    "earlier details, tool outputs, or exact quotes at any time."
 )
 
 RESUME_NOTE = (
@@ -1155,6 +1164,8 @@ class Driver:
         self.documented_apps: set[str] = set()
         self.tool_discovery: dict[str, int] = {}
         self.subagents_spawned = 0
+        self.transcript_pos = 0
+        """Messages of the root loop already appended to the live transcript file."""
         self.sessions: dict[str, dict] = {}
         """Named persistent subagents: session name -> {"messages", "tools"}. A
         continued session appends the new prompt and keeps its context — the caller
@@ -1507,9 +1518,21 @@ class Driver:
 
     # --- compaction -------------------------------------------------------------------
 
+    def append_transcript(self, messages: list[dict]) -> None:
+        """Append the root loop's not-yet-persisted messages to the live transcript."""
+        new = messages[self.transcript_pos :]
+        if not new:
+            return
+        SPILL_DIR.mkdir(parents=True, exist_ok=True)
+        with TRANSCRIPT_PATH.open("a") as f:
+            f.write(render_history(new) + "\n")
+        self.transcript_pos = len(messages)
+
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
-        history_path = _spill(render_history(messages[keep:]), "history")
+        self.append_transcript(
+            messages
+        )  # everything summarized-away is already on disk
         request = [
             *messages,
             {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE},
@@ -1545,9 +1568,12 @@ class Driver:
             COMPACTION_FRAMING
             + "\n\n"
             + summary
-            + HISTORY_FRAMING_NOTE.format(path=history_path)
+            + HISTORY_FRAMING_NOTE.format(path=TRANSCRIPT_PATH)
         )
         messages[:] = [*messages[:keep], {"role": "user", "content": framing}]
+        # The rebuilt prefix is already on disk; only the framing+summary is new.
+        self.transcript_pos = keep
+        self.append_transcript(messages)
         self.last_prompt_tokens = 0
         self.compactions += 1
         self.compaction_pending = False
@@ -1688,7 +1714,10 @@ class Driver:
             if depth == 0:
                 if isinstance(messages[-1]["content"], str):
                     messages[-1]["content"] += self._notices()
+                self.append_transcript(messages)
                 self.write_stats("loop")
+        if depth == 0:
+            self.append_transcript(messages)  # the final, tool-free assistant reply
         return final
 
     def write_stats(self, phase: str) -> None:
@@ -1750,11 +1779,25 @@ async def main() -> None:
             initial = json.loads(path.read_text())
             path.unlink(missing_ok=True)
         system = driver.system_prompt_base(driver.tools)
+        system += "\n\n" + TRANSCRIPT_SYSTEM_NOTE.format(path=TRANSCRIPT_PATH)
         if initial is not None and "run_code" in driver.tools:
             system += "\n\n" + RESUME_NOTE
         if args.system_prompt:
             system += "\n\n" + args.system_prompt
         messages = assemble_messages(system, args.prompt, initial)
+        if initial is not None:
+            # Replayed conversation is already on disk from earlier segments; persist
+            # only what follows the last assistant/tool message (the injected turns).
+            last = max(
+                (
+                    i
+                    for i, m in enumerate(messages)
+                    if m.get("role") in ("assistant", "tool")
+                ),
+                default=0,
+            )
+            driver.transcript_pos = last + 1
+        driver.append_transcript(messages)
         # The turn budget, not this call, is the authority on stopping.
         await driver.run_loop(messages, tools=driver.tools, depth=0, max_turns=None)
         driver.write_stats("complete")
