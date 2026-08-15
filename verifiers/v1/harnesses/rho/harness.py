@@ -7,11 +7,10 @@ import json
 import tarfile
 from pathlib import Path
 
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPHarnessSession
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -20,8 +19,8 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 NATIVE_TOOLS = ("read", "write", "edit", "bash", "run_code")
 
 RUNTIME_DIAGNOSTICS = "/tmp/.rho/runtime.json"
-"""Where the program leaves its stats (mirrors program.py); picked up onto the trace.
-Per-segment, last-write-wins on resume — cumulative truth lives on the trace itself."""
+"""Where the program leaves its stats (mirrors program.py); picked up onto the trace
+when the session closes. The program rewrites it after every segment."""
 
 
 class RhoHarnessConfig(HarnessConfig):
@@ -41,18 +40,30 @@ class RhoHarnessConfig(HarnessConfig):
     practiced. 0 disables (tests only)."""
 
 
-class RhoHarness(Harness[RhoHarnessConfig]):
+class RhoHarnessSession(ACPHarnessSession):
+    async def close(self) -> None:
+        # Diagnostics ride the session's end; failures must never mask teardown.
+        if not self._closed:
+            with contextlib.suppress(Exception):
+                picked = await self.runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
+                if picked.exit_code == 0 and picked.stdout.strip():
+                    self.trace.info["rho"] = json.loads(picked.stdout)
+        await super().close()
+
+
+class RhoHarness(ACPHarness[RhoHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    # A resumed segment relaunches on the accreted conversation: the kernel namespace
-    # is fresh (stated to the model), files and the tools tree persist on the runtime.
+    # One live process per rollout: later turns land in the same conversation, so the
+    # kernel namespace, named agent() sessions, and the transcript file all persist.
     SUPPORTS_RESUME = True
     EXECUTES_CODE = True
     NEEDS_CONTAINER = True
+    SESSION_CLASS = RhoHarnessSession
 
     def tool_surface(self) -> list[str]:
         # Seat shaping goes through the base `disabled_tools`: a ptc-style service
-        # seat is disabled_tools=["read", "write", "edit"]. `--tools` is the one
+        # seat is disabled_tools=["read", "write", "edit"]. RHO_TOOLS is the one
         # channel for what the seat offers — compact rides it like everything else.
         tools = [
             name
@@ -64,9 +75,10 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         return tools
 
     async def setup(self, runtime: Runtime) -> None:
+        await super().setup(runtime)
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -75,77 +87,62 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Stage the task's `inputs/` tree — the file-based taskset convention — on the
-        # first segment only (a Messages prompt is a resumed segment whose workspace is
-        # work in progress). One tarball, one upload, one extraction: a per-file loop
-        # costs 2N gateway round-trips on the prime runtime.
-        if isinstance(prompt, str) or prompt is None:
-            task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
-            if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
-                buffer = io.BytesIO()
+        # Stage the task's `inputs/` tree — the file-based taskset convention. A session
+        # starts once per rollout, so this always runs on a fresh workspace. One tarball,
+        # one upload, one extraction: a per-file loop costs 2N gateway round-trips on
+        # the prime runtime.
+        task_dir = Path(raw) if (raw := getattr(data, "dir", "") or "") else None
+        if task_dir is not None and (inputs := task_dir / "inputs").is_dir():
+            buffer = io.BytesIO()
 
-                def build_tar() -> None:
-                    with tarfile.open(fileobj=buffer, mode="w") as tar:
-                        tar.add(inputs, arcname="inputs")
+            def build_tar() -> None:
+                with tarfile.open(fileobj=buffer, mode="w") as tar:
+                    tar.add(inputs, arcname="inputs")
 
-                await asyncio.to_thread(build_tar)
-                archive = f".vf-inputs-{trace.id}.tar"
-                await runtime.write(archive, buffer.getvalue())
-                staged = await runtime.run(
-                    ["sh", "-c", f"tar -xf {archive} && rm -f {archive}"], {}
-                )
-                if staged.exit_code != 0:
-                    raise RuntimeError(
-                        f"inputs staging failed (exit {staged.exit_code}): "
-                        f"{staged.stderr.strip()[-300:]}"
-                    )
-        args = [
-            f"--base-url={endpoint}",
-            f"--api-key={secret}",
-            f"--model={ctx.model}",
-            f"--system-prompt={system_prompt or ''}",
-            "--tools=" + ",".join(self.tool_surface()),
-            f"--context-budget-tokens={self.config.context_budget_tokens}",
-        ]
-        if isinstance(prompt, str) or prompt is None:
-            args.append(f"--prompt={prompt or ''}")
-        else:
-            # A resumed segment's prompt is the accreted conversation; hand Messages
-            # over through a file (base64 images can exceed exec limits).
-            path = f".vf-initial-messages-{trace.id}.json"
-            await runtime.write(
-                path, json.dumps([message_to_wire(m) for m in prompt]).encode()
+            await asyncio.to_thread(build_tar)
+            archive = f".vf-inputs-{trace.id}.tar"
+            await runtime.write(archive, buffer.getvalue())
+            staged = await runtime.run(
+                ["sh", "-c", f"tar -xf {archive} && rm -f {archive}"], {}
             )
-            args.append(f"--initial-messages-file={path}")
+            if staged.exit_code != 0:
+                raise RuntimeError(
+                    f"inputs staging failed (exit {staged.exit_code}): "
+                    f"{staged.stderr.strip()[-300:]}"
+                )
+        env = {
+            **self.config.resolved_env,
+            # The program pops RHO_* on startup so the secret never reaches the
+            # kernel's or bash's inherited environment.
+            "RHO_BASE_URL": endpoint,
+            "RHO_API_KEY": secret,
+            "RHO_MODEL": ctx.model,
+            "RHO_TOOLS": ",".join(self.tool_surface()),
+            "RHO_CONTEXT_BUDGET_TOKENS": str(self.config.context_budget_tokens),
+        }
+        if system_prompt:
+            # A file, not an env value: task system prompts can exceed env limits.
+            path = f".vf-rho-system-{trace.id}"
+            await runtime.write(path, system_prompt.encode())
+            env["RHO_SYSTEM_PROMPT_FILE"] = path
         # One effort channel: the framework's sampling config (which interception
         # overlays on every call anyway); no rho-only knob to fight it.
         if ctx.sampling.reasoning_effort:
-            args.append(f"--effort={ctx.sampling.reasoning_effort}")
+            env["RHO_EFFORT"] = ctx.sampling.reasoning_effort
         if self.config.subagents:
-            args.append("--subagents")
+            env["RHO_SUBAGENTS"] = "1"
         # One cap, owned by the framework: the box spends the budget it is measured
-        # against instead of walking into a refused call. A resumed segment gets the
-        # REMAINING allowance — the trace has already spent turns against the cap.
+        # against instead of walking into a refused call. The budget spans the whole
+        # session — every segment's turns draw on it.
         if trace.agent is not None and trace.agent.config.max_turns:
-            args.append(
-                f"--max-turns={max(0, trace.agent.config.max_turns - trace.num_turns)}"
-            )
-        if mcp_urls:
-            args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {"mcpServers": {n: {"url": u} for n, u in mcp_urls.items()}}
-                )
+            env["RHO_MAX_TURNS"] = str(
+                max(0, trace.agent.config.max_turns - trace.num_turns)
             )
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        result = await runtime.run_program([*program, *args], self.config.resolved_env)
-        # Diagnostics ride the segment's end; failures must never mask its result.
-        with contextlib.suppress(Exception):
-            picked = await runtime.run(["cat", RUNTIME_DIAGNOSTICS], {})
-            if picked.exit_code == 0 and picked.stdout.strip():
-                trace.info["rho"] = json.loads(picked.stdout)
-        return result
+        # system_prompt stays out of ACPConfig: the runner would fold it into the first
+        # prompt's text blocks, while rho builds its own system message from the file.
+        return ACPConfig(env=env, command=[*program], prompt=prompt)

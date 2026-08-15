@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
+#     "agent-client-protocol==0.11.0",
 #     "openai==2.49.0",
 #     "mcp==1.28.1",
 #     "httpx==0.28.1",
@@ -23,6 +24,13 @@ one-shot sub-LLM calls, and `agent()` spawns subagents (config-gated, depth 1). 
 executes in a persistent kernel subprocess reached over stdio NDJSON; the same channel is
 the tool bridge, so the kernel holds capabilities, never credentials.
 
+The program is an ACP agent: the harness's runner spawns it once per rollout, session/new
+builds the driver and its MCP surface, and each session/prompt runs one loop segment on
+the same conversation — kernel namespace, named agent() sessions, and the transcript all
+persist across segments. Config rides RHO_* environment variables, popped on read so the
+API secret never reaches the kernel's or bash's inherited environment; the final reply of
+each segment goes back as an agent message chunk.
+
 The transcript is append-only between compaction boundaries: assistant messages (reasoning
 included) are re-sent complete, and the only rewriting event is Codex-style checkpoint
 compaction — triggered by the token budget, a context overflow, or the model's own
@@ -32,8 +40,8 @@ Two standing recovery stores: the live transcript (every root-loop message appen
 one greppable file as it happens; subagent transcripts land beside it under agents/) and
 spill files (full payloads named by truncation footers, whose pointers ride inside the
 transcript). `agent()` supports named persistent sessions — transcript, tool surface,
-and kernel continue across calls; sessions survive checkpoints but die with the segment
-(per-process state), and the boundary prompts say so.
+and kernel continue across calls; sessions survive checkpoints and later prompt
+segments alike, because the process is the rollout.
 
 Deliberate absences (known, may be wanted later, not built yet):
 - Parallel tool calls: multiple calls in one turn execute sequentially, and the kernel
@@ -45,7 +53,6 @@ Deliberate absences (known, may be wanted later, not built yet):
   (start a fresh session), not compacted — subagent loops have no checkpoint machinery.
 """
 
-import argparse
 import asyncio
 import base64
 import contextlib
@@ -60,9 +67,20 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from acp import PROTOCOL_VERSION, Agent, Client, run_agent, update_agent_message_text
+from acp.schema import (
+    AgentCapabilities,
+    ImageContentBlock,
+    InitializeResponse,
+    NewSessionResponse,
+    PromptCapabilities,
+    PromptResponse,
+    TextContentBlock,
+)
 from openai import AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
@@ -193,31 +211,6 @@ TRANSCRIPT_SYSTEM_NOTE = (
 SESSIONS_CHECKPOINT_CLAUSE = (
     " Named agent() sessions also persist across this compaction."
 )
-SESSIONS_RESUME_CLAUSE = (
-    " Named agent() sessions from previous segments are gone too — reusing a session "
-    "name now starts a fresh subagent."
-)
-
-RESUME_NOTE = (
-    "This session continues an earlier exchange: run_code variables from previous "
-    "segments are gone; files, ./tools/, and {dir} artifacts are intact."
-)
-
-
-def assemble_messages(
-    system: str, prompt: str, initial: list[dict] | None
-) -> list[dict]:
-    """The loop's starting transcript. A resumed segment replays the exchange's
-    conversation: a LEADING system message is the previous segment's harness-built
-    system prompt and is replaced by the fresh rebuild; any later explicit system
-    messages survive (the base `Harness.resume` contract). A fresh segment opens
-    with the task prompt."""
-    head = {"role": "system", "content": system}
-    if initial is not None:
-        if initial and initial[0].get("role") == "system":
-            initial = initial[1:]
-        return [head, *initial]
-    return [head, {"role": "user", "content": prompt}]
 
 
 def render_history(messages: list[dict]) -> str:
@@ -1175,16 +1168,16 @@ def parse_reply(text: str, schema) -> tuple[object, str | None]:
 class Driver:
     """Owns the client, kernel, MCP dispatch, and both loops (main + subagents)."""
 
-    def __init__(self, args):
-        self.args = args
+    def __init__(self, config: "Config"):
+        self.config = config
         self.client = AsyncOpenAI(
-            base_url=args.base_url,
-            api_key=args.api_key,
+            base_url=config.base_url,
+            api_key=config.api_key,
             http_client=httpx.AsyncClient(timeout=TUNNEL_TIMEOUT, limits=TUNNEL_POOL),
         )
-        self.budget = TurnBudget(args.max_turns)
+        self.budget = TurnBudget(config.max_turns)
         self.box = Path.cwd()
-        self.tools: list[str] = args.tools.split(",") if args.tools else []
+        self.tools: list[str] = list(config.tools)
         self.kernel: Kernel | None = None
         self.apps_payload: dict = {}
         self.dispatch: dict = {}
@@ -1213,11 +1206,10 @@ class Driver:
     def served_apps(self) -> set[str]:
         return {app for app, _ in self.dispatch}
 
-    async def setup(self) -> None:
-        config = json.loads(self.args.mcp_config) if self.args.mcp_config else {}
-        self.servers = config.get("mcpServers", {})
-        self.clients = mcp_clients(config)
-        self.dispatch, docs, catalog_ref = await connect_mcp(config, self.clients)
+    async def setup(self, mcp_config: dict) -> None:
+        self.servers = mcp_config.get("mcpServers", {})
+        self.clients = mcp_clients(mcp_config)
+        self.dispatch, docs, catalog_ref = await connect_mcp(mcp_config, self.clients)
         apps_payload = {}
         for (app, verb), (_, _, params) in self.dispatch.items():
             apps_payload.setdefault(app, {})[verb] = params
@@ -1245,7 +1237,7 @@ class Driver:
         self.apps_payload = apps_payload
         if "run_code" in self.tools:
             self.kernel = Kernel(
-                {"apps": apps_payload, "subagents": self.args.subagents}
+                {"apps": apps_payload, "subagents": self.config.subagents}
             )
 
     # --- bridge handlers ----------------------------------------------------------
@@ -1261,7 +1253,7 @@ class Driver:
                 call.get("prompt", ""), call.get("schema"), call.get("system")
             )
         if kind == "agent":
-            if not self.args.subagents:
+            if not self.config.subagents:
                 raise BridgeError("NameError", "agent() is not enabled in this session")
             if depth > 0:
                 raise BridgeError(
@@ -1318,7 +1310,7 @@ class Driver:
             if attempt and not self.budget.take():
                 break
             completion = await self.client.chat.completions.create(
-                model=self.args.model, messages=messages, **self._effort_kwargs()
+                model=self.config.model, messages=messages, **self._effort_kwargs()
             )
             text = completion.choices[0].message.content or ""
             if schema is None:
@@ -1591,23 +1583,8 @@ class Driver:
             f.write(render_history(new) + "\n")
         self.transcript_pos = len(messages)
 
-    def mark_replayed(self, messages: list[dict]) -> None:
-        """Position the transcript pointer for a resumed segment: the replayed
-        conversation is already on disk from earlier segments; only what follows the
-        last assistant/tool message (the caller-injected turns) is new. With none
-        present, only the trailing injected message is appended."""
-        last = max(
-            (
-                i
-                for i, m in enumerate(messages)
-                if m.get("role") in ("assistant", "tool")
-            ),
-            default=len(messages) - 2,
-        )
-        self.transcript_pos = last + 1
-
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
-        keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
+        keep = 2  # the protected prefix: the system message + the opening user prompt
         # Normally a no-op — per-turn appends already persisted everything; kept as
         # a safety net so the file's completeness never depends on call-site order.
         self.append_transcript(messages)
@@ -1623,7 +1600,7 @@ class Driver:
         while True:
             try:
                 completion = await self.client.chat.completions.create(
-                    model=self.args.model,
+                    model=self.config.model,
                     messages=request,
                     tools=tool_schemas or None,
                     tool_choice="none" if tool_schemas else None,
@@ -1670,14 +1647,14 @@ class Driver:
             return True
         return bool(
             not self.auto_compact_disabled
-            and self.args.context_budget_tokens
-            and self.last_prompt_tokens >= self.args.context_budget_tokens
+            and self.config.context_budget_tokens
+            and self.last_prompt_tokens >= self.config.context_budget_tokens
         )
 
     # --- the loop ----------------------------------------------------------------------
 
     def _effort_kwargs(self, effort: str | None = None) -> dict:
-        value = effort if effort is not None else self.args.effort
+        value = effort if effort is not None else self.config.effort
         return {"reasoning_effort": value} if value else {}
 
     def _notices(self) -> str:
@@ -1687,7 +1664,7 @@ class Driver:
         if "compact" in self.tools and self.last_prompt_tokens:
             notices.append(
                 f"[harness] Context: ~{self.last_prompt_tokens} prompt tokens "
-                f"(checkpoint threshold {self.args.context_budget_tokens})."
+                f"(checkpoint threshold {self.config.context_budget_tokens})."
             )
         return ("\n\n" + "\n".join(notices)) if notices else ""
 
@@ -1719,7 +1696,7 @@ class Driver:
                 break
             try:
                 completion = await self.client.chat.completions.create(
-                    model=self.args.model,
+                    model=self.config.model,
                     messages=messages,
                     tools=tool_schemas or None,
                     **self._effort_kwargs(effort),
@@ -1755,8 +1732,8 @@ class Driver:
                     # big — further automatic compaction would loop without shrinking.
                     self.just_compacted = False
                     if (
-                        self.args.context_budget_tokens
-                        and usage.prompt_tokens >= self.args.context_budget_tokens
+                        self.config.context_budget_tokens
+                        and usage.prompt_tokens >= self.config.context_budget_tokens
                     ):
                         self.auto_compact_disabled = True
             msg = completion.choices[0].message
@@ -1833,52 +1810,143 @@ class Driver:
 # --------------------------------------------------------------------------------------
 
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--base-url", required=True)
-    p.add_argument("--api-key", required=True)
-    p.add_argument("--model", required=True)
-    p.add_argument("--system-prompt", default="")
-    p.add_argument("--prompt", default="")
-    p.add_argument("--initial-messages-file", default="")
-    p.add_argument("--mcp-config", default="")
-    p.add_argument("--effort", default="")
-    # Defaults below are manual-run conveniences; the harness always passes these.
-    p.add_argument("--tools", default="read,write,edit,bash,run_code")
-    p.add_argument("--subagents", action="store_true")
-    p.add_argument("--context-budget-tokens", type=int, default=150_000)
-    p.add_argument("--max-turns", type=int, default=None)
-    return p.parse_args()
+@dataclass
+class Config:
+    """The RHO_* environment contract with the harness (ACPConfig.env reaches the
+    runner, which spawns this program with an inherited environment)."""
+
+    base_url: str
+    api_key: str
+    model: str
+    system_prompt: str
+    effort: str
+    tools: list[str]
+    subagents: bool
+    context_budget_tokens: int
+    max_turns: int | None
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        env = os.environ
+        system_prompt = ""
+        if path := env.pop("RHO_SYSTEM_PROMPT_FILE", ""):
+            # A file, not an env value: task system prompts can exceed env limits.
+            file = Path(path)
+            system_prompt = file.read_text()
+            file.unlink(missing_ok=True)
+        # Defaults below are manual-run conveniences; the harness always sets these.
+        raw_tools = env.pop("RHO_TOOLS", "read,write,edit,bash,run_code")
+        max_turns = env.pop("RHO_MAX_TURNS", "")
+        return cls(
+            base_url=env.pop("RHO_BASE_URL"),
+            api_key=env.pop("RHO_API_KEY"),
+            model=env.pop("RHO_MODEL"),
+            system_prompt=system_prompt,
+            effort=env.pop("RHO_EFFORT", ""),
+            tools=[name for name in raw_tools.split(",") if name],
+            subagents=env.pop("RHO_SUBAGENTS", "") == "1",
+            context_budget_tokens=int(env.pop("RHO_CONTEXT_BUDGET_TOKENS", "150000")),
+            max_turns=int(max_turns) if max_turns else None,
+        )
+
+
+def blocks_to_content(blocks: list) -> str | list[dict]:
+    """One prompt turn's ACP content blocks as one chat message content. Text-only
+    turns stay a plain string (transcript-friendly); images ride as data-URI parts."""
+    parts: list[dict] = []
+    for block in blocks:
+        if isinstance(block, TextContentBlock):
+            parts.append({"type": "text", "text": block.text})
+        elif isinstance(block, ImageContentBlock):
+            url = block.uri or f"data:{block.mime_type};base64,{block.data}"
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+        else:
+            kind = getattr(block, "type", type(block).__name__)
+            raise TypeError(f"unsupported prompt content block: {kind!r}")
+    if all(part["type"] == "text" for part in parts):
+        return "\n\n".join(part["text"] for part in parts)
+    return parts
+
+
+class RhoAgent(Agent):
+    """The driver's ACP face: one native session per process, one loop segment per
+    prompt turn. The conversation accretes across turns — a later prompt lands as a
+    user message on the same transcript, kernel, and named sessions."""
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.conn: Client | None = None
+        self.driver: Driver | None = None
+        self.messages: list[dict] = []
+
+    def on_connect(self, conn: Client) -> None:
+        self.conn = conn
+
+    async def initialize(
+        self, protocol_version, client_capabilities=None, client_info=None, **kwargs
+    ) -> InitializeResponse:
+        return InitializeResponse(
+            protocol_version=min(protocol_version, PROTOCOL_VERSION),
+            agent_capabilities=AgentCapabilities(
+                prompt_capabilities=PromptCapabilities(image=True)
+            ),
+        )
+
+    async def new_session(
+        self, cwd, additional_directories=None, mcp_servers=None, **kwargs
+    ) -> NewSessionResponse:
+        mcp_config = {
+            "mcpServers": {
+                server.name: {"url": url}
+                for server in mcp_servers or []
+                if (url := getattr(server, "url", None))
+            }
+        }
+        self.driver = Driver(self.config)
+        await self.driver.setup(mcp_config)
+        system = self.driver.system_prompt_base(
+            self.driver.tools, advertise_agent=self.config.subagents
+        )
+        system += "\n\n" + TRANSCRIPT_SYSTEM_NOTE.format(path=TRANSCRIPT_PATH)
+        if self.config.system_prompt:
+            system += "\n\n" + self.config.system_prompt
+        self.messages = [{"role": "system", "content": system}]
+        self.driver.append_transcript(self.messages)
+        self.driver.write_stats("ready")
+        return NewSessionResponse(session_id="rho")
+
+    async def prompt(self, session_id, prompt, **kwargs) -> PromptResponse:
+        assert self.conn is not None and self.driver is not None
+        self.messages.append({"role": "user", "content": blocks_to_content(prompt)})
+        self.driver.append_transcript(self.messages)
+        # The turn budget, not this call, is the authority on stopping.
+        final = await self.driver.run_loop(
+            self.messages, tools=self.driver.tools, depth=0, max_turns=None
+        )
+        self.driver.write_stats("segment")
+        await self.conn.session_update(
+            session_id=session_id,
+            update=update_agent_message_text(
+                final or "(the loop ended without a final reply)"
+            ),
+        )
+        return PromptResponse(stop_reason="end_turn")
+
+    async def cancel(self, session_id, **kwargs) -> None:
+        pass  # the verifiers runner never cancels a prompt turn
 
 
 async def main() -> None:
-    args = parse_args()
+    config = Config.from_env()
     write_diagnostics("started")
-    driver = Driver(args)
+    agent = RhoAgent(config)
     try:
-        await driver.setup()
-        initial = None
-        if args.initial_messages_file:
-            path = Path(args.initial_messages_file)
-            initial = json.loads(path.read_text())
-            path.unlink(missing_ok=True)
-        system = driver.system_prompt_base(driver.tools, advertise_agent=args.subagents)
-        system += "\n\n" + TRANSCRIPT_SYSTEM_NOTE.format(path=TRANSCRIPT_PATH)
-        if initial is not None and "run_code" in driver.tools:
-            system += "\n\n" + RESUME_NOTE.format(dir=SPILL_DIR)
-            if args.subagents:
-                system += SESSIONS_RESUME_CLAUSE
-        if args.system_prompt:
-            system += "\n\n" + args.system_prompt
-        messages = assemble_messages(system, args.prompt, initial)
-        if initial is not None:
-            driver.mark_replayed(messages)
-        driver.append_transcript(messages)
-        # The turn budget, not this call, is the authority on stopping.
-        await driver.run_loop(messages, tools=driver.tools, depth=0, max_turns=None)
-        driver.write_stats("complete")
+        # Serves the ACP connection over stdio until the client disconnects; stdout
+        # is the protocol channel, so nothing else may print to it.
+        await run_agent(agent)
     finally:
-        await driver.close()
+        if agent.driver is not None:
+            await agent.driver.close()
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from verifiers.v1.utils.aio import run_shielded
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
-__all__ = ["ACPConfig", "ACPHarness"]
+__all__ = ["ACPConfig", "ACPHarness", "ACPHarnessSession"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
@@ -46,6 +46,9 @@ class ACPConfig:
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    SESSION_CLASS: "type[ACPHarnessSession] | None" = None
+    """Subclass hook for extending the session (e.g. picking up diagnostics on close)."""
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -82,7 +85,8 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
-        return ACPHarnessSession(
+        session_cls = type(self).SESSION_CLASS or ACPHarnessSession
+        return session_cls(
             self,
             ctx,
             trace,

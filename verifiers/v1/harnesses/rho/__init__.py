@@ -1,3 +1,7 @@
-from verifiers.v1.harnesses.rho.harness import RhoHarness, RhoHarnessConfig
+from verifiers.v1.harnesses.rho.harness import (
+    RhoHarness,
+    RhoHarnessConfig,
+    RhoHarnessSession,
+)
 
-__all__ = ["RhoHarness", "RhoHarnessConfig"]
+__all__ = ["RhoHarness", "RhoHarnessConfig", "RhoHarnessSession"]

@@ -68,6 +68,7 @@ USER_RUNTIMES = [
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
     pair("codex", "docker", "codex-acp-in-docker"),
+    pair("rho", "docker", "rho-acp-in-docker"),
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     pair("rlm", "docker", "rlm-acp-in-docker"),
