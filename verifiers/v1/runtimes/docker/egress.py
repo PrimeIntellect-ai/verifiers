@@ -331,6 +331,7 @@ class EgressProxy:
                 writer.write(
                     b"HTTP/1.1 407 Proxy Authentication Required\r\n"
                     b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
+                    b"Connection: close\r\n"
                     b"Content-Length: 0\r\n\r\n"
                 )
                 await _drain(writer)
