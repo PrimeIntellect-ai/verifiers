@@ -1,8 +1,10 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
+import asyncio
 import json
 import logging
 import random
+import re
 import shlex
 from typing import Literal
 
@@ -25,11 +27,14 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
+COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(default="main", min_length=1)
-    """Git ref (branch, tag, or commit) of nano-rlm to install."""
+    """Git ref (branch, tag, or commit) of nano-rlm to install. Branches and tags are
+    resolved to a commit once at the start of the run, so every rollout installs the
+    same harness even if the ref moves mid-run."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
@@ -66,7 +71,45 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
+    _version_lock: asyncio.Lock | None = None
+    _resolved_version: str | None = None
+
+    async def _resolve_version(self) -> str:
+        """The configured version as a commit, resolved host-side once per run so
+        concurrent rollouts install the same harness even if the ref moves mid-run.
+        Refs `git ls-remote` doesn't list (e.g. short commits) pass through as-is."""
+        if self._version_lock is None:
+            self._version_lock = asyncio.Lock()
+        async with self._version_lock:
+            if self._resolved_version is None:
+                version = self.config.version
+                if not COMMIT_RE.fullmatch(version):
+                    proc = await asyncio.create_subprocess_exec(
+                        "git",
+                        "ls-remote",
+                        f"https://{RLM_REPO}",
+                        version,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode != 0:
+                        raise RuntimeError(
+                            f"rlm: resolving version {version!r} failed: "
+                            f"{stderr.decode().strip()[-500:]}"
+                        )
+                    if stdout.strip():
+                        version = stdout.split()[0].decode()
+                        logger.info(
+                            "rlm: locked version %s to %s for this run",
+                            self.config.version,
+                            version,
+                        )
+                self._resolved_version = version
+        return self._resolved_version
+
     async def setup(self, runtime: Runtime) -> None:
+        version = await self._resolve_version()
         # Before the installer: install.sh packages the skills it finds.
         await self.install_skills(runtime, SKILLS_DIR)
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
@@ -74,11 +117,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
-            f"git -C /tmp/rlm checkout {shlex.quote(self.config.version)} && "
+            f"git -C /tmp/rlm checkout {shlex.quote(version)} && "
             f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
             f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )
-        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
+        logger.info("rlm: ensuring rlm is installed (version=%s)", version)
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         env = self.config.resolved_env.copy()
