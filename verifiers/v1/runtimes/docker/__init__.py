@@ -239,9 +239,8 @@ class DockerRuntime(Runtime):
                 "." not in registry and ":" not in registry and registry != "localhost"
             ):
                 image = f"docker.io/{image}"
-        run = await docker(
-            "run",
-            "--detach",
+        create = await docker(
+            "create",
             *options,
             *limits,
             "--workdir",
@@ -253,12 +252,23 @@ class DockerRuntime(Runtime):
             image,
             "infinity",
         )
-        if run.exit_code != 0:
-            raise SandboxError(f"docker run failed: {run.stderr.strip()}")
+        if create.exit_code != 0:
+            raise SandboxError(f"docker create failed: {create.stderr.strip()}")
         self._container = self.name
-        self.info.id = run.stdout.strip()[
-            :12
-        ]  # `docker run -d` prints the container id
+        self.info.id = create.stdout.strip()[:12]
+        network = await docker(
+            "inspect", "--format", "{{.HostConfig.NetworkMode}}", self._container
+        )
+        if network.exit_code != 0:
+            raise SandboxError(f"docker inspect failed: {network.stderr.strip()}")
+        if network.stdout.strip() == "host":
+            raise SandboxError(
+                "docker runtime requires an isolated network namespace, but the "
+                "container engine selected host networking"
+            )
+        start = await docker("start", self._container)
+        if start.exit_code != 0:
+            raise SandboxError(f"docker start failed: {start.stderr.strip()}")
         workdir = await docker(
             "exec",
             "--user",
@@ -319,8 +329,8 @@ class DockerRuntime(Runtime):
                     "DAC_OVERRIDE",
                     "--security-opt",
                     "no-new-privileges",
-                    "--mount",
-                    f"type=bind,source={directory},target=/run/vf",
+                    "--volume",
+                    f"{directory}:/run/vf:Z",
                     "docker.io/library/python:3.11-alpine",
                     "python3",
                     "-c",
@@ -422,18 +432,28 @@ class DockerRuntime(Runtime):
             raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
         self._cut = True
 
-    def _proxy_env(self) -> dict[str, str]:
+    def _proxy_env(self, env: dict[str, str]) -> dict[str, str]:
         if self._proxy is None:
             return {}
         host = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
         proxy = f"http://verifiers:{self._proxy.token}@{host}:{self._proxy.port}"
+        no_proxy = ",".join(
+            filter(
+                None,
+                (
+                    env.get("NO_PROXY"),
+                    env.get("no_proxy"),
+                    "localhost,127.0.0.1,::1,[::1]",
+                ),
+            )
+        )
         return {
             "HTTP_PROXY": proxy,
             "HTTPS_PROXY": proxy,
             "http_proxy": proxy,
             "https_proxy": proxy,
-            "NO_PROXY": "localhost,127.0.0.1",
-            "no_proxy": "localhost,127.0.0.1",
+            "NO_PROXY": no_proxy,
+            "no_proxy": no_proxy,
         }
 
     async def teardown(self) -> None:
@@ -442,7 +462,7 @@ class DockerRuntime(Runtime):
         await super().teardown()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        env = {**env, **self._proxy_env()}
+        env = {**env, **self._proxy_env(env)}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
@@ -452,7 +472,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         assert self._container is not None
-        env = {**env, **self._proxy_env()}
+        env = {**env, **self._proxy_env(env)}
         env_args = [
             arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
         ]
@@ -512,7 +532,7 @@ class DockerRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        env = {**env, **self._proxy_env()}
+        env = {**env, **self._proxy_env(env)}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
         run = await docker(
