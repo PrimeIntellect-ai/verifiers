@@ -383,9 +383,7 @@ class DockerRuntime(Runtime):
         return f"http://127.0.0.1:{host_port}"
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Allow the declared framework routes, then leave the proxy as the only route."""
-        if not self.network_restricted:
-            return
+        """Install framework routes, then cut direct egress for restricted runs."""
         assert self._proxy is not None
         if routes is None:
             self._proxy.policy = NetworkPolicy(
@@ -400,8 +398,9 @@ class DockerRuntime(Runtime):
             self.config.allow,
             self.config.block,
             framework,
+            allow_non_global=not self.network_restricted,
         )
-        if self._cut:
+        if not self.network_restricted or self._cut:
             return
         script = r"""
 set -eu
