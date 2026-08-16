@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/rlm-harness.git"
+RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
