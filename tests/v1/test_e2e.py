@@ -288,11 +288,21 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
-    # The interception server captured the advertised tools onto the trace (for tool-use SFT):
-    # the null harness offered the task's MCP tool under the canonical name, schema included.
+    # The harness advertised the qualified MCP name, while the trace captured the tool exactly
+    # as the environment declared it (for tool-use SFT), schema included.
     assert trace.tools
-    (echo_tool,) = [t for t in trace.tools if t.name == "mcp__echo__back"]
+    (echo_tool,) = [t for t in trace.tools if t.name == "back"]
     assert "message" in echo_tool.parameters.get("properties", {})
+    assert {
+        call.name
+        for message in trace.assistant_messages
+        for call in message.tool_calls or []
+    } == {"back"}
+    assert {
+        message.name
+        for message in trace.messages
+        if message.role == "tool" and message.name is not None
+    } <= {"back"}
 
 
 @pytest.mark.e2e
@@ -599,9 +609,9 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
-    # The tool was advertised to the masked chat exactly as to any run.
+    # The assistant trace keeps the environment-declared name after the MCP call ran.
     assert assistant.tools
-    assert any(tool.name == "mcp__echo__back" for tool in assistant.tools)
+    assert any(tool.name == "back" for tool in assistant.tools)
 
 
 @pytest.mark.e2e

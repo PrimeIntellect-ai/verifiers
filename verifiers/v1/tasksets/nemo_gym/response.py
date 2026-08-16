@@ -1,17 +1,15 @@
 """Convert Verifiers traces to NeMo Gym Responses objects."""
 
 import json
-from collections.abc import Collection
 from typing import Any
 
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, ToolMessage
+from verifiers.v1.types import AssistantMessage, ToolMessage, declared_tool_name
 
 
 def trace_to_nemo_response(
     trace: Trace,
     responses_create_params: dict[str, Any],
-    tool_names: Collection[str],
 ) -> dict[str, Any]:
     """Convert the one completed V1 branch into a Gym Responses object."""
 
@@ -84,18 +82,11 @@ def trace_to_nemo_response(
                 }
             )
 
-    known_names = sorted(tool_names, key=len, reverse=True)
     for index, item in enumerate(output):
         name = item.get("name")
         if item.get("type") != "function_call" or not isinstance(name, str):
             continue
-        if name in tool_names:
-            continue
-        if name.startswith("mcp__"):
-            for tool_name in known_names:
-                if name.endswith(f"__{tool_name}"):
-                    output[index] = item | {"name": tool_name}
-                    break
+        output[index] = item | {"name": declared_tool_name(name)}
 
     return {
         "id": f"resp_{trace.id}",

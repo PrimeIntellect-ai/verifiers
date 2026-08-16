@@ -28,7 +28,6 @@ class NeMoGymState(State):
     mcp_url: str | None = None
     mcp_headers: dict[str, str] = Field(default_factory=dict)
     direct_tools: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    tool_names: list[str] = Field(default_factory=list)
 
     async def post(self, path: str, body: dict[str, Any]) -> httpx.Response:
         """POST to Gym while carrying this rollout's cookie session forward."""
@@ -85,7 +84,6 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
                 )
                 for spec in self.state.direct_tools.values()
             ]
-        self.state.tool_names = [tool.name for tool in tools]
         return tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:

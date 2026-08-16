@@ -37,6 +37,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    declared_tool_name,
 )
 
 if TYPE_CHECKING:
@@ -70,6 +71,12 @@ class MessageNode(BaseModel):
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
+    provider_message: Message | None = Field(default=None, exclude=True, repr=False)
+    """The original provider-facing form when trace recording normalized an MCP tool name.
+
+    Retained only in memory so a stateless harness can replay its exact conversation on resume;
+    persisted traces contain only the environment-declared tool names in ``message``.
+    """
     sampled: bool = False
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
@@ -214,6 +221,22 @@ def _canonical_tool_arguments(arguments: str) -> str:
         return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
     except (json.JSONDecodeError, ValueError):
         return arguments
+
+
+def _trace_message(message: Message) -> Message:
+    """Normalize provider-qualified MCP names to the environment's declared names."""
+    if isinstance(message, AssistantMessage) and message.tool_calls:
+        calls = [
+            call.model_copy(update={"name": declared_tool_name(call.name)})
+            for call in message.tool_calls
+        ]
+        if calls != message.tool_calls:
+            return message.model_copy(update={"tool_calls": calls})
+    elif isinstance(message, ToolMessage) and message.name:
+        name = declared_tool_name(message.name)
+        if name != message.name:
+            return message.model_copy(update={"name": name})
+    return message
 
 
 # Provider-specific fields not represented by typed messages but required on replay.
@@ -372,7 +395,10 @@ class PendingTurn:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
         if tools:
-            self.trace.tools = tools
+            self.trace.tools = [
+                tool.model_copy(update={"name": declared_tool_name(tool.name)})
+                for tool in tools
+            ]
         return assistant_id
 
     def commit_prompt(self, tools: list[Tool] | None = None) -> None:
@@ -380,12 +406,22 @@ class PendingTurn:
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
         index = _head_index(self.trace)
         for message in self.tail:
+            recorded = _trace_message(message)
             previous = parent
-            self.trace.nodes.append(MessageNode(parent=parent, message=message))
+            self.trace.nodes.append(
+                MessageNode(
+                    parent=parent,
+                    message=recorded,
+                    provider_message=message if recorded != message else None,
+                )
+            )
             parent = len(self.trace.nodes) - 1
-            index[(previous, message_hash(message))] = parent
+            index[(previous, message_hash(recorded))] = parent
         if tools:
-            self.trace.tools = tools
+            self.trace.tools = [
+                tool.model_copy(update={"name": declared_tool_name(tool.name)})
+                for tool in tools
+            ]
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
@@ -395,11 +431,12 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     path_len = 0
     prefix_node_ids: list[int] = []
     for msg in prompt:
+        recorded = _trace_message(msg)
         existing = None
         if (
-            isinstance(msg.content, list)
+            isinstance(recorded.content, list)
             and len(idx) <= 10
-            and any(part.type == "image_url" for part in msg.content)
+            and any(part.type == "image_url" for part in recorded.content)
         ):
             children = [
                 node_id
@@ -408,10 +445,10 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
             ]
             # Repeated image URLs are cheaper to compare than to encode and hash again.
             # Only scan short, unambiguous parents; all other cases use the stable index.
-            if len(children) == 1 and trace.nodes[children[0]].message == msg:
+            if len(children) == 1 and trace.nodes[children[0]].message == recorded:
                 existing = children[0]
         if existing is None:
-            existing = idx.get((parent, message_hash(msg)))
+            existing = idx.get((parent, message_hash(recorded)))
         if existing is None:
             break
         prefix_node_ids.append(existing)
@@ -573,7 +610,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     if multi_modal_data is not None:
         mm_path = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
-        key = (parent, message_hash(msg))
+        recorded = _trace_message(msg)
+        key = (parent, message_hash(recorded))
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
@@ -583,7 +621,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             # potentially huge token slices a second time.
             MessageNode.model_construct(
                 parent=parent,
-                message=msg,
+                message=recorded,
+                provider_message=msg if recorded != msg else None,
                 token_ids=node_tokens,
                 mask=[False] * len(node_tokens),
                 is_content=is_content[start:end] if has_is_content else [],
@@ -593,17 +632,21 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         idx[key] = parent
         new_node_ids.append(parent)
         if mm_path is not None:
-            mm_path.append((parent, msg))
+            mm_path.append((parent, recorded))
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
     comp_ids = tokens.completion_ids if tokens else []
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
+    recorded_response = _trace_message(response.message)
     trace.nodes.append(
         MessageNode.model_construct(
             parent=parent,
-            message=response.message,
+            message=recorded_response,
+            provider_message=response.message
+            if recorded_response != response.message
+            else None,
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
@@ -616,7 +659,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     assistant_id = len(trace.nodes) - 1
-    idx[(parent, message_hash(response.message))] = assistant_id
+    idx[(parent, message_hash(recorded_response))] = assistant_id
     new_node_ids.append(assistant_id)
 
     # Attribute this turn's images onto the input nodes that introduced them (by content part).

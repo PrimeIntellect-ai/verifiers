@@ -63,6 +63,17 @@ class UserMessage(BaseModel):
     content: MessageContent
 
 
+def declared_tool_name(name: str) -> str:
+    """Recover the environment-declared name from a direct MCP tool name."""
+    original = name
+    server, separator, name = name.removeprefix("mcp__").partition("__")
+    return (
+        name
+        if original.startswith("mcp__") and server and separator and name
+        else original
+    )
+
+
 class ToolCall(BaseModel):
     id: str
     name: str

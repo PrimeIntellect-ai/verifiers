@@ -128,6 +128,54 @@ def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     assert graph.message_hash(left) == graph.message_hash(right)
 
 
+def test_mcp_tool_names_are_normalized_on_the_trace_without_changing_replay():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="use submit")),
+    )
+    user = vf.UserMessage(content="use submit")
+    qualified = "mcp__grader__submit"
+    call = vf.ToolCall(id="call_0", name=qualified, arguments="{}")
+    response = _response(
+        vf.AssistantMessage(
+            tool_calls=[call],
+            provider_state=[
+                {
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": qualified,
+                    "arguments": call.arguments,
+                }
+            ],
+        )
+    )
+
+    graph.prepare_turn(trace, [user]).commit(
+        response,
+        tools=[vf.Tool(name=qualified, description="", parameters={})],
+    )
+
+    stored_call = trace.assistant_messages[0].tool_calls
+    assert stored_call is not None and stored_call[0].name == "submit"
+    assert trace.tools[0].name == "submit"
+    assert response.message.tool_calls == [call]
+    assert trace.nodes[-1].provider_message == response.message
+    dumped = trace.model_dump()
+    assert dumped["nodes"][-1]["message"]["tool_calls"][0]["name"] == "submit"
+    assert "provider_message" not in dumped["nodes"][-1]
+
+    result = vf.ToolMessage(content="accepted", tool_call_id=call.id, name=qualified)
+    graph.prepare_turn(trace, [user, response.message, result]).commit(
+        _response(vf.AssistantMessage(content="done"))
+    )
+
+    assert trace.num_branches == 1
+    recorded_result = trace.messages[-2]
+    assert isinstance(recorded_result, vf.ToolMessage)
+    assert recorded_result.name == "submit"
+    assert trace.nodes[-2].provider_message == result
+
+
 def test_reasoning_content_participates_in_graph_prefix_matching():
     task = vf.TaskData(idx=0, prompt="use a tool")
     trace = vf.Trace(

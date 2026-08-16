@@ -369,7 +369,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
-    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+    """The tools offered to the agent, recorded under their environment-declared names."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
