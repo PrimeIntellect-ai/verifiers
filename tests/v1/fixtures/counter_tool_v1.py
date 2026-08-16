@@ -24,9 +24,7 @@ class CounterTaskConfig(vf.TaskConfig):
 
 
 class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
-    @classmethod
-    def toolsets(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
-        return [CounterToolset(config.tools)]
+    tools = (CounterToolset,)
 
     @vf.reward(weight=1.0)
     async def counted(self, trace: vf.Trace) -> float:

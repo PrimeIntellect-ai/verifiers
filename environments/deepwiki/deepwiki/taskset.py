@@ -26,9 +26,7 @@ class DeepWikiTaskData(vf.TaskData):
 
 
 class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
-    @classmethod
-    def toolsets(cls, config: DeepWikiTaskConfig) -> list[vf.Toolset]:
-        return [DeepWikiToolset(config.tools)]
+    tools = (DeepWikiToolset,)
 
     @vf.reward(weight=1.0)
     async def answered(self, trace: vf.Trace) -> float:

@@ -15,7 +15,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
@@ -137,6 +137,8 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
+    tools: ClassVar[tuple[type[Toolset], ...]] = ()
+    """Per-rollout Toolsets, each constructed from ``config.tools``."""
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
@@ -277,16 +279,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     @classmethod
     def toolsets(cls, config: ConfigT) -> list[Toolset]:
-        """Tool servers launched per rollout, each constructed with its config off
-        `config` — override and wire explicitly:
+        """Build the Toolsets declared by ``tools`` for one rollout.
 
-            @classmethod
-            def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
-                return [SearchToolset(config.tools)]
-
-        A classmethod so consumers can size placement (tunnels) off the class
-        before any task instance exists."""
-        return []
+        Override this for dynamic Toolsets or Toolsets with distinct configs. A
+        classmethod lets consumers size placement before a task instance exists.
+        """
+        if not cls.tools:
+            return []
+        tool_config = cast(Any, config).tools
+        return [toolset(tool_config) for toolset in cls.tools]
 
 
 TaskT = TypeVar("TaskT", bound=Task)

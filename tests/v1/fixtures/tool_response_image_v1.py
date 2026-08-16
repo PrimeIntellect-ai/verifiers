@@ -33,9 +33,7 @@ class ToolResponseImageTaskConfig(vf.TaskConfig):
 class ToolResponseImageTask(
     vf.Task[vf.TaskData, vf.State, ToolResponseImageTaskConfig]
 ):
-    @classmethod
-    def toolsets(cls, config: ToolResponseImageTaskConfig) -> list[vf.Toolset]:
-        return [VisionToolset(config.tools)]
+    tools = (VisionToolset,)
 
     @vf.reward(weight=1.0)
     async def preserved_image_tool_result(self, trace: vf.Trace) -> float:

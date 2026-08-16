@@ -28,9 +28,7 @@ class ACPResumeConfig(vf.TasksetConfig):
 
 
 class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
-    @classmethod
-    def toolsets(cls, config: ACPResumeTaskConfig) -> list[vf.Toolset]:
-        return [ResumeToolset(config.tools)]
+    tools = (ResumeToolset,)
 
     @vf.reward(weight=1.0)
     async def resumed(self, trace: vf.Trace) -> float:
