@@ -42,8 +42,9 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
-# The single port a publishing runtime forwards for a server hosted in its sandbox. A server
-# placed in such a runtime binds this (on 0.0.0.0) and is reached at the runtime's exposed URL.
+# The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
+# hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
+# at the runtime's public URL.
 SERVICE_PORT = 8000
 
 
@@ -364,19 +365,12 @@ class Runtime(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` when this runtime has no port reserved for an exposed service."""
+        `None` for runtimes without a reserved service port."""
         return None
-
-    def configure_exposure(self) -> None:
-        """Declare before `start` that this runtime will host a non-colocated server.
-
-        Providers that always reserve a service port need no action. A runtime whose
-        forwarding must be selected at container creation can override this hook.
-        """
 
     async def expose(self, port: int) -> str | None:
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when no forwarding is needed. Sandboxes override this with local port mapping
-        or their provider's native exposure, torn down with the runtime in `stop()`. The reverse
-        of a host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
+        or None when unavailable. A runtime overrides this with the provider's native port
+        exposure or a local port mapping, torn down with the sandbox in `stop()`. The reverse of
+        a host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return None

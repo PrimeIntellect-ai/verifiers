@@ -376,7 +376,6 @@ async def _serve(
             runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
-            runtime.configure_exposure()
             stack.push_async_callback(runtime.stop)
             await runtime.start()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
