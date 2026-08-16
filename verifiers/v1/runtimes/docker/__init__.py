@@ -245,7 +245,7 @@ class DockerRuntime(Runtime):
             *options,
             *limits,
             "--workdir",
-            self.config.workdir,
+            "/",
             "--entrypoint",
             "sleep",
             "--name",
@@ -259,6 +259,19 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
+        workdir = await docker(
+            "exec",
+            "--user",
+            "0",
+            self._container,
+            "mkdir",
+            "-p",
+            self.config.workdir,
+        )
+        if workdir.exit_code != 0:
+            raise SandboxError(
+                f"could not create container workdir: {workdir.stderr.strip()}"
+            )
 
         # Docker or Podman isolates the container's network. This proxy lets the
         # container reach Verifiers callbacks and enforces restricted egress. It starts
