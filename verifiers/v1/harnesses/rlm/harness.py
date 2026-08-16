@@ -28,9 +28,7 @@ RLM_STATE_DIR = ".vf-rlm"
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(
-        default="41739cf3c2eb9859a90dc630db0d4739df404d23", min_length=1
-    )
+    version: str = Field(default="main", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
