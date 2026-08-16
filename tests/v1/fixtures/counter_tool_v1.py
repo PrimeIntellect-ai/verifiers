@@ -44,7 +44,7 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
                 vf.TaskData(
                     idx=0,
                     prompt=(
-                        f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait "
+                        f"Call the `mcp__counter__bump` tool {TARGET} times, one call per turn — wait "
                         "for each result before the next. After the last result, reply with "
                         "<answer>done</answer>."
                     ),

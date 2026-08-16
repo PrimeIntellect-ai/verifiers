@@ -184,8 +184,10 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 },
             },
             "mcp": {
+                # OpenClaw joins MCP server and tool names with ``__`` but supplies no
+                # MCP marker, so the configured namespace completes the canonical name.
                 "servers": {
-                    name: {
+                    f"mcp__{name}": {
                         "url": url,
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,

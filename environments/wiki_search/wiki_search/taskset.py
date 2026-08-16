@@ -13,9 +13,10 @@ from wiki_search.judge import WikiSearchJudgeConfig
 from wiki_search.servers.wiki import WikiSearchToolset
 
 SYSTEM = (
-    "Use the Wikipedia search tools — `wiki_search_pages` to find relevant pages, "
-    "`wiki_view_sections` to list a page's sections, and `wiki_read_section` to read "
-    "one — to answer the question. When confident, reply with a concise final answer."
+    "Use the `wiki` MCP server's tools — `mcp__wiki__search_pages` to find relevant "
+    "pages, `mcp__wiki__view_sections` to list a page's sections, and "
+    "`mcp__wiki__read_section` to read one — to answer the question. When confident, "
+    "reply with a concise final answer."
 )
 
 # The question bank and count are fixed properties of this env, not eval-time

@@ -7,7 +7,7 @@ class WikiSearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
     """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive) are
     built once in `setup`, in the server process. Every tool call is a read."""
 
-    TOOL_PREFIX = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
+    TOOL_PREFIX = "wiki"
 
     async def setup(self) -> None:
         import os

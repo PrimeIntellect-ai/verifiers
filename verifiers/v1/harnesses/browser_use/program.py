@@ -235,7 +235,7 @@ async def connect_mcp(
     config: dict, reserved: set[str]
 ) -> tuple[list[dict], dict, dict]:
     """Enumerate each configured MCP server's tools (a streamable-HTTP `url`); return (tool schemas,
-    dispatch mapping `<server>_<tool>` -> (server name, raw tool name), servers mapping name -> spec).
+    dispatch mapping `mcp__<server>__<tool>` -> (server name, raw tool name), servers mapping name -> spec).
     No session is held — a stateless-HTTP server is reconnected per call."""
     tool_schemas: list[dict] = []
     dispatch: dict[str, tuple] = {}
@@ -248,8 +248,7 @@ async def connect_mcp(
                 return (await session.list_tools()).tools
 
         for tool in await with_retry(list_tools):
-            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
-            full = f"{name}_{tool.name}" if name else tool.name
+            full = f"mcp__{name}__{tool.name}"
             if full in reserved or full in dispatch:
                 raise ValueError(
                     f"duplicate tool name {full!r}; keep MCP tool names qualified"

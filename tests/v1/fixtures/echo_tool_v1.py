@@ -18,7 +18,7 @@ ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface
 
 
 class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "echo"  # the model sees `echo_back` (matches the prompt)
+    TOOL_PREFIX = "echo"  # the model sees `mcp__echo__back`
 
     @vf.tool
     def back(self, message: str) -> str:
@@ -53,7 +53,7 @@ class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
                 vf.TaskData(
                     idx=0,
                     prompt=(
-                        f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
+                        f'Call the `mcp__echo__back` tool with the message "{PHRASE}", then reply '
                         "with exactly what it returns inside <answer></answer> tags."
                     ),
                 ),

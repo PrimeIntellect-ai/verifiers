@@ -132,10 +132,11 @@ def _import_ref(ref: str) -> object:
 
 
 class ServerBase(Generic[ConfigT, StateT]):
-    TOOL_PREFIX: ClassVar[str | None] = ""
-    """The empty value falls back to the snake-cased class name. None advertises the server's
-    tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
-    author's concern."""
+    TOOL_PREFIX: ClassVar[str] = ""
+    """Logical MCP server name. The empty value falls back to the snake-cased class name.
+
+    Harnesses expose direct MCP tools as ``mcp__<server>__<tool>``.
+    """
 
     EXTRAS: ClassVar[tuple[str, ...]] = ()
     """Package extras the server's module needs, applied at sandbox install."""
@@ -254,8 +255,6 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     @property
     def server_name(self) -> str:
-        if self.TOOL_PREFIX is None:
-            return ""
         return self.TOOL_PREFIX or "".join(
             ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
         ).lstrip("_")

@@ -13,7 +13,7 @@ SYSTEM = "Call the requested tool before answering."
 
 
 class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "vision"  # the model sees `vision_snapshot`
+    TOOL_PREFIX = "vision"  # the model sees `mcp__vision__snapshot`
 
     @vf.tool
     def snapshot(self) -> list:
@@ -60,7 +60,7 @@ class ToolResponseImageTaskset(
                 vf.TaskData(
                     idx=0,
                     prompt=(
-                        "Call the `vision_snapshot` tool exactly once. After it returns, "
+                        "Call the `mcp__vision__snapshot` tool exactly once. After it returns, "
                         "reply with exactly `done`."
                     ),
                     system_prompt=SYSTEM,

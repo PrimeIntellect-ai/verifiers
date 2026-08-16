@@ -1,8 +1,8 @@
 """The simplest locally authored, task-scoped tool example.
 
 `GlossaryToolset` is a vf-native class with an `@vf.tool` method. Verifiers launches
-one server per rollout and exposes it as `facts_lookup`; compare `deepwiki` for a remote
-server and `wiki_search` for an expensive worker-shared server.
+one server per rollout and exposes it as `mcp__facts__lookup`; compare `deepwiki` for a
+remote server and `wiki_search` for an expensive worker-shared server.
 """
 
 import verifiers.v1 as vf
@@ -42,7 +42,8 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
                     idx=i,
                     name=entity.title(),
                     prompt=(
-                        f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
+                        f"Use the `facts` MCP server's `lookup` tool (`mcp__facts__lookup`) "
+                        f'to look up "{entity.title()}", then '
                         "reply with exactly what it returns inside <answer></answer> tags."
                     ),
                     answer=fact,
