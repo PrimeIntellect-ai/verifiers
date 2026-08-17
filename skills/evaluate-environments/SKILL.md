@@ -11,10 +11,10 @@ Set up an evaluation for a taskset in the correct way to reproduce results from 
 
 ## Canonical path
 
-Use the prime CLI
+Use the `eval` entrypoint
 
 ```bash
-prime eval run <MY_ENV>
+uv run eval <MY_ENV>
 ```
 
 ## Core workflow
@@ -22,19 +22,19 @@ prime eval run <MY_ENV>
 1. Resolve and validate config without model calls:
 
 ```bash
-prime eval run <MY_ENV> --dry-run
+uv run eval <MY_ENV> --dry-run
 ```
 
 2. Run model-free gold validation when the taskset implements `validate`:
 
 ```bash
-prime eval validate <MY_ENV> --runtime.type subprocess
+uv run validate <MY_ENV> --runtime.type subprocess
 ```
 
 3. Do a small run to see whether it works correctly:
 
 ```bash
-prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
+uv run eval <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 4. Inspect successful, zero-reward, and errored traces.
@@ -49,7 +49,7 @@ A plugin id names an installed package (e.g. `my-taskset`); verifiers imports it
 The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
-prime eval run my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
+uv run eval my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
 ```
 
 The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
@@ -57,8 +57,8 @@ keeps the taskset's own story (its exported `Env` subclass, else the single-agen
 env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash
-prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
-prime eval run my-task-v1 --env.id agentic-judge \
+uv run eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
+uv run eval my-task-v1 --env.id agentic-judge \
   --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
 ```
 
@@ -90,13 +90,13 @@ For implementation details and defaults, start at `verifiers/v1/configs/cli/eval
 Taskset settings:
 
 ```bash
-prime eval run my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
+uv run eval my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
 ```
 
 Harness and runtime settings:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --env.agent.harness.id rlm \
   --env.agent.runtime.type docker \
   --env.agent.runtime.cpu 4 \
@@ -106,7 +106,7 @@ prime eval run my-task-v1 \
 Sampling:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --sampling.temperature 0.7 \
   --sampling.top-p 0.95 \
   --sampling.max-tokens 2048 \
@@ -141,7 +141,7 @@ temperature = 0.7
 ```
 
 ```bash
-prime eval run @ configs/my-eval.toml
+uv run eval @ configs/my-eval.toml
 ```
 
 ## Retries
@@ -149,7 +149,7 @@ prime eval run @ configs/my-eval.toml
 Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --env.agent.retries.max-retries 2 \
   --env.agent.retries.include SandboxError ProviderError \
   --env.agent.retries.exclude TaskError
@@ -171,7 +171,7 @@ Set an exact path with `-o`. `traces.jsonl` is one **episode** per line — the 
 Resume in place:
 
 ```bash
-prime eval run --resume /path/to/run
+uv run eval --resume /path/to/run
 ```
 
 ## Trace inspection
