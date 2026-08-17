@@ -4,8 +4,7 @@ DEEPWIKI_URL = "https://mcp.deepwiki.com/mcp"
 
 
 class DeepWikiToolset(vf.Toolset[vf.ToolsetConfig]):
-    # A remote server (config.url) with no locally registered @tool methods.
-    TOOL_PREFIX = "deepwiki"
+    TOOL_PREFIX = "deepwiki"  # a remote server (config.url) — no @tool methods; model sees `deepwiki_<tool>`
 
 
 if __name__ == "__main__":

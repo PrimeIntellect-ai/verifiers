@@ -65,7 +65,7 @@ class NeMoGymState(State):
 class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
 
-    TOOL_PREFIX = "nemo_gym"
+    TOOL_PREFIX = None
 
     def register(self, mcp: FastMCP) -> None:
         server = mcp._mcp_server

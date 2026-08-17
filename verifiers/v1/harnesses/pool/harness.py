@@ -94,8 +94,6 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
             env=env,
             command=command,
             prompt=prompt,
-            # Pool joins MCP server and tool names with ``__`` but supplies no
-            # MCP marker, so the configured namespace completes the canonical name.
-            mcp_urls={f"mcp__{name}": url for name, url in mcp_urls.items()},
+            mcp_urls=mcp_urls,
             system_prompt=system_prompt,
         )

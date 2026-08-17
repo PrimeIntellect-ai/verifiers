@@ -71,7 +71,7 @@ async def chat(
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `mcp__<server>__<tool>` -> (session, raw tool name))."""
+    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -90,7 +90,7 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = f"mcp__{name}__{tool.name}"
+            full = f"{name}_{tool.name}"
             tool_schemas.append(
                 {
                     "type": "function",

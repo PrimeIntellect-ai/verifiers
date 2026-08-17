@@ -142,9 +142,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=self._env(ctx, trace, endpoint, secret, data, system_prompt),
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
-            # RLM joins MCP server and tool names with ``_``. The trailing
-            # underscore makes its generated skill use the canonical separator.
-            mcp_urls={f"mcp__{name}_": url for name, url in mcp_urls.items()},
         )
 
     @metric

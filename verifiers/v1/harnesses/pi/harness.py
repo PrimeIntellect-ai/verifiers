@@ -57,7 +57,6 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    # pi-mcp-adapter exposes one `mcp` proxy tool rather than individual MCP tools.
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True

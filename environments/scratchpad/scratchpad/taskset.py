@@ -22,8 +22,7 @@ WORDS = [
 ]  # fmt: skip
 
 INSTRUCTION = (
-    "Call the `scratchpad` MCP server's `roundtrip` tool (`mcp__scratchpad__roundtrip`) "
-    'with word="{word}". It returns a single word. '
+    'Call the `scratchpad_roundtrip` tool with word="{word}". It returns a single word. '
     "Then reply with that returned word verbatim as your final answer — nothing else."
 )
 
