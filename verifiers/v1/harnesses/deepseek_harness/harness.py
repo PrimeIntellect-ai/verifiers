@@ -81,13 +81,17 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             self.config.version,
         )
         lock = f"{DSH_DIR}.install.lock"
+        # Process start time distinguishes a live installer from a reused stale PID.
         guarded = (
-            f'until ln -s "$$" {lock} 2>/dev/null; do '
+            f"identity=\"$$:$(awk '{{print $22}}' /proc/$$/stat)\"; "
+            f'until ln -s "$identity" {lock} 2>/dev/null; do '
             f"owner=$(readlink {lock}); "
-            f'if ! kill -0 "$owner" 2>/dev/null; then '
+            f"pid=${{owner%%:*}}; started=${{owner#*:}}; "
+            f'if [ "$(awk \'{{print $22}}\' "/proc/$pid/stat" 2>/dev/null)" '
+            f'!= "$started" ]; then '
             f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
             f"sleep 0.1; done; "
-            f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
+            f'trap \'[ "$(readlink {lock})" != "$identity" ] || rm -f {lock}\' EXIT; '
             f"sh -c {shlex.quote(INSTALL)}"
         )
         install = await runtime.run(
@@ -114,6 +118,13 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     ) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError("DeepSeek Harness ACP does not support disabling tools")
+        if (
+            self.config.transport == "anthropic_messages"
+            and ctx.sampling.max_tokens is None
+        ):
+            raise ValueError(
+                "DeepSeek Harness anthropic_messages transport requires max_tokens"
+            )
 
         system_prompt, prompt = self.resolve_prompt(data)
         run_dir = self.run_dir(trace)

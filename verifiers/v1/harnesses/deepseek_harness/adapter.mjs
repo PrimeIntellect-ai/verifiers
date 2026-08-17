@@ -69,7 +69,7 @@ function providerOptions(options, internalToProvider) {
 
 function replayOf(message, transport) {
   const source = message.source.kind === "model" ? message.source : undefined;
-  const state = source?.replayState;
+  const state = source?.replayState?.response;
   return state?.transport === transport ? state.data : undefined;
 }
 
@@ -174,11 +174,12 @@ function chatResponse(raw) {
   const blocks = [];
   const reasoning = reasoningText(message);
   if (reasoning) blocks.push({ type: "reasoning", text: reasoning });
-  const text = typeof message.content === "string"
+  const contentText = typeof message.content === "string"
     ? message.content
     : Array.isArray(message.content)
-      ? message.content.map((part) => part?.text || "").join("")
+      ? message.content.map((part) => part?.text || part?.refusal || "").join("")
       : "";
+  const text = contentText || (typeof message.refusal === "string" ? message.refusal : "");
   if (text) blocks.push({ type: "text", text });
   for (const call of message.tool_calls || []) {
     blocks.push({
@@ -577,7 +578,11 @@ class VerifiersAdapter extends LlmAdapter {
       };
     }
     yield { type: "usage", usage: result.usage };
-    yield { type: "finish", reason: result.reason, replayState: result.replayState };
+    yield {
+      type: "finish",
+      reason: result.reason,
+      replayState: { response: result.replayState },
+    };
   }
 }
 
