@@ -227,4 +227,5 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     def run_dir(trace: Trace) -> str:
         # Keeping the config below the npm prefix lets Cordis resolve its bare
         # plugin specifiers while the trace id isolates concurrent rollouts.
-        return f"{PACKAGES_DIR}/runs/{trace.id}"
+        trace_dir = hashlib.sha256(trace.id.encode()).hexdigest()
+        return f"{PACKAGES_DIR}/runs/{trace_dir}"
