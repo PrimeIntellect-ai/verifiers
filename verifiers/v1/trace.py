@@ -193,6 +193,9 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Namespaced boundary metadata for this exchange. It is descriptive only; message
+    ancestry in `Trace.nodes` remains authoritative for branch construction."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -405,6 +408,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
+    _harness_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+    """Runtime-only harness protocol metadata, excluded from trace serialization."""
 
     @property
     def reward(self) -> float:

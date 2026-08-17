@@ -21,8 +21,9 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+ACP_RESPONSE_METADATA_KEY = "ai.verifiers.acp/responses-v1"
 
-__all__ = ["ACPConfig", "ACPHarness"]
+__all__ = ["ACP_RESPONSE_METADATA_KEY", "ACPConfig", "ACPHarness"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
@@ -47,9 +48,12 @@ class ACPConfig:
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
+    def acp_setup_env(self) -> dict[str, str]:
+        return self.config.resolved_env
+
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
-            ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
+            ACP_SOURCE, {**self.acp_setup_env(), "UV_FROZEN": "false"}
         )
 
     @abstractmethod
@@ -193,6 +197,17 @@ class ACPHarnessSession(HarnessSession):
     def _stderr(self) -> str:
         return self._stderr_tail.decode(errors="replace").strip()
 
+    def _record_metadata(self, response: JsonObject) -> None:
+        metadata = response.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise TypeError("ACP response metadata must be an object")
+        stored = self.trace._harness_metadata.setdefault(ACP_RESPONSE_METADATA_KEY, {})
+        if not isinstance(stored, dict):
+            raise TypeError(
+                f"trace harness metadata {ACP_RESPONSE_METADATA_KEY!r} must be an object"
+            )
+        stored.update(metadata)
+
     async def _run(self, messages: Messages | None) -> ProgramResult:
         prompt = self.config.prompt if messages is None else messages
         if prompt is None:
@@ -240,6 +255,7 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
+        self._record_metadata(response)
         reply = response.get("reply", "")
         if not isinstance(reply, str):
             raise TypeError("ACP session reply must be a string")
@@ -257,7 +273,9 @@ class ACPHarnessSession(HarnessSession):
             if graceful and reader is not None:
                 with contextlib.suppress(BaseException):
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    if response.get("ok"):
+                        self._record_metadata(response)
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),

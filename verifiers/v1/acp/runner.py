@@ -126,7 +126,7 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> tuple[str, dict]:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -154,7 +154,7 @@ async def prompt(
             "ACP agent produced no visible reply "
             f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
         )
-    return client.visible_reply
+    return client.visible_reply, dict(response.field_meta or {})
 
 
 class ACPSession:
@@ -170,6 +170,7 @@ class ACPSession:
         self.capabilities: Any = None
         self.session_id: str | None = None
         self.is_new = True
+        self.start_metadata: dict[str, dict] = {}
 
     async def start(self, config: dict) -> None:
         command = config["command"]
@@ -201,12 +202,16 @@ class ACPSession:
             raise
         self.session_id = session.session_id
         self.is_new = True
+        self.start_metadata = {
+            "initialize": dict(initialized.field_meta or {}),
+            "new_session": dict(session.field_meta or {}),
+        }
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> tuple[str, dict[str, dict]]:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
-        reply = await prompt(
+        reply, metadata = await prompt(
             self.client,
             self.connection,
             self.capabilities,
@@ -215,9 +220,12 @@ class ACPSession:
             is_new=self.is_new,
         )
         self.is_new = False
-        return reply
+        response_metadata = {**self.start_metadata, "prompt": metadata}
+        self.start_metadata = {}
+        return reply, response_metadata
 
-    async def close(self) -> None:
+    async def close(self) -> dict[str, dict]:
+        metadata: dict[str, dict] = {}
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
@@ -225,10 +233,17 @@ class ACPSession:
                 )
                 if session_capabilities and session_capabilities.close is not None:
                     with suppress(Exception):
-                        await self.connection.close_session(session_id=self.session_id)
+                        response = await self.connection.close_session(
+                            session_id=self.session_id
+                        )
+                        field_meta = (
+                            response.field_meta if response is not None else None
+                        )
+                        metadata["close_session"] = dict(field_meta or {})
             await self.stack.aclose()
         finally:
             self._reset()
+        return metadata
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -269,14 +284,16 @@ async def serve_stream() -> None:
             try:
                 operation = request.get("operation")
                 if operation == "prompt":
+                    reply, metadata = await session.run(request["config"])
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        "reply": reply,
+                        "metadata": metadata,
                     }
                 elif operation == "shutdown":
-                    await session.close()
+                    metadata = await session.close()
                     stop = True
-                    response = {"ok": True}
+                    response = {"ok": True, "metadata": metadata}
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures
