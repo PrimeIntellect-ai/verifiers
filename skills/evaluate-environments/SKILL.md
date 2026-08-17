@@ -157,22 +157,24 @@ uv run eval my-task-v1 \
 
 ## Output and resume
 
-Default output:
+A run writes to `output_dir / run.dir` (`-o` sets `output_dir`, default `outputs`; `run.dir` defaults to the auto-generated run name):
 
 ```text
-outputs/<env>--<model>--<harness>/<uuid>/
-├── config.toml
-├── traces.jsonl
-└── eval.log
+outputs/<env>--<model>--<harness>--<short-id>/
+├── configs/eval.json
+├── logs/eval.log
+└── traces.jsonl
 ```
 
-Set an exact path with `-o`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+`configs/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
 
-Resume in place:
+Resume in place by re-running the run's own saved config with `--resume` (it re-runs only the missing/errored rollouts; any config drift from the saved run is refused):
 
 ```bash
-uv run eval --resume /path/to/run
+uv run eval @ <run-dir>/configs/eval.json --resume
 ```
+
+To overwrite a run dir and start fresh instead, use `--clean`.
 
 ## Trace inspection
 
