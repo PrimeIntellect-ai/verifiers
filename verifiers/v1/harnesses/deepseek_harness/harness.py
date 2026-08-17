@@ -26,7 +26,6 @@ PACKAGES_DIR = f"{DSH_DIR}/packages"
 DSH_BIN = f"{PACKAGES_DIR}/node_modules/.bin/dsh-acp-demo"
 NODE_ADDON_VERSION = "0.1.4"
 DEFAULT_CONTEXT_WINDOW = 262_144
-DEFAULT_MAX_TOKENS = 32_768
 ADAPTER_SOURCE = (Path(__file__).resolve().parent / "adapter.mjs").read_bytes()
 
 INSTALL = r"""
@@ -81,9 +80,14 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             "deepseek-harness: ensuring DeepSeek Harness %s is installed",
             self.config.version,
         )
+        lock = f"{DSH_DIR}.install.lock"
         guarded = (
-            f"mkdir -p {DSH_DIR} && "
-            f'"$(command -v flock || command -v lockf)" {DSH_DIR}/install.lock '
+            f'until ln -s "$$" {lock} 2>/dev/null; do '
+            f"owner=$(readlink {lock}); "
+            f'if ! kill -0 "$owner" 2>/dev/null; then '
+            f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
+            f"sleep 0.1; done; "
+            f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
             f"sh -c {shlex.quote(INSTALL)}"
         )
         install = await runtime.run(
@@ -128,8 +132,12 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
                     "transport": self.config.transport,
                     "model": ctx.model,
                     "contextWindow": DEFAULT_CONTEXT_WINDOW,
-                    "maxTokens": ctx.sampling.max_tokens or DEFAULT_MAX_TOKENS,
                     "bareToolPrefixes": bare_tool_prefixes,
+                    **(
+                        {"maxTokens": ctx.sampling.max_tokens}
+                        if ctx.sampling.max_tokens is not None
+                        else {}
+                    ),
                 },
             },
             {
