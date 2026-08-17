@@ -232,8 +232,8 @@ function responsesResponse(raw) {
       reasoning.push(...(item.content || []).map((part) => part?.text || ""));
     } else if (item.type === "message") {
       text += (item.content || [])
-        .filter((part) => part?.type === "output_text")
-        .map((part) => part.text || "")
+        .filter((part) => part?.type === "output_text" || part?.type === "refusal")
+        .map((part) => part.text || part.refusal || "")
         .join("");
     } else if (item.type === "function_call" || item.type === "custom_tool_call") {
       blocks.push({
@@ -250,9 +250,7 @@ function responsesResponse(raw) {
   return {
     blocks,
     usage: responsesUsage(raw.usage),
-    reason: raw.status === "incomplete"
-      ? { kind: "max-tokens" }
-      : finishReason(undefined, blocks),
+    reason: responsesFinishReason(raw, blocks),
     replayState: {
       transport: "responses",
       data: output,
@@ -280,7 +278,10 @@ function anthropicRequest(options) {
       for (const call of toolCallsOf(message.content)) {
         let input = {};
         try {
-          input = JSON.parse(call.arguments);
+          const parsed = JSON.parse(call.arguments);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            input = parsed;
+          }
         } catch {
           // Anthropic requires an object; malformed provider arguments stay executable as {}.
         }
@@ -398,6 +399,14 @@ function finishReason(raw, blocks) {
     return { kind: "tool-calls" };
   }
   return { kind: "stop" };
+}
+
+function responsesFinishReason(raw, blocks) {
+  if (raw.status !== "incomplete") return finishReason(undefined, blocks);
+  if (raw.incomplete_details?.reason === "content_filter") {
+    return { kind: "content-filter" };
+  }
+  return { kind: "max-tokens" };
 }
 
 function errorCode(status) {

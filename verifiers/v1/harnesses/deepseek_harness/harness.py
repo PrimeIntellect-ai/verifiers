@@ -35,13 +35,16 @@ packages=/var/tmp/vf-deepseek-harness/packages
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
 if ! command -v python3 >/dev/null || ! command -v make >/dev/null || ! command -v c++ >/dev/null; then
-    if ! command -v apt-get >/dev/null; then
+    if command -v apk >/dev/null; then
+        apk add --no-cache python3 make g++ >/dev/null
+    elif command -v apt-get >/dev/null; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 make g++ >/dev/null
+        rm -rf /var/lib/apt/lists/*
+    else
         echo "DeepSeek Harness requires Python, make, and a C++ compiler to build node-pty" >&2
         exit 1
     fi
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 make g++ >/dev/null
-    rm -rf /var/lib/apt/lists/*
 fi
 
 versions="$VF_DEEPSEEK_HARNESS_VERSION:$VF_NODE_ADDON_VERSION"
@@ -152,10 +155,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         ]
 
         for index, (name, url) in enumerate(mcp_urls.items()):
-            server_name = re.sub(r"[^A-Za-z0-9_-]", "_", name) or "server"
-            if server_name != name or len(server_name) > 32:
-                digest = hashlib.sha1(name.encode()).hexdigest()[:8]
-                server_name = f"{server_name[:23]}_{digest}"
+            server_name = _dsh_server_name(name)
             composition.append(
                 {
                     "id": f"mcp-{index}",
@@ -202,3 +202,11 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         # Keeping the config below the npm prefix lets Cordis resolve its bare
         # plugin specifiers while the trace id isolates concurrent rollouts.
         return f"{PACKAGES_DIR}/runs/{trace.id}"
+
+
+def _dsh_server_name(name: str) -> str:
+    server_name = re.sub(r"[^A-Za-z0-9_-]", "_", name)
+    if server_name != name or len(server_name) > 32:
+        digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+        server_name = f"{server_name[:23]}_{digest}"
+    return server_name
