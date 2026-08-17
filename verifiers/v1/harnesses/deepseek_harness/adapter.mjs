@@ -29,6 +29,44 @@ function toolCallsOf(blocks) {
   return blocks.filter((block) => block.type === "tool-call");
 }
 
+function toolNameMaps(tools, bareToolPrefixes) {
+  const internalToProvider = new Map();
+  const providerToInternal = new Map();
+  // DSH requires namespaced MCP names internally; only Verifiers' bare tools cross the API bare.
+  for (const tool of tools || []) {
+    const prefix = bareToolPrefixes.find((candidate) => tool.name.startsWith(candidate));
+    const providerName = prefix === undefined ? tool.name : tool.name.slice(prefix.length);
+    const existing = providerToInternal.get(providerName);
+    if (existing !== undefined && existing !== tool.name) {
+      throw new LlmError(
+        `Tools ${existing} and ${tool.name} both map to ${providerName}.`,
+        "INVALID_REQUEST",
+      );
+    }
+    internalToProvider.set(tool.name, providerName);
+    providerToInternal.set(providerName, tool.name);
+  }
+  return { internalToProvider, providerToInternal };
+}
+
+function providerOptions(options, internalToProvider) {
+  return {
+    ...options,
+    tools: options.tools?.map((tool) => ({
+      ...tool,
+      name: internalToProvider.get(tool.name) || tool.name,
+    })),
+    messages: options.messages.map((message) => ({
+      ...message,
+      content: message.content.map((block) =>
+        block.type === "tool-call"
+          ? { ...block, name: internalToProvider.get(block.name) || block.name }
+          : block,
+      ),
+    })),
+  };
+}
+
 function replayOf(message, transport) {
   const source = message.source.kind === "model" ? message.source : undefined;
   const state = source?.replayState;
@@ -232,8 +270,8 @@ function responsesResponse(raw) {
       reasoning.push(...(item.content || []).map((part) => part?.text || ""));
     } else if (item.type === "message") {
       text += (item.content || [])
-        .filter((part) => part?.type === "output_text")
-        .map((part) => part.text || "")
+        .filter((part) => part?.type === "output_text" || part?.type === "refusal")
+        .map((part) => part.text || part.refusal || "")
         .join("");
     } else if (item.type === "function_call" || item.type === "custom_tool_call") {
       blocks.push({
@@ -245,14 +283,23 @@ function responsesResponse(raw) {
     }
   }
   const reasoningText = reasoning.filter(Boolean).join("\n");
+  const incompleteReason = raw.incomplete_details?.reason || "incomplete";
   if (reasoningText) blocks.unshift({ type: "reasoning", text: reasoningText });
   if (text) blocks.splice(reasoningText ? 1 : 0, 0, { type: "text", text });
   return {
     blocks,
     usage: responsesUsage(raw.usage),
-    reason: raw.status === "incomplete"
-      ? { kind: "max-tokens" }
-      : finishReason(undefined, blocks),
+    reason: raw.status !== "incomplete"
+      ? finishReason(undefined, blocks)
+      : incompleteReason === "max_output_tokens"
+        ? { kind: "max-tokens" }
+        : {
+            kind: "error",
+            failure: {
+              message: `model stopped: ${incompleteReason}`,
+              code: String(incompleteReason).toUpperCase(),
+            },
+          },
     replayState: {
       transport: "responses",
       data: output,
@@ -280,9 +327,12 @@ function anthropicRequest(options) {
       for (const call of toolCallsOf(message.content)) {
         let input = {};
         try {
-          input = JSON.parse(call.arguments);
+          const parsed = JSON.parse(call.arguments);
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            input = parsed;
+          }
         } catch {
-          // Anthropic requires an object; malformed provider arguments stay executable as {}.
+          // Anthropic requires an object; invalid tool arguments stay executable as {}.
         }
         content.push({ type: "tool_use", id: call.id, name: call.name, input });
       }
@@ -484,7 +534,8 @@ class VerifiersAdapter extends LlmAdapter {
     const codec = CODECS[this.config.transport];
     const apiKey = process.env.DSH_INTERCEPT_KEY;
     if (!apiKey) throw new LlmError("Missing DSH_INTERCEPT_KEY.", "MISSING_CREDENTIAL");
-    const body = codec.request(options);
+    const names = toolNameMaps(options.tools, this.config.bareToolPrefixes || []);
+    const body = codec.request(providerOptions(options, names.internalToProvider));
     const url = `${this.config.endpoint.replace(/\/$/, "")}/${codec.path}`;
     const raw = await postJson(
       url,
@@ -494,10 +545,15 @@ class VerifiersAdapter extends LlmAdapter {
       options.signal,
     );
     const result = codec.response(raw);
-    if (result.blocks.length === 0) {
+    const blocks = result.blocks.map((block) =>
+      block.type === "tool-call"
+        ? { ...block, name: names.providerToInternal.get(block.name) || block.name }
+        : block,
+    );
+    if (blocks.length === 0) {
       throw new LlmError(`Model ${options.model} returned no content.`, "EMPTY_RESPONSE");
     }
-    for (const [index, block] of result.blocks.entries()) {
+    for (const [index, block] of blocks.entries()) {
       yield { type: "block-start", index, blockType: block.type };
       if (block.type === "text") {
         yield { type: "text-delta", index, text: block.text };

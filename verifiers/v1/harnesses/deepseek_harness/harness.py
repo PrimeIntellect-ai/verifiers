@@ -35,13 +35,16 @@ packages=/var/tmp/vf-deepseek-harness/packages
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
 if ! command -v python3 >/dev/null || ! command -v make >/dev/null || ! command -v c++ >/dev/null; then
-    if ! command -v apt-get >/dev/null; then
+    if command -v apt-get >/dev/null; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 make g++ >/dev/null
+        rm -rf /var/lib/apt/lists/*
+    elif command -v apk >/dev/null; then
+        apk add --no-cache python3 make g++ >/dev/null
+    else
         echo "DeepSeek Harness requires Python, make, and a C++ compiler to build node-pty" >&2
         exit 1
     fi
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 make g++ >/dev/null
-    rm -rf /var/lib/apt/lists/*
 fi
 
 versions="$VF_DEEPSEEK_HARNESS_VERSION:$VF_NODE_ADDON_VERSION"
@@ -59,7 +62,7 @@ fi
 
 
 class DeepSeekHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.1.0-rc.6", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default="0.1.0-rc.7", pattern=r"^[A-Za-z0-9._+-]+$")
     """DeepSeek Harness release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
@@ -115,6 +118,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
 
         adapter_path = f"{run_dir}/adapter.mjs"
         await runtime.write(adapter_path, ADAPTER_SOURCE)
+        bare_tool_prefixes = []
         composition = [
             {
                 "id": "llm-verifiers",
@@ -125,6 +129,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
                     "model": ctx.model,
                     "contextWindow": DEFAULT_CONTEXT_WINDOW,
                     "maxTokens": ctx.sampling.max_tokens or DEFAULT_MAX_TOKENS,
+                    "bareToolPrefixes": bare_tool_prefixes,
                 },
             },
             {
@@ -156,6 +161,8 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             if server_name != name or len(server_name) > 32:
                 digest = hashlib.sha1(name.encode()).hexdigest()[:8]
                 server_name = f"{server_name[:23]}_{digest}"
+            if not name:
+                bare_tool_prefixes.append(f"mcp__{server_name}__")
             composition.append(
                 {
                     "id": f"mcp-{index}",
