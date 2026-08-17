@@ -331,9 +331,9 @@ async def test_native_tool_interception(run_v1, harness, harness_runtime, tmp_pa
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     assert trace.info.get("native_failure_observed") is True
-    # Hermes retries empty post-tool completions from the same parent, and the trace
-    # retains each sampled attempt as a separate branch.
-    if harness.id != "hermes-agent":
+    # Claude Code and Hermes retry empty completions from the same parent, while the
+    # trace retains every sampled attempt as a separate branch.
+    if harness.id not in {"claude-code", "hermes-agent"}:
         assert trace.num_branches == 1
     assert len(trace.request_rewrites) == 2
     assert [(record.boundary, record.phase) for record in trace.request_rewrites] == [
