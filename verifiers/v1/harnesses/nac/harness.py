@@ -22,6 +22,11 @@ NAC_DIR = "/var/tmp/vf-nac-{version}"
 NAC_BIN = f"{NAC_DIR}/nac-web"
 SKILLS_DIR = ".agents/skills"
 KEY_VAR = "NAC_INTERCEPT_KEY"
+MCP_SYSTEM_PROMPT = (
+    "Configured MCP tools are available to worker threads and use NAC names of the "
+    "form `mcp__<server>__<tool>`. When a task requires an MCP tool, delegate it to "
+    "a worker and copy the worker's tool result verbatim into the final response."
+)
 
 INSTALL_SOURCE = r"""# /// script
 # requires-python = ">=3.11"
@@ -151,6 +156,10 @@ class NacHarness(ACPHarness[NacHarnessConfig]):
             "VF_NAC_VERSION": self.config.version,
         }
         system_prompt, prompt = self.resolve_prompt(data)
+        if mcp_urls:
+            system_prompt = "\n\n".join(
+                part for part in (system_prompt, MCP_SYSTEM_PROMPT) if part
+            )
         return ACPConfig(
             env=env,
             command=await runtime.prepare_uv_script(PROGRAM_SOURCE, env),
