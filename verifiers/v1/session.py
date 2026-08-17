@@ -124,6 +124,12 @@ class RolloutSession:
     """The response returned for `last_request`, replayed verbatim on a retry."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
     """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
+    rlm_request_digests: dict[str, bytes] = field(default_factory=dict)
+    """Stable RLM call ID -> body digest, used to reject identity reuse with new content."""
+    rlm_responses: dict[str, dict] = field(default_factory=dict)
+    """Completed non-streaming RLM calls, replayed across SDK and outer transport retries."""
+    rlm_inflight: dict[str, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    """Stable RLM call ID -> the response currently computing."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record

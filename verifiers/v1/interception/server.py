@@ -24,13 +24,14 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 import traceback
 from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from tempfile import SpooledTemporaryFile
-from typing import Literal
+from typing import Any, Literal
 
 from aiohttp import web
 from pydantic import ValidationError
@@ -80,6 +81,20 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+RLM_LINEAGE_VERSION_HEADER = "x-rlm-lineage-version"
+RLM_CALL_ID_HEADER = "x-rlm-call-id"
+RLM_LINEAGE_METADATA_KEY = "ai.prime.rlm/lineage-v1"
+RLM_LINEAGE_HEADERS = {
+    "session_id": "x-rlm-session-id",
+    "invocation_id": "x-rlm-invocation-id",
+    "parent_invocation_id": "x-rlm-parent-invocation-id",
+    "segment_id": "x-rlm-segment-id",
+    "call_id": RLM_CALL_ID_HEADER,
+    "parent_call_id": "x-rlm-parent-call-id",
+    "depth": "x-rlm-depth",
+    "call_kind": "x-rlm-call-kind",
+}
+_RLM_LINEAGE_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -87,6 +102,57 @@ def is_retried_request(headers: Mapping[str, str]) -> bool:
         return int(headers.get(RETRY_COUNT_HEADER, 0)) > 0
     except ValueError:
         return False
+
+
+def _rlm_lineage(headers: Mapping[str, str]) -> tuple[str | None, dict[str, Any]]:
+    version = headers.get(RLM_LINEAGE_VERSION_HEADER)
+    if version is None:
+        return None, {}
+    if version != "1":
+        logger.warning("ignoring unsupported RLM lineage version %r", version)
+        return None, {}
+    values = {name: headers.get(header) for name, header in RLM_LINEAGE_HEADERS.items()}
+    required = (
+        "session_id",
+        "invocation_id",
+        "segment_id",
+        "call_id",
+        "depth",
+        "call_kind",
+    )
+    missing = [name for name in required if values[name] is None]
+    if missing:
+        raise ValueError(f"RLM lineage is missing fields: {missing}")
+    for name in (
+        "session_id",
+        "invocation_id",
+        "parent_invocation_id",
+        "segment_id",
+        "call_id",
+        "parent_call_id",
+    ):
+        value = values[name]
+        if value is not None and _RLM_LINEAGE_ID_RE.fullmatch(value) is None:
+            raise ValueError(f"RLM lineage field {name!r} is invalid")
+    try:
+        depth = int(values["depth"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("RLM lineage depth is invalid") from error
+    if depth < 0:
+        raise ValueError("RLM lineage depth is invalid")
+    if values["call_kind"] not in ("turn", "compaction"):
+        raise ValueError("RLM lineage call kind is invalid")
+    lineage = {"version": 1, **values, "depth": depth}
+    return values["call_id"], {RLM_LINEAGE_METADATA_KEY: lineage}
+
+
+def _upstream_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Drop Verifiers-authenticated RLM control headers before the provider boundary."""
+    return {
+        name: value
+        for name, value in headers.items()
+        if not name.lower().startswith("x-rlm-")
+    }
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -324,6 +390,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -371,6 +438,7 @@ class InterceptionServer(Interception):
                 )
                 if policy_paths
                 else None,
+                metadata=metadata or {},
             )
         )
 
@@ -394,6 +462,11 @@ class InterceptionServer(Interception):
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        try:
+            rlm_call_id, call_metadata = _rlm_lineage(request.headers)
+        except ValueError as error:
+            return web.json_response(dialect.error_body(str(error)), status=400)
+        upstream_headers = _upstream_headers(request.headers)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -406,14 +479,28 @@ class InterceptionServer(Interception):
         # alone is no proof of a retry (compaction can legitimately regenerate an identical
         # request), and a stale replay would loop the rollout.
         retried = is_retried_request(request.headers)
+        if rlm_call_id:
+            prior_digest = session.rlm_request_digests.get(rlm_call_id)
+            if prior_digest is not None and prior_digest != req_hash:
+                return web.json_response(
+                    dialect.error_body(
+                        "RLM call ID was reused with a different request"
+                    ),
+                    status=400,
+                )
+            session.rlm_request_digests.setdefault(rlm_call_id, req_hash)
+        if rlm_call_id and rlm_call_id in session.rlm_responses:
+            logger.debug("intercept replay: id=%s (RLM call retry)", session.trace.id)
+            return _completion_response(session.rlm_responses[rlm_call_id])
         if (
-            retried
+            not rlm_call_id
+            and retried
             and session.last_request == req_hash
             and session.last_response is not None
         ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
-        if session.last_request == req_hash:
+        if not rlm_call_id and session.last_request == req_hash:
             # A fresh attempt supersedes the recorded response for the same body: drop it
             # so this attempt's own retries coalesce or re-run instead of replaying the
             # previous turn.
@@ -447,15 +534,29 @@ class InterceptionServer(Interception):
 
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            if retried and (inflight := session.inflight.get(req_hash)) is not None:
+            if (
+                rlm_call_id
+                and (inflight := session.rlm_inflight.get(rlm_call_id)) is not None
+            ):
+                return await coalesced(inflight)
+            if (
+                not rlm_call_id
+                and retried
+                and (inflight := session.inflight.get(req_hash)) is not None
+            ):
                 return await coalesced(inflight)
             fut = asyncio.get_running_loop().create_future()
-            session.inflight[req_hash] = fut
+            if rlm_call_id:
+                session.rlm_inflight[rlm_call_id] = fut
+            else:
+                session.inflight[req_hash] = fut
 
         def finish_inflight(completion: dict | None = None) -> None:
             if fut is None:
                 return
-            if session.inflight.get(req_hash) is fut:
+            if rlm_call_id and session.rlm_inflight.get(rlm_call_id) is fut:
+                session.rlm_inflight.pop(rlm_call_id, None)
+            elif not rlm_call_id and session.inflight.get(req_hash) is fut:
                 session.inflight.pop(req_hash, None)
             if not fut.done():
                 fut.set_result(completion)
@@ -522,6 +623,8 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
+                upstream_headers=upstream_headers,
+                call_metadata=call_metadata,
             )
 
         def serve(response: Response) -> web.Response:
@@ -529,8 +632,11 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
+            if rlm_call_id:
+                session.rlm_responses[rlm_call_id] = response.raw
+            else:
+                session.last_request = req_hash
+                session.last_response = response.raw
             finish_inflight(response.raw)
             return _completion_response(response.raw)
 
@@ -548,7 +654,7 @@ class InterceptionServer(Interception):
                         dialect,
                         body,
                         session.ctx.sampling,
-                        headers=request.headers,
+                        headers=upstream_headers,
                         session_id=session.trace.id,
                         turn=turn,
                     )
@@ -650,6 +756,7 @@ class InterceptionServer(Interception):
                     usage=call_response.usage if call_response else None,
                     error=error,
                     policy_paths=policy_paths,
+                    metadata=call_metadata,
                 )
             return serve(call_response)
         finally:
@@ -668,6 +775,8 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
+        upstream_headers: Mapping[str, str] | None = None,
+        call_metadata: dict[str, Any] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -683,7 +792,7 @@ class InterceptionServer(Interception):
                 reply = await session.client.relay(
                     dialect,
                     body,
-                    headers=request.headers,
+                    headers=upstream_headers,
                     session_id=session.trace.id,
                 )
             except OverlongPromptError as e:
@@ -926,6 +1035,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
                 policy_paths=policy_paths,
+                metadata=call_metadata,
             )
 
     async def handle_aux(
