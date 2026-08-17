@@ -520,7 +520,6 @@ class VerifiersAdapter extends LlmAdapter {
       id: model,
       name: model,
       inputModalities: ["text"],
-      context: { contextWindow: this.config.contextWindow },
       ...(this.config.maxTokens === undefined
         ? {}
         : { defaultMaxTokens: this.config.maxTokens }),

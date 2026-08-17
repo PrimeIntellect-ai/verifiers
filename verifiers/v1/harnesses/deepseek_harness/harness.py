@@ -25,7 +25,6 @@ DSH_DIR = "/var/tmp/vf-deepseek-harness"
 PACKAGES_DIR = f"{DSH_DIR}/packages"
 DSH_BIN = f"{PACKAGES_DIR}/node_modules/.bin/dsh-acp-demo"
 NODE_ADDON_VERSION = "0.1.4"
-DEFAULT_CONTEXT_WINDOW = 262_144
 ADAPTER_SOURCE = (Path(__file__).resolve().parent / "adapter.mjs").read_bytes()
 
 INSTALL = r"""
@@ -142,7 +141,6 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
                     "endpoint": endpoint,
                     "transport": self.config.transport,
                     "model": ctx.model,
-                    "contextWindow": DEFAULT_CONTEXT_WINDOW,
                     "bareToolPrefixes": bare_tool_prefixes,
                     **(
                         {"maxTokens": ctx.sampling.max_tokens}
