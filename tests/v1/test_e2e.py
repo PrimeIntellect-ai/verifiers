@@ -33,12 +33,12 @@ CHAT_PLACEMENTS = [
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
-# harness x harness runtime for the shell task: every coding agent once (null is a chat
-# loop with no shell), both local runtimes hit (subprocess only carries bash), one
-# remote row per provider.
+# harness x harness runtime for the shell task: every general-purpose coding agent once
+# (null is a chat loop with no shell), both local runtimes hit (subprocess only carries
+# bash), one remote row per provider. RLM's IPython and MCP execution path is covered by
+# the two-segment ACP continuation test, which is deterministic for its tool contract.
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
-    pair("rlm", "docker", "rlm-harness-in-docker"),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
         "docker",
