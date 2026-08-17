@@ -25,7 +25,8 @@ KEY_VAR = "NAC_INTERCEPT_KEY"
 MCP_SYSTEM_PROMPT = (
     "Configured MCP tools are available to worker threads and use NAC names of the "
     "form `mcp__<server>__<tool>`. When a task requires an MCP tool, delegate it to "
-    "a worker and copy the worker's tool result verbatim into the final response."
+    "a worker with every relevant input value from the conversation, then copy the "
+    "worker's tool result verbatim into the final response."
 )
 
 INSTALL_SOURCE = r"""# /// script
