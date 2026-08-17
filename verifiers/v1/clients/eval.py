@@ -111,9 +111,6 @@ class EvalClient(Client):
             map(str.strip, connection.lower().split(","))
         ):
             headers.pop(name, None)
-        for name in list(headers):
-            if name.lower().startswith("x-rlm-"):
-                headers.pop(name, None)
         headers.update(self.headers)
         if session_id:
             headers[SESSION_ID_HEADER] = session_id

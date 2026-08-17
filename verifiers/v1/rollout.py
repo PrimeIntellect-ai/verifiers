@@ -103,6 +103,7 @@ class Rollout:
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
+            logical_call_resolver=harness.LOGICAL_CALL_RESOLVER,
             network_policy=(
                 runtime_config
                 if isinstance(runtime_config, NetworkPolicyConfig)

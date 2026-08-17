@@ -11,6 +11,7 @@ from pydantic import Field, PositiveInt, model_validator
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harnesses.rlm.protocol import RLM_LINEAGE_RESOLVER
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -65,6 +66,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    LOGICAL_CALL_RESOLVER = RLM_LINEAGE_RESOLVER
 
     async def setup(self, runtime: Runtime) -> None:
         # Before the installer: install.sh packages the skills it finds.

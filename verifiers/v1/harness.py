@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, SandboxError, boundary
+from verifiers.v1.logical_calls import LogicalCallResolver
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
@@ -52,6 +53,8 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
+    LOGICAL_CALL_RESOLVER: ClassVar[LogicalCallResolver | None] = None
+    """Optional harness protocol for stable model-call identity and private headers."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

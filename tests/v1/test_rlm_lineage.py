@@ -8,17 +8,18 @@ import verifiers.v1 as vf
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.errors import ProviderError
-from verifiers.v1.interception.server import (
+from verifiers.v1.harnesses.rlm.protocol import (
     RLM_LINEAGE_METADATA_KEY,
-    InterceptionServer,
-    _rlm_lineage,
+    RLM_LINEAGE_RESOLVER,
 )
+from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import AssistantMessage, Response, Usage
 
 
 def _trace() -> vf.Trace:
     return vf.Trace(
+        id="trace-1",
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task",
@@ -44,6 +45,14 @@ def _lineage_headers(call_id: str = "call-1") -> dict[str, str]:
         "X-RLM-Depth": "0",
         "X-RLM-Call-Kind": "turn",
     }
+
+
+def _session(trace: vf.Trace) -> RolloutSession:
+    return RolloutSession(
+        ctx=_context(),
+        trace=trace,
+        logical_call_resolver=RLM_LINEAGE_RESOLVER,
+    )
 
 
 class _BlockingClient:
@@ -91,7 +100,7 @@ class _FailOnceClient(_BlockingClient):
         return await super().get_response(dialect, body, sampling, **kwargs)
 
 
-def test_rlm_lineage_parser_handles_parents_compaction_and_future_versions():
+def test_rlm_lineage_parser_handles_parents_compaction_and_rejects_bad_context():
     headers = httpx.Headers(
         {
             **_lineage_headers(),
@@ -102,9 +111,11 @@ def test_rlm_lineage_parser_handles_parents_compaction_and_future_versions():
         }
     )
 
-    call_id, metadata = _rlm_lineage(headers)
+    resolved = RLM_LINEAGE_RESOLVER.resolve(headers, session_id="trace-1")
+    assert resolved.call is not None
+    metadata = resolved.call.metadata
 
-    assert call_id == "call-1"
+    assert resolved.call.key == "call-1"
     assert metadata[RLM_LINEAGE_METADATA_KEY]["parent_invocation_id"] == (
         "parent-invocation"
     )
@@ -112,16 +123,26 @@ def test_rlm_lineage_parser_handles_parents_compaction_and_future_versions():
     assert metadata[RLM_LINEAGE_METADATA_KEY]["depth"] == 2
     assert metadata[RLM_LINEAGE_METADATA_KEY]["call_kind"] == "compaction"
     future = httpx.Headers({**_lineage_headers(), "X-RLM-Lineage-Version": "2"})
-    assert _rlm_lineage(future) == (None, {})
+    with pytest.raises(ValueError, match="unsupported"):
+        RLM_LINEAGE_RESOLVER.resolve(future, session_id="trace-1")
     invalid = httpx.Headers({**_lineage_headers(), "X-RLM-Depth": "not-an-int"})
     with pytest.raises(ValueError, match="depth"):
-        _rlm_lineage(invalid)
+        RLM_LINEAGE_RESOLVER.resolve(invalid, session_id="trace-1")
+    with pytest.raises(ValueError, match="does not match"):
+        RLM_LINEAGE_RESOLVER.resolve(headers, session_id="another-trace")
+
+    legacy = RLM_LINEAGE_RESOLVER.resolve(
+        httpx.Headers({"X-RLM-Depth": "2", "X-Public": "yes"}),
+        session_id="trace-1",
+    )
+    assert legacy.call is None
+    assert legacy.forward_headers == {"x-public": "yes"}
 
 
 @pytest.mark.asyncio
 async def test_rlm_call_identity_coalesces_and_records_lineage_without_forwarding_it():
     trace = _trace()
-    session = RolloutSession(ctx=_context(), trace=trace)
+    session = _session(trace)
     client = _BlockingClient()
     session.client = client
     body = {"model": "ignored", "messages": [{"role": "user", "content": "hi"}]}
@@ -153,10 +174,16 @@ async def test_rlm_call_identity_coalesces_and_records_lineage_without_forwardin
                 json={**body, "temperature": 0.5},
                 headers=headers,
             )
+            changed_metadata = await http.post(
+                f"{server.base_url}/v1/chat/completions",
+                json=body,
+                headers={**headers, "X-RLM-Depth": "1"},
+            )
 
     assert first_response.status_code == second_response.status_code == 200
     assert replay.status_code == 200
     assert reused.status_code == 400
+    assert changed_metadata.status_code == 400
     assert client.calls == 1
     assert all(not name.lower().startswith("x-rlm-") for name in client.headers)
     assert len(trace.calls) == 1
@@ -177,7 +204,7 @@ async def test_rlm_call_identity_coalesces_and_records_lineage_without_forwardin
 @pytest.mark.asyncio
 async def test_distinct_rlm_call_ids_with_identical_bodies_both_sample():
     trace = _trace()
-    session = RolloutSession(ctx=_context(), trace=trace)
+    session = _session(trace)
     client = _BlockingClient()
     client.release.set()
     session.client = client
@@ -205,9 +232,34 @@ async def test_distinct_rlm_call_ids_with_identical_bodies_both_sample():
 
 
 @pytest.mark.asyncio
-async def test_failed_rlm_call_can_retry_with_the_same_identity():
+async def test_rlm_headers_do_not_enable_identity_without_the_rlm_resolver():
     trace = _trace()
     session = RolloutSession(ctx=_context(), trace=trace)
+    client = _BlockingClient()
+    client.release.set()
+    session.client = client
+    body = {"model": "ignored", "messages": [{"role": "user", "content": "hi"}]}
+
+    async with InterceptionServer() as server:
+        secret = "rollout-secret"
+        server.sessions[secret] = session
+        headers = {"Authorization": f"Bearer {secret}", **_lineage_headers()}
+        async with httpx.AsyncClient() as http:
+            first = await http.post(
+                f"{server.base_url}/v1/chat/completions", json=body, headers=headers
+            )
+            second = await http.post(
+                f"{server.base_url}/v1/chat/completions", json=body, headers=headers
+            )
+
+    assert first.status_code == second.status_code == 200
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_rlm_call_can_retry_with_the_same_identity():
+    trace = _trace()
+    session = _session(trace)
     client = _FailOnceClient()
     client.release.set()
     session.client = client

@@ -22,6 +22,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.logical_calls import LogicalCallResolver
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -95,9 +96,17 @@ class RolloutLimits:
 
 
 @dataclass
+class LogicalCallReplay:
+    binding: tuple[str, bytes, bytes]
+    response: dict | None = None
+    inflight: "asyncio.Future[dict | None] | None" = None
+
+
+@dataclass
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
+    logical_call_resolver: LogicalCallResolver | None = None
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
     trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
@@ -124,12 +133,8 @@ class RolloutSession:
     """The response returned for `last_request`, replayed verbatim on a retry."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
     """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
-    rlm_request_digests: dict[str, bytes] = field(default_factory=dict)
-    """Stable RLM call ID -> body digest, used to reject identity reuse with new content."""
-    rlm_responses: dict[str, dict] = field(default_factory=dict)
-    """Completed non-streaming RLM calls, replayed across SDK and outer transport retries."""
-    rlm_inflight: dict[str, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Stable RLM call ID -> the response currently computing."""
+    logical_calls: dict[str, LogicalCallReplay] = field(default_factory=dict)
+    """Stable harness call identity -> request binding and replay state."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
