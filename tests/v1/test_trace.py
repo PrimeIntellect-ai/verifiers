@@ -104,16 +104,3 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
-
-
-def test_model_call_metadata_round_trips_without_affecting_branches():
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
-        calls=[vf.ModelCall(metadata={"example/lineage-v1": {"call_id": "call-1"}})],
-    )
-
-    restored = vf.WireTrace.model_validate(trace.model_dump())
-
-    assert restored.calls[0].metadata == {"example/lineage-v1": {"call_id": "call-1"}}
-    assert restored.num_branches == trace.num_branches == 0

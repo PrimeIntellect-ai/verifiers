@@ -15,15 +15,14 @@ from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import HarnessArtifact, Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-ACP_RESPONSE_METADATA_KEY = "ai.verifiers.acp/responses-v1"
 
-__all__ = ["ACP_RESPONSE_METADATA_KEY", "ACPConfig", "ACPHarness"]
+__all__ = ["ACPConfig", "ACPHarness"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
@@ -42,6 +41,8 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
+    required_capabilities: JsonObject | None = None
+    require_session_close: bool = False
     allow_empty_tool_reply: bool = False
 
 
@@ -175,6 +176,7 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_tail = bytearray()
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._metadata_bytes = 0
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -197,16 +199,28 @@ class ACPHarnessSession(HarnessSession):
     def _stderr(self) -> str:
         return self._stderr_tail.decode(errors="replace").strip()
 
-    def _record_metadata(self, response: JsonObject) -> None:
-        metadata = response.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise TypeError("ACP response metadata must be an object")
-        stored = self.trace._harness_metadata.setdefault(ACP_RESPONSE_METADATA_KEY, {})
-        if not isinstance(stored, dict):
-            raise TypeError(
-                f"trace harness metadata {ACP_RESPONSE_METADATA_KEY!r} must be an object"
+    def _record_artifacts(self, response: JsonObject) -> None:
+        artifacts = response.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            raise TypeError("ACP response artifacts must be a list")
+        parsed: list[HarnessArtifact] = []
+        metadata_bytes = 0
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                raise TypeError("ACP response artifact must be an object")
+            operation = artifact.get("operation")
+            metadata = artifact.get("metadata")
+            if not isinstance(operation, str) or not isinstance(metadata, dict):
+                raise TypeError("ACP response artifact is invalid")
+            metadata_bytes += len(json.dumps(metadata, ensure_ascii=False).encode())
+            parsed.append(
+                HarnessArtifact(protocol="acp", operation=operation, metadata=metadata)
             )
-        stored.update(metadata)
+        if self._metadata_bytes + metadata_bytes > MAX_PACKET_BYTES:
+            raise ValueError("ACP session response metadata is too large")
+        self._metadata_bytes += metadata_bytes
+        for artifact in parsed:
+            self.trace.record_harness_artifact(artifact)
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         prompt = self.config.prompt if messages is None else messages
@@ -230,6 +244,8 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "required_capabilities": self.config.required_capabilities or {},
+            "require_session_close": self.config.require_session_close,
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
         }
         async with self._lock:
@@ -250,15 +266,15 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
-        if not response.get("ok"):
-            detail = response.get("error") or "ACP session request failed"
-            if stderr := self._stderr():
-                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-            raise RuntimeError(detail)
-        self._record_metadata(response)
-        reply = response.get("reply", "")
-        if not isinstance(reply, str):
-            raise TypeError("ACP session reply must be a string")
+            if not response.get("ok"):
+                detail = response.get("error") or "ACP session request failed"
+                if stderr := self._stderr():
+                    detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+                raise RuntimeError(detail)
+            self._record_artifacts(response)
+            reply = response.get("reply", "")
+            if not isinstance(reply, str):
+                raise TypeError("ACP session reply must be a string")
         result = ProgramResult(exit_code=0, stdout=reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result
@@ -275,7 +291,7 @@ class ACPHarnessSession(HarnessSession):
                     await process.write(_packet({"operation": "shutdown"}))
                     response = await asyncio.wait_for(reader.read(), timeout=10)
                     if response.get("ok"):
-                        self._record_metadata(response)
+                        self._record_artifacts(response)
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),

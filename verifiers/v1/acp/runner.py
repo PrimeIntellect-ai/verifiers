@@ -37,6 +37,42 @@ from acp.schema import (
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
+def _metadata_contains(actual: Any, required: Any) -> bool:
+    if isinstance(required, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _metadata_contains(actual[key], value)
+            for key, value in required.items()
+        )
+    if isinstance(required, list):
+        return isinstance(actual, list) and all(value in actual for value in required)
+    return actual == required
+
+
+def require_capabilities(actual: dict, required: dict) -> None:
+    missing = [
+        name
+        for name, requirement in required.items()
+        if name not in actual or not _metadata_contains(actual[name], requirement)
+    ]
+    if missing:
+        raise RuntimeError(f"ACP agent lacks required capabilities: {missing}")
+
+
+async def run_shielded(coro: Any) -> Any:
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except BaseException:  # noqa: BLE001, S110 - re-raised from the task below
+            pass
+    if cancelled is not None:
+        raise cancelled from (None if task.cancelled() else task.exception())
+    return task.result()
+
+
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
@@ -170,7 +206,7 @@ class ACPSession:
         self.capabilities: Any = None
         self.session_id: str | None = None
         self.is_new = True
-        self.start_metadata: dict[str, dict] = {}
+        self.start_artifacts: list[dict] = []
 
     async def start(self, config: dict) -> None:
         command = config["command"]
@@ -188,8 +224,22 @@ class ACPSession:
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
+                **config.get("required_capabilities", {}),
             )
             self.capabilities = initialized.agent_capabilities
+            capability_metadata = dict(
+                getattr(self.capabilities, "field_meta", None) or {}
+            )
+            require_capabilities(
+                capability_metadata, config.get("required_capabilities", {})
+            )
+            session_capabilities = (
+                self.capabilities and self.capabilities.session_capabilities
+            )
+            if config.get("require_session_close") and not (
+                session_capabilities and session_capabilities.close is not None
+            ):
+                raise RuntimeError("ACP agent lacks required session/close capability")
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
@@ -202,12 +252,22 @@ class ACPSession:
             raise
         self.session_id = session.session_id
         self.is_new = True
-        self.start_metadata = {
-            "initialize": dict(initialized.field_meta or {}),
-            "new_session": dict(session.field_meta or {}),
-        }
+        self.start_artifacts = [
+            {
+                "operation": "initialize",
+                "metadata": dict(initialized.field_meta or {}),
+            },
+            {
+                "operation": "agent_capabilities",
+                "metadata": capability_metadata,
+            },
+            {
+                "operation": "new_session",
+                "metadata": dict(session.field_meta or {}),
+            },
+        ]
 
-    async def run(self, config: dict) -> tuple[str, dict[str, dict]]:
+    async def run(self, config: dict) -> tuple[str, list[dict]]:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -220,12 +280,15 @@ class ACPSession:
             is_new=self.is_new,
         )
         self.is_new = False
-        response_metadata = {**self.start_metadata, "prompt": metadata}
-        self.start_metadata = {}
-        return reply, response_metadata
+        artifacts = [
+            *self.start_artifacts,
+            {"operation": "prompt", "metadata": metadata},
+        ]
+        self.start_artifacts = []
+        return reply, artifacts
 
-    async def close(self) -> dict[str, dict]:
-        metadata: dict[str, dict] = {}
+    async def _close(self) -> list[dict]:
+        artifacts: list[dict] = []
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
@@ -239,11 +302,21 @@ class ACPSession:
                         field_meta = (
                             response.field_meta if response is not None else None
                         )
-                        metadata["close_session"] = dict(field_meta or {})
-            await self.stack.aclose()
+                        artifacts.append(
+                            {
+                                "operation": "close_session",
+                                "metadata": dict(field_meta or {}),
+                            }
+                        )
         finally:
-            self._reset()
-        return metadata
+            try:
+                await self.stack.aclose()
+            finally:
+                self._reset()
+        return artifacts
+
+    async def close(self) -> list[dict]:
+        return await run_shielded(self._close())
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -284,16 +357,16 @@ async def serve_stream() -> None:
             try:
                 operation = request.get("operation")
                 if operation == "prompt":
-                    reply, metadata = await session.run(request["config"])
+                    reply, artifacts = await session.run(request["config"])
                     response = {
                         "ok": True,
                         "reply": reply,
-                        "metadata": metadata,
+                        "artifacts": artifacts,
                     }
                 elif operation == "shutdown":
-                    metadata = await session.close()
+                    artifacts = await session.close()
                     stop = True
-                    response = {"ok": True, "metadata": metadata}
+                    response = {"ok": True, "artifacts": artifacts}
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures

@@ -4,6 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
@@ -172,6 +173,15 @@ class PolicyEvent(BaseModel):
     """Value-free native request paths affected by the decision."""
 
 
+@dataclass(frozen=True)
+class HarnessArtifact:
+    """Runtime-only metadata emitted by a harness protocol boundary."""
+
+    protocol: str
+    operation: str
+    metadata: dict[str, Any]
+
+
 class ModelCall(BaseModel):
     """A model call, automatically recorded at intercept time."""
 
@@ -193,9 +203,6 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    """Namespaced boundary metadata for this exchange. It is descriptive only; message
-    ancestry in `Trace.nodes` remains authoritative for branch construction."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -390,6 +397,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
+    harness_artifacts: list[HarnessArtifact] = Field(default_factory=list, exclude=True)
+    """Ordered runtime-only outputs from harness protocol boundaries."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
 
@@ -408,8 +417,20 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
-    _harness_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
-    """Runtime-only harness protocol metadata, excluded from trace serialization."""
+
+    def record_harness_artifact(self, artifact: HarnessArtifact) -> None:
+        self.harness_artifacts.append(artifact)
+
+    def get_harness_artifacts(
+        self, *, protocol: str | None = None, operation: str | None = None
+    ) -> tuple[HarnessArtifact, ...]:
+        """Return runtime-only harness artifacts in the order they were observed."""
+        return tuple(
+            artifact
+            for artifact in self.harness_artifacts
+            if (protocol is None or artifact.protocol == protocol)
+            and (operation is None or artifact.operation == operation)
+        )
 
     @property
     def reward(self) -> float:
