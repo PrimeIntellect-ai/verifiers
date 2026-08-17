@@ -44,14 +44,12 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 
 ## IDs and plugin resolution
 
-- `my-taskset` resolves an importable local package.
-- `owner/name` installs a Hub package on demand.
-- `owner/name@version` pins a Hub version.
+A plugin id names an installed package (e.g. `my-taskset`); verifiers imports it and never installs anything itself.
 
 The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
-prime eval run owner/name --env.agent.harness.id codex --env.agent.runtime.type prime
+prime eval run my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
 ```
 
 The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`

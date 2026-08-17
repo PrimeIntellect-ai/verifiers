@@ -24,7 +24,6 @@ from verifiers.v1.utils.format import (
     format_override,
     format_time,
 )
-from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
@@ -240,7 +239,7 @@ def Overview(config: EvalConfig) -> Table:
     taskset = config.env.taskset
     env_label = taskset.name if taskset.id else "no taskset"
     if config.env.id:
-        env_label = f"{env_name(config.env.id)}+{env_label}"
+        env_label = f"{config.env.id}+{env_label}"
     # One seat story when every seat resolves the same way (the common case); one
     # row per seat when they diverge (a judge on its own harness/runtime).
     runtimes = {role: getattr(config.env, role).runtime.type for role in seats}
