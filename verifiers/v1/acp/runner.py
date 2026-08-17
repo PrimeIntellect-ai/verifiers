@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.11.0"]
+# dependencies = ["agent-client-protocol==0.12.1"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -35,7 +35,6 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
 class VerifiersACPClient(Client):
@@ -43,7 +42,6 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
-        self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -51,23 +49,19 @@ class VerifiersACPClient(Client):
         self.tool_calls = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        async with self.output_changed:
-            if isinstance(update, ToolCall):
-                self.tool_calls[update.tool_call_id] = update.status or "pending"
-            elif isinstance(update, ToolCallUpdate):
-                if update.status:
-                    self.tool_calls[update.tool_call_id] = update.status
-            elif isinstance(update, AgentMessageChunk) and isinstance(
-                update.content, TextContentBlock
-            ):
-                message_id = getattr(update, "message_id", None)
-                if message_id is not None and message_id != self.message_id:
-                    self.visible_reply = ""
-                    self.message_id = message_id
-                self.visible_reply += update.content.text
-            else:
-                return
-            self.output_changed.notify_all()
+        if isinstance(update, ToolCall):
+            self.tool_calls[update.tool_call_id] = update.status or "pending"
+        elif isinstance(update, ToolCallUpdate):
+            if update.status:
+                self.tool_calls[update.tool_call_id] = update.status
+        elif isinstance(update, AgentMessageChunk) and isinstance(
+            update.content, TextContentBlock
+        ):
+            message_id = getattr(update, "message_id", None)
+            if message_id is not None and message_id != self.message_id:
+                self.visible_reply = ""
+                self.message_id = message_id
+            self.visible_reply += update.content.text
 
     async def request_permission(
         self,
@@ -148,24 +142,6 @@ async def prompt(
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
 
-    # ACP 0.11 dispatches notifications in background tasks but resolves a request
-    # response directly in its receive loop. An agent that sends its final
-    # session/update immediately before session/prompt returns can therefore wake
-    # this coroutine before the update handler has run. Wait specifically for text:
-    # a completed tool update may also arrive first and must not hide a later reply.
-    def has_visible_reply() -> bool:
-        return bool(client.visible_reply.strip())
-
-    if not has_visible_reply():
-        async with client.output_changed:
-            try:
-                await asyncio.wait_for(
-                    client.output_changed.wait_for(has_visible_reply),
-                    timeout=LATE_UPDATE_GRACE_SECONDS,
-                )
-            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-                pass
-
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
         config.get("allow_empty_tool_reply", False)
@@ -173,7 +149,7 @@ async def prompt(
         and bool(tool_statuses)
         and all(status in ("completed", "failed") for status in tool_statuses)
     )
-    if not has_visible_reply() and not completed_tool_turn:
+    if not client.visible_reply.strip() and not completed_tool_turn:
         raise RuntimeError(
             "ACP agent produced no visible reply "
             f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
