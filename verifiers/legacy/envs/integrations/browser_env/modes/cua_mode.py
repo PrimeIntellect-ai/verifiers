@@ -195,6 +195,7 @@ class CUAMode:
                 self._sandbox_request = CreateSandboxRequest(
                     name="cua-server",
                     docker_image=prebuilt_image,
+                    vm=False,
                     start_command="./cua-server-linux-x64",
                     cpu_cores=cpu_cores,
                     memory_gb=memory_gb,
@@ -207,6 +208,7 @@ class CUAMode:
                 self._sandbox_request = CreateSandboxRequest(
                     name="cua-server",
                     docker_image=docker_image,
+                    vm=False,
                     start_command="tail -f /dev/null",
                     cpu_cores=cpu_cores,
                     memory_gb=memory_gb,

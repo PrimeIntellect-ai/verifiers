@@ -59,8 +59,8 @@ class ACPResumeEnv(vf.SingleAgentEnv):
             if not first.terminated:
                 segments.append(
                     await interaction.turn(
-                        "Call `resume_recall` with the codeword from my previous "
-                        "message, then reply with exactly the tool result."
+                        "Call the tool that returns a supplied codeword with the codeword "
+                        "from my previous message, then reply with exactly the tool result."
                     )
                 )
             interaction.trace.info["acp_segments"] = [

@@ -184,7 +184,7 @@ def test_judges_reject_shared_reward_keys():
 
 
 def test_reward_name_fallback():
-    # name > id's package name > snake-cased class name (code-level judge with neither).
+    # name > id > snake-cased class name (code-level judge with neither).
     class MyQualityJudge(vf.Judge[float]):
         prompt = "{x}"
 
@@ -192,7 +192,7 @@ def test_reward_name_fallback():
         vf.ReferenceJudge().reward_name == "reference"
     )  # class-name fallback (no id set)
     assert (
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="org/my-judge@1.0.0")).reward_name
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="my-judge")).reward_name
         == "my-judge"
     )
     assert vf.ReferenceJudge(vf.ReferenceJudgeConfig(name="gold")).reward_name == "gold"

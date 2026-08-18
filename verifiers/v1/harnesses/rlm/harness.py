@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/rlm-harness.git"
+RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
@@ -29,7 +29,7 @@ RLM_STATE_DIR = ".vf-rlm"
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(default="main", min_length=1)
-    """Git ref (branch, tag, or commit) of rlm-harness to install."""
+    """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
