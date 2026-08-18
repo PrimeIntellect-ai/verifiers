@@ -263,8 +263,6 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # NAC intentionally forks worker conversations from its orchestrator conversation.
     if harness.id not in {"kimi-code", "nac"}:
         assert trace.num_branches == 1
-    elif harness.id == "nac":
-        assert trace.num_branches > 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]

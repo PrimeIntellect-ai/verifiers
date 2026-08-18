@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.15"
-# dependencies = ["agent-client-protocol==0.11.0", "httpx==0.28.1"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx==0.28.1"]
 # ///
 """Expose NAC's HTTP session API as an ACP agent."""
 
