@@ -87,28 +87,6 @@ ACP_RESUME_PLACEMENTS = [
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]
 
-# Native hook/plugin interception: Bash is the reference loop; each ACP harness below
-# must block before execution and rewrite one real result after execution.
-TOOL_INTERCEPTION_PLACEMENTS = [
-    pair("bash", "subprocess", "bash-native-tool-interception"),
-    pair("claude-code", "docker", "claude-code-native-tool-interception"),
-    pair("hermes-agent", "docker", "hermes-native-tool-interception"),
-    pair("openclaw", "docker", "openclaw-native-tool-interception"),
-    pytest.param(
-        {"id": "pi", "transport": "responses"},
-        "docker",
-        marks=[mark.pi, mark.docker],
-        id="pi-native-tool-interception",
-    ),
-]
-
-# Restricted Docker needs one row per bridge stack: shared Node, Python, and OpenClaw.
-TOOL_INTERCEPTION_RESTRICTED_PLACEMENTS = [
-    pair("claude-code", "docker", "claude-code-native-tool-interception-restricted"),
-    pair("hermes-agent", "docker", "hermes-native-tool-interception-restricted"),
-    pair("openclaw", "docker", "openclaw-native-tool-interception-restricted"),
-]
-
 # harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
@@ -288,66 +266,6 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
-
-
-@pytest.mark.e2e
-@pytest.mark.parametrize(
-    "harness,harness_runtime", TOOL_INTERCEPTION_PLACEMENTS, indirect=True
-)
-async def test_native_tool_interception(run_v1, harness, harness_runtime, tmp_path):
-    """Native hooks block, rewrite a success, and observe a failure synchronously."""
-    (trace,) = await run_v1(
-        "tool-interception",
-        harness=harness,
-        runtime={"type": harness_runtime},
-        output_dir=tmp_path,
-        max_turns=6,
-        max_tokens=8192,
-        rollout_timeout=600,
-    )
-    assert trace.ok, trace.errors
-    assert trace.stop_condition == "agent_completed"
-    assert trace.reward == 1.0
-    assert trace.info.get("native_failure_observed") is True
-    # Claude Code and Hermes retry empty completions from the same parent, while the
-    # trace retains every sampled attempt as a separate branch.
-    if harness.id not in {"claude-code", "hermes-agent"}:
-        assert trace.num_branches == 1
-    assert len(trace.request_rewrites) == 2
-    assert [(record.boundary, record.phase) for record in trace.request_rewrites] == [
-        ("tool", "before"),
-        ("tool", "after"),
-    ]
-
-
-@pytest.mark.e2e
-@pytest.mark.parametrize(
-    "harness,harness_runtime",
-    TOOL_INTERCEPTION_RESTRICTED_PLACEMENTS,
-    indirect=True,
-)
-async def test_native_tool_interception_restricted(
-    run_v1, harness, harness_runtime, tmp_path
-):
-    """Native plugins reach interception through the framework-only proxy."""
-    (trace,) = await run_v1(
-        "tool-interception",
-        harness=harness,
-        runtime={"type": harness_runtime, "allow": []},
-        output_dir=tmp_path,
-        max_turns=6,
-        max_tokens=8192,
-        rollout_timeout=600,
-    )
-    assert trace.ok, trace.errors
-    assert trace.stop_condition == "agent_completed"
-    assert trace.reward == 1.0
-    assert trace.info.get("native_failure_observed") is True
-    assert len(trace.request_rewrites) == 2
-    assert [(record.boundary, record.phase) for record in trace.request_rewrites] == [
-        ("tool", "before"),
-        ("tool", "after"),
-    ]
 
 
 @pytest.mark.e2e
