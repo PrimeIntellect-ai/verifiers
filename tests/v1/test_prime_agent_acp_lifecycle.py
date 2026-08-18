@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from verifiers.v1.acp import _record_lifecycle_status
+from verifiers.v1.harnesses.prime_agent.harness import PrimeAgentHarnessConfig
 from verifiers.v1.utils.score import read_answer_file_or_last_reply
 
 NAMESPACE = "ai.primeintellect.prime-agent"
@@ -23,7 +24,13 @@ def load_runner(monkeypatch: pytest.MonkeyPatch):
     acp = types.ModuleType("acp")
     acp.PROTOCOL_VERSION = "0.11"
     acp.Client = object
-    acp.RequestError = RuntimeError
+
+    class RequestError(RuntimeError):
+        def __init__(self, message, *, data=None):
+            super().__init__(message)
+            self.data = data
+
+    acp.RequestError = RequestError
     acp.image_block = lambda data, media_type: (data, media_type)
     acp.spawn_agent_process = None
     acp.text_block = lambda text: text
@@ -75,7 +82,15 @@ def update(runner, metadata, text=None):
     return value
 
 
-async def run_prompt(runner, client, updates, stop_reason="end_turn"):
+def tool_update(runner, metadata, status="completed"):
+    value = runner.ToolCallUpdate()
+    value.tool_call_id = "tool"
+    value.status = status
+    value.field_meta = {NAMESPACE: metadata}
+    return value
+
+
+async def run_prompt(runner, client, updates, stop_reason="end_turn", config=CONFIG):
     class Connection:
         async def prompt(self, **kwargs):
             for value in updates:
@@ -83,7 +98,7 @@ async def run_prompt(runner, client, updates, stop_reason="end_turn"):
             return types.SimpleNamespace(stop_reason=stop_reason)
 
     return await runner.prompt(
-        client, Connection(), None, "session", CONFIG, is_new=True
+        client, Connection(), None, "session", config, is_new=True
     )
 
 
@@ -120,7 +135,7 @@ async def test_only_correlated_terminal_quiescence_completes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_prompt_return_boundary_and_waiting_text_do_not_complete(monkeypatch):
+async def test_outer_timeout_bounds_waiting_text_without_terminal(monkeypatch):
     runner = load_runner(monkeypatch)
     client = runner.VerifiersACPClient()
     updates = [
@@ -264,6 +279,158 @@ async def test_terminal_error_is_not_autonomous_completion(monkeypatch):
 
     with pytest.raises(RuntimeError, match="terminal lifecycle error"):
         await run_prompt(runner, client, updates)
+
+
+def test_prime_agent_lifecycle_is_explicitly_opt_in():
+    assert PrimeAgentHarnessConfig().require_terminal_quiescence is False
+    assert (
+        PrimeAgentHarnessConfig(
+            require_terminal_quiescence=True
+        ).require_terminal_quiescence
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_agent_remains_compatible_without_lifecycle_namespace(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+    legacy_config = {**CONFIG, "lifecycle_meta_namespace": None}
+
+    result = await run_prompt(
+        runner,
+        client,
+        [update(runner, event(1), "legacy answer")],
+        config=legacy_config,
+    )
+
+    assert result == {
+        "reply": "legacy answer",
+        "stop_reason": "end_turn",
+        "lifecycle": None,
+    }
+    assert legacy_config["lifecycle_meta_namespace"] is None
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_state_persists_across_prompt_turns(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+    first = [
+        update(runner, event(1), "first answer"),
+        update(runner, event(2, "responseBoundary", outcome="result")),
+        update(
+            runner,
+            event(
+                3,
+                "terminalQuiescence",
+                outcome="result",
+                quiescence={
+                    "outstandingSubagents": 0,
+                    "remainingAutonomousContinuations": 0,
+                },
+            ),
+        ),
+    ]
+    second = [
+        update(runner, event(4, turn=2), "second answer"),
+        update(
+            runner,
+            event(5, "responseBoundary", turn=2, outcome="result"),
+        ),
+        update(
+            runner,
+            event(
+                6,
+                "terminalQuiescence",
+                turn=2,
+                outcome="result",
+                quiescence={
+                    "outstandingSubagents": 0,
+                    "remainingAutonomousContinuations": 0,
+                },
+            ),
+        ),
+    ]
+
+    first_result = await run_prompt(runner, client, first)
+    second_result = await run_prompt(runner, client, second)
+
+    assert first_result["reply"] == "first answer"
+    assert second_result["reply"] == "second answer"
+    assert second_result["lifecycle"]["promptTurnId"] == 2
+
+
+@pytest.mark.asyncio
+async def test_request_error_waits_for_correlated_terminal_error(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            async def settle():
+                await asyncio.sleep(0.01)
+                await client.session_update(
+                    "session",
+                    update(runner, event(1, "responseBoundary", outcome="error")),
+                )
+                await client.session_update(
+                    "session",
+                    update(
+                        runner,
+                        event(
+                            2,
+                            "terminalQuiescence",
+                            outcome="error",
+                            quiescence={
+                                "outstandingSubagents": 0,
+                                "remainingAutonomousContinuations": 0,
+                            },
+                        ),
+                    ),
+                )
+
+            asyncio.create_task(settle())
+            raise runner.RequestError(
+                "request failed", data={"details": "model request failed"}
+            )
+
+    with pytest.raises(RuntimeError, match="model request failed"):
+        await runner.prompt(client, Connection(), None, "session", CONFIG, is_new=True)
+    assert client.terminal_quiescence is not None
+    assert client.terminal_quiescence["outcome"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_foreign_tool_update_cannot_complete_current_turn(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+    updates = [
+        tool_update(runner, event(1, turn=0)),
+        update(runner, event(2, "responseBoundary", outcome="result")),
+        update(
+            runner,
+            event(
+                3,
+                "terminalQuiescence",
+                outcome="result",
+                quiescence={
+                    "outstandingSubagents": 0,
+                    "remainingAutonomousContinuations": 0,
+                },
+            ),
+        ),
+    ]
+    config = {**CONFIG, "allow_empty_tool_reply": True}
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            for value in updates:
+                await client.session_update("session", value)
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    with pytest.raises(RuntimeError, match="no visible reply"):
+        await runner.prompt(client, Connection(), None, "session", config, is_new=True)
 
 
 def test_lifecycle_status_is_separate_from_benchmark_reward():

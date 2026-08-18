@@ -41,6 +41,9 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9._+-]+$")
     """Prime Agent release to install, pinned for reproducibility."""
 
+    require_terminal_quiescence: bool = False
+    """Require the correlated lifecycle contract provided by compatible releases."""
+
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
@@ -174,7 +177,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             command=[wrapper],
             prompt=prompt,
             allow_empty_tool_reply=True,
-            lifecycle_meta_namespace=LIFECYCLE_META_NAMESPACE,
+            lifecycle_meta_namespace=(
+                LIFECYCLE_META_NAMESPACE
+                if self.config.require_terminal_quiescence
+                else None
+            ),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

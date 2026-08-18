@@ -129,7 +129,7 @@ class VerifiersACPClient(Client):
             return
         self.terminal_quiescence = event
 
-    def _is_answer_chunk(self, event: dict[str, Any] | None) -> bool:
+    def _is_current_turn_event(self, event: dict[str, Any] | None) -> bool:
         if self.lifecycle_namespace is None:
             return True
         return bool(
@@ -137,7 +137,11 @@ class VerifiersACPClient(Client):
             and type(event.get("promptTurnId")) is int
             and event.get("promptTurnId") == self.prompt_turn_id
             and event.get("phase") == "event"
-            and not self._NON_ANSWER_META.intersection(event)
+        )
+
+    def _is_answer_chunk(self, event: dict[str, Any] | None) -> bool:
+        return self._is_current_turn_event(event) and not (
+            event and self._NON_ANSWER_META.intersection(event)
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
@@ -145,9 +149,10 @@ class VerifiersACPClient(Client):
             event = self._lifecycle_meta(update)
             self._consume_lifecycle(event)
             if isinstance(update, ToolCall):
-                self.tool_calls[update.tool_call_id] = update.status or "pending"
+                if self._is_current_turn_event(event):
+                    self.tool_calls[update.tool_call_id] = update.status or "pending"
             elif isinstance(update, ToolCallUpdate):
-                if update.status:
+                if update.status and self._is_current_turn_event(event):
                     self.tool_calls[update.tool_call_id] = update.status
             elif (
                 isinstance(update, AgentMessageChunk)
@@ -236,12 +241,12 @@ async def prompt(
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset(config.get("lifecycle_meta_namespace"))
+    prompt_error: RequestError | None = None
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
         client.stop_reason = response.stop_reason
     except RequestError as error:
-        detail = error.data.get("details") if isinstance(error.data, dict) else None
-        raise RuntimeError(detail or str(error)) from error
+        prompt_error = error
 
     # ACP 0.11 dispatches notifications in background tasks but resolves a request
     # response directly in its receive loop. An agent that sends its final
@@ -251,7 +256,7 @@ async def prompt(
     def has_visible_reply() -> bool:
         return bool(client.visible_reply.strip())
 
-    if not has_visible_reply():
+    if prompt_error is None and not has_visible_reply():
         async with client.output_changed:
             try:
                 await asyncio.wait_for(
@@ -262,6 +267,8 @@ async def prompt(
                 pass
 
     if client.lifecycle_namespace is not None and client.terminal_quiescence is None:
+        # Do not impose a short protocol grace here: descendants can settle long after
+        # the prompt response. The owning rollout/action timeout remains the hard bound.
         async with client.output_changed:
             await client.output_changed.wait_for(
                 lambda: (
@@ -274,8 +281,12 @@ async def prompt(
     if client.lifecycle_namespace is not None and client.terminal_quiescence is None:
         raise RuntimeError(
             "Prime Agent prompt returned without correlated terminalQuiescence "
-            f"(stop_reason={response.stop_reason})"
+            f"(stop_reason={client.stop_reason})"
         )
+    if prompt_error is not None:
+        data = getattr(prompt_error, "data", None)
+        detail = data.get("details") if isinstance(data, dict) else None
+        raise RuntimeError(detail or str(prompt_error)) from prompt_error
     if (
         client.terminal_quiescence is not None
         and client.terminal_quiescence["outcome"] == "error"
@@ -285,14 +296,14 @@ async def prompt(
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
         config.get("allow_empty_tool_reply", False)
-        and response.stop_reason == "end_turn"
+        and client.stop_reason == "end_turn"
         and bool(tool_statuses)
         and all(status in ("completed", "failed") for status in tool_statuses)
     )
     if not has_visible_reply() and not completed_tool_turn:
         raise RuntimeError(
             "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+            f"(stop_reason={client.stop_reason}, tool_statuses={tool_statuses})"
         )
     return {
         "reply": client.visible_reply,
