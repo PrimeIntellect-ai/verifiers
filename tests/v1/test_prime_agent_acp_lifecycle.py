@@ -74,7 +74,7 @@ def event(sequence, phase="event", turn=1, **values):
 
 def update(runner, metadata, text=None):
     if text is None:
-        value = runner.SessionInfoUpdate()
+        value = sys.modules["acp.schema"].SessionInfoUpdate()
     else:
         content = runner.TextContentBlock()
         content.text = text
@@ -475,11 +475,40 @@ async def test_precommit_request_error_does_not_wait_for_terminal(monkeypatch):
 async def test_malformed_lifecycle_envelope_fails_promptly(monkeypatch):
     runner = load_runner(monkeypatch)
     client = runner.VerifiersACPClient()
-    malformed = runner.SessionInfoUpdate()
+    malformed = sys.modules["acp.schema"].SessionInfoUpdate()
     malformed.field_meta = {NAMESPACE: "not an object"}
 
     with pytest.raises(RuntimeError, match="metadata must be an object"):
         await run_prompt(runner, client, [malformed])
+
+
+@pytest.mark.asyncio
+async def test_ignored_update_kind_wakes_lifecycle_error_waiter(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    class IgnoredUpdate:
+        def __init__(self):
+            self.field_meta = {NAMESPACE: "not an object"}
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            await client.session_update(
+                "session", update(runner, event(1), "partial answer")
+            )
+
+            async def publish_malformed_update():
+                await asyncio.sleep(0)
+                await client.session_update("session", IgnoredUpdate())
+
+            asyncio.create_task(publish_malformed_update())
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    with pytest.raises(RuntimeError, match="metadata must be an object"):
+        await asyncio.wait_for(
+            runner.prompt(client, Connection(), None, "session", CONFIG, is_new=True),
+            timeout=0.03,
+        )
 
 
 def test_lifecycle_status_is_separate_from_benchmark_reward():

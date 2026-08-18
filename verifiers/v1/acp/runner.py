@@ -29,7 +29,6 @@ from acp.schema import (
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
-    SessionInfoUpdate,
     TextContentBlock,
     ToolCall,
     ToolCallUpdate,
@@ -175,8 +174,8 @@ class VerifiersACPClient(Client):
                     self.visible_reply = ""
                     self.message_id = message_id
                 self.visible_reply += update.content.text
-            elif not isinstance(update, SessionInfoUpdate):
-                return
+            # Lifecycle metadata can accompany update kinds we otherwise ignore.
+            # Always wake lifecycle waiters after consuming it.
             self.output_changed.notify_all()
 
     async def request_permission(
