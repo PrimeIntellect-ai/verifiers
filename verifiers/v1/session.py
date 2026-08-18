@@ -193,6 +193,7 @@ class RolloutSession:
                     break
         prepared_messages = self.prepared_messages.copy()
         prepared: set[int] = set()
+        native_prepared: set[int] = set()
         candidates: set[int] = set()
         for position in range(tail_start, len(current.messages)):
             message = current.messages[position]
@@ -222,6 +223,7 @@ class RolloutSession:
                 candidates.add(position)
                 if is_prepared:
                     prepared.add(position)
+                    native_prepared.add(position)
                 elif prepared_result is not None:
                     raise HarnessError(
                         "native tool interception did not preserve the approved result "
@@ -241,7 +243,7 @@ class RolloutSession:
         already_intercepted = candidates == prepared
         if (
             candidates
-            and already_intercepted
+            and candidates == native_prepared
             and all(
                 isinstance(current.messages[position], ToolMessage)
                 for position in candidates
@@ -489,6 +491,8 @@ class RolloutSession:
             raise HarnessError("rollout concluded during tool interception")
         candidate = request.messages[-1]
         assert isinstance(candidate, ToolMessage)
+        # Pi's transports reshape image results before the next model request, so only
+        # text has a stable identity that the hook and canonical trace can both verify.
         if (
             stopped is None
             and content == "nonempty_text"

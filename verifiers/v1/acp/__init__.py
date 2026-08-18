@@ -42,6 +42,7 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     allow_empty_tool_reply: bool = False
+    require_terminal_tool_status: bool = False
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -231,6 +232,7 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
+            "require_terminal_tool_status": self.config.require_terminal_tool_status,
         }
         async with self._lock:
             if self._closed:
