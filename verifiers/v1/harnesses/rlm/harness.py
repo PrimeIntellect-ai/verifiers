@@ -1,20 +1,26 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
-import json
 import logging
 import random
 import shlex
 from typing import Literal
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    PositiveInt,
+    field_validator,
+    model_validator,
+)
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.decorators import metric
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +31,72 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
+RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
+RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+
+
+class _ContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _UsageSnapshot(_ContractModel):
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+
+
+class _ProgrammaticToolCallSnapshot(_ContractModel):
+    python_total: int = Field(ge=0)
+    bash_total: int = Field(ge=0)
+    by_tool_python: dict[str, int]
+    by_tool_bash: dict[str, int]
+
+
+class _SupervisorSnapshot(_ContractModel):
+    subagent_calls: int = Field(ge=0)
+    active_subagent_calls: int = Field(ge=0)
+
+
+class _LimitsSnapshot(_ContractModel):
+    max_depth: int = Field(ge=0)
+    max_concurrent_subagents: int = Field(gt=0)
+    max_subagent_calls: int = Field(gt=0)
+    max_tokens: int | None = Field(default=None, gt=0)
+    summarize_at_tokens: int | None = Field(default=None, gt=0)
+    max_compactions: int | None = Field(default=None, gt=0)
+    max_tool_output_chars: int | None = Field(default=None, gt=0)
+    allow_git: bool
+
+
+class _SessionSnapshot(_ContractModel):
+    session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    last_stop_reason: str | None
+    model: str = Field(min_length=1)
+    turns: int = Field(ge=0)
+    usage: _UsageSnapshot
+    metrics: dict[str, int | float]
+    programmatic_tool_call_stats: _ProgrammaticToolCallSnapshot
+    supervisor: _SupervisorSnapshot
+    limits: _LimitsSnapshot
 
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(default="main", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
-    max_depth: int = 0
-    """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
+    max_depth: NonNegativeInt = 0
+    """Recursion depth RLM may spawn sub-harnesses to."""
+    exec_timeout: PositiveInt = 300
+    max_output: int = -1
+    max_tokens: PositiveInt | None = None
+    max_compactions: PositiveInt | None = None
+    max_concurrent_subagents: PositiveInt | None = None
+    max_subagent_calls: PositiveInt = 64
+    max_tool_output_chars: PositiveInt | None = None
+    allow_git: bool = False
+    sdk_max_retries: NonNegativeInt = 5
+    system_prompt_path: str | None = None
+    kernel_env: dict[str, str] = Field(default_factory=dict)
+    """Task variables intentionally visible to model-controlled kernel code."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
@@ -48,6 +113,22 @@ class RLMHarnessConfig(HarnessConfig):
             raise ValueError(
                 "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
             )
+        return self
+
+    @field_validator("max_output")
+    @classmethod
+    def validate_max_output(cls, value: int) -> int:
+        if value == 0 or value < -1:
+            raise ValueError("must be positive, or -1 to disable truncation")
+        return value
+
+    @model_validator(mode="after")
+    def validate_concurrency(self) -> "RLMHarnessConfig":
+        if (
+            self.max_concurrent_subagents is not None
+            and self.max_concurrent_subagents < self.max_depth
+        ):
+            raise ValueError("max_concurrent_subagents must be at least max_depth")
         return self
 
     @model_validator(mode="after")
@@ -89,19 +170,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
-    def summarize_threshold(self, task_idx: int | None) -> str:
-        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —
-        0 when unset — so a task's rollouts share one threshold). Always set — "" when disabled —
-        so the typed field, not a host var the subprocess runtime would inherit, wins."""
+    def summarize_threshold(self, task_idx: int | None) -> int | None:
+        """Resolve a fixed or per-task compaction threshold."""
         value = self.config.summarize_at_tokens
         if value is None:
-            return ""
+            return None
         if isinstance(value, tuple):
             lo, hi = value
-            return str(random.Random(task_idx or 0).randint(lo, hi))
-        return str(value)
+            return random.Random(task_idx or 0).randint(lo, hi)
+        return value
 
-    def _env(
+    def _runtime_metadata(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -109,21 +188,38 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         secret: str,
         data: TaskData,
         system_prompt: str | None,
-    ) -> dict[str, str]:
-        env = {
-            **self.config.resolved_env,
-            "RLM_BASE_URL": endpoint,
-            "RLM_API_KEY": secret,
-            "RLM_MODEL": ctx.model,
-            "RLM_MAX_DEPTH": str(self.config.max_depth),
-            "RLM_HOME": self._home(trace),
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(data.idx),
+    ) -> JsonObject:
+        max_concurrent = self.config.max_concurrent_subagents or max(
+            4, self.config.max_depth
+        )
+        payload = {
+            "session_id": trace.id,
+            "model": ctx.model,
+            "provider": {
+                "base_url": endpoint,
+                "api_key": secret,
+                "headers": {},
+                "max_retries": self.config.sdk_max_retries,
+            },
+            "policy": {
+                "max_depth": self.config.max_depth,
+                "exec_timeout": self.config.exec_timeout,
+                "max_output": self.config.max_output,
+                "max_tokens": self.config.max_tokens,
+                "summarize_at_tokens": self.summarize_threshold(data.idx),
+                "max_compactions": self.config.max_compactions,
+                "max_concurrent_subagents": max_concurrent,
+                "max_subagent_calls": self.config.max_subagent_calls,
+                "max_tool_output_chars": self.config.max_tool_output_chars,
+                "allow_git": self.config.allow_git,
+            },
+            "system_prompt_path": self.config.system_prompt_path,
+            "append_to_system_prompt": system_prompt,
+            "skills": list(self.config.builtin_skills),
+            "kernel_env": self.config.kernel_env,
+            "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
-        if system_prompt is not None:
-            env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.builtin_skills:
-            env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
-        return env
+        return {RLM_RUNTIME_METADATA_KEY: payload}
 
     async def prepare_acp(
         self,
@@ -137,29 +233,21 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
-            env=self._env(ctx, trace, endpoint, secret, data, system_prompt),
+            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
+            session_meta=self._runtime_metadata(
+                ctx, trace, endpoint, secret, data, system_prompt
+            ),
         )
 
-    @metric
-    async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
-        # RolloutRun closes the harness session before metrics, which finalizes
-        # RLM's meta.json while leaving the harness-owned state available here.
-        home = shlex.quote(self._home(trace))
-        latest = f'cat "$(ls -t {home}/sessions/*/meta.json | head -1)"'
-        result = await runtime.run(["sh", "-c", latest], {})
-        if result.exit_code != 0 or not result.stdout.strip():
-            return {}
-        try:
-            meta = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {}
-        return {
-            key: float(value)
-            for key, value in meta.get("metrics", {}).items()
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-        }
+    def acp_close_metrics(self, trace: Trace, metadata: JsonObject) -> dict[str, float]:
+        snapshot = _SessionSnapshot.model_validate(
+            metadata.get(RLM_SESSION_METADATA_KEY)
+        )
+        if snapshot.session_id != trace.id:
+            raise ValueError("RLM session snapshot does not match the rollout")
+        return {name: float(value) for name, value in snapshot.metrics.items()}
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
