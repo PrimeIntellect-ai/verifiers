@@ -2,11 +2,14 @@
 # requires-python = ">=3.11"
 # dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
 # ///
-"""The interception endpoint and secret arrive through argv rather than the environment."""
+"""The interception endpoint and secret arrive through argv rather than the environment;
+the tool-policy secret arrives over stdin so it never shows in the process cmdline."""
 
 import argparse
 import asyncio
 import json
+import os
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -139,6 +142,25 @@ async def call_mcp(
     return mcp_content_to_chat_content(result.content)
 
 
+async def run_tool_hook(
+    client: httpx.AsyncClient,
+    url: str,
+    api_key: str,
+    phase: str,
+    message: dict,
+) -> dict:
+    response = await client.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"phase": phase, "message": message},
+    )
+    response.raise_for_status()
+    decision = response.json()
+    if decision["action"] == "stop":
+        raise RuntimeError(decision["reason"])
+    return decision
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -148,11 +170,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-secret-bytes", type=int, default=0)
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    tool_interception_secret = ""
+    if args.tool_interception_secret_bytes:
+        secret_payload = sys.stdin.buffer.read(args.tool_interception_secret_bytes)
+        if len(secret_payload) != args.tool_interception_secret_bytes:
+            raise RuntimeError("interception credential handoff ended early")
+        tool_interception_secret = secret_payload.decode()
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(devnull, sys.stdin.fileno())
+        finally:
+            os.close(devnull)
     initial = []
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)
@@ -163,6 +198,11 @@ async def main() -> None:
         base_url=args.base_url,
         api_key=args.api_key,
         timeout=httpx.Timeout(None, connect=5.0),
+    )
+    tool_client = (
+        httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
+        if args.tool_interception_url
+        else None
     )
     config = json.loads(args.mcp_config or "{}")
     if config.get("mcpServers"):
@@ -187,35 +227,52 @@ async def main() -> None:
             break
         for call in message.tool_calls:
             name = call.function.name
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": "",
+                "name": name,
+            }
+            if args.tool_interception_url:
+                assert tool_client is not None
+                decision = await run_tool_hook(
+                    tool_client,
+                    args.tool_interception_url,
+                    tool_interception_secret,
+                    "before",
+                    tool_message,
+                )
+                if decision["action"] == "rewrite":
+                    messages.append(decision["message"])
+                    continue
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
             except json.JSONDecodeError as e:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                    }
-                )
-                continue
-            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
-            # assumes a dict, so reject anything else as a tool error rather than crashing.
-            if not isinstance(tool_args, dict):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                    }
-                )
-                continue
-            if name in dispatch:
-                content = await call_mcp(servers, dispatch, name, tool_args)
+                content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
             else:
-                content = f"error: unknown tool {name!r}"
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": content}
-            )
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
+                # assumes a dict, so reject anything else as a tool error rather than crashing.
+                if not isinstance(tool_args, dict):
+                    content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
+                elif name in dispatch:
+                    content = await call_mcp(servers, dispatch, name, tool_args)
+                else:
+                    content = f"error: unknown tool {name!r}"
+            tool_message["content"] = content
+            if args.tool_interception_url:
+                assert tool_client is not None
+                decision = await run_tool_hook(
+                    tool_client,
+                    args.tool_interception_url,
+                    tool_interception_secret,
+                    "after",
+                    tool_message,
+                )
+                if decision["action"] == "rewrite":
+                    tool_message = decision["message"]
+            messages.append(tool_message)
+    if tool_client is not None:
+        await tool_client.aclose()
 
 
 if __name__ == "__main__":

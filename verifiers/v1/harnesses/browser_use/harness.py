@@ -7,6 +7,7 @@ from pydantic import model_validator
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -51,6 +52,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
@@ -66,6 +68,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
@@ -94,6 +97,19 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         ]
         if not replaying_browser_prompt:
             args.append(f"--system-prompt={system_prompt}")
+        if tool_interception is not None:
+            tool_interception_url, tool_interception_secret = tool_interception
+            args.append(f"--tool-interception-url={tool_interception_url}")
+            if not runtime.supports_live_processes:
+                raise HarnessError(
+                    "browser-use tool interception requires a runtime with live "
+                    "process support"
+                )
+            tool_interception_secret_bytes = tool_interception_secret.encode()
+            args.append(
+                "--tool-interception-secret-bytes="
+                f"{len(tool_interception_secret_bytes)}"
+            )
         if self.config.cdp_url:
             args.append(f"--cdp-url={self.config.cdp_url}")
         if mcp_urls:
@@ -123,4 +139,8 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
+        if tool_interception is not None:
+            return await runtime.run_with_input(
+                [*program, *args], env, tool_interception_secret_bytes
+            )
         return await runtime.run_program([*program, *args], env)
