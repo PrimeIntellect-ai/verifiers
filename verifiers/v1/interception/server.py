@@ -58,7 +58,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import IdempotentRequest, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
 
@@ -80,6 +80,7 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -91,6 +92,11 @@ def is_retried_request(headers: Mapping[str, str]) -> bool:
 
 def _body_digest(raw: bytes) -> bytes:
     return hashlib.blake2b(raw, digest_size=16).digest()
+
+
+def _provider_idempotency_key(session_id: str, key: str) -> str:
+    value = f"{session_id}\0{key}".encode()
+    return hashlib.blake2b(value, digest_size=16).hexdigest()
 
 
 async def _request_digest(raw: bytes) -> bytes:
@@ -396,6 +402,7 @@ class InterceptionServer(Interception):
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        upstream_headers = dict(request.headers)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -408,14 +415,49 @@ class InterceptionServer(Interception):
         # alone is no proof of a retry (compaction can legitimately regenerate an identical
         # request), and a stale replay would loop the rollout.
         retried = is_retried_request(request.headers)
+        idempotent: IdempotentRequest | None = None
+        if idempotency_key := request.headers.get(IDEMPOTENCY_KEY_HEADER):
+            if streaming:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key is not supported for streaming requests"
+                    ),
+                    status=400,
+                )
+            binding = (request.path, req_hash)
+            idempotent = session.idempotent_requests.get(idempotency_key)
+            if idempotent is not None and idempotent.binding != binding:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key was reused with a different request"
+                    ),
+                    status=400,
+                )
+            if idempotent is None:
+                idempotent = IdempotentRequest(binding=binding)
+                session.idempotent_requests[idempotency_key] = idempotent
+            if idempotent.response is not None:
+                logger.debug(
+                    "intercept replay: id=%s (idempotent request)", session.trace.id
+                )
+                return _completion_response(idempotent.response)
+            upstream_headers = {
+                name: value
+                for name, value in upstream_headers.items()
+                if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
+            }
+            upstream_headers[IDEMPOTENCY_KEY_HEADER] = _provider_idempotency_key(
+                session.trace.id, idempotency_key
+            )
         if (
-            retried
+            idempotent is None
+            and retried
             and session.last_request == req_hash
             and session.last_response is not None
         ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
-        if session.last_request == req_hash:
+        if idempotent is None and session.last_request == req_hash:
             # A fresh attempt supersedes the recorded response for the same body: drop it
             # so this attempt's own retries coalesce or re-run instead of replaying the
             # previous turn.
@@ -440,7 +482,7 @@ class InterceptionServer(Interception):
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            completion = await inflight
+            completion = await asyncio.shield(inflight)
             if completion is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
@@ -449,15 +491,26 @@ class InterceptionServer(Interception):
 
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            if retried and (inflight := session.inflight.get(req_hash)) is not None:
+            if idempotent is not None and idempotent.inflight is not None:
+                return await coalesced(idempotent.inflight)
+            if (
+                idempotent is None
+                and retried
+                and (inflight := session.inflight.get(req_hash)) is not None
+            ):
                 return await coalesced(inflight)
             fut = asyncio.get_running_loop().create_future()
-            session.inflight[req_hash] = fut
+            if idempotent is not None:
+                idempotent.inflight = fut
+            else:
+                session.inflight[req_hash] = fut
 
         def finish_inflight(completion: dict | None = None) -> None:
             if fut is None:
                 return
-            if session.inflight.get(req_hash) is fut:
+            if idempotent is not None and idempotent.inflight is fut:
+                idempotent.inflight = None
+            elif session.inflight.get(req_hash) is fut:
                 session.inflight.pop(req_hash, None)
             if not fut.done():
                 fut.set_result(completion)
@@ -531,8 +584,11 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
+            if idempotent is not None:
+                idempotent.response = response.raw
+            else:
+                session.last_request = req_hash
+                session.last_response = response.raw
             finish_inflight(response.raw)
             return _completion_response(response.raw)
 
@@ -550,7 +606,7 @@ class InterceptionServer(Interception):
                         dialect,
                         body,
                         session.ctx.sampling,
-                        headers=request.headers,
+                        headers=upstream_headers,
                         session_id=session.trace.id,
                         turn=turn,
                     )

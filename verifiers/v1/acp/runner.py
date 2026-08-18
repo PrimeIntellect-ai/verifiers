@@ -195,18 +195,25 @@ class ACPSession:
         self.is_new = False
         return reply
 
-    async def close(self) -> None:
+    async def close(self) -> dict:
+        metadata: dict = {}
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )
                 if session_capabilities and session_capabilities.close is not None:
-                    with suppress(Exception):
-                        await self.connection.close_session(session_id=self.session_id)
-            await self.stack.aclose()
+                    response = await self.connection.close_session(
+                        session_id=self.session_id
+                    )
+                    if response is not None:
+                        metadata = dict(response.field_meta or {})
         finally:
-            self._reset()
+            try:
+                await self.stack.aclose()
+            finally:
+                self._reset()
+        return metadata
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -252,9 +259,9 @@ async def serve_stream() -> None:
                         "reply": await session.run(request["config"]),
                     }
                 elif operation == "shutdown":
-                    await session.close()
                     stop = True
-                    response = {"ok": True}
+                    metadata = await session.close()
+                    response = {"ok": True, "metadata": metadata}
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures

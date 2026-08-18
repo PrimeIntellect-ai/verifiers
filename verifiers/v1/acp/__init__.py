@@ -3,8 +3,9 @@
 import asyncio
 import contextlib
 import json
+import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, TypeVar
@@ -21,6 +22,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 __all__ = ["ACPConfig", "ACPHarness"]
 
@@ -50,6 +52,12 @@ class ACPHarness(Harness[ConfigT]):
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
+
+    def acp_close_metrics(
+        self, trace: Trace, metadata: JsonObject
+    ) -> Mapping[str, float]:
+        """Extract harness metrics from a successful ACP session/close response."""
+        return {}
 
     @abstractmethod
     async def prepare_acp(
@@ -253,9 +261,21 @@ class ACPHarnessSession(HarnessSession):
             return
         try:
             if graceful and reader is not None:
-                with contextlib.suppress(BaseException):
+                try:
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    if not response.get("ok"):
+                        raise RuntimeError(
+                            response.get("error") or "ACP session shutdown failed"
+                        )
+                    metadata = response.get("metadata", {})
+                    if not isinstance(metadata, dict):
+                        raise TypeError("ACP close metadata must be an object")
+                    self.trace.record_metrics(
+                        self.harness.acp_close_metrics(self.trace, metadata)
+                    )
+                except BaseException:
+                    logger.warning("ACP session shutdown failed", exc_info=True)
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
