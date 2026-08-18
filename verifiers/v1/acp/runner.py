@@ -143,7 +143,8 @@ async def prompt(
         raise RuntimeError(detail or str(error)) from error
 
     tool_statuses = list(client.tool_calls.values())
-    if any(status not in ("completed", "failed") for status in tool_statuses):
+    tools_finished = all(status in ("completed", "failed") for status in tool_statuses)
+    if config.get("require_terminal_tool_status", False) and not tools_finished:
         raise RuntimeError(
             f"ACP agent ended with unfinished tool calls: {tool_statuses}"
         )
@@ -151,6 +152,7 @@ async def prompt(
         config.get("allow_empty_tool_reply", False)
         and response.stop_reason == "end_turn"
         and bool(tool_statuses)
+        and tools_finished
     )
     if not client.visible_reply.strip() and not completed_tool_turn:
         raise RuntimeError(
