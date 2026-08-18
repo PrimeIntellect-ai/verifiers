@@ -51,6 +51,9 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    # No tool interception: Kimi Code's permission rules are static config, not a
+    # synchronous callout, and it has no plugin surface that could gate every tool
+    # or preserve a rewritten result into its next model turn.
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)

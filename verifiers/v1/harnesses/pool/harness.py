@@ -36,6 +36,8 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    # No tool interception: Pool is a closed binary without a hook or plugin
+    # surface, so nothing can synchronously gate its tool execution boundary.
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)

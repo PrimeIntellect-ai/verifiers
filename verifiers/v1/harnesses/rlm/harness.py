@@ -65,6 +65,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    # No tool interception: rlm owns its ipython loop upstream (nano-rlm) and
+    # exposes no hook surface that could gate execution or preserve a rewritten
+    # result into its next model turn.
 
     async def setup(self, runtime: Runtime) -> None:
         # Before the installer: install.sh packages the skills it finds.

@@ -22,6 +22,9 @@ class Terminus2HarnessConfig(HarnessConfig):
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
+    # No tool interception: Terminus parses keystrokes from plain assistant text
+    # (no tool calls exist to key hooks on); response-boundary rules are the
+    # pre-execution gate for text-action agents.
     # Beyond the usual host leaks, Terminus drives tmux: on the host its tmux server —
     # and the `tmux kill-server` cleanup in `launch` — would share the user's own.
 

@@ -20,6 +20,9 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+    # No tool interception: mini-swe-agent parses actions from plain assistant
+    # text (no tool calls exist to key hooks on); response-boundary rules are the
+    # pre-execution gate for text-action agents.
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)

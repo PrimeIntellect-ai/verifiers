@@ -48,6 +48,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    # No tool interception: Codex exposes no synchronous per-tool hook — approvals
+    # only fire for sandbox escalations (never in the full-access mode rollouts
+    # need) and results stream with no rewrite point before its next model turn.
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
