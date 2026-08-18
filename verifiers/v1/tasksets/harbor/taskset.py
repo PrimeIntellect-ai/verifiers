@@ -105,6 +105,23 @@ class CollectHook(BaseModel):
     timeout_sec: float = 600.0
 
 
+class Healthcheck(BaseModel):
+    """`[environment.healthcheck]`: the readiness probe Harbor runs once the
+    environment is up and before anything else touches the box.
+
+    Docker HEALTHCHECK semantics, which is what Harbor implements: failures inside
+    `start_period_sec` are a warming box rather than a broken one and never count,
+    and after it a run of `retries` consecutive failures gives up.
+    """
+
+    command: str
+    interval_sec: float = 5.0
+    timeout_sec: float = 30.0
+    start_period_sec: float = 0.0
+    start_interval_sec: float = 5.0
+    retries: int = 3
+
+
 class VerifierConfig(BaseModel):
     """The box this task's verifier wants, when it wants one of its own.
 
@@ -114,6 +131,10 @@ class VerifierConfig(BaseModel):
     image: str | None = None
     """Pullable ref from `[verifier.environment].docker_image`. None keeps the task's
     own image, which is what Harbor's fresh copy of `[environment]` resolves to."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Raw `env` of the verifier's own environment — its `[verifier.environment].env`,
+    or the fresh copy's inherited `[environment].env`. Resolved into the grading box
+    the same way the agent's box resolves its own."""
     resources: TaskResources = TaskResources()
     workdir: str | None = None
     fresh_copy: bool = False
@@ -142,6 +163,16 @@ class HarborData(TaskData):
     """Host path to the task dir; used to stage tests/ to verify."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Raw [environment.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
+    Resolved against the host environment at setup time, like `harbor run`, and applied
+    to the box itself — so the healthcheck, the harness, the agent's own commands, and
+    the verifier all see them. Only the templates are stored; the resolved values live
+    in the runtime and never reach the trace."""
+    healthcheck: Healthcheck | None = None
+    """`[environment.healthcheck]`, run after environment/ is staged and before the
+    harness is provisioned. Exhausting its retries fails setup, so the agent never
+    starts against a box that isn't ready."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -158,25 +189,76 @@ class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     async def setup(self, runtime: Runtime) -> None:
-        if not self.data.upload_environment:
-            return
-        await runtime.write(
-            "/tmp/environment.tgz",
-            make_tar(Path(self.data.task_dir) / "environment"),
-        )
-        result = await runtime.run(
-            [
-                "sh",
-                "-c",
-                "tar --no-same-owner -xzf /tmp/environment.tgz && rm /tmp/environment.tgz",
-            ],
-            {},
-        )
-        if result.exit_code:
-            raise RuntimeError(
-                f"environment setup failed (exit {result.exit_code}): "
-                f"{(result.stderr or result.stdout).strip()[-500:]}"
+        """Harbor's environment phase: variables, then `environment/`, then the
+        readiness probe — all of it before the harness is provisioned, which is where
+        Harbor puts it too (agent setup follows the healthcheck)."""
+        self._apply_env(runtime)
+        if self.data.upload_environment:
+            await runtime.write(
+                "/tmp/environment.tgz",
+                make_tar(Path(self.data.task_dir) / "environment"),
             )
+            result = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    "tar --no-same-owner -xzf /tmp/environment.tgz && rm /tmp/environment.tgz",
+                ],
+                {},
+            )
+            if result.exit_code:
+                raise RuntimeError(
+                    f"environment setup failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
+        await self._healthcheck(runtime)
+
+    def _apply_env(self, runtime: Runtime) -> None:
+        """Resolve `[environment.env]` into the box, so everything that runs there
+        afterwards inherits it: the healthcheck, harness setup and the agent's own
+        program, the collect hooks, and the verifier.
+
+        Resolved here rather than at load: templates are what the task declares and
+        what the trace records, and a host secret that never becomes task data can
+        never be serialized with it."""
+        if self.data.env:
+            runtime.env = {**runtime.env, **resolve_env(self.data.env)}
+
+    async def _healthcheck(self, runtime: Runtime) -> None:
+        """Wait for the box to report itself ready, or fail setup trying.
+
+        Docker's retry shape, as Harbor implements it: inside `start_period_sec` a
+        failure only means "not yet" and is retried at `start_interval_sec`; after it,
+        `retries` consecutive failures give up. Raising here aborts the rollout during
+        setup, so the agent never starts against a box that never came up."""
+        check = self.data.healthcheck
+        if check is None:
+            return
+        loop = asyncio.get_running_loop()
+        start_period_ends = loop.time() + check.start_period_sec
+        failures = 0
+        while True:
+            warming = loop.time() < start_period_ends
+            try:
+                result = await asyncio.wait_for(
+                    runtime.run(["sh", "-c", check.command], {}), check.timeout_sec
+                )
+            except TimeoutError:
+                detail = f"timed out after {check.timeout_sec:g}s"
+            else:
+                if result.exit_code == 0:
+                    return
+                detail = f"exit {result.exit_code}"
+            if warming:
+                await asyncio.sleep(check.start_interval_sec)
+                continue
+            failures += 1
+            if failures >= check.retries:
+                raise TaskError(
+                    f"healthcheck failed after {check.retries} consecutive "
+                    f"attempts ({detail}): {check.command}"
+                )
+            await asyncio.sleep(check.interval_sec)
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         """Run Harbor's collect hooks while the agent's box is still alive.
@@ -303,7 +385,11 @@ def verifier_box_data(data: HarborData) -> HarborData:
     Which box follows Harbor: a declared `[verifier.environment]` states its own
     image, workdir, and resources, and what it omits is the run's default; a
     fresh copy of `[environment]` keeps the task's own. The verifier's network
-    policy applies either way."""
+    policy applies either way.
+
+    Its `env` is the verifier environment's own. Its healthcheck is dropped: Harbor
+    probes the agent's environment only, and a box that exists to run `test.sh` has
+    no readiness to wait on."""
     verifier = data.verifier
     if verifier is None:
         raise TaskError(f"task {data.name!r} declares no separate verifier")
@@ -316,6 +402,8 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "resources": data.resources if fresh else verifier.resources,
             "network_allow": list(verifier.network_allow),
             "network_block": [],
+            "env": dict(verifier.env),
+            "healthcheck": None,
         }
     )
 
@@ -529,6 +617,12 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        env=environment.env,
+        healthcheck=(
+            Healthcheck(**environment.healthcheck.model_dump())
+            if environment.healthcheck is not None
+            else None
+        ),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -645,7 +739,7 @@ def parse_verifier_environment(
         )
     unsupported = [
         field
-        for field in ("healthcheck", "mcp_servers", "skills_dir", "gpu_types", "tpu")
+        for field in ("mcp_servers", "skills_dir", "gpu_types", "tpu")
         if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:
@@ -654,10 +748,20 @@ def parse_verifier_environment(
             f"{unsupported or environment.os}, which verifiers' verifier-runtime "
             "integration cannot honor"
         )
+    # Harbor probes the agent's environment only, so a healthcheck here is inert
+    # there too — inherited silently by a fresh copy, worth saying out loud when
+    # the task wrote one into `[verifier.environment]` itself.
+    if declared and environment.healthcheck is not None:
+        logger.warning(
+            "%s: [verifier.environment].healthcheck is ignored — Harbor runs the "
+            "healthcheck against the agent's environment only",
+            task_dir.name,
+        )
 
     network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
     return VerifierConfig(
         image=environment.docker_image if declared else None,
+        env=environment.env,
         # A declared environment states its own resources; what it leaves out is the
         # run's default, not the agent task's. A fresh copy is the task's environment,
         # so it keeps whatever the agent box resolved to.
@@ -676,16 +780,25 @@ def parse_verifier_environment(
     )
 
 
-def verifier_env(task: HarborData) -> dict[str, str]:
-    """Resolve templates at scoring time so host secrets are never serialized."""
-    if not task.verifier_env:
+def resolve_env(env: dict[str, str]) -> dict[str, str]:
+    """Resolve Harbor's `${VAR}` / `${VAR:-default}` templates against the host, at
+    execution time: task data carries the templates, so a resolved secret is never
+    serialized onto the trace."""
+    if not env:
         return {}
 
     # Harbor is an optional dependency, so importing this module must still work
     # for users who do not install the Harbor extra.
     from harbor.utils.env import resolve_env_vars
 
-    return resolve_env_vars(task.verifier_env)
+    return resolve_env_vars(env)
+
+
+def verifier_env(task: HarborData) -> dict[str, str]:
+    """`[verifier.env]`, resolved at scoring time. It runs on top of the box's own
+    variables (`[environment.env]`, already resolved into the runtime), which is
+    Harbor's precedence — the verifier's entry wins where both name a key."""
+    return resolve_env(task.verifier_env)
 
 
 # Downloaded task directories are immutable. Cache the current task's environment

@@ -413,14 +413,14 @@ class DockerRuntime(Runtime):
             await self._proxy.stop()
         await super().teardown()
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env = {**env, **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
         )
 
-    async def open_process(
+    async def _open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         assert self._container is not None
@@ -481,7 +481,7 @@ class DockerRuntime(Runtime):
             f"docker live process failed to start: {detail or 'PID unavailable'}"
         )
 
-    async def run_background(
+    async def _run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Detached servers survive the cut, so they need the initially permissive proxy.

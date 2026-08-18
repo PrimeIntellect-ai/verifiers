@@ -143,10 +143,16 @@ class Runtime(ABC):
     @property
     def supports_live_processes(self) -> bool:
         """Whether `open_process()` is implemented for this runtime instance."""
-        return type(self).open_process is not Runtime.open_process
+        return type(self)._open_process is not Runtime._open_process
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        self.env: dict[str, str] = {}
+        """Box-wide environment variables, applied to every program run here the way
+        the image and workdir are — for a task whose environment is declared as
+        variables rather than as files (harbor's `[environment.env]`). A caller's own
+        `env` wins on conflict. Set it before anything runs (a task's `setup`); it is
+        never serialized, so resolved secrets stay in this process."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
@@ -185,9 +191,19 @@ class Runtime(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
-    @abstractmethod
+    def exec_env(self, env: dict[str, str]) -> dict[str, str]:
+        """A caller's `env` over this box's own variables."""
+        return {**self.env, **env} if self.env else env
+
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        pass
+        """Run a short infra op in the box. Framework method — override `_run`, not
+        this: every entry point layers the box's own `env` under the caller's here,
+        so a runtime cannot forget it."""
+        return await self._run(argv, self.exec_env(env))
+
+    @abstractmethod
+    async def _run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        """Run `argv` with exactly `env`; `run` resolves the box's variables into it."""
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
@@ -210,7 +226,13 @@ class Runtime(ABC):
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        """Start a live process for a rollout-scoped harness session."""
+        """Start a live process for a rollout-scoped harness session. Framework
+        method — override `_open_process`, not this."""
+        return await self._open_process(argv, self.exec_env(env))
+
+    async def _open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
         raise NotImplementedError(
             f"{type(self).__name__} does not support live processes"
         )
@@ -220,7 +242,13 @@ class Runtime(ABC):
     ) -> None:
         """Start `argv` as a background process in the runtime (combined output to
         `log`, a path in the workspace) and return immediately. It runs until `stop()`
-        tears the runtime down. Used to host a tool server colocated with the harness."""
+        tears the runtime down. Used to host a tool server colocated with the harness.
+        Framework method — override `_run_background`, not this."""
+        await self._run_background(argv, self.exec_env(env), log)
+
+    async def _run_background(
+        self, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
         raise NotImplementedError(
             f"{type(self).__name__} does not support run_background"
         )
