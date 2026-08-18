@@ -84,8 +84,7 @@ async def launch_chat_program(
     program = await runtime.prepare_uv_script(
         source, config.resolved_env, activate=activate
     )
-    return await runtime.run_program(
-        [*program, *args],
-        env if env is not None else {**config.resolved_env},
-        stdin=stdin,
-    )
+    process_env = env if env is not None else {**config.resolved_env}
+    if stdin is not None:
+        return await runtime.run_with_input([*program, *args], process_env, stdin)
+    return await runtime.run_program([*program, *args], process_env)

@@ -35,7 +35,7 @@ from typing import Literal
 
 import httpx
 from aiohttp import web
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
@@ -48,12 +48,12 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
+    HarnessError,
     ProviderError,
     RolloutError,
     TaskError,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.tool import ToolHookRequest
 from verifiers.v1.interception.tunnel import (
     PrimeTunnelConfig,
     Tunnel,
@@ -63,7 +63,7 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Request, Response, Usage
+from verifiers.v1.types import FinishReason, Request, Response, ToolMessage, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,12 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+
+
+class ToolHookRequest(BaseModel):
+    phase: Literal["before", "after"]
+    message: ToolMessage
+    content: Literal["any", "nonempty_text"] = "any"
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -398,20 +404,37 @@ class InterceptionServer(Interception):
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
-        if session.released:
-            return web.json_response({"error": "rollout concluded"}, status=409)
-        if session.stopped:
-            return web.json_response(
-                {"action": "stop", "reason": session.trace.stop_condition}
-            )
         try:
-            hook = ToolHookRequest.model_validate_json(await request.read())
-            return web.json_response(
-                await session.handle_tool(hook.phase, hook.message)
+            async with session.tool_interception_lock:
+                if session.released:
+                    return web.json_response(
+                        {"error": "rollout concluded"}, status=409
+                    )
+                if session.stopped:
+                    return web.json_response(
+                        {"action": "stop", "reason": session.trace.stop_condition}
+                    )
+                if session.fatal_error is not None:
+                    return web.json_response(
+                        {"error": str(session.fatal_error)}, status=409
+                    )
+                hook = ToolHookRequest.model_validate_json(await request.read())
+                decision = await session.handle_tool(
+                    hook.phase,
+                    hook.message,
+                    hook.content,
+                )
+            return web.json_response(decision)
+        except Exception as error:  # noqa: BLE001 - malformed native-hook traffic is fatal
+            failure = (
+                error
+                if isinstance(error, RolloutError)
+                else HarnessError(
+                    f"tool interception failed: {type(error).__name__}: {error}"
+                )
             )
-        except RolloutError as error:
-            session.error = error
-            return web.json_response({"error": str(error)}, status=400)
+            session.fatal_error = failure
+            return web.json_response({"error": str(failure)}, status=400)
 
     def record_call(
         self,

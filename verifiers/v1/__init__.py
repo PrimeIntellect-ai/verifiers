@@ -105,7 +105,6 @@ from verifiers.v1.trace import (
     TimeSpan,
     TimeSplit,
     Timing,
-    ToolPolicyEvent,
     Trace,
     TraceTask,
     VersionInfo,
@@ -264,7 +263,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "reward",
     # interception
     "InterceptRecord",
-    "ToolPolicyEvent",
     # errors
     "RolloutError",
     "EnvError",
