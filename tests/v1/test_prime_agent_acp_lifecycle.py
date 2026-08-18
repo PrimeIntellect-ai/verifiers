@@ -294,6 +294,12 @@ def test_prime_agent_lifecycle_is_explicitly_opt_in():
     )
 
 
+@pytest.mark.parametrize("version", [".", "..", "+", "-unsafe"])
+def test_prime_agent_version_rejects_path_like_values(version):
+    with pytest.raises(ValueError):
+        PrimeAgentHarnessConfig(version=version)
+
+
 @pytest.mark.asyncio
 async def test_legacy_agent_remains_compatible_without_lifecycle_namespace(monkeypatch):
     runner = load_runner(monkeypatch)

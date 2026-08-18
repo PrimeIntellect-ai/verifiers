@@ -33,12 +33,15 @@ prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_VERSION"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
-curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" | sh
+installer="$(mktemp "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+trap 'rm -f "$installer"' EXIT
+curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" -o "$installer"
+sh "$installer"
 """
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
     """Prime Agent release to install, pinned for reproducibility."""
 
     require_terminal_quiescence: bool = False
