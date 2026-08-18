@@ -6,12 +6,14 @@ import logging
 import re
 import shlex
 from collections import Counter
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -22,9 +24,11 @@ logger = logging.getLogger(__name__)
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "1.2.0"
+codexVersion = "0.147.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
+hookSource = Path(__file__).with_name("tool_hook.mjs").read_text()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -38,7 +42,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.147.0", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=codexVersion, pattern=r"^[A-Za-z0-9._+-]+$")
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -48,6 +52,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -207,3 +212,94 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        if self.config.version != codexVersion:
+            raise HarnessError(
+                f"Codex tool interception is verified only for version {codexVersion}"
+            )
+
+        codexConfig = json.loads(config.env["CODEX_CONFIG"])
+        features = codexConfig.setdefault("features", {})
+        features["code_mode"] = False
+        features["unified_exec"] = False
+        codexConfig["shell_environment_policy"] = {
+            "exclude": ["^VF_CODEX_TOOL_URL$", "^VF_CODEX_TOOL_SECRET$"]
+        }
+        config.env["CODEX_CONFIG"] = json.dumps(codexConfig)
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        config.env["VF_CODEX_TOOL_URL"] = url
+        config.env["VF_CODEX_TOOL_SECRET"] = secret
+
+        home = config.env["CODEX_HOME"]
+        hooksPath = f"{home}/hooks.json"
+        command = shlex.join(
+            [f"{NODE_BIN_DIR}/node", "--input-type=module", "--eval", hookSource]
+        )
+        handler = {"type": "command", "command": command, "timeout": 35}
+        hooks = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [handler]}],
+                "PostToolUse": [{"hooks": [handler]}],
+            }
+        }
+        await runtime.write(hooksPath, json.dumps(hooks).encode())
+        resolved = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'cd "$(dirname "$1")" && printf "%s/%s\\n" "$(pwd -P)" "$(basename "$1")"',
+                "resolve-hook-path",
+                hooksPath,
+            ],
+            {},
+        )
+        if resolved.exit_code != 0:
+            raise RuntimeError(
+                f"failed to resolve Codex hook path: {resolved.stderr.strip()[-500:]}"
+            )
+        resolvedHooksPath = resolved.stdout.strip()
+
+        states = []
+        for event in ("pre_tool_use", "post_tool_use"):
+            identity = {
+                "event_name": event,
+                "hooks": [
+                    {
+                        "async": False,
+                        "command": command,
+                        "timeout": 35,
+                        "type": "command",
+                    }
+                ],
+            }
+            canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+            trustedHash = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+            key = f"{resolvedHooksPath}:{event}:0:0"
+            states.append(
+                f"[hooks.state.{json.dumps(key)}]\n"
+                f"trusted_hash = {json.dumps(trustedHash)}\n"
+            )
+        statePayload = ("\n" + "\n".join(states)).encode()
+        result = await runtime.run_with_input(
+            [
+                "sh",
+                "-c",
+                'head -c "$1" >> "$2"',
+                "append-hook-state",
+                str(len(statePayload)),
+                f"{home}/config.toml",
+            ],
+            {},
+            statePayload,
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"failed to trust Codex interception hooks: {result.stderr.strip()[-500:]}"
+            )

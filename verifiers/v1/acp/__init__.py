@@ -43,6 +43,7 @@ class ACPConfig:
     session_meta: JsonObject | None = None
     allow_empty_tool_reply: bool = False
     require_terminal_tool_status: bool = False
+    toolInterception: tuple[str, str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -73,10 +74,7 @@ class ACPHarness(Harness[ConfigT]):
         url: str,
         secret: str,
     ) -> None:
-        raise HarnessError(
-            f"harness {self.config.id!r} advertises tool interception without "
-            "configuring a native hook"
-        )
+        """Install an adapter bridge when the agent cannot use the ACP capability directly."""
 
     async def session(
         self,
@@ -97,6 +95,7 @@ class ACPHarness(Harness[ConfigT]):
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
         if tool_interception is not None:
+            config.toolInterception = tool_interception
             await self.configure_tool_interception(config, runtime, *tool_interception)
         return ACPHarnessSession(
             self,
@@ -233,6 +232,14 @@ class ACPHarnessSession(HarnessSession):
             "session_meta": self.config.session_meta or {},
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
             "require_terminal_tool_status": self.config.require_terminal_tool_status,
+            "toolInterception": (
+                {
+                    "url": self.config.toolInterception[0],
+                    "secret": self.config.toolInterception[1],
+                }
+                if self.config.toolInterception is not None
+                else None
+            ),
         }
         async with self._lock:
             if self._closed:

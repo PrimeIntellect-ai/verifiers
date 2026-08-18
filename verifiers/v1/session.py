@@ -424,6 +424,8 @@ class RolloutSession:
         phase: str,
         message: ToolMessage,
         content: str = "any",
+        resultPrefix: str = "",
+        resultSuffix: str = "",
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
         leaves = graph.leaves(self.trace)
@@ -491,17 +493,18 @@ class RolloutSession:
             raise HarnessError("rollout concluded during tool interception")
         candidate = request.messages[-1]
         assert isinstance(candidate, ToolMessage)
-        # Pi's transports reshape image results before the next model request, so only
-        # text has a stable identity that the hook and canonical trace can both verify.
-        if (
-            stopped is None
-            and content == "nonempty_text"
-            and (phase != "before" or candidate != message)
-            and (not isinstance(candidate.content, str) or not candidate.content)
-        ):
-            raise HarnessError(
-                "this native hook can only preserve non-empty text tool results"
-            )
+        # A native hook may approve only replacements its harness can preserve exactly.
+        if stopped is None:
+            if content == "none" and candidate != message:
+                raise HarnessError("this native hook cannot replace tool results")
+            if (
+                content == "nonempty_text"
+                and (phase != "before" or candidate != message)
+                and (not isinstance(candidate.content, str) or not candidate.content)
+            ):
+                raise HarnessError(
+                    "this native hook can only preserve non-empty text tool results"
+                )
         self.trace.request_rewrites.extend(records)
         if stopped is not None:
             results = {
@@ -527,7 +530,16 @@ class RolloutSession:
         if phase == "before" and candidate == message:
             self.prepared_tool_results.setdefault(tool_call, None)
             return {"action": "allow"}
-        self.prepared_tool_results[tool_call] = candidate
+        delivered = candidate
+        if phase == "before" and (resultPrefix or resultSuffix):
+            if not isinstance(candidate.content, str):
+                raise HarnessError("native pre-tool result framing requires text")
+            delivered = candidate.model_copy(
+                update={
+                    "content": f"{resultPrefix}{candidate.content.strip()}{resultSuffix}"
+                }
+            )
+        self.prepared_tool_results[tool_call] = delivered
         if candidate != message:
             return {
                 "action": "rewrite",

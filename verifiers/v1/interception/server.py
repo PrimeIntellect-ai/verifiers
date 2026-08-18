@@ -85,7 +85,9 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 class ToolHookRequest(BaseModel):
     phase: Literal["before", "after"]
     message: ToolMessage
-    content: Literal["any", "nonempty_text"] = "any"
+    content: Literal["any", "none", "nonempty_text"] = "any"
+    resultPrefix: str = ""
+    resultSuffix: str = ""
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -327,6 +329,8 @@ class InterceptionServer(Interception):
                     hook.phase,
                     hook.message,
                     hook.content,
+                    hook.resultPrefix,
+                    hook.resultSuffix,
                 )
             return web.json_response(decision)
         except Exception as error:  # noqa: BLE001 - malformed native-hook traffic is fatal
