@@ -75,8 +75,13 @@ class VerifiersACPClient(Client):
         field_meta = getattr(update, "field_meta", None)
         if not isinstance(field_meta, dict):
             return None
-        event = field_meta.get(self.lifecycle_namespace)
-        return event if isinstance(event, dict) else None
+        if self.lifecycle_namespace not in field_meta:
+            return None
+        event = field_meta[self.lifecycle_namespace]
+        if not isinstance(event, dict):
+            self.lifecycle_error = "Prime Agent lifecycle metadata must be an object"
+            return None
+        return event
 
     def _consume_lifecycle(self, event: dict[str, Any] | None) -> None:
         if event is None:
@@ -94,7 +99,13 @@ class VerifiersACPClient(Client):
             return
         phase = event.get("phase")
         if phase == "responseBoundary":
-            if event.get("outcome") not in ("result", "error"):
+            outcome = event.get("outcome")
+            terminal_expected = event.get("terminalQuiescenceExpected")
+            if (
+                outcome not in ("result", "error")
+                or type(terminal_expected) is not bool
+                or (outcome == "result" and not terminal_expected)
+            ):
                 self.lifecycle_error = "Prime Agent responseBoundary is malformed"
             elif self.response_boundary is not None:
                 self.lifecycle_error = "Prime Agent emitted duplicate responseBoundary"
@@ -266,7 +277,38 @@ async def prompt(
             except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
                 pass
 
-    if client.lifecycle_namespace is not None and client.terminal_quiescence is None:
+    if (
+        client.lifecycle_namespace is not None
+        and prompt_error is not None
+        and client.response_boundary is None
+        and client.lifecycle_error is None
+    ):
+        # Prime drains its boundary notification before returning a request error,
+        # while ACP 0.11 dispatches that notification in a background task.
+        async with client.output_changed:
+            try:
+                await asyncio.wait_for(
+                    client.output_changed.wait_for(
+                        lambda: (
+                            client.response_boundary is not None
+                            or client.lifecycle_error is not None
+                        )
+                    ),
+                    timeout=LATE_REPLY_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                pass
+
+    terminal_expected = prompt_error is None or bool(
+        client.response_boundary
+        and client.response_boundary.get("terminalQuiescenceExpected") is True
+    )
+    if (
+        client.lifecycle_namespace is not None
+        and terminal_expected
+        and client.terminal_quiescence is None
+        and client.lifecycle_error is None
+    ):
         # Do not impose a short protocol grace here: descendants can settle long after
         # the prompt response. The owning rollout/action timeout remains the hard bound.
         async with client.output_changed:
@@ -278,7 +320,11 @@ async def prompt(
             )
     if client.lifecycle_error is not None:
         raise RuntimeError(client.lifecycle_error)
-    if client.lifecycle_namespace is not None and client.terminal_quiescence is None:
+    if (
+        client.lifecycle_namespace is not None
+        and terminal_expected
+        and client.terminal_quiescence is None
+    ):
         raise RuntimeError(
             "Prime Agent prompt returned without correlated terminalQuiescence "
             f"(stop_reason={client.stop_reason})"
@@ -308,6 +354,7 @@ async def prompt(
     return {
         "reply": client.visible_reply,
         "stop_reason": client.stop_reason,
+        "response_boundary": client.response_boundary,
         "lifecycle": client.terminal_quiescence,
     }
 
@@ -440,6 +487,7 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                     "stop_reason": session.client.stop_reason,
+                    "response_boundary": session.client.response_boundary,
                     "lifecycle": session.client.terminal_quiescence,
                 }
             write_packet(sys.stdout.buffer, response)

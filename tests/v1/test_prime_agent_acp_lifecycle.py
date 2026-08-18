@@ -61,12 +61,15 @@ def load_runner(monkeypatch: pytest.MonkeyPatch):
 
 
 def event(sequence, phase="event", turn=1, **values):
-    return {
+    metadata = {
         "promptTurnId": turn,
         "eventSequence": sequence,
         "phase": phase,
         **values,
     }
+    if phase == "responseBoundary":
+        metadata.setdefault("terminalQuiescenceExpected", True)
+    return metadata
 
 
 def update(runner, metadata, text=None):
@@ -307,6 +310,7 @@ async def test_legacy_agent_remains_compatible_without_lifecycle_namespace(monke
     assert result == {
         "reply": "legacy answer",
         "stop_reason": "end_turn",
+        "response_boundary": None,
         "lifecycle": None,
     }
     assert legacy_config["lifecycle_meta_namespace"] is None
@@ -369,7 +373,7 @@ async def test_request_error_waits_for_correlated_terminal_error(monkeypatch):
     class Connection:
         async def prompt(self, **kwargs):
             async def settle():
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0)
                 await client.session_update(
                     "session",
                     update(runner, event(1, "responseBoundary", outcome="error")),
@@ -433,10 +437,56 @@ async def test_foreign_tool_update_cannot_complete_current_turn(monkeypatch):
         await runner.prompt(client, Connection(), None, "session", config, is_new=True)
 
 
+@pytest.mark.asyncio
+async def test_precommit_request_error_does_not_wait_for_terminal(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            async def publish_boundary():
+                await asyncio.sleep(0)
+                await client.session_update(
+                    "session",
+                    update(
+                        runner,
+                        event(
+                            1,
+                            "responseBoundary",
+                            outcome="error",
+                            terminalQuiescenceExpected=False,
+                        ),
+                    ),
+                )
+
+            asyncio.create_task(publish_boundary())
+            raise runner.RequestError(
+                "request failed", data={"details": "admission failed"}
+            )
+
+    with pytest.raises(RuntimeError, match="admission failed"):
+        await runner.prompt(client, Connection(), None, "session", CONFIG, is_new=True)
+    assert client.response_boundary is not None
+    assert client.response_boundary["terminalQuiescenceExpected"] is False
+    assert client.terminal_quiescence is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_lifecycle_envelope_fails_promptly(monkeypatch):
+    runner = load_runner(monkeypatch)
+    client = runner.VerifiersACPClient()
+    malformed = runner.SessionInfoUpdate()
+    malformed.field_meta = {NAMESPACE: "not an object"}
+
+    with pytest.raises(RuntimeError, match="metadata must be an object"):
+        await run_prompt(runner, client, [malformed])
+
+
 def test_lifecycle_status_is_separate_from_benchmark_reward():
     trace = types.SimpleNamespace(
         info={}, rewards={"benchmark": 0.75}, stop_condition=None
     )
+    boundary = event(8, "responseBoundary", turn=4, outcome="result")
     terminal = event(
         9,
         "terminalQuiescence",
@@ -451,6 +501,7 @@ def test_lifecycle_status_is_separate_from_benchmark_reward():
             "ok": True,
             "reply": "main answer",
             "stop_reason": "max_turn_requests",
+            "response_boundary": boundary,
             "lifecycle": terminal,
         },
     )
@@ -460,6 +511,7 @@ def test_lifecycle_status_is_separate_from_benchmark_reward():
         "stop_reason": "max_turn_requests",
         "infrastructure_status": "ok",
         "autonomous_completion": True,
+        "response_boundary": boundary,
         "terminal_quiescence": terminal,
     }
     assert trace.info["acp_answer_fallback"] == "main answer"

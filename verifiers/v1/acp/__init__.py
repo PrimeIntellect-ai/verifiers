@@ -123,14 +123,17 @@ def _record_lifecycle_status(
 ) -> None:
     """Record agent lifecycle as infrastructure status, never benchmark reward."""
     stop_reason = response.get("stop_reason")
+    response_boundary = response.get("response_boundary")
     lifecycle = response.get("lifecycle")
     if stop_reason is not None and not isinstance(stop_reason, str):
         raise TypeError("ACP stop reason must be a string or null")
+    if response_boundary is not None and not isinstance(response_boundary, dict):
+        raise TypeError("ACP response boundary must be an object or null")
     if lifecycle is not None and not isinstance(lifecycle, dict):
         raise TypeError("ACP lifecycle status must be an object or null")
     infrastructure_ok = response.get("ok") is True
     status = {
-        "prompt_turn_id": lifecycle.get("promptTurnId") if lifecycle else None,
+        "prompt_turn_id": (lifecycle or response_boundary or {}).get("promptTurnId"),
         "stop_reason": stop_reason,
         "infrastructure_status": "ok" if infrastructure_ok else "error",
         "autonomous_completion": bool(
@@ -139,6 +142,7 @@ def _record_lifecycle_status(
             and lifecycle.get("phase") == "terminalQuiescence"
             and lifecycle.get("outcome") == "result"
         ),
+        "response_boundary": response_boundary,
         "terminal_quiescence": lifecycle,
     }
     trace.info.setdefault("acp_lifecycle", {}).setdefault(namespace, []).append(status)
