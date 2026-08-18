@@ -44,6 +44,9 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
     """Prime Agent release to install, pinned for reproducibility."""
 
+    autonomous: bool = True
+    """Run Prime Agent in autonomous mode unless an evaluation opts out."""
+
     require_terminal_quiescence: bool = False
     """Require the correlated lifecycle contract provided by compatible releases."""
 
@@ -154,6 +157,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             f"{root}/daemon.sock",
             "--offline",
         ]
+        if self.config.autonomous:
+            args.append("--autonomous")
         for skill in self.config.skills:
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:

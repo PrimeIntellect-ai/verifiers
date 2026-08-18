@@ -284,7 +284,9 @@ async def test_terminal_error_is_not_autonomous_completion(monkeypatch):
         await run_prompt(runner, client, updates)
 
 
-def test_prime_agent_lifecycle_is_explicitly_opt_in():
+def test_prime_agent_eval_defaults_to_autonomous_with_lifecycle_opt_in():
+    assert PrimeAgentHarnessConfig().autonomous is True
+    assert PrimeAgentHarnessConfig(autonomous=False).autonomous is False
     assert PrimeAgentHarnessConfig().require_terminal_quiescence is False
     assert (
         PrimeAgentHarnessConfig(
