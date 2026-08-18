@@ -8,10 +8,6 @@ from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarnessConfig,
 )
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
-from verifiers.v1.harnesses.deepseek_harness import (
-    DeepSeekHarness,
-    DeepSeekHarnessConfig,
-)
 from verifiers.v1.harnesses.hermes_agent import (
     HermesAgentHarness,
     HermesAgentHarnessConfig,
@@ -37,8 +33,6 @@ __all__ = [
     "ClaudeCodeHarnessConfig",
     "CodexHarness",
     "CodexHarnessConfig",
-    "DeepSeekHarness",
-    "DeepSeekHarnessConfig",
     "HermesAgentHarness",
     "HermesAgentHarnessConfig",
     "KimiCodeHarness",
