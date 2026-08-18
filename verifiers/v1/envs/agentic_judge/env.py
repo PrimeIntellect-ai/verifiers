@@ -137,13 +137,15 @@ class JudgeTask(vf.Task):
         solution: vf.Trace,
         config: "JudgeTaskConfig",
         share_runtime: bool = True,
+        artifacts: dict[str, bytes | None] | None = None,
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
         `share_runtime` selects both the workspace note and artifact transport. In
         the solver's box the published artifacts are already on disk, so none
-        travel; a fresh box gets the collected set, restored by `setup` at the
-        paths they had.
+        travel; a fresh box gets `artifacts` — the set the env collected off the
+        solver's box before tearing it down — restored by `setup` at the paths
+        they had.
         """
         solved = solution.task.data
         files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
@@ -170,7 +172,7 @@ class JudgeTask(vf.Task):
                 network_block=solved.network_block,
             ),
             files=files,
-            artifacts={} if share_runtime else solution.state.artifacts,
+            artifacts={} if share_runtime else dict(artifacts or {}),
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -342,9 +344,23 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
     """Judge only collected artifacts in a fresh box with the solver's policy."""
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task)
-        if not solution.ok:
-            raise RuntimeError("the solver's rollout failed, so the judge never ran")
+        # The env owns the solver's box so the artifacts can be taken off it after
+        # the task finalized and before it is destroyed. Collecting here — not in a
+        # task's `finalize` — is what makes the transfer work for any task that
+        # declares paths or writes to the convention dir.
+        async with agents.solver.provision(task) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            if not solution.ok:
+                raise RuntimeError(
+                    "the solver's rollout failed, so the judge never ran"
+                )
+            # A task that published its own set (harbor collects behind its hooks)
+            # already tarred this box; re-collecting would move the same bytes twice.
+            artifacts = solution.state.artifacts or await vf.collect(
+                box, task.data.artifacts
+            )
         await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+            JudgeTask.from_trace(
+                solution, self.config.task, share_runtime=False, artifacts=artifacts
+            )
         )
