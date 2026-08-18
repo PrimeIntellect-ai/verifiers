@@ -48,7 +48,6 @@ AGENTIC_PLACEMENTS = [
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
-    pair("deepseek-harness", "docker", "dsh-agent-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -84,7 +83,6 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    pair("deepseek-harness", "docker", "dsh-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]

@@ -49,9 +49,6 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "hermes_agent: v1 e2e cases on the hermes-agent harness"
     )
-    config.addinivalue_line(
-        "markers", "deepseek_harness: v1 e2e cases on the deepseek-harness harness"
-    )
 
 
 @pytest.fixture
