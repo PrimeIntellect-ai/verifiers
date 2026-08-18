@@ -22,6 +22,7 @@ PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
 PROVIDER = "intercept"
+LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
@@ -173,6 +174,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             command=[wrapper],
             prompt=prompt,
             allow_empty_tool_reply=True,
+            lifecycle_meta_namespace=LIFECYCLE_META_NAMESPACE,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
