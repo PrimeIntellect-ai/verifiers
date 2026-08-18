@@ -5,17 +5,26 @@ import json
 import logging
 import secrets
 import shlex
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
+from verifiers.v1.interception.tool import install_tool_hook
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+OPENCLAW_VERSION = "2026.7.1-2"
+TOOL_INTERCEPTION_PLUGIN_ID = "verifiers-tool-interception"
+TOOL_INTERCEPTION_SOURCE = (
+    Path(__file__).with_name("tool_interception.mjs").read_bytes()
+)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -82,7 +91,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: str = Field(default="2026.7.1-2", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=OPENCLAW_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """OpenClaw release to install, pinned for reproducibility."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
@@ -92,6 +101,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         if not hasattr(self, "_staged_skills_dir"):
@@ -232,6 +242,62 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        # The plugin depends on this release's before_tool_call and tool-result
+        # middleware contracts and on how it renders results into model requests.
+        if self.config.version != OPENCLAW_VERSION:
+            raise HarnessError(
+                "OpenClaw tool interception is verified only for version "
+                f"{OPENCLAW_VERSION}"
+            )
+        config.require_terminal_tool_status = True
+        # The plugin's fetch runs in OpenClaw's bundled Node; under restricted
+        # networking it reaches interception only through the env proxy.
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        state_dir = config.env["OPENCLAW_STATE_DIR"]
+        plugin_dir = f"{state_dir}/tool-interception"
+        manifest = {
+            "id": TOOL_INTERCEPTION_PLUGIN_ID,
+            "name": "Verifiers tool interception",
+            "description": "Routes native tool calls through the rollout policy.",
+            "activation": {"onStartup": True},
+            "contracts": {"agentToolResultMiddleware": ["openclaw"]},
+            "configSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+        }
+        config.env.update(
+            await install_tool_hook(
+                runtime,
+                f"{plugin_dir}/index.mjs",
+                TOOL_INTERCEPTION_SOURCE,
+                url,
+                secret,
+            )
+        )
+        await runtime.write(
+            f"{plugin_dir}/openclaw.plugin.json", json.dumps(manifest).encode()
+        )
+        config_path = config.env["OPENCLAW_CONFIG_PATH"]
+        openclaw = json.loads(await runtime.read(config_path))
+        # The allowlist prevents task-owned workspace plugins from joining this
+        # credential-bearing Gateway process alongside the generated plugin.
+        openclaw["plugins"] = {
+            "enabled": True,
+            "allow": [TOOL_INTERCEPTION_PLUGIN_ID],
+            "load": {"paths": [plugin_dir]},
+            "entries": {TOOL_INTERCEPTION_PLUGIN_ID: {"enabled": True}},
+        }
+        await runtime.write(config_path, json.dumps(openclaw).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         state_dir = f".vf-openclaw/{trace.id}"

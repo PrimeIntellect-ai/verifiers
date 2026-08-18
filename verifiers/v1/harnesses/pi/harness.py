@@ -3,7 +3,6 @@
 import json
 import logging
 import shlex
-import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -14,6 +13,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception.tool import install_tool_hook
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -222,33 +222,16 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             )
         config.require_terminal_tool_status = True
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
-        hook_path = f"{agent_dir}/extensions/tool-hook.js"
-        await runtime.write(
-            hook_path,
-            Path(__file__).with_name("tool_hook.mjs").read_bytes(),
-        )
-        # The random name plus shell noclobber makes credential creation exclusive.
-        credentials_path = f"{hook_path}.{uuid.uuid4().hex}.credentials"
-        payload = json.dumps({"url": url, "secret": secret}).encode()
-        result = await runtime.run_with_input(
-            [
-                "sh",
-                "-c",
-                'umask 077; set -C; head -c "$1" > "$2"',
-                "write-tool-credentials",
-                str(len(payload)),
-                credentials_path,
-            ],
-            {},
-            payload,
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                "failed to write Pi interception credentials privately: "
-                f"{result.stderr.strip()[-500:]}"
-            )
         config.env["NODE_USE_ENV_PROXY"] = "1"
-        config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
+        config.env.update(
+            await install_tool_hook(
+                runtime,
+                f"{agent_dir}/extensions/tool-hook.js",
+                Path(__file__).with_name("tool_hook.mjs").read_bytes(),
+                url,
+                secret,
+            )
+        )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f".vf-pi-agent-{trace.id}"], {})

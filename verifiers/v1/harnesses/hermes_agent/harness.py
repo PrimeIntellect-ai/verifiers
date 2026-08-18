@@ -8,15 +8,19 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
+from verifiers.v1.interception.tool import install_tool_hook
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+HERMES_VERSION = "0.19.0"
+TOOL_HOOK_SOURCE = Path(__file__).with_name("tool_hook.py").read_bytes()
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.19.0", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=HERMES_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Hermes Agent release to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
@@ -26,6 +30,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -94,6 +99,46 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             prompt=prompt,
             system_prompt=system_prompt,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        if self.config.version != HERMES_VERSION:
+            raise HarnessError(
+                "Hermes Agent tool interception is verified only for version "
+                f"{HERMES_VERSION}"
+            )
+        config.require_terminal_tool_status = True
+        home = config.env["HERMES_HOME"]
+        # Only the generated plugin may join this credential-bearing process: a
+        # task-owned project plugin would run alongside the hook with its secret.
+        config.env["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
+        config.env["HERMES_SAFE_MODE"] = "0"
+        plugin = f"{home}/plugins/verifiers-interception"
+        config.env.update(
+            await install_tool_hook(
+                runtime,
+                f"{plugin}/__init__.py",
+                TOOL_HOOK_SOURCE,
+                url,
+                secret,
+            )
+        )
+        manifest = (
+            "name: verifiers-interception\n"
+            'version: "1"\n'
+            "hooks:\n"
+            "  - transform_tool_result\n"
+        )
+        await runtime.write(f"{plugin}/plugin.yaml", manifest.encode())
+        config_path = f"{home}/config.yaml"
+        settings = json.loads((await runtime.read(config_path)).decode())
+        settings["plugins"] = {"enabled": ["verifiers-interception"]}
+        await runtime.write(config_path, json.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f"/tmp/vf-hermes/{trace.id}"], {})

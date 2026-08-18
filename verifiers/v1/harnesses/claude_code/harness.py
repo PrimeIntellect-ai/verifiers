@@ -1,12 +1,14 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
 import shlex
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -15,8 +17,18 @@ from verifiers.v1.trace import Trace
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.67.0"
+CLAUDE_CODE_VERSION = "2.1.232"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
+# The tool hook wraps the adapter in-process: argv[1] is the adapter library the
+# wrapper patches, argv[2] the executable entry it then runs.
+ACP_LIB = (
+    f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/lib.js"
+)
+ACP_INDEX = (
+    f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+)
+TOOL_HOOK_SCRIPT = Path(__file__).with_name("tool_hook.mjs").read_text()
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
 ACP_INSTALL = r"""
@@ -32,7 +44,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: str = Field(default="2.1.232", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=CLAUDE_CODE_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Claude Code release to install, pinned for reproducibility."""
 
 
@@ -40,6 +52,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -111,6 +124,46 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             prompt=prompt or "",
             session_meta=session_meta,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        # The hook's content mappings and the adapter wrapper depend on how these
+        # exact releases render results and structure their dist modules.
+        if self.config.version != CLAUDE_CODE_VERSION:
+            raise HarnessError(
+                "Claude Code tool interception is verified only for version "
+                f"{CLAUDE_CODE_VERSION}"
+            )
+        config.require_terminal_tool_status = True
+        # Restricting setting sources to "user" drops project skill discovery, so
+        # mirror the uploaded skills into the user-scoped config dir.
+        await self.install_skills(runtime, f"{config.env['CLAUDE_CONFIG_DIR']}/skills")
+        assert config.session_meta is not None
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        config.command = [
+            f"{NODE_BIN_DIR}/node",
+            "--input-type=module",
+            "--eval",
+            TOOL_HOOK_SCRIPT,
+            ACP_LIB.format(**versions),
+            ACP_INDEX.format(**versions),
+        ]
+        # The wrapper consumes this private ACP metadata before the adapter constructs
+        # the Claude query, so neither value reaches the model-controlled subprocess.
+        config.session_meta["vfToolInterception"] = {"url": url, "secret": secret}
+        claude = config.session_meta["claudeCode"]
+        assert isinstance(claude, dict)
+        options = claude["options"]
+        assert isinstance(options, dict)
+        # claude-agent-acp otherwise includes project/local sources, which lets the task
+        # merge its own native hooks into the Claude process.
+        options["settingSources"] = ["user"]
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", self.config_dir(trace)], {})
