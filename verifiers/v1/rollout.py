@@ -31,7 +31,14 @@ from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
-from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Request,
+    Response,
+    SystemMessage,
+    UserMessage,
+)
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -388,6 +395,25 @@ class Rollout:
                     if self._session.stopped:
                         return False
                 await self._harness_session.turn(messages)
+                if (
+                    self._session.native_tool_interception
+                    and not self._session.stopped
+                    and trace.nodes
+                ):
+                    leaf = len(trace.nodes) - 1
+                    assistant = trace.nodes[leaf].message
+                    if isinstance(assistant, AssistantMessage):
+                        missing = [
+                            call.id
+                            for call in assistant.tool_calls or []
+                            if self._session.prepared_tool_results.get((leaf, call.id))
+                            is None
+                        ]
+                        if missing:
+                            raise HarnessError(
+                                "native tool interception did not observe approved "
+                                f"results for terminal calls {missing}"
+                            )
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget —
             # an agent failure, never a clean stop. A TimeoutError from the
