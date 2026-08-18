@@ -3316,14 +3316,14 @@ wheels = [
 
 [[package]]
 name = "prime-pydantic-config"
-version = "0.4.2"
+version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3c/37/e240dd598e687af74523f4497acb122b6d484975dac35e38932b58733753/prime_pydantic_config-0.4.2.tar.gz", hash = "sha256:7e85ac624c63edc1995ef512398fa5cd4610724b48a65c595f7742b7514153a4", size = 75997, upload-time = "2026-07-20T19:39:54.631Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/eb/9c00634759016565e6359376f76817987c13ea25bb121aab638268c64e28/prime_pydantic_config-0.4.3.tar.gz", hash = "sha256:1f0a6bd78c69e21da389bbd0e1177ca5440888488708a625e355d98712d4374d", size = 76884, upload-time = "2026-08-18T00:24:31.744Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/f7/12d3b54d0db5812d4fb9e8b9df987f805e687df2f0d11359c2d066df513c/prime_pydantic_config-0.4.2-py3-none-any.whl", hash = "sha256:092f7da638f625747a136983b579f5c929ead1b243df22f69fad6cf16b044ab0", size = 27414, upload-time = "2026-07-20T19:39:53.716Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/ec/1d43ce0cd6b981a9381457e3b8f136cc8c7527fe13b3cb45c3b874a7cd49/prime_pydantic_config-0.4.3-py3-none-any.whl", hash = "sha256:13e8a0c39d0f88c3f75eb1df74a56198d1e907670e63e4918558a2e852b4e015", size = 27869, upload-time = "2026-08-18T00:24:30.681Z" },
 ]
 
 [package.optional-dependencies]
