@@ -11,6 +11,8 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseResponse,
+    CancelRequest,
+    CancelResponse,
     HealthResponse,
     RunRequest,
     RunResponse,
@@ -47,6 +49,8 @@ class EnvServer:
             )
         # This worker's episode bound (`--max-concurrent`), spanning requests.
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
+        # In-flight run tasks by wire request_id, so a `cancel` can abort them
+        self._running: dict[str, asyncio.Task] = {}
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -107,11 +111,26 @@ class EnvServer:
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
-                response = await self._run(RunRequest.model_validate(raw))
+                self._running[request_id.decode()] = asyncio.current_task()
+                try:
+                    response = await self._run(RunRequest.model_validate(raw))
+                finally:
+                    self._running.pop(request_id.decode(), None)
+            elif route == "cancel":
+                target = CancelRequest.model_validate(raw).request_id
+                running = self._running.get(target)
+                if running is not None:
+                    running.cancel()
+                    logger.info("cancelled run %s on client request", target)
+                response = CancelResponse(cancelled=running is not None)
             else:
                 response = BaseResponse(
                     success=False, error=f"unknown method {route!r}"
                 )
+        except asyncio.CancelledError:
+            # An aborted run still replies so broker/client accounting stays
+            # exact; the requesting client has already given up on the result
+            response = BaseResponse(success=False, error="Cancelled: rollout aborted")
         except (
             Exception
         ) as e:  # a failed request is data, not a crash — report and keep serving

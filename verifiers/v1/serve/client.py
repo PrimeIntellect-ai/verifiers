@@ -24,6 +24,7 @@ from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
+    CancelRequest,
     HealthRequest,
     HealthResponse,
     RunRequest,
@@ -81,8 +82,16 @@ class EnvClient:
         )
         try:
             data = await asyncio.wait_for(future, timeout)
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError:
             self._pending.pop(request_id, None)
+            raise
+        except asyncio.CancelledError:
+            self._pending.pop(request_id, None)
+            if request.method == RunRequest.method:
+                # Fire-and-forget: tell the server to abort the rollout so the
+                # episode stops consuming inference and env-runtime resources.
+                # A task on the loop outlives this (cancelled) caller.
+                asyncio.get_running_loop().create_task(self._send_cancel(request_id))
             raise
         if response_type is HealthResponse:
             response = response_type.model_validate(msgpack.unpackb(data, raw=False))
@@ -108,6 +117,17 @@ class EnvClient:
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
         return response
+
+    async def _send_cancel(self, run_request_id: str) -> None:
+        """Best-effort server-side abort of an abandoned run."""
+        with contextlib.suppress(Exception):
+            payload = msgpack.packb(
+                CancelRequest(request_id=run_request_id).model_dump(mode="json"),
+                use_bin_type=True,
+            )
+            await self.socket.send_multipart(
+                [uuid.uuid4().hex.encode(), CancelRequest.method.encode(), payload]
+            )
 
     async def health(self, timeout: float = 2.0) -> bool:
         try:

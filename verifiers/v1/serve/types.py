@@ -26,6 +26,19 @@ class HealthResponse(BaseResponse):
     pass
 
 
+class CancelRequest(BaseRequest):
+    """Abort an in-flight run by its wire ``request_id``. Idempotent — a
+    finished or unknown run cancels successfully with ``cancelled=False``."""
+
+    method: ClassVar[str] = "cancel"
+    request_id: str
+
+
+class CancelResponse(BaseResponse):
+    cancelled: bool = False
+    """Whether a live run was found and aborted."""
+
+
 class RunRequest(BaseRequest):
     """One env-rollout, shipping the task itself: `task_data` is the dumped
     `TaskData` the server validates into the taskset's declared type."""
