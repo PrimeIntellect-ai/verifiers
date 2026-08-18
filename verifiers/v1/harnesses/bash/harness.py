@@ -58,8 +58,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-        tool_interception_url: str | None = None,
-        tool_interception_secret: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         fragments = [BASH_SYSTEM_PROMPT]
@@ -77,9 +76,9 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
         ]
-        if tool_interception_url:
+        if tool_interception is not None:
+            tool_interception_url, tool_interception_secret = tool_interception
             args.append(f"--tool-interception-url={tool_interception_url}")
-            assert tool_interception_secret is not None
             if not runtime.supports_live_processes:
                 raise HarnessError(
                     "Bash tool interception requires a runtime with live process support"
@@ -136,7 +135,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env, activate=False
         )
-        if tool_interception_url:
+        if tool_interception is not None:
             return await runtime.run_with_input(
                 [*program, *args], env, tool_interception_secret_bytes
             )

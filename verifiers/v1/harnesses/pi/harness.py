@@ -3,6 +3,8 @@
 import json
 import logging
 import shlex
+import uuid
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -12,7 +14,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.interception.tool import install_tool_hook
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -211,7 +212,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     async def configure_tool_interception(
         self,
         config: ACPConfig,
-        trace: Trace,
         runtime: Runtime,
         url: str,
         secret: str,
@@ -221,19 +221,33 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 f"Pi tool interception is verified only for version {PI_VERSION}"
             )
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
-        hook_path = f"{agent_dir}/tool-hook.mjs"
-        config.env.update(await install_tool_hook(runtime, hook_path, url, secret))
-        wrapper = f"{agent_dir}/pi-intercept"
-        command = shlex.join(
-            [config.env["PI_ACP_PI_COMMAND"], "--extension", hook_path]
+        hook_path = f"{agent_dir}/extensions/tool-hook.js"
+        await runtime.write(
+            hook_path,
+            Path(__file__).with_name("tool_hook.mjs").read_bytes(),
         )
-        await runtime.write(wrapper, f'#!/bin/sh\nexec {command} "$@"\n'.encode())
-        chmod = await runtime.run(["chmod", "+x", wrapper], {})
-        if chmod.exit_code != 0:
+        # The random name plus shell noclobber makes credential creation exclusive.
+        credentials_path = f"{hook_path}.{uuid.uuid4().hex}.credentials"
+        payload = json.dumps({"url": url, "secret": secret}).encode()
+        result = await runtime.run_with_input(
+            [
+                "sh",
+                "-c",
+                'umask 077; set -C; head -c "$1" > "$2"',
+                "write-tool-credentials",
+                str(len(payload)),
+                credentials_path,
+            ],
+            {},
+            payload,
+        )
+        if result.exit_code != 0:
             raise RuntimeError(
-                f"failed to make Pi hook wrapper executable: {chmod.stderr.strip()[-500:]}"
+                "failed to write Pi interception credentials privately: "
+                f"{result.stderr.strip()[-500:]}"
             )
-        config.env["PI_ACP_PI_COMMAND"] = wrapper
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f".vf-pi-agent-{trace.id}"], {})
