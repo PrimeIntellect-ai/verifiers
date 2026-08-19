@@ -197,10 +197,14 @@ class EnvServerPool:
                         )
                     elif method == b"cancel":
                         # Route the cancel to the worker holding the target run;
-                        # an unknown/finished target is answered inline
-                        target = str(
-                            msgpack.unpackb(payload, raw=False).get("request_id", "")
-                        ).encode()
+                        # an unknown/finished target (or an unparseable payload
+                        # — one bad frame must not tear down the broker) is
+                        # answered inline
+                        try:
+                            body = msgpack.unpackb(payload, raw=False)
+                            target = str(body.get("request_id", "")).encode()
+                        except Exception:
+                            target = b""
                         target_entry = pending.get(target)
                         if target_entry is None:
                             await self.frontend.send_multipart(

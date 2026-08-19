@@ -180,14 +180,15 @@ class EnvClient:
         return response.episode
 
     async def close(self) -> None:
-        # Let scheduled fire-and-forget cancels reach the socket first, or a
-        # run cancelled right before close() leaves its server-side rollout running
-        if self._cancel_tasks:
-            await asyncio.gather(*self._cancel_tasks, return_exceptions=True)
         if self._receiver is not None:
             self._receiver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._receiver
             self._receiver = None
+        # Let scheduled fire-and-forget cancels reach the socket first, or a
+        # run cancelled right before close() leaves its server-side rollout
+        # running. Loop: awaiting one wave can schedule another
+        while self._cancel_tasks:
+            await asyncio.gather(*list(self._cancel_tasks), return_exceptions=True)
         self.socket.close()
         self.ctx.term()

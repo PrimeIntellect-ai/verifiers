@@ -111,7 +111,7 @@ class EnvServer:
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
-                self._running[request_id.decode()] = asyncio.current_task()
+                # Registered in the dispatch loop, before this task first runs
                 try:
                     response = await self._run(RunRequest.model_validate(raw))
                 finally:
@@ -175,6 +175,12 @@ class EnvServer:
                     task = asyncio.create_task(
                         self._handle(client_id, request_id, method, payload)
                     )
+                    if method == b"run":
+                        # Register at dispatch, not handler start: a cancel
+                        # processed ahead of the run's handler task must still
+                        # find its target (ZMQ preserves per-client frame
+                        # order, so the run always arrives first)
+                        self._running[request_id.decode()] = task
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
             except (asyncio.CancelledError, KeyboardInterrupt):
