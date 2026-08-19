@@ -191,7 +191,9 @@ class PrimeRuntime(Runtime):
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
-                            labels=list(dict.fromkeys([*BASE_LABELS, *self.config.labels])),
+                            labels=list(
+                                dict.fromkeys([*BASE_LABELS, *self.config.labels])
+                            ),
                             docker_image=self.config.image,
                             vm=self.config.vm,
                             guaranteed=self.config.guaranteed,

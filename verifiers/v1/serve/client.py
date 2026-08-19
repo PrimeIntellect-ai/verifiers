@@ -95,7 +95,9 @@ class EnvClient:
                 # Fire-and-forget: tell the server to abort the rollout so the
                 # episode stops consuming inference and env-runtime resources.
                 # A task on the loop outlives this (cancelled) caller.
-                task = asyncio.get_running_loop().create_task(self._send_cancel(request_id))
+                task = asyncio.get_running_loop().create_task(
+                    self._send_cancel(request_id)
+                )
                 self._cancel_tasks.add(task)
                 task.add_done_callback(self._cancel_tasks.discard)
             raise
@@ -178,6 +180,10 @@ class EnvClient:
         return response.episode
 
     async def close(self) -> None:
+        # Let scheduled fire-and-forget cancels reach the socket first, or a
+        # run cancelled right before close() leaves its server-side rollout running
+        if self._cancel_tasks:
+            await asyncio.gather(*self._cancel_tasks, return_exceptions=True)
         if self._receiver is not None:
             self._receiver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
