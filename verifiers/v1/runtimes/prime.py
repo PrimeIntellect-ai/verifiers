@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
-# Prime launchers can ignore terminal signals; reset them for every user process.
-DEFAULT_SIGNAL_ARGV = ("env", "--default-signal=INT,QUIT")
+# GNU env can restore terminal signals ignored by Prime's process launcher.
+DEFAULT_SIGNAL_ARGV = ("env", "--default-signal=INT,QUIT", "--")
 
 
 BASE_LABELS: list[str] = []
@@ -146,6 +146,7 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
+        self._signal_argv: tuple[str, ...] = ()
 
     @property
     def supports_live_processes(self) -> bool:
@@ -218,6 +219,18 @@ class PrimeRuntime(Runtime):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
+            signal_probe = await self._client.execute_command(
+                self.info.id, shlex.join([*DEFAULT_SIGNAL_ARGV, "true"])
+            )
+            self._signal_argv = (
+                DEFAULT_SIGNAL_ARGV if signal_probe.exit_code == 0 else ()
+            )
+            if not self._signal_argv:
+                logger.warning(
+                    "prime: image %s lacks GNU env signal reset; child processes may "
+                    "inherit ignored SIGINT/SIGQUIT",
+                    self.config.image,
+                )
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
@@ -270,7 +283,7 @@ class PrimeRuntime(Runtime):
         try:
             result = await self._client.run_background_job(
                 self.info.id,
-                shlex.join([*DEFAULT_SIGNAL_ARGV, *argv]),
+                shlex.join([*self._signal_argv, *argv]),
                 timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
@@ -297,7 +310,7 @@ class PrimeRuntime(Runtime):
         try:
             process = await self._client.open_process(
                 self.info.id,
-                shlex.join([*DEFAULT_SIGNAL_ARGV, *argv]),
+                shlex.join([*self._signal_argv, *argv]),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -325,7 +338,9 @@ class PrimeRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        command = f"exec {shlex.join([*DEFAULT_SIGNAL_ARGV, *argv])} > {shlex.quote(log)} 2>&1"
+        command = (
+            f"exec {shlex.join([*self._signal_argv, *argv])} > {shlex.quote(log)} 2>&1"
+        )
         try:
             await self._client.start_background_job(
                 self.info.id,
