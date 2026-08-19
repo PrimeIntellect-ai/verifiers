@@ -24,6 +24,7 @@ from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
+    CancelRequest,
     HealthRequest,
     HealthResponse,
     RunRequest,
@@ -46,6 +47,10 @@ class EnvClient:
         self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.connect(address)
         self._pending: dict[str, asyncio.Future[bytes]] = {}
+        # Strong refs to in-flight fire-and-forget cancels: the loop only
+        # holds weak references to tasks, so an unreferenced one can be
+        # garbage-collected before it ever sends
+        self._cancel_tasks: set[asyncio.Task] = set()
         self._receiver: asyncio.Task | None = None
         self._decode_slots = asyncio.BoundedSemaphore(1)
 
@@ -81,8 +86,20 @@ class EnvClient:
         )
         try:
             data = await asyncio.wait_for(future, timeout)
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError:
             self._pending.pop(request_id, None)
+            raise
+        except asyncio.CancelledError:
+            self._pending.pop(request_id, None)
+            if request.method == RunRequest.method:
+                # Fire-and-forget: tell the server to abort the rollout so the
+                # episode stops consuming inference and env-runtime resources.
+                # A task on the loop outlives this (cancelled) caller.
+                task = asyncio.get_running_loop().create_task(
+                    self._send_cancel(request_id)
+                )
+                self._cancel_tasks.add(task)
+                task.add_done_callback(self._cancel_tasks.discard)
             raise
         if response_type is HealthResponse:
             response = response_type.model_validate(msgpack.unpackb(data, raw=False))
@@ -108,6 +125,17 @@ class EnvClient:
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
         return response
+
+    async def _send_cancel(self, run_request_id: str) -> None:
+        """Best-effort server-side abort of an abandoned run."""
+        with contextlib.suppress(Exception):
+            payload = msgpack.packb(
+                CancelRequest(request_id=run_request_id).model_dump(mode="json"),
+                use_bin_type=True,
+            )
+            await self.socket.send_multipart(
+                [uuid.uuid4().hex.encode(), CancelRequest.method.encode(), payload]
+            )
 
     async def health(self, timeout: float = 2.0) -> bool:
         try:
@@ -157,5 +185,10 @@ class EnvClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._receiver
             self._receiver = None
+        # Let scheduled fire-and-forget cancels reach the socket first, or a
+        # run cancelled right before close() leaves its server-side rollout
+        # running. Loop: awaiting one wave can schedule another
+        while self._cancel_tasks:
+            await asyncio.gather(*list(self._cancel_tasks), return_exceptions=True)
         self.socket.close()
         self.ctx.term()

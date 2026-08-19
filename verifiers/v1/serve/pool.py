@@ -36,11 +36,14 @@ import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse
+from verifiers.v1.serve.types import CancelResponse, HealthResponse
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
+_CANCEL_MISS = msgpack.packb(
+    CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True
+)
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -192,6 +195,32 @@ class EnvServerPool:
                         await self.frontend.send_multipart(
                             [client_id, request_id, _HEALTH]
                         )
+                    elif method == b"cancel":
+                        # Route the cancel to the worker holding the target run;
+                        # an unknown/finished target (or an unparseable payload
+                        # — one bad frame must not tear down the broker) is
+                        # answered inline
+                        try:
+                            body = msgpack.unpackb(payload, raw=False)
+                            target = str(body.get("request_id", "")).encode()
+                        except Exception:  # noqa: BLE001 - one bad frame must not kill the broker
+                            target = b""
+                        target_entry = pending.get(target)
+                        if target_entry is None:
+                            await self.frontend.send_multipart(
+                                [client_id, request_id, _CANCEL_MISS]
+                            )
+                        else:
+                            worker = target_entry["worker"]
+                            worker["active"] += 1
+                            pending[request_id] = {
+                                "client_id": client_id,
+                                "worker": worker,
+                            }
+                            in_flight += 1
+                            await worker["dealer"].send_multipart(
+                                [request_id, method, payload]
+                            )
                     else:
                         worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += 1
