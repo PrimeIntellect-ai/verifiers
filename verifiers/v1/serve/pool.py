@@ -203,7 +203,7 @@ class EnvServerPool:
                         try:
                             body = msgpack.unpackb(payload, raw=False)
                             target = str(body.get("request_id", "")).encode()
-                        except Exception:
+                        except Exception:  # noqa: BLE001 - one bad frame must not kill the broker
                             target = b""
                         target_entry = pending.get(target)
                         if target_entry is None:
