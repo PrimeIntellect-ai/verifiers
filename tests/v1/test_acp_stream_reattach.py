@@ -174,3 +174,90 @@ async def test_turn_fails_when_runtime_cannot_reattach(monkeypatch) -> None:
     with pytest.raises(ConnectionError, match="process stream RPC failed"):
         await session._run(None)
     assert session._process is None  # torn down, next turn would restart
+
+
+@pytest.mark.asyncio
+async def test_runner_repairs_empty_end_turn_in_the_same_session() -> None:
+    pytest.importorskip("acp", reason="ACP runner dependency is installed at runtime")
+    from verifiers.v1.acp.runner import (
+        EMPTY_REPLY_REPAIR_PROMPT,
+        VerifiersACPClient,
+        prompt,
+    )
+
+    client = VerifiersACPClient()
+
+    class EmptyThenVisibleConnection:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def prompt(self, *, session_id, prompt):
+            self.calls.append((session_id, prompt))
+            if len(self.calls) == 3:
+                client.visible_reply = "refinement complete"
+            return SimpleNamespace(stop_reason="end_turn")
+
+    connection = EmptyThenVisibleConnection()
+    config = {
+        "system_prompt": "system instructions",
+        "user_contents": ["refine the task"],
+        "allow_empty_tool_reply": False,
+    }
+
+    reply = await prompt(
+        client,
+        connection,
+        None,
+        "same-session",
+        config,
+        is_new=True,
+    )
+
+    assert reply == "refinement complete"
+    assert [session_id for session_id, _ in connection.calls] == [
+        "same-session",
+        "same-session",
+        "same-session",
+    ]
+    first_prompt = connection.calls[0][1]
+    assert "system instructions" in first_prompt[0].text
+    assert "refine the task" in first_prompt[-1].text
+    assert [block.text for block in connection.calls[1][1]] == [
+        EMPTY_REPLY_REPAIR_PROMPT
+    ]
+    assert [block.text for block in connection.calls[2][1]] == [
+        EMPTY_REPLY_REPAIR_PROMPT
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_stops_after_three_empty_end_turns() -> None:
+    pytest.importorskip("acp", reason="ACP runner dependency is installed at runtime")
+    from verifiers.v1.acp.runner import VerifiersACPClient, prompt
+
+    class EmptyConnection:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def prompt(self, *, session_id, prompt):
+            self.calls += 1
+            return SimpleNamespace(stop_reason="end_turn")
+
+    connection = EmptyConnection()
+    config = {
+        "system_prompt": "",
+        "user_contents": ["refine the task"],
+        "allow_empty_tool_reply": False,
+    }
+
+    with pytest.raises(RuntimeError, match="after 3 attempt\\(s\\)"):
+        await prompt(
+            VerifiersACPClient(),
+            connection,
+            None,
+            "same-session",
+            config,
+            is_new=False,
+        )
+
+    assert connection.calls == 3

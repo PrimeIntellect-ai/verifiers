@@ -36,6 +36,11 @@ from acp.schema import (
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 KEEPALIVE_INTERVAL_SECONDS = 15.0
+EMPTY_REPLY_ATTEMPTS = 3
+EMPTY_REPLY_REPAIR_PROMPT = (
+    "Your previous turn ended without a visible reply. Continue the pending task "
+    "and return a visible final response."
+)
 # Bytes written while the host is detached from the process stream are dropped,
 # so a reattached host may be mid-frame. Sync responses carry this marker (plus
 # the request nonce) so the host can re-align the length-prefixed framing.
@@ -140,26 +145,37 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
-    client.reset()
-    try:
-        response = await connection.prompt(session_id=session_id, prompt=blocks)
-    except RequestError as error:
-        detail = error.data.get("details") if isinstance(error.data, dict) else None
-        raise RuntimeError(detail or str(error)) from error
 
-    tool_statuses = list(client.tool_calls.values())
-    completed_tool_turn = (
-        config.get("allow_empty_tool_reply", False)
-        and response.stop_reason == "end_turn"
-        and bool(tool_statuses)
-        and all(status in ("completed", "failed") for status in tool_statuses)
-    )
-    if not client.visible_reply.strip() and not completed_tool_turn:
-        raise RuntimeError(
-            "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+    for attempt in range(1, EMPTY_REPLY_ATTEMPTS + 1):
+        client.reset()
+        try:
+            response = await connection.prompt(session_id=session_id, prompt=blocks)
+        except RequestError as error:
+            detail = error.data.get("details") if isinstance(error.data, dict) else None
+            raise RuntimeError(detail or str(error)) from error
+
+        tool_statuses = list(client.tool_calls.values())
+        completed_tool_turn = (
+            config.get("allow_empty_tool_reply", False)
+            and response.stop_reason == "end_turn"
+            and bool(tool_statuses)
+            and all(status in ("completed", "failed") for status in tool_statuses)
         )
-    return client.visible_reply
+        if client.visible_reply.strip() or completed_tool_turn:
+            return client.visible_reply
+
+        retryable_empty_reply = (
+            response.stop_reason == "end_turn" and not tool_statuses
+        )
+        if not retryable_empty_reply or attempt == EMPTY_REPLY_ATTEMPTS:
+            raise RuntimeError(
+                "ACP agent produced no visible reply "
+                f"after {attempt} attempt(s) "
+                f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+            )
+        blocks = [text_block(EMPTY_REPLY_REPAIR_PROMPT)]
+
+    raise AssertionError("empty reply retry loop did not return or raise")
 
 
 class ACPSession:
