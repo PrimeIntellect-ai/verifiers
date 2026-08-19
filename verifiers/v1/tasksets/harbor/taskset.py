@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -116,6 +117,8 @@ class VerifierConfig(BaseModel):
     own image, which is what Harbor's fresh copy of `[environment]` resolves to."""
     resources: TaskResources = TaskResources()
     workdir: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    healthcheck: dict | None = None
     fresh_copy: bool = False
     """Whether this came from Harbor's fresh copy of `[environment]` rather than a
     declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
@@ -142,6 +145,9 @@ class HarborData(TaskData):
     """Host path to the task dir; used to stage tests/ to verify."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Raw `[environment.env]` templates, resolved only when the runtime starts."""
+    healthcheck: dict | None = None
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -157,25 +163,60 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
+    def runtime_env(self) -> dict[str, str]:
+        return resolve_env(self.data.env)
+
     async def setup(self, runtime: Runtime) -> None:
-        if not self.data.upload_environment:
-            return
-        await runtime.write(
-            "/tmp/environment.tgz",
-            make_tar(Path(self.data.task_dir) / "environment"),
-        )
-        result = await runtime.run(
-            [
-                "sh",
-                "-c",
-                "tar --no-same-owner -xzf /tmp/environment.tgz && rm /tmp/environment.tgz",
-            ],
-            {},
-        )
-        if result.exit_code:
-            raise RuntimeError(
-                f"environment setup failed (exit {result.exit_code}): "
-                f"{(result.stderr or result.stdout).strip()[-500:]}"
+        if self.data.upload_environment:
+            await runtime.write(
+                "/tmp/environment.tgz",
+                make_tar(Path(self.data.task_dir) / "environment"),
+            )
+            result = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    "tar --no-same-owner -xzf /tmp/environment.tgz && rm /tmp/environment.tgz",
+                ],
+                {},
+            )
+            if result.exit_code:
+                raise RuntimeError(
+                    f"environment setup failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
+        if self.data.healthcheck is not None:
+            await self._wait_for_health(runtime, self.data.healthcheck)
+
+    async def _wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
+        from harbor.environments.base import HealthcheckError
+        from harbor.models.task.config import HealthcheckConfig
+
+        healthcheck = HealthcheckConfig.model_validate(healthcheck)
+        start_period_end = time.monotonic() + healthcheck.start_period_sec
+        failures = 0
+        while True:
+            in_start_period = time.monotonic() < start_period_end
+            try:
+                async with asyncio.timeout(healthcheck.timeout_sec):
+                    if (
+                        await runtime.run(["sh", "-c", healthcheck.command], {})
+                    ).exit_code == 0:
+                        return
+            except TimeoutError:
+                pass
+
+            if not in_start_period:
+                failures += 1
+                if failures >= healthcheck.retries:
+                    raise HealthcheckError(
+                        f"Healthcheck failed after {healthcheck.retries} consecutive "
+                        f"retries: {healthcheck.command}"
+                    )
+            await asyncio.sleep(
+                healthcheck.start_interval_sec
+                if in_start_period
+                else healthcheck.interval_sec
             )
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
@@ -259,7 +300,9 @@ class HarborTask(Task[HarborData]):
     async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
-        await runtime.run(["bash", "/tests/test.sh"], verifier_env(self.data))
+        await runtime.run(
+            ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
+        )
         scores = await self._reward_json(runtime)
         if scores is not None:
             if isinstance(scores, dict) and "reward" in scores:
@@ -314,6 +357,9 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "image": verifier.image if verifier.image is not None else data.image,
             "workdir": data.workdir if fresh else verifier.workdir,
             "resources": data.resources if fresh else verifier.resources,
+            "upload_environment": data.upload_environment if fresh else False,
+            "env": dict(verifier.env),
+            "healthcheck": verifier.healthcheck,
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -529,6 +575,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -645,7 +692,7 @@ def parse_verifier_environment(
         )
     unsupported = [
         field
-        for field in ("healthcheck", "mcp_servers", "skills_dir", "gpu_types", "tpu")
+        for field in ("mcp_servers", "skills_dir", "gpu_types", "tpu")
         if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:
@@ -667,6 +714,7 @@ def parse_verifier_environment(
             else TaskResources()
         ),
         workdir=environment.workdir if declared else None,
+        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         fresh_copy=not declared,
         network_allow=(
             ["*"]
@@ -676,16 +724,16 @@ def parse_verifier_environment(
     )
 
 
-def verifier_env(task: HarborData) -> dict[str, str]:
-    """Resolve templates at scoring time so host secrets are never serialized."""
-    if not task.verifier_env:
+def resolve_env(values: dict[str, str]) -> dict[str, str]:
+    """Resolve templates at execution time so host secrets are never serialized."""
+    if not values:
         return {}
 
     # Harbor is an optional dependency, so importing this module must still work
     # for users who do not install the Harbor extra.
     from harbor.utils.env import resolve_env_vars
 
-    return resolve_env_vars(task.verifier_env)
+    return resolve_env_vars(values)
 
 
 # Downloaded task directories are immutable. Cache the current task's environment

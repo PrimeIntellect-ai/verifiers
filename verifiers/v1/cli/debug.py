@@ -224,6 +224,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         else task.data.timeout.setup
     )
     try:
+        runtime.env = dict(task.runtime_env())
         trace.timing.boot.start = time.time()
         await runtime.start()
         now = time.time()
