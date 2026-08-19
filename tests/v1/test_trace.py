@@ -38,6 +38,15 @@ def test_bare_trace_round_trip():
     assert rt.reward == 0.0 and rt.errors == []
 
 
+def test_agent_timeout_is_truncated() -> None:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
+    )
+    trace.stop("agent_timeout")
+    assert trace.is_truncated
+
+
 def test_custom_task_state_round_trip():
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
