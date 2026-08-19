@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
@@ -183,17 +184,24 @@ class PrimeRuntime(Runtime):
                 )
                 or contextlib.nullcontext()
             ):
-                sandbox = await self._client.create(
-                    CreateSandboxRequest(
-                        name=self.name,
-                        labels=list(dict.fromkeys([*BASE_LABELS, *self.config.labels])),
-                        docker_image=self.config.image,
-                        vm=self.config.vm,
-                        guaranteed=self.config.guaranteed,
-                        **{k: v for k, v in options.items() if v is not None},
+                # Shielded through the id capture: a cancel that aborts the POST
+                # mid-flight leaves the platform creating a sandbox this side
+                # never learned the id of — teardown() then cannot delete it
+                async def create_and_capture_id():
+                    sandbox = await self._client.create(
+                        CreateSandboxRequest(
+                            name=self.name,
+                            labels=list(dict.fromkeys([*BASE_LABELS, *self.config.labels])),
+                            docker_image=self.config.image,
+                            vm=self.config.vm,
+                            guaranteed=self.config.guaranteed,
+                            **{k: v for k, v in options.items() if v is not None},
+                        )
                     )
-                )
-            self.info.id = sandbox.id
+                    self.info.id = sandbox.id
+                    return sandbox
+
+                sandbox = await run_shielded(create_and_capture_id())
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
             # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase

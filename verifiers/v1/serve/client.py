@@ -47,6 +47,10 @@ class EnvClient:
         self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.connect(address)
         self._pending: dict[str, asyncio.Future[bytes]] = {}
+        # Strong refs to in-flight fire-and-forget cancels: the loop only
+        # holds weak references to tasks, so an unreferenced one can be
+        # garbage-collected before it ever sends
+        self._cancel_tasks: set[asyncio.Task] = set()
         self._receiver: asyncio.Task | None = None
         self._decode_slots = asyncio.BoundedSemaphore(1)
 
@@ -91,7 +95,9 @@ class EnvClient:
                 # Fire-and-forget: tell the server to abort the rollout so the
                 # episode stops consuming inference and env-runtime resources.
                 # A task on the loop outlives this (cancelled) caller.
-                asyncio.get_running_loop().create_task(self._send_cancel(request_id))
+                task = asyncio.get_running_loop().create_task(self._send_cancel(request_id))
+                self._cancel_tasks.add(task)
+                task.add_done_callback(self._cancel_tasks.discard)
             raise
         if response_type is HealthResponse:
             response = response_type.model_validate(msgpack.unpackb(data, raw=False))
