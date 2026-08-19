@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from verifiers.v1.acp import _record_lifecycle_status
+from verifiers.v1.acp import ACPHarnessSession, _record_lifecycle_status
 from verifiers.v1.harnesses.prime_agent.harness import PrimeAgentHarnessConfig
 from verifiers.v1.utils.score import read_answer_file_or_last_reply
 
@@ -548,12 +548,237 @@ def test_lifecycle_status_is_separate_from_benchmark_reward():
         "stop_reason": "max_turn_requests",
         "infrastructure_status": "ok",
         "autonomous_completion": True,
+        "terminal_quiescence_observed": True,
+        "last_lifecycle_phase": "terminalQuiescence",
         "response_boundary": boundary,
         "terminal_quiescence": terminal,
     }
     assert trace.info["acp_answer_fallback"] == "main answer"
     assert trace.rewards == {"benchmark": 0.75}
     assert trace.stop_condition is None
+
+
+def test_lifecycle_status_preserves_available_response_boundary_phase():
+    trace = types.SimpleNamespace(info={})
+    boundary = event(
+        3,
+        "responseBoundary",
+        outcome="error",
+        terminalQuiescenceExpected=False,
+    )
+
+    _record_lifecycle_status(
+        trace,
+        NAMESPACE,
+        {"ok": False, "response_boundary": boundary},
+    )
+
+    status = trace.info["acp_lifecycle"][NAMESPACE][0]
+    assert status["infrastructure_status"] == "error"
+    assert status["autonomous_completion"] is False
+    assert status["terminal_quiescence_observed"] is False
+    assert status["last_lifecycle_phase"] == "responseBoundary"
+
+
+class _BlockingProcess:
+    async def write(self, data):
+        assert data
+
+
+class _BlockingReader:
+    async def read(self):
+        await asyncio.Event().wait()
+
+
+def _incomplete_session(namespace=NAMESPACE):
+    session = object.__new__(ACPHarnessSession)
+    session.config = types.SimpleNamespace(
+        prompt="task",
+        command=["agent"],
+        system_prompt=None,
+        session_meta=None,
+        allow_empty_tool_reply=False,
+        lifecycle_meta_namespace=namespace,
+    )
+    session.mcp_urls = {}
+    session._lock = asyncio.Lock()
+    session._closed = False
+    session._process = _BlockingProcess()
+    session._reader = _BlockingReader()
+    session.trace = types.SimpleNamespace(
+        info={}, rewards={"benchmark": 0.75}, calls=[], stop_condition=None
+    )
+    stopped = []
+
+    async def stop(*, graceful):
+        stopped.append(graceful)
+
+    session._stop = stop
+    return session, stopped
+
+
+_INCOMPLETE_STATUS = {
+    "prompt_turn_id": None,
+    "stop_reason": None,
+    "infrastructure_status": "error",
+    "autonomous_completion": False,
+    "terminal_quiescence_observed": False,
+    "last_lifecycle_phase": None,
+    "response_boundary": None,
+    "terminal_quiescence": None,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_with_timeout", [False, True])
+async def test_cancelled_turn_records_incomplete_lifecycle_status(cancel_with_timeout):
+    session, stopped = _incomplete_session()
+    turn = asyncio.create_task(session._run(None))
+    await asyncio.sleep(0)
+    if cancel_with_timeout:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(turn, timeout=0.01)
+    else:
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+    assert session.trace.info["acp_lifecycle"][NAMESPACE] == [_INCOMPLETE_STATUS]
+    assert "acp_answer_fallback" not in session.trace.info
+    assert session.trace.rewards == {"benchmark": 0.75}
+    assert stopped == [False]
+
+
+@pytest.mark.asyncio
+async def test_lock_wait_cancellation_records_status_without_stopping_process():
+    session, stopped = _incomplete_session()
+    await session._lock.acquire()
+    turn = asyncio.create_task(session._run(None))
+    await asyncio.sleep(0)
+
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    session._lock.release()
+
+    assert session.trace.info["acp_lifecycle"][NAMESPACE] == [_INCOMPLETE_STATUS]
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_start_cancellation_records_status_and_stops_locked_turn():
+    session, stopped = _incomplete_session()
+    session._process = None
+    session._reader = None
+    start_entered = asyncio.Event()
+
+    async def start():
+        start_entered.set()
+        await asyncio.Event().wait()
+
+    session._start = start
+    turn = asyncio.create_task(session._run(None))
+    await start_entered.wait()
+    turn.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert session.trace.info["acp_lifecycle"][NAMESPACE] == [_INCOMPLETE_STATUS]
+    assert stopped == [False]
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_teardown_finishes_before_next_turn_starts():
+    session, _ = _incomplete_session()
+    read_entered = asyncio.Event()
+    fail_read = asyncio.Event()
+    teardown_entered = asyncio.Event()
+    finish_teardown = asyncio.Event()
+    second_start = asyncio.Event()
+    second_write = asyncio.Event()
+
+    class FirstReader:
+        async def read(self):
+            read_entered.set()
+            await fail_read.wait()
+            raise RuntimeError("packet read failed")
+
+    class SecondProcess:
+        async def write(self, data):
+            assert data
+            second_write.set()
+
+    async def start():
+        second_start.set()
+        session._process = SecondProcess()
+        session._reader = _BlockingReader()
+
+    async def stop(*, graceful):
+        assert graceful is False
+        teardown_entered.set()
+        await finish_teardown.wait()
+        session._process = None
+        session._reader = None
+
+    session._reader = FirstReader()
+    session._start = start
+    session._stop = stop
+
+    first = asyncio.create_task(session._run(None))
+    await read_entered.wait()
+    second = asyncio.create_task(session._run(None))
+    fail_read.set()
+    await teardown_entered.wait()
+    await asyncio.sleep(0)
+
+    assert not second_start.is_set()
+    assert not second_write.is_set()
+
+    finish_teardown.set()
+    with pytest.raises(RuntimeError, match="packet read failed"):
+        await first
+    await second_start.wait()
+    await second_write.wait()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_without_lifecycle_namespace_only_stops_process():
+    session, stopped = _incomplete_session(namespace=None)
+    turn = asyncio.create_task(session._run(None))
+    await asyncio.sleep(0)
+    turn.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert session.trace.info == {}
+    assert stopped == [False]
+
+
+@pytest.mark.asyncio
+async def test_status_recording_failure_does_not_mask_turn_exception(monkeypatch):
+    session, stopped = _incomplete_session()
+    original = RuntimeError("packet read failed")
+
+    class FailingReader:
+        async def read(self):
+            raise original
+
+    def fail_recording(*args, **kwargs):
+        raise TypeError("malformed trace.info")
+
+    session._reader = FailingReader()
+    monkeypatch.setattr("verifiers.v1.acp._record_lifecycle_status", fail_recording)
+
+    with pytest.raises(RuntimeError, match="packet read failed") as error:
+        await session._run(None)
+
+    assert error.value is original
+    assert stopped == [False]
 
 
 @pytest.mark.asyncio
