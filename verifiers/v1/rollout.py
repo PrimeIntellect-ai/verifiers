@@ -81,6 +81,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._owns_runtime = runtime is None
+        self._previous_runtime_env: dict[str, str] | None = None
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -172,6 +173,12 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
+    def _release_borrowed_runtime(self) -> None:
+        if self._previous_runtime_env is not None and self.runtime is not None:
+            self.runtime.env = self._previous_runtime_env
+            self._previous_runtime_env = None
+            self.runtime.borrow_lock.release()
+
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
         (or borrow) the runtime, run task + harness setup, bring up the
@@ -200,6 +207,15 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
+            runtime_env = dict(self.task.runtime_env())
+            if self._owns_runtime:
+                runtime.env = runtime_env
+            else:
+                await runtime.borrow_lock.acquire()
+                self._previous_runtime_env = runtime.env
+                # The owner's defaults return after the borrow; they do not belong to
+                # this task and must not flow into its processes.
+                runtime.env = runtime_env
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
@@ -421,6 +437,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
+        self._release_borrowed_runtime()
         if self._owns_runtime and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -502,6 +519,7 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
+            self._release_borrowed_runtime()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

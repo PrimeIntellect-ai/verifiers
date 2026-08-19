@@ -9,12 +9,11 @@ from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
-from verifiers.v1.utils.install import env_name
 
 
 class HarnessConfig(BaseConfig):
     id: ID = "bash"
-    """Local package or Hub `org/name[@version]`, set through the seat's
+    """Installed harness package, set through the seat's
     `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
     env: dict[str, str] = Field(default_factory=dict)
     """Extra program variables; harness-owned variables take precedence."""
@@ -30,7 +29,7 @@ class HarnessConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        return env_name(self.id)
+        return self.id
 
     @property
     def resolved_env(self) -> dict[str, str]:

@@ -12,7 +12,6 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
-from verifiers.v1.utils.install import env_name
 
 
 def default_run_name(env: EnvConfig, model: str) -> str:
@@ -24,7 +23,7 @@ def default_run_name(env: EnvConfig, model: str) -> str:
     if taskset.id and env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
         # not share a name with a plain `gsm8k` one.
-        name = f"{env_name(env.id)}+{name}"
+        name = f"{env.id}+{name}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
     slug = (

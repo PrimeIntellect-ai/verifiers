@@ -232,11 +232,17 @@ class DockerRuntime(Runtime):
                 network += ["--add-host", f"{_PROXY_HOST}:host-gateway"]
         else:
             network = ["--network", "host"]
+        env_args = [
+            arg
+            for key, value in self.env.items()
+            for arg in ("--env", f"{key}={value}")
+        ]
         run = await docker(
             "run",
             "--detach",
             *network,
             *limits,
+            *env_args,
             "--workdir",
             self.config.workdir,
             "--entrypoint",
@@ -414,7 +420,7 @@ class DockerRuntime(Runtime):
         await super().teardown()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        env = {**env, **(self._proxy_env() if self._cut else {})}
+        env = {**self.process_env(env), **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
@@ -424,7 +430,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         assert self._container is not None
-        env = {**env, **(self._proxy_env() if self._cut else {})}
+        env = {**self.process_env(env), **(self._proxy_env() if self._cut else {})}
         env_args = [
             arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
         ]
@@ -485,7 +491,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Detached servers survive the cut, so they need the initially permissive proxy.
-        env = {**env, **self._proxy_env()}
+        env = {**self.process_env(env), **self._proxy_env()}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
         run = await docker(

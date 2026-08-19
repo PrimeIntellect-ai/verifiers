@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from openai.types.chat import ChatCompletion
 from openai.types.chat.completion_create_params import CompletionCreateParams
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
@@ -356,7 +357,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
     response_type = ModdedChatCompletion
 
     def mediate_external_capabilities(
-        self, body: CompletionCreateParams
+        self, body: CompletionCreateParams, policy: NetworkPolicyConfig
     ) -> tuple[CompletionCreateParams, list[str]]:
         mediated = body
         capabilities: list[str] = []
@@ -446,7 +447,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
                 elif kind == "image_url":
                     image = part.get("image_url") or {}
                     url = image.get("url") if isinstance(image, dict) else image
-                    if not isinstance(url, str) or blocked_url(url):
+                    if not isinstance(url, str) or blocked_url(url, policy):
                         capability = f"{path}.image_url.url"
                 elif kind == "file":
                     file = part.get("file")
@@ -465,7 +466,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
                                 capability = f"{path}.file.file_data"
                             else:
                                 if (parsed.scheme or parsed.netloc) and blocked_url(
-                                    file_data
+                                    file_data, policy
                                 ):
                                     capability = f"{path}.file.file_data"
                 if capability is None:

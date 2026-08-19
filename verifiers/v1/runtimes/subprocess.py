@@ -97,7 +97,7 @@ class SubprocessRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(env)
+        full_env.update(self.process_env(env))
         proc = await asyncio.create_subprocess_exec(
             *argv,
             env=full_env,
@@ -127,7 +127,7 @@ class SubprocessRuntime(Runtime):
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(env)
+        full_env.update(self.process_env(env))
         proc = await asyncio.create_subprocess_exec(
             *argv,
             env=full_env,
@@ -144,7 +144,7 @@ class SubprocessRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(env)
+        full_env.update(self.process_env(env))
         logfile = self.workdir / log
         with logfile.open(
             "wb"

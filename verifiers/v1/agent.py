@@ -548,6 +548,8 @@ class Agent:
             else self.runtime_config
         )
         async with provision_runtime(config) as runtime:
+            # Keep sandbox startup task-neutral: this box may later host another task.
+            runtime.env = dict(task.runtime_env()) if task is not None else {}
             yield runtime
 
 
