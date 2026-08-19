@@ -24,3 +24,22 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.env.taskset.id
+
+
+def test_write_config_sanitizes_headers(tmp_path: Path) -> None:
+    from verifiers.v1.cli.output import write_config
+    from verifiers.v1.configs.client import EvalClientConfig
+
+    config = EvalConfig(
+        client=EvalClientConfig(
+            headers={"X-Prime-Team-ID": "secret-team-123", "Authorization": "Bearer secret"}
+        )
+    )
+    written_path = write_config(config, tmp_path)
+    import json
+    data = json.loads(written_path.read_text())
+    assert data["client"]["headers"] == {
+        "X-Prime-Team-ID": "<redacted>",
+        "Authorization": "<redacted>",
+    }
+

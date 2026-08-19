@@ -15,6 +15,7 @@ import hashlib
 import json
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -61,6 +62,21 @@ def output_path(config: EvalConfig) -> Path:
     return config.output_dir / config.run.dir
 
 
+def sanitize_dict(data: Any) -> Any:
+    """Recursively sanitize a dictionary or list, masking sensitive fields like headers."""
+    if isinstance(data, dict):
+        sanitized = {}
+        for k, v in data.items():
+            if k == "headers" and isinstance(v, dict):
+                sanitized[k] = {hk: "<redacted>" for hk in v}
+            else:
+                sanitized[k] = sanitize_dict(v)
+        return sanitized
+    elif isinstance(data, list):
+        return [sanitize_dict(item) for item in data]
+    return data
+
+
 def write_config(
     config: BaseModel, results_dir: Path, filename: str = "eval.json"
 ) -> Path:
@@ -70,7 +86,8 @@ def write_config(
     config_dir = results_dir / CONFIG_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / filename
-    config_path.write_text(json.dumps(config.model_dump(mode="json"), indent=2))
+    sanitized = sanitize_dict(config.model_dump(mode="json"))
+    config_path.write_text(json.dumps(sanitized, indent=2))
     return config_path
 
 

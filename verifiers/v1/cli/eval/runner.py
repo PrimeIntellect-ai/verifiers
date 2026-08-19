@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 
@@ -11,6 +12,7 @@ from verifiers.v1.cli.output import (
     append_episode,
     output_path,
     save_config,
+    sanitize_dict,
 )
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
-    logger.info("eval config:\n%s", config.model_dump_json(indent=2))
+    logger.info("eval config:\n%s", json.dumps(sanitize_dict(config.model_dump(mode="json")), indent=2))
     taskset = env.taskset
     if config.num_tasks is None and taskset.INFINITE:
         raise ValueError(
