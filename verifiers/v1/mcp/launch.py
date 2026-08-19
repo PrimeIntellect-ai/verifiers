@@ -303,7 +303,7 @@ async def serve_in_runtime(
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
-        ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
+        [python, "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
     if probe.exit_code != 0:
         raise ToolsetError(
