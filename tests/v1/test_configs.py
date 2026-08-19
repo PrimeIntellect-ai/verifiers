@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.cli.eval import EvalConfig
 
 CONFIGS = sorted(
@@ -24,3 +25,16 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.env.taskset.id
+
+
+def test_rollout_timeout_outcome_parses() -> None:
+    assert AgentConfig().timeout.on_rollout_timeout == "error"
+    config = AgentConfig.model_validate(
+        {"timeout": {"rollout": 60, "on_rollout_timeout": "zero"}}
+    )
+    assert config.timeout.on_rollout_timeout == "zero"
+
+    with pytest.raises(ValueError):
+        AgentConfig.model_validate(
+            {"timeout": {"rollout": 60, "on_rollout_timeout": "ignore"}}
+        )
