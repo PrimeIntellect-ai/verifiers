@@ -19,7 +19,6 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
-from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -150,22 +149,9 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(
-        self,
-        run: "Rollout",
-        make_run: Callable[[], "Rollout"],
-        retry: RetryConfig,
-        gate: asyncio.Semaphore | None = None,
-        borrowed: bool = False,
-    ) -> None:
+    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
         self._run = run
         self._gate = gate
-        self._make_run = make_run
-        self._retry = retry
-        self._borrowed = borrowed
-        self._attempt = 0
-        self._history: list = []
-        self._delivered = False
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
@@ -173,53 +159,6 @@ class Interaction:
     @property
     def trace(self) -> Trace:
         return self._run.trace
-
-    async def _finish(self, *, include_history: bool) -> Trace:
-        trace = await self._run.close()
-        if trace.agent.runtime is not None:
-            trace.agent.runtime.borrowed = self._borrowed
-        if include_history and self._history:
-            trace.errors[:0] = self._history
-            self._history.clear()
-        return trace
-
-    async def _retry_failed(self) -> bool:
-        retry = self._retry
-        if (
-            self._delivered
-            or self._attempt >= retry.max_retries
-            or not trace_should_retry(self.trace, retry)
-        ):
-            return False
-        if self._borrowed:
-            logger.warning(
-                "not retrying the interaction on a borrowed box (its state is no "
-                "longer the task's start state); the error stands"
-            )
-            return False
-        trace = await self._finish(include_history=False)
-        self._history.extend(trace.errors)
-        delay = backoff(self._attempt)
-        logger.warning(
-            "retrying agent interaction (retry %d/%d) in %.1fs after error: %s",
-            self._attempt + 1,
-            retry.max_retries,
-            delay,
-            trace.last_error.type if trace.last_error else "?",
-        )
-        await asyncio.sleep(delay)
-        self._attempt += 1
-        self._run = self._make_run()
-        self._started = False
-        self._over = False
-        return True
-
-    async def _open(self) -> bool:
-        while True:
-            if await self._run.open():
-                return True
-            if not await self._retry_failed():
-                return False
 
     async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
@@ -256,28 +195,24 @@ class Interaction:
             # A turn's messages may arrive typed or as wire dicts (env code naturally
             # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
             messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
-        while True:
-            self._started = True
-            turns_before = self.trace.num_turns
-            nodes_before = len(self.trace.nodes)
-            await self._run.step(messages)
-            if self.trace.num_turns > turns_before:
-                # The segment answered — even if a limit or @stop then ended the
-                # exchange, that surfaces as the NEXT turn's terminated segment.
-                segment_messages: Messages = []
-                saw_assistant = False
-                for node in self.trace.nodes[nodes_before:]:
-                    if node.sampled:
-                        segment_messages.append(node.message)
-                        saw_assistant = True
-                    elif saw_assistant and isinstance(node.message, ToolMessage):
-                        segment_messages.append(node.message)
-                self._delivered = True
-                return Segment(messages=segment_messages)
-            if await self._retry_failed() and await self._open():
-                continue
-            self._over = True
-            return Segment(messages=[], terminated=True)
+        self._started = True
+        turns_before = self.trace.num_turns
+        nodes_before = len(self.trace.nodes)
+        await self._run.step(messages)
+        if self.trace.num_turns > turns_before:
+            # The segment answered — even if a limit or @stop then ended the
+            # exchange, that surfaces as the NEXT turn's terminated segment.
+            segment_messages: Messages = []
+            saw_assistant = False
+            for node in self.trace.nodes[nodes_before:]:
+                if node.sampled:
+                    segment_messages.append(node.message)
+                    saw_assistant = True
+                elif saw_assistant and isinstance(node.message, ToolMessage):
+                    segment_messages.append(node.message)
+            return Segment(messages=segment_messages)
+        self._over = True
+        return Segment(messages=[], terminated=True)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
@@ -285,7 +220,7 @@ class Interaction:
         async with self._lock, self._gate or nullcontext():
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
-            return await self._finish(include_history=True)
+            return await self._run.close()
 
 
 class Agent:
@@ -515,45 +450,38 @@ class Agent:
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
-        `on_trace`). `config.retries` applies while no segment has been returned
-        to the caller: setup and the opening turn can restart on a fresh runtime.
-        Once caller-visible output exists, the exchange cannot be replayed without
-        also rewinding caller state, so later failures conclude the interaction."""
+        `on_trace`). An exchange is caller-driven, so `config.retries` does not
+        apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         params = self._rollout_params(task, runtime, dict(tools or {}))
-
-        def make_run() -> Rollout:
-            return Rollout(
-                task=task,
-                has_user=True,
-                on_trace=on_trace,
-                **params,
-            )
-
-        interaction = Interaction(
-            make_run(),
-            make_run=make_run,
-            retry=self.config.retries,
-            gate=self._gate,
-            borrowed=runtime is not None,
+        run = Rollout(
+            task=task,
+            has_user=True,
+            on_trace=on_trace,
+            **params,
         )
+        interaction = Interaction(run, gate=self._gate)
         async with self._gate or nullcontext():
-            opened = await interaction._open()
-            if not opened and (failure := interaction._run.failure) is not None:
-                await interaction._finish(include_history=True)
+            opened = await run.open()
+            if not opened and (failure := run.failure) is not None:
+                trace = await run.close()
+                if trace.agent.runtime is not None:
+                    trace.agent.runtime.borrowed = runtime is not None
                 raise failure
         try:
             yield interaction
         except Exception as e:
-            interaction._run.fail(e)
+            run.fail(e)
             raise
         except BaseException:
-            await interaction._run.abort()
+            await run.abort()
             raise
         finally:
-            await interaction.close()
+            trace = run.trace if run.closed else await interaction.close()
+            if trace.agent.runtime is not None:
+                trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
