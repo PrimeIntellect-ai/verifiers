@@ -16,12 +16,14 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
     append_user_notice,
     blocked_url,
     parse_sse_event,
+    provider_allowed_domains,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -56,6 +58,7 @@ THINKING = ("redacted_thinking", "thinking")
 # at the provider. Anchoring the pattern keeps new versions client-side without treating an
 # arbitrary dated provider tool as safe.
 _CLIENT_TOOL_TYPE = re.compile(r"(?:bash|text_editor|computer|memory)_\d{8}").fullmatch
+_WEB_TOOL_TYPE = re.compile(r"web_(?:search|fetch)_\d{8}").fullmatch
 _CONTENT_WRAPPERS = (
     "tool_result",
     "code_execution_tool_result",
@@ -126,10 +129,10 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def blocked_content_path(value, path: str) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
                 return blocked
         return None
     if not isinstance(value, dict):
@@ -148,10 +151,12 @@ def blocked_content_path(value, path: str) -> str | None:
             return source_path
         source_kind = source.get("type")
         if source_kind == "content":
-            return blocked_content_path(source.get("content"), f"{source_path}.content")
+            return blocked_content_path(
+                source.get("content"), f"{source_path}.content", policy
+            )
         if source_kind == "url":
             url = source.get("url")
-            if not isinstance(url, str) or blocked_url(url):
+            if not isinstance(url, str) or blocked_url(url, policy):
                 return f"{source_path}.url"
         if source_kind == "file":
             return (
@@ -169,13 +174,13 @@ def blocked_content_path(value, path: str) -> str | None:
     ) and value.get("file_id"):
         return f"{path}.file_id"
     if kind in _CONTENT_WRAPPERS:
-        return blocked_content_path(value.get("content"), f"{path}.content")
+        return blocked_content_path(value.get("content"), f"{path}.content", policy)
     return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path)
+        blocked = blocked_content_path(value, path, policy)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
@@ -183,16 +188,18 @@ def mediate_content(value, path: str):
     for index, block in enumerate(value):
         item_path = f"{path}[{index}]"
         if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
-            if blocked := blocked_content_path({**block, "content": []}, item_path):
+            if blocked := blocked_content_path(
+                {**block, "content": []}, item_path, policy
+            ):
                 capabilities.append(blocked)
                 continue
             content, removed = mediate_content(
-                block.get("content"), f"{item_path}.content"
+                block.get("content"), f"{item_path}.content", policy
             )
             if removed:
                 block["content"] = content or ""
                 capabilities.extend(removed)
-        elif blocked := blocked_content_path(block, item_path):
+        elif blocked := blocked_content_path(block, item_path, policy):
             capabilities.append(blocked)
             continue
         mediated.append(block)
@@ -448,7 +455,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     response_type = ModdedAnthropicMessage
 
     def mediate_external_capabilities(
-        self, body: MessageCreateParams
+        self, body: MessageCreateParams, policy: NetworkPolicyConfig
     ) -> tuple[MessageCreateParams, list[str]]:
         mediated = body
         capabilities: list[str] = []
@@ -457,7 +464,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system, removed = mediate_content(mediated.get("system"), "system")
+        system, removed = mediate_content(mediated.get("system"), "system", policy)
         capabilities.extend(removed)
         if removed:
             if system:
@@ -469,7 +476,9 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if not isinstance(message, dict):
                 continue
             content, removed = mediate_content(
-                message.get("content"), f"messages[{message_index}].content"
+                message.get("content"),
+                f"messages[{message_index}].content",
+                policy,
             )
             capabilities.extend(removed)
             if removed:
@@ -482,6 +491,33 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         tools = []
         for index, tool in enumerate(tool_items):
             kind = tool.get("type") if isinstance(tool, dict) else None
+            if (
+                isinstance(tool, dict)
+                and isinstance(kind, str)
+                and _WEB_TOOL_TYPE(kind)
+            ):
+                callers = tool.get("allowed_callers")
+                domains = (
+                    provider_allowed_domains(policy, tool.get("allowed_domains"))
+                    if tool.get("blocked_domains") in (None, [])
+                    and (
+                        callers is None
+                        or isinstance(callers, list)
+                        and "direct" in callers
+                    )
+                    else []
+                )
+                if domains:
+                    web_tool = {
+                        **tool,
+                        "allowed_domains": domains,
+                        "allowed_callers": ["direct"],
+                    }
+                    web_tool.pop("blocked_domains", None)
+                    tools.append(web_tool)
+                    continue
+                capabilities.append(f"tools[{index}].type")
+                continue
             if isinstance(tool, dict) and (
                 (isinstance(kind, str) and _CLIENT_TOOL_TYPE(kind))
                 or (kind in (None, "custom") and "input_schema" in tool)

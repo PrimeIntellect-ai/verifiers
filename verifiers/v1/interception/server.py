@@ -280,7 +280,9 @@ class InterceptionServer(Interception):
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(body)
+        mediated, capabilities = dialect.mediate_external_capabilities(
+            body, session.network_policy
+        )
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(

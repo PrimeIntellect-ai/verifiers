@@ -16,16 +16,19 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel
+from pydantic import AnyHttpUrl, BaseModel, TypeAdapter, ValidationError
 from pydantic_core import from_json
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
 from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
 CAPABILITY_NOTICE = (
@@ -35,9 +38,83 @@ CAPABILITY_NOTICE = (
 )
 
 
-def blocked_url(value: str) -> bool:
-    """Whether a provider-resolved resource is not inline data."""
-    return not value.lower().startswith("data:")
+def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
+    """Whether a provider-resolved resource is neither inline nor policy-permitted."""
+    if value.lower().startswith("data:"):
+        return False
+    try:
+        url = HTTP_URL_ADAPTER.validate_python(value)
+    except ValidationError:
+        return True
+    host = url.host.lower().rstrip(".").strip("[]")
+    return any(
+        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.block
+    ) or not any(
+        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.allow
+    )
+
+
+def provider_allowed_domains(
+    policy: NetworkPolicyConfig, requested: object = None
+) -> list[str]:
+    """Translate a network policy to provider domain-filter semantics without widening it."""
+    if policy.block or not policy.allow or "*" in policy.allow:
+        return []
+    domains = []
+    for rule in policy.allow:
+        try:
+            url = urlsplit(rule if "://" in rule else f"//{rule}")
+            port = url.port
+        except ValueError:
+            return []
+        host = (url.hostname or "").lower().rstrip(".")
+        domain = host.removeprefix("*.")
+        if (
+            url.scheme
+            or port is not None
+            or not host.startswith("*.")
+            or not domain
+            or "*" in domain
+            or not domain.isascii()
+        ):
+            return []
+        domains.append(domain)
+    domains = list(dict.fromkeys(domains))
+    if requested is None:
+        return domains
+    if not isinstance(requested, list):
+        return []
+    requested_domains = []
+    for domain in requested:
+        if not isinstance(domain, str):
+            return []
+        try:
+            url = urlsplit(domain if "://" in domain else f"//{domain}")
+            port = url.port
+        except ValueError:
+            return []
+        host = (url.hostname or "").lower().rstrip(".")
+        if (
+            url.scheme
+            or port is not None
+            or url.username is not None
+            or url.path
+            or url.query
+            or url.fragment
+            or not host
+            or "*" in host
+            or not host.isascii()
+        ):
+            return []
+        requested_domains.append(host)
+    intersection = []
+    for allowed in domains:
+        for requested_domain in requested_domains:
+            if allowed == requested_domain or allowed.endswith(f".{requested_domain}"):
+                intersection.append(allowed)
+            elif requested_domain.endswith(f".{allowed}"):
+                intersection.append(requested_domain)
+    return list(dict.fromkeys(intersection))
 
 
 def append_user_notice(
@@ -187,7 +264,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
     @abstractmethod
-    def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
+    def mediate_external_capabilities(
+        self, body: ReqT, policy: NetworkPolicyConfig
+    ) -> tuple[ReqT, list[str]]:
         """Remove provider-side capabilities during restricted execution. Implementations add
         the same policy context on every call because the agent does not retain injected request
         content. Returned paths never contain request values."""
