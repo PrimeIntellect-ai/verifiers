@@ -154,6 +154,8 @@ def _eval_config(
         runtime_cfg = dict(runtime)
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
+    retries = {"max_retries": 2, "include": ["ProviderError", "HarnessError"]}
+    env_cfg.setdefault("retries", retries)
     # Per-run caps live on the seats: resolve the env's declared roles and cap
     # each one (a test's own seat dict wins over the shared defaults).
     config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
@@ -167,11 +169,8 @@ def _eval_config(
         seat_cfg.setdefault("max_turns", max_turns)
         seat_cfg.setdefault("max_output_tokens", max_tokens)
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
-        # Flake resilience: retries are per-agent now (flat RetryConfig).
-        seat_cfg.setdefault(
-            "retries",
-            {"max_retries": 2, "include": ["ProviderError", "HarnessError"]},
-        )
+        # Agent runs retry locally; interactions retry with their whole episode.
+        seat_cfg.setdefault("retries", retries)
     return EvalConfig(
         env={
             "taskset": taskset_cfg,
