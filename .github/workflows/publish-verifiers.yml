@@ -31,12 +31,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Build sdist and wheel
         run: uv build
@@ -45,7 +45,7 @@ jobs:
         run: ls -1 dist/
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: verifiers-dev-dist
           path: dist/
@@ -60,13 +60,13 @@ jobs:
       id-token: write
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: verifiers-dev-dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
 
@@ -80,7 +80,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Checkout tagged release
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
@@ -100,13 +100,13 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Build sdist and wheel
         run: uv build
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: verifiers-dist
           path: dist/
@@ -121,13 +121,13 @@ jobs:
       id-token: write
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: verifiers-dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release-tag:
     needs: [build-tag, publish-tag]
@@ -136,18 +136,18 @@ jobs:
       contents: write
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.build-tag.outputs.tag }}
 
       - name: Download dist artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: verifiers-dist
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build-tag.outputs.tag }}
           generate_release_notes: true
