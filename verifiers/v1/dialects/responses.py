@@ -8,6 +8,7 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 """
 
 import json
+import re
 from collections import deque
 from typing import cast
 
@@ -17,12 +18,14 @@ from openai.types.responses import (
 from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel, ConfigDict
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
     append_user_notice,
     blocked_url,
     iter_sse_reverse,
+    provider_allowed_domains,
 )
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
@@ -65,6 +68,7 @@ _CLIENT_TOOL_TYPES = (
     "computer_use_preview",
 )
 _CLIENT_TOOL_CHOICES = (*_CLIENT_TOOL_TYPES, "namespace", "tool_search", "shell")
+_WEB_SEARCH_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
 _SAFE_INPUT_TYPES = (
     "input_text",
     "input_file",
@@ -142,7 +146,9 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
+def mediate_tools(
+    tools, path: str, policy: NetworkPolicyConfig
+) -> tuple[list[dict], list[str]]:
     if tools is not None and not isinstance(tools, list):
         return [], [path]
     mediated = []
@@ -153,11 +159,27 @@ def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
             capabilities.append(item_path)
             continue
         kind = tool.get("type")
+        if isinstance(kind, str) and _WEB_SEARCH_TOOL_TYPE(kind):
+            raw_filters = tool.get("filters")
+            if raw_filters is None or isinstance(raw_filters, dict):
+                requested = raw_filters.get("allowed_domains") if raw_filters else None
+                domains = provider_allowed_domains(policy, requested)
+            else:
+                domains = []
+            if domains:
+                filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+                filters["allowed_domains"] = domains
+                mediated.append({**tool, "filters": filters})
+                continue
+            capabilities.append(f"{item_path}.type")
+            continue
         if kind in _CLIENT_TOOL_TYPES:
             mediated.append(tool)
             continue
         if kind == "namespace":
-            nested, removed = mediate_tools(tool.get("tools"), f"{item_path}.tools")
+            nested, removed = mediate_tools(
+                tool.get("tools"), f"{item_path}.tools", policy
+            )
             capabilities.extend(removed)
             if nested:
                 mediated.append({**tool, "tools": nested})
@@ -177,10 +199,10 @@ def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
     return mediated, capabilities
 
 
-def blocked_content_path(value, path: str) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
                 return blocked
         return None
     if not isinstance(value, dict):
@@ -196,7 +218,9 @@ def blocked_content_path(value, path: str) -> str | None:
         if value.get("file_id"):
             return f"{path}.file_id"
         if "file_url" in value:
-            if not isinstance(value["file_url"], str) or blocked_url(value["file_url"]):
+            if not isinstance(value["file_url"], str) or blocked_url(
+                value["file_url"], policy
+            ):
                 return f"{path}.file_url"
         elif not isinstance(value.get("file_data"), str):
             return f"{path}.file_data"
@@ -204,7 +228,7 @@ def blocked_content_path(value, path: str) -> str | None:
         if value.get("file_id"):
             return f"{path}.file_id"
         if not isinstance(value.get("image_url"), str) or blocked_url(
-            value["image_url"]
+            value["image_url"], policy
         ):
             return f"{path}.image_url"
 
@@ -222,7 +246,7 @@ def blocked_content_path(value, path: str) -> str | None:
     if kind in ("additional_tools", "tool_search_output"):
         if kind == "tool_search_output" and value.get("execution") != "client":
             return f"{path}.execution"
-        _, removed = mediate_tools(value.get("tools"), f"{path}.tools")
+        _, removed = mediate_tools(value.get("tools"), f"{path}.tools", policy)
         return removed[0] if removed else None
 
     if kind in (
@@ -230,21 +254,21 @@ def blocked_content_path(value, path: str) -> str | None:
         "function_call_output",
         "custom_tool_call_output",
     ):
-        return blocked_content_path(value.get("output"), f"{path}.output")
+        return blocked_content_path(value.get("output"), f"{path}.output", policy)
     if kind in (None, "message") and "role" in value and "content" in value:
-        return blocked_content_path(value["content"], f"{path}.content")
+        return blocked_content_path(value["content"], f"{path}.content", policy)
     return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path)
+        blocked = blocked_content_path(value, path, policy)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
     capabilities = []
     for index, part in enumerate(value):
-        if blocked := blocked_content_path(part, f"{path}[{index}]"):
+        if blocked := blocked_content_path(part, f"{path}[{index}]", policy):
             capabilities.append(blocked)
             continue
         mediated.append(part)
@@ -415,7 +439,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
     response_type = OpenAIResponse
 
     def mediate_external_capabilities(
-        self, body: ResponseCreateParams
+        self, body: ResponseCreateParams, policy: NetworkPolicyConfig
     ) -> tuple[ResponseCreateParams, list[str]]:
         mediated = body
         capabilities: list[str] = []
@@ -440,12 +464,12 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                 kind = item.get("type")
                 if kind in ("additional_tools", "tool_search_output"):
                     if blocked := blocked_content_path(
-                        {**item, "tools": []}, item_path
+                        {**item, "tools": []}, item_path, policy
                     ):
                         capabilities.append(blocked)
                         continue
                     item["tools"], removed = mediate_tools(
-                        item.get("tools"), f"{item_path}.tools"
+                        item.get("tools"), f"{item_path}.tools", policy
                     )
                     capabilities.extend(removed)
                     if kind == "tool_search_output" or item["tools"]:
@@ -459,14 +483,16 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
 
                 if content_field:
                     content, removed = mediate_content(
-                        item.get(content_field), f"{item_path}.{content_field}"
+                        item.get(content_field),
+                        f"{item_path}.{content_field}",
+                        policy,
                     )
                     capabilities.extend(removed)
                     if removed:
                         item[content_field] = content or ""
 
                 scan = {**item, content_field: []} if content_field else item
-                blocked = blocked_content_path(scan, item_path)
+                blocked = blocked_content_path(scan, item_path, policy)
                 if blocked is None:
                     safe_input.append(item)
                 else:
@@ -480,11 +506,11 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                         }
                         safe_input.append(item)
             mediated["input"] = safe_input
-        elif blocked := blocked_content_path(raw_input, "input"):
+        elif blocked := blocked_content_path(raw_input, "input", policy):
             capabilities.append(blocked)
             mediated["input"] = []
 
-        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools")
+        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools", policy)
         capabilities.extend(tool_capabilities)
         if "tools" in mediated:
             mediated["tools"] = tools
@@ -497,14 +523,18 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         )
         if isinstance(choice, dict):
             kind = choice.get("type")
-            valid_choice = kind in _CLIENT_TOOL_CHOICES and any(
+            valid_choice = (
+                kind in _CLIENT_TOOL_CHOICES
+                or isinstance(kind, str)
+                and _WEB_SEARCH_TOOL_TYPE(kind)
+            ) and any(
                 tool.get("type") == kind
                 and ("name" not in choice or tool.get("name") == choice["name"])
                 for tool in tools
             )
             if kind == "allowed_tools":
                 choice_tools, choice_capabilities = mediate_tools(
-                    choice.get("tools"), "tool_choice.tools"
+                    choice.get("tools"), "tool_choice.tools", policy
                 )
                 valid_choice = not choice_capabilities
                 mediated["tool_choice"] = {**choice, "tools": choice_tools}

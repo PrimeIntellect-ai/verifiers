@@ -99,9 +99,11 @@ allowlists retain their shared entries, while blocklists combine; framework-only
 either side takes precedence, and concrete allowlists cannot be combined with blocklists.
 Docker framework routes take precedence over deny rules, while ordinary Prime deny rules
 are applied unchanged and may block a matching route. Restricted Harbor tasks require
-Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved remote resources
-and hosted tools are disabled under every restricted policy; allowlists govern runtime
-egress only.
+Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained
+when their initial destination matches the effective policy. OpenAI Responses web search and
+Anthropic web search/fetch receive wildcard host allowlists translated to provider domains;
+policies that cannot be translated without widening still disable them. Every other hosted
+tool and provider-held resource remains disabled.
 
 ## Artifacts and collect hooks
 
