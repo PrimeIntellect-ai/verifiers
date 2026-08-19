@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
+# Prime launchers can ignore terminal signals; reset them for every user process.
+_DEFAULT_SIGNAL_ARGV = ("env", "--default-signal=INT,QUIT")
+
 
 BASE_LABELS: list[str] = []
 
@@ -267,7 +270,7 @@ class PrimeRuntime(Runtime):
         try:
             result = await self._client.run_background_job(
                 self.info.id,
-                shlex.join(argv),
+                shlex.join([*_DEFAULT_SIGNAL_ARGV, *argv]),
                 timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
@@ -294,7 +297,7 @@ class PrimeRuntime(Runtime):
         try:
             process = await self._client.open_process(
                 self.info.id,
-                shlex.join(argv),
+                shlex.join([*_DEFAULT_SIGNAL_ARGV, *argv]),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -322,7 +325,7 @@ class PrimeRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        command = f"exec {shlex.join([*_DEFAULT_SIGNAL_ARGV, *argv])} > {shlex.quote(log)} 2>&1"
         try:
             await self._client.start_background_job(
                 self.info.id,
