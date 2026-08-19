@@ -145,6 +145,15 @@ class Runtime(ABC):
         """Whether `open_process()` is implemented for this runtime instance."""
         return type(self).open_process is not Runtime.open_process
 
+    @property
+    def supports_snapshots(self) -> bool:
+        """Whether this runtime can capture and restore workspace snapshots."""
+        return (
+            type(self).snapshot is not Runtime.snapshot
+            and type(self).restore is not Runtime.restore
+            and type(self).delete_snapshot is not Runtime.delete_snapshot
+        )
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}
@@ -224,6 +233,27 @@ class Runtime(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support run_background"
         )
+
+    async def snapshot(self) -> str:
+        """Capture the configured workspace and return an opaque reference.
+
+        The reference must outlive this runtime instance so a later compatible runtime
+        can restore it. Providers define the reference's durability and storage. Callers
+        own returned snapshots and should release them with `delete_snapshot`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def restore(self, ref: str) -> None:
+        """Replace the configured workspace with the contents of `ref`."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def delete_snapshot(self, ref: str) -> None:
+        """Release a snapshot previously returned by this runtime type.
+
+        This must not require a live runtime: callers may delete through a stopped or
+        unstarted compatible instance after the runtime that captured `ref` is gone.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     async def prepare_uv_script(
         self,
