@@ -1,5 +1,7 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
+from typing import Literal
+
 from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
@@ -17,6 +19,10 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for the task + harness setup hooks."""
     rollout: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
+    on_rollout_timeout: Literal["error", "zero"] = "error"
+    """How to record an expired rollout timeout. ``error`` preserves the current
+    failure behavior. ``zero`` keeps the partial trajectory as a clean truncation
+    with reward zero, so a trainer can use it as negative evidence."""
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None

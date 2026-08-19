@@ -521,6 +521,7 @@ class Agent:
                     else task.data.timeout.setup
                 ),
                 agent=cap_remote_agent_timeout(agent_timeout, runtime_config, task),
+                agent_outcome=self.timeout.on_rollout_timeout,
                 finalize=(
                     self.timeout.finalize
                     if self.timeout.finalize is not None
