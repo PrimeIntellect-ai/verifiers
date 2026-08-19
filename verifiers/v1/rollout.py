@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -45,6 +46,8 @@ class RolloutTimeouts:
     """Timeout (in seconds) for the task + harness setup hooks."""
     agent: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
+    agent_outcome: Literal["error", "zero"] = "error"
+    """How to record an expired agent timeout."""
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
@@ -126,6 +129,7 @@ class Rollout:
         )
         self._stack = AsyncExitStack()
         self._failed = False
+        self._zero_reward_on_timeout = False
         self._failure: Exception | None = None
         self._opened = False
         self._closed = False
@@ -343,7 +347,7 @@ class Rollout:
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
-        a failure (an expired agent timeout included), or a segment that made no
+        a failure, a configured clean agent timeout, or a segment that made no
         progress all end it."""
         if not self._opened or self._closed or not self.ok:
             return False
@@ -370,16 +374,20 @@ class Rollout:
                         return False
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
-            # An expired rollout deadline is the agent breaking its time budget —
-            # an agent failure, never a clean stop. A TimeoutError from the
-            # harness's own I/O with no expired deadline stays the raw failure.
+            # A TimeoutError from the harness's own I/O with no expired deadline
+            # stays the raw failure. The configured policy controls only expiry of
+            # this rollout's agent deadline.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.fail(
-                    HarnessError(
-                        f"agent timeout: rollout exceeded its "
-                        f"{self._timeouts.agent:g}s budget"
+                if self._timeouts.agent_outcome == "zero":
+                    self._zero_reward_on_timeout = True
+                    trace.stop("agent_timeout")
+                else:
+                    self.fail(
+                        HarnessError(
+                            f"agent timeout: rollout exceeded its "
+                            f"{self._timeouts.agent:g}s budget"
+                        )
                     )
-                )
             else:
                 self.fail(e)
             return False
@@ -463,17 +471,20 @@ class Rollout:
                     )
                 now = time.time()
                 trace.timing.finalize.end = now
-                trace.timing.scoring.start = now
-                async with boundary(TaskError, "scoring"):
-                    # Cross-trace judgement runs later, after the runtime is gone.
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            self.task.score(trace, runtime),
-                            self.harness.score(trace, runtime),
-                        ),
-                        self._timeouts.scoring,
-                    )
-                trace.timing.scoring.end = time.time()
+                if not self._zero_reward_on_timeout:
+                    trace.timing.scoring.start = now
+                    async with boundary(TaskError, "scoring"):
+                        # Cross-trace judgement runs later, after the runtime is gone.
+                        await asyncio.wait_for(
+                            asyncio.gather(
+                                self.task.score(trace, runtime),
+                                self.harness.score(trace, runtime),
+                            ),
+                            self._timeouts.scoring,
+                        )
+                    trace.timing.scoring.end = time.time()
+                else:
+                    trace.rewards.clear()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
