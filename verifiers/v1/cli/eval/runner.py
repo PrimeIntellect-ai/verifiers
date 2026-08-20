@@ -16,8 +16,7 @@ from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
-from verifiers.v1.episode import Episode
-from verifiers.v1.trace import EvalRunInfo
+from verifiers.v1.episode import Episode, EvalRunInfo
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +71,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
 
     async def on_complete(episode: Episode) -> None:
-        for trace in episode.traces:
-            trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+        episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -205,8 +203,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     sampling=config.sampling,
                     **payload,
                 )
-            for trace in episode.traces:
-                trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+            episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
             return [episode]
 

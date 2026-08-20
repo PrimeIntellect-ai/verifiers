@@ -4,9 +4,9 @@
 it. `load` keeps the good saved rollouts and re-runs what's owed: missing rollouts
 (never written) and errored ones (dropped and redone).
 
-A saved rollout is matched to a selected task by content: `task_key` hashes the
-task's wire data. Tasks with identical data are interchangeable, a task whose data
-changed since the interrupted run re-runs, and nothing depends on `data.idx`.
+A saved episode is matched to a selected task by hashing `episode.task.data`.
+Tasks with identical data are interchangeable, a task whose data changed since the
+interrupted run re-runs, and nothing depends on `data.idx`.
 """
 
 import json
@@ -57,12 +57,7 @@ def load(
                         row = from_json(line)
                     except ValueError:
                         row = json.loads(line)
-                    # The task rides each trace; a traceless record (a failure
-                    # before any trace minted) has no task and is owed again.
-                    if sniff_episode(row):
-                        key = task_key(row["traces"][0]["task"]["data"])
-                    else:
-                        key = task_key(row["task"]["data"])
+                    key = task_key(row["task"]["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
