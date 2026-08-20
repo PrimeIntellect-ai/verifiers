@@ -35,38 +35,147 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-LATE_UPDATE_GRACE_SECONDS = 1.0
+LATE_REPLY_GRACE_SECONDS = 1.0
 
 
 class VerifiersACPClient(Client):
+    """ACP output collector with an opt-in correlated lifecycle consumer."""
+
+    _NON_ANSWER_META = frozenset(("compaction", "refinement", "subagents"))
+
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
         self.output_changed = asyncio.Condition()
+        self.lifecycle_namespace: str | None = None
+        self.stop_reason: str | None = None
+        self.prompt_turn_id = 0
+        self.response_boundary: dict[str, Any] | None = None
+        self.terminal_quiescence: dict[str, Any] | None = None
+        self.lifecycle_error: str | None = None
+        self._last_event_sequence = 0
 
-    def reset(self) -> None:
+    def reset(self, lifecycle_namespace: str | None = None) -> None:
         self.visible_reply = ""
         self.message_id = None
         self.tool_calls = {}
+        self.lifecycle_namespace = lifecycle_namespace
+        self.stop_reason = None
+        self.response_boundary = None
+        self.terminal_quiescence = None
+        self.lifecycle_error = None
+        if lifecycle_namespace is not None:
+            self.prompt_turn_id += 1
+
+    def _lifecycle_meta(self, update: Any) -> dict[str, Any] | None:
+        if self.lifecycle_namespace is None:
+            return None
+        field_meta = getattr(update, "field_meta", None)
+        if not isinstance(field_meta, dict):
+            return None
+        if self.lifecycle_namespace not in field_meta:
+            return None
+        event = field_meta[self.lifecycle_namespace]
+        if not isinstance(event, dict):
+            self.lifecycle_error = "Prime Agent lifecycle metadata must be an object"
+            return None
+        return event
+
+    def _consume_lifecycle(self, event: dict[str, Any] | None) -> None:
+        if event is None:
+            return
+        sequence = event.get("eventSequence")
+        if type(sequence) is not int or sequence <= self._last_event_sequence:
+            self.lifecycle_error = "Prime Agent lifecycle eventSequence is invalid"
+            return
+        self._last_event_sequence = sequence
+        turn_id = event.get("promptTurnId")
+        if type(turn_id) is not int:
+            self.lifecycle_error = "Prime Agent lifecycle promptTurnId is invalid"
+            return
+        if turn_id != self.prompt_turn_id:
+            return
+        phase = event.get("phase")
+        if phase == "responseBoundary":
+            outcome = event.get("outcome")
+            terminal_expected = event.get("terminalQuiescenceExpected")
+            if (
+                outcome not in ("result", "error")
+                or type(terminal_expected) is not bool
+                or (outcome == "result" and not terminal_expected)
+            ):
+                self.lifecycle_error = "Prime Agent responseBoundary is malformed"
+            elif self.response_boundary is not None:
+                self.lifecycle_error = "Prime Agent emitted duplicate responseBoundary"
+            else:
+                self.response_boundary = event
+            return
+        if phase != "terminalQuiescence":
+            return
+        quiescence = event.get("quiescence")
+        outstanding = (
+            quiescence.get("outstandingSubagents")
+            if isinstance(quiescence, dict)
+            else None
+        )
+        remaining = (
+            quiescence.get("remainingAutonomousContinuations")
+            if isinstance(quiescence, dict)
+            else None
+        )
+        if (
+            self.response_boundary is None
+            or event.get("outcome") != self.response_boundary.get("outcome")
+            or type(outstanding) is not int
+            or outstanding != 0
+            or type(remaining) is not int
+            or remaining < 0
+        ):
+            self.lifecycle_error = "Prime Agent terminalQuiescence is malformed"
+            return
+        if self.terminal_quiescence is not None:
+            self.lifecycle_error = "Prime Agent emitted duplicate terminalQuiescence"
+            return
+        self.terminal_quiescence = event
+
+    def _is_current_turn_event(self, event: dict[str, Any] | None) -> bool:
+        if self.lifecycle_namespace is None:
+            return True
+        return bool(
+            event
+            and type(event.get("promptTurnId")) is int
+            and event.get("promptTurnId") == self.prompt_turn_id
+            and event.get("phase") == "event"
+        )
+
+    def _is_answer_chunk(self, event: dict[str, Any] | None) -> bool:
+        return self._is_current_turn_event(event) and not (
+            event and self._NON_ANSWER_META.intersection(event)
+        )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         async with self.output_changed:
+            event = self._lifecycle_meta(update)
+            self._consume_lifecycle(event)
             if isinstance(update, ToolCall):
-                self.tool_calls[update.tool_call_id] = update.status or "pending"
+                if self._is_current_turn_event(event):
+                    self.tool_calls[update.tool_call_id] = update.status or "pending"
             elif isinstance(update, ToolCallUpdate):
-                if update.status:
+                if update.status and self._is_current_turn_event(event):
                     self.tool_calls[update.tool_call_id] = update.status
-            elif isinstance(update, AgentMessageChunk) and isinstance(
-                update.content, TextContentBlock
+            elif (
+                isinstance(update, AgentMessageChunk)
+                and isinstance(update.content, TextContentBlock)
+                and self._is_answer_chunk(event)
             ):
                 message_id = getattr(update, "message_id", None)
                 if message_id is not None and message_id != self.message_id:
                     self.visible_reply = ""
                     self.message_id = message_id
                 self.visible_reply += update.content.text
-            else:
-                return
+            # Lifecycle metadata can accompany update kinds we otherwise ignore.
+            # Always wake lifecycle waiters after consuming it.
             self.output_changed.notify_all()
 
     async def request_permission(
@@ -132,7 +241,7 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> dict[str, Any]:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -141,12 +250,13 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
-    client.reset()
+    client.reset(config.get("lifecycle_meta_namespace"))
+    prompt_error: RequestError | None = None
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.stop_reason = response.stop_reason
     except RequestError as error:
-        detail = error.data.get("details") if isinstance(error.data, dict) else None
-        raise RuntimeError(detail or str(error)) from error
+        prompt_error = error
 
     # ACP 0.11 dispatches notifications in background tasks but resolves a request
     # response directly in its receive loop. An agent that sends its final
@@ -156,29 +266,96 @@ async def prompt(
     def has_visible_reply() -> bool:
         return bool(client.visible_reply.strip())
 
-    if not has_visible_reply():
+    if prompt_error is None and not has_visible_reply():
         async with client.output_changed:
             try:
                 await asyncio.wait_for(
                     client.output_changed.wait_for(has_visible_reply),
-                    timeout=LATE_UPDATE_GRACE_SECONDS,
+                    timeout=LATE_REPLY_GRACE_SECONDS,
                 )
             except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
                 pass
 
+    if (
+        client.lifecycle_namespace is not None
+        and prompt_error is not None
+        and client.response_boundary is None
+        and client.lifecycle_error is None
+    ):
+        # Prime drains its boundary notification before returning a request error,
+        # while ACP 0.11 dispatches that notification in a background task.
+        async with client.output_changed:
+            try:
+                await asyncio.wait_for(
+                    client.output_changed.wait_for(
+                        lambda: (
+                            client.response_boundary is not None
+                            or client.lifecycle_error is not None
+                        )
+                    ),
+                    timeout=LATE_REPLY_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                pass
+
+    terminal_expected = prompt_error is None or bool(
+        client.response_boundary
+        and client.response_boundary.get("terminalQuiescenceExpected") is True
+    )
+    if (
+        client.lifecycle_namespace is not None
+        and terminal_expected
+        and client.terminal_quiescence is None
+        and client.lifecycle_error is None
+    ):
+        # Do not impose a short protocol grace here: descendants can settle long after
+        # the prompt response. The owning rollout/action timeout remains the hard bound.
+        async with client.output_changed:
+            await client.output_changed.wait_for(
+                lambda: (
+                    client.terminal_quiescence is not None
+                    or client.lifecycle_error is not None
+                )
+            )
+    if client.lifecycle_error is not None:
+        raise RuntimeError(client.lifecycle_error)
+    if (
+        client.lifecycle_namespace is not None
+        and terminal_expected
+        and client.terminal_quiescence is None
+    ):
+        raise RuntimeError(
+            "Prime Agent prompt returned without correlated terminalQuiescence "
+            f"(stop_reason={client.stop_reason})"
+        )
+    if prompt_error is not None:
+        data = getattr(prompt_error, "data", None)
+        detail = data.get("details") if isinstance(data, dict) else None
+        raise RuntimeError(detail or str(prompt_error)) from prompt_error
+    if (
+        client.terminal_quiescence is not None
+        and client.terminal_quiescence["outcome"] == "error"
+    ):
+        raise RuntimeError("Prime Agent reported a terminal lifecycle error")
+
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
         config.get("allow_empty_tool_reply", False)
-        and response.stop_reason == "end_turn"
+        and client.stop_reason == "end_turn"
         and bool(tool_statuses)
         and all(status in ("completed", "failed") for status in tool_statuses)
     )
     if not has_visible_reply() and not completed_tool_turn:
         raise RuntimeError(
             "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+            f"(stop_reason={client.stop_reason}, tool_statuses={tool_statuses})"
         )
-    return client.visible_reply
+    return {
+        "reply": client.visible_reply,
+        "stop_reason": client.stop_reason,
+        "response_boundary": client.response_boundary,
+        "lifecycle": client.terminal_quiescence,
+    }
 
 
 class ACPSession:
@@ -226,7 +403,7 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> dict[str, Any]:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -295,7 +472,7 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        **await session.run(request["config"]),
                     }
                 elif operation == "shutdown":
                     await session.close()
@@ -308,6 +485,9 @@ async def serve_stream() -> None:
                 response = {
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
+                    "stop_reason": session.client.stop_reason,
+                    "response_boundary": session.client.response_boundary,
+                    "lifecycle": session.client.terminal_quiescence,
                 }
             write_packet(sys.stdout.buffer, response)
             if stop:

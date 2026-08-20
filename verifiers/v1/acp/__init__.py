@@ -42,6 +42,8 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     allow_empty_tool_reply: bool = False
+    lifecycle_meta_namespace: str | None = None
+    """Namespaced ACP lifecycle contract required to finish each prompt turn."""
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -114,6 +116,45 @@ def _packet(value: JsonObject) -> bytes:
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
     return len(data).to_bytes(8, "big") + data
+
+
+def _record_lifecycle_status(
+    trace: Trace, namespace: str, response: JsonObject
+) -> None:
+    """Record agent lifecycle as infrastructure status, never benchmark reward."""
+    stop_reason = response.get("stop_reason")
+    response_boundary = response.get("response_boundary")
+    lifecycle = response.get("lifecycle")
+    if stop_reason is not None and not isinstance(stop_reason, str):
+        raise TypeError("ACP stop reason must be a string or null")
+    if response_boundary is not None and not isinstance(response_boundary, dict):
+        raise TypeError("ACP response boundary must be an object or null")
+    if lifecycle is not None and not isinstance(lifecycle, dict):
+        raise TypeError("ACP lifecycle status must be an object or null")
+    infrastructure_ok = response.get("ok") is True
+    last_lifecycle = lifecycle or response_boundary
+    terminal_quiescence_observed = bool(
+        lifecycle and lifecycle.get("phase") == "terminalQuiescence"
+    )
+    status = {
+        "prompt_turn_id": (last_lifecycle or {}).get("promptTurnId"),
+        "stop_reason": stop_reason,
+        "infrastructure_status": "ok" if infrastructure_ok else "error",
+        "autonomous_completion": bool(
+            infrastructure_ok
+            and terminal_quiescence_observed
+            and lifecycle
+            and lifecycle.get("outcome") == "result"
+        ),
+        "terminal_quiescence_observed": terminal_quiescence_observed,
+        "last_lifecycle_phase": (last_lifecycle or {}).get("phase"),
+        "response_boundary": response_boundary,
+        "terminal_quiescence": lifecycle,
+    }
+    trace.info.setdefault("acp_lifecycle", {}).setdefault(namespace, []).append(status)
+    reply = response.get("reply")
+    if status["autonomous_completion"]:
+        trace.info["acp_answer_fallback"] = reply if isinstance(reply, str) else ""
 
 
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
@@ -216,25 +257,44 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
+            "lifecycle_meta_namespace": self.config.lifecycle_meta_namespace,
         }
-        async with self._lock:
-            if self._closed:
-                raise HarnessError(
-                    f"harness {self.harness.config.id!r} session is already closed"
-                )
-            if self._process is None:
-                await self._start()
-            assert self._process is not None
-            assert self._reader is not None
-            calls_before = len(self.trace.calls)
-            try:
-                await self._process.write(
-                    _packet({"operation": "prompt", "config": config})
-                )
-                response = await self._reader.read()
-            except BaseException:
-                await run_shielded(self._stop(graceful=False))
-                raise
+        lock_acquired = False
+        try:
+            async with self._lock:
+                lock_acquired = True
+                locked_turn_started = False
+                try:
+                    # Closed-session rejection is validation, not an attempted turn.
+                    if self._closed:
+                        raise HarnessError(
+                            f"harness {self.harness.config.id!r} session is already closed"
+                        )
+                    locked_turn_started = True
+                    if self._process is None:
+                        await self._start()
+                    assert self._process is not None
+                    assert self._reader is not None
+                    calls_before = len(self.trace.calls)
+                    await self._process.write(
+                        _packet({"operation": "prompt", "config": config})
+                    )
+                    response = await self._reader.read()
+                except BaseException:
+                    if locked_turn_started:
+                        with contextlib.suppress(BaseException):
+                            if namespace := self.config.lifecycle_meta_namespace:
+                                _record_lifecycle_status(self.trace, namespace, {})
+                        await run_shielded(self._stop(graceful=False))
+                    raise
+        except asyncio.CancelledError:
+            if not lock_acquired:
+                with contextlib.suppress(BaseException):
+                    if namespace := self.config.lifecycle_meta_namespace:
+                        _record_lifecycle_status(self.trace, namespace, {})
+            raise
+        if namespace := self.config.lifecycle_meta_namespace:
+            _record_lifecycle_status(self.trace, namespace, response)
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
