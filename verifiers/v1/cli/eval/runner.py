@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from typing import Any
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -18,8 +19,15 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EvalRunInfo
+from verifiers.v1.utils.platform import PushState, abort_run, finish_run, open_run
 
 logger = logging.getLogger(__name__)
+
+
+def record_run(episode: "Episode[Any, Any, Any]", config: EvalConfig) -> None:
+    """Stamp the run onto an episode's traces — the id the platform knows it by."""
+    for trace in episode.traces:
+        trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
 
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
@@ -70,39 +78,49 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("results: %s", out)
 
     write_lock = asyncio.Lock()
+    push_state = PushState() if config.push and config.rich else None
+    # Opened before the first rollout so the platform's id *is* the run's id:
+    # every trace is stamped with it once, at rollout time, and nothing is
+    # re-stamped or rewritten afterwards.
+    run = open_run(config, push_state)
+    config.run.adopt_id(run.id)
+    # A resume's kept rollouts are part of this run too, so they carry its id and
+    # go up with the rest — otherwise the platform would hold half a run.
+    for episode in finished:
+        record_run(episode, config)
+    run.log_traces(finished)
 
     async def on_complete(episode: Episode) -> None:
-        for trace in episode.traces:
-            trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+        record_run(episode, config)
         await append_episode(out, episode, write_lock)
+        # A queue put, but a bounded one: handing it to a thread keeps a full
+        # queue from stalling every other rollout (and freezing the dashboard).
+        await asyncio.to_thread(run.log_traces, [episode])
 
     # Serving resources (shared tool servers, interception) come up once for the
     # run; plan slots inside so the env's agents borrow them.
     async with env.serving():
         planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
         slots = [RunSlot.finished(episode) for episode in finished] + planned
-        push_state = None
-        if config.push and config.rich:
-            from verifiers.v1.utils.platform import PushState
-
-            push_state = PushState()
         display = (
             dashboard(slots, config, start, push=push_state)
             if config.rich
             else contextlib.nullcontext()
         )
         async with display:
-            results = await asyncio.gather(
-                *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
-            )
+            try:
+                results = await asyncio.gather(
+                    *(
+                        env.run_slot(slot, ctx, semaphore, on_complete)
+                        for slot in planned
+                    )
+                )
+            except BaseException as e:  # a killed eval must not sit at running
+                await asyncio.to_thread(abort_run, run, e, push_state)
+                raise
             episodes = finished + list(results)
-            if (
-                push_state is not None
-            ):  # upload off the event loop so the view keeps refreshing
-                from verifiers.v1.utils.platform import push_traces
-
-                push_state.started = True
-                await asyncio.to_thread(push_traces, episodes, config, push_state)
+            # Drain and close out off the event loop so the view keeps refreshing.
+            await asyncio.to_thread(finish_run, run, episodes, push_state)
     return episodes
 
 
@@ -196,6 +214,13 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
         )
         write_lock = asyncio.Lock()
+        # Same contract as the in-process runner: the run opens before the first
+        # rollout, so its id is the one every trace carries.
+        run = open_run(config)
+        config.run.adopt_id(run.id)
+        for episode in finished:
+            record_run(episode, config)
+        run.log_traces(finished)
 
         async def run_unit(payload: dict) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
@@ -205,16 +230,22 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     sampling=config.sampling,
                     **payload,
                 )
-            for trace in episode.traces:
-                trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+            record_run(episode, config)
             await append_episode(out, episode, write_lock)
+            await asyncio.to_thread(run.log_traces, [episode])
             return [episode]
 
         # Each rollout is its own `run` request, dispatched least-busy across workers.
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]
-        results = await asyncio.gather(*units)
+        try:
+            results = await asyncio.gather(*units)
+        except BaseException as e:  # a killed eval must not sit at running
+            await asyncio.to_thread(abort_run, run, e)
+            raise
         await client.close()
-        return finished + [record for unit in results for record in unit]
+        episodes = finished + [record for unit in results for record in unit]
+        await asyncio.to_thread(finish_run, run, episodes)
+        return episodes
     finally:
         proc.terminate()
         with contextlib.suppress(Exception):

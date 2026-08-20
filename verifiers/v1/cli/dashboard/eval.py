@@ -279,17 +279,22 @@ def Overview(config: EvalConfig) -> Table:
 
 
 def _push_footer(push: "PushState | None") -> Group | None:
-    """The `--push` status line under the rollouts, shown once the run finishes and the upload
-    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
-    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    """The `--push` status line under the rollouts. The run opens before the first rollout and
+    its traces stream up as they land, so the line carries the run's URL for the whole eval:
+    dim `Pushing traces (<url>)` while rollouts are still going, then white `Traces pushed
+    (<url>)` — with anything that degraded along the way appended in yellow — or red `Trace
+    push failed (<err>)` when there is no run to show. `None` (no line) when `--push` is off
+    or the run stayed local."""
     if push is None or not push.started:
         return None
-    if not push.done:
-        line = Text("Pushing traces...", style="dim")
-    elif push.url:
-        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-    else:
+    if push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    elif not push.done:
+        line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
+    else:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+        if push.warning:  # pushed, but not all of it - say what went wrong
+            line.append(f"  {push.warning}", style="yellow")
     return Group(Rule(style="dim"), line)
 
 

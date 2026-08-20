@@ -4,15 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "verifiers"
-authors = [
-    {name = "William Brown", email = "williambrown97@gmail.com"},
-]
-dynamic = ["version"]  # derived from git tags via hatch-vcs
+authors = [{ name = "William Brown", email = "williambrown97@gmail.com" }]
+dynamic = ["version"] # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11,<3.14"
-keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
+keywords = [
+    "reinforcement-learning",
+    "llm",
+    "rl",
+    "grpo",
+    "environments",
+    "multi-turn",
+    "agents",
+    "agentic-rl",
+    "tool-use",
+    "train",
+    "eval",
+    "harness",
+    "verifiers",
+    "rlvr",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -36,6 +49,7 @@ dependencies = [
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.37",
+    "prime-runs>=0.1.0",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",
@@ -96,30 +110,16 @@ examples = [
 ]
 
 [project.optional-dependencies]
-rg = [
-    "reasoning-gym>=0.1.8",
-]
-ta = [
-    "textarena==0.7.4",
-    "nltk>=3.9.2",
-]
-browser = [
-    "stagehand>=3.4.0",
-    "python-dotenv>=1.0.0",
-]
+rg = ["reasoning-gym>=0.1.8"]
+ta = ["textarena==0.7.4", "nltk>=3.9.2"]
+browser = ["stagehand>=3.4.0", "python-dotenv>=1.0.0"]
 harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "harbor==0.21.0 ; python_full_version >= '3.12'",
 ]
-modal = [
-    "modal>=1.4.0",
-]
-notebook = [
-    "nest-asyncio>=1.6.0",
-]
-openenv = [
-    "openenv>=0.4.1",
-]
+modal = ["modal>=1.4.0"]
+notebook = ["nest-asyncio>=1.6.0"]
+openenv = ["openenv>=0.4.1"]
 nemo-gym = [
     # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "nemo-gym==0.4.0; python_version >= '3.12'",
@@ -163,6 +163,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# TEMPORARY: prime-runs is not on PyPI yet
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", branch = "feature/prime-runs-sdk" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }
@@ -192,6 +194,7 @@ ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
+prime-runs = false
 prime-pydantic-config = false
 renderers = false
 
@@ -233,18 +236,8 @@ git_describe_command = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = [
-    "/verifiers",
-    "/tests",
-    "/README.md",
-    "/LICENSE",
-]
-exclude = [
-    "/wandb",
-    "/scratch",
-    "/configs",
-    "/environments",
-]
+include = ["/verifiers", "/tests", "/README.md", "/LICENSE"]
+exclude = ["/wandb", "/scratch", "/configs", "/environments"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["verifiers"]
@@ -269,12 +262,7 @@ pythonpath = ["tests/v1/fixtures"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--tb=short",
-    "-ra",
-    "--quiet",
-]
+addopts = ["--strict-markers", "--tb=short", "-ra", "--quiet"]
 markers = [
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
     "integration: marks tests as integration tests",
@@ -334,11 +322,7 @@ not-iterable = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-    "*/site-packages/*",
-]
+omit = ["*/tests/*", "*/__pycache__/*", "*/site-packages/*"]
 
 [tool.coverage.report]
 exclude_lines = [

@@ -40,12 +40,35 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # TODO: fetch the id from the Prime SDK once runs are registered there.
+    # The platform's run id once `prime_runs.init()` has opened the run (see
+    # `adopt_id`); the local uuid until then, and for a run that never reaches
+    # the platform. Private so it stays out of the saved config and its digest —
+    # two runs of the same config differ by id, and resume compares configs.
     _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+
+    _source: str | None = PrivateAttr(default=None)
+    """The `@ file.toml` this run was launched from, recorded by the CLI."""
 
     @property
     def id(self) -> str:
         return self._id
+
+    @property
+    def source(self) -> str | None:
+        return self._source
+
+    def adopt_id(self, run_id: str) -> None:
+        """Take the platform's run id as this run's id.
+
+        Called once, before the first rollout, so that every trace is stamped
+        with the id the platform knows the run by — one id, minted in one place,
+        never re-stamped afterwards."""
+        self._id = run_id
+
+    def record_source(self, path: str | None) -> None:
+        """Remember the config file the run was launched from, so it can be
+        uploaded verbatim with the run."""
+        self._source = path
 
 
 class EvalConfig(BaseConfig):
