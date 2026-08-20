@@ -73,7 +73,7 @@ class PrimeConfig(NetworkPolicyConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
-    timeout: float | None = None
+    timeout: float | None = Field(default=None, gt=0)
     """Seconds until the sandbox is deleted regardless of activity (None disables;
     only VM sandboxes support running without a lifetime limit)."""
     idle_timeout: float | None = 3600
