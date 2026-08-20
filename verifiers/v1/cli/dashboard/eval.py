@@ -294,7 +294,7 @@ def _push_footer(push: "PushState | None") -> Group | None:
         line.append(f"  not closed out: {push.error}", style="red")
     elif push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
-    elif not push.done:
+    elif not push.finished:
         line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
     else:
         line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")

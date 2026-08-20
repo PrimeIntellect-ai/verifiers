@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import prime_runs as pr
-from prime_runs.projection import build_samples, trace_to_sample
+from prime_runs.projection import build_samples
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
@@ -21,7 +21,6 @@ __all__ = [
     "build_samples",
     "finish_run",
     "open_run",
-    "trace_to_sample",
 ]
 
 
@@ -34,12 +33,17 @@ class PushState:
 
     run: "pr.Run | None" = None
     error: str | None = None
-    done: bool = False
 
     @property
     def url(self) -> str | None:
         """Where to watch the run. `None` for a run that stays local."""
         return self.run.url if self.run is not None else None
+
+    @property
+    def finished(self) -> bool:
+        """Whether the run has been closed out. The run's own flag, not a copy of
+        it: one that a caller has to remember to set is one that can disagree."""
+        return self.run is not None and self.run.finished
 
     @property
     def started(self) -> bool:
@@ -195,6 +199,3 @@ def _close(
     else:
         if run.url:
             logger.info("--push: %s -> %s", status.value, run.url)
-    finally:
-        if state is not None:
-            state.done = True
