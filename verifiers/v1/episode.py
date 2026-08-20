@@ -84,7 +84,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
-    task: TraceTask[DataT] | None = None
+    task: TraceTask[DataT]
     """The task dispatched to the env, including when no trace was produced."""
     group_id: str | None = None
     """Consumer-assigned identity shared by episodes in one rollout group."""
@@ -147,11 +147,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
             exclude_none=True,
         )
-
-    @classmethod
-    def of(cls, trace: Trace, env: str = "") -> Self:
-        """The single-agent record: one trace as its own episode."""
-        return cls(env=EnvInfo(id=env), task=trace.task, traces=[trace], ok=trace.ok)
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]

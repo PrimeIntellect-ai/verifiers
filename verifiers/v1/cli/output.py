@@ -6,8 +6,7 @@ whole episode owed on resume, and a failure before any trace minted still leaves
 its errors on disk. config.toml is the run's resolved config in the format the
 CLI reads (`@ config.toml`), so a run is re-runnable from its own output. Lines
 append as episodes complete, so results are durable mid-run. Files written
-before the episode atom (one bare trace per line) are still readable:
-`read_episodes` sniffs the line shape.
+by this surface contain episodes only.
 """
 
 import asyncio
@@ -15,11 +14,12 @@ import hashlib
 import json
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
 
@@ -93,35 +93,22 @@ def write_episode(results_dir: Path, episode: Episode) -> None:
         f.write(data + b"\n")
 
 
-def sniff_episode(row: dict) -> bool:
-    """Whether a parsed traces.jsonl row is an `Episode` (vs a pre-episode
-    bare trace, recognizable by its message graph)."""
-    return "traces" in row and "nodes" not in row
-
-
-def read_episodes(results_dir: Path, trace_type: type) -> list[Episode]:
+def read_episodes(results_dir: Path, trace_type: type) -> list[Episode[Any, Any, Any]]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
-    importing it). A pre-episode line (one bare trace) is wrapped as a single-trace
-    record, so both file generations read uniformly."""
+    importing it)."""
     trace_adapter = type_adapter(trace_type)
-    episodes: list[Episode] = []
+    episodes: list[Episode[Any, Any, Any]] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if sniff_episode(row):
-                # Validate the shell wire-typed (unknown task fields preserved), then
-                # re-type the traces as the caller asked.
-                record = WireEpisode.model_validate({**row, "traces": []})
-                record.traces = [
-                    trace_adapter.validate_python(t) for t in row.get("traces") or []
-                ]
-                episodes.append(record)
-            else:
-                trace = trace_adapter.validate_python(row)
-                episodes.append(Episode.of(trace))
+            record = WireEpisode.model_validate({**row, "traces": []})
+            record.traces = [
+                trace_adapter.validate_python(trace) for trace in row["traces"]
+            ]
+            episodes.append(record)
     return episodes
 
 
@@ -147,4 +134,10 @@ async def append_trace(
     """Append one finished trace as a single-agent rollout episode — the writers that
     complete trace-at-a-time (eval runners, gepa, replay) all go
     through here."""
-    await append_episode(results_dir, Episode.of(trace, env=env), lock)
+    episode = Episode(
+        env=EnvInfo(id=env),
+        task=trace.task,
+        traces=[trace],
+        ok=trace.ok,
+    )
+    await append_episode(results_dir, episode, lock)

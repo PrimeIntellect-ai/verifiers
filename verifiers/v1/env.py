@@ -59,13 +59,8 @@ class RunSlot:
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
-        task = episode.task
-        if task is None:
-            if not episode.traces:
-                raise ValueError("A finished episode is missing its task")
-            task = episode.traces[0].task
         return cls(
-            task=Task(task.data),
+            task=Task(episode.task.data),
             traces=list(episode.traces),
             episode=episode,
             done=True,

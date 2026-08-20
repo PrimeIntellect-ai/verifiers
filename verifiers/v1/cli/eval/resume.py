@@ -13,21 +13,21 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import TRACES_FILE, sniff_episode
+from verifiers.v1.cli.output import TRACES_FILE
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.task import task_key
-from verifiers.v1.trace import WireTrace
 
 
 def load(
     resume_dir: Path,
     selected_keys: list[str],
     num_rollouts: int,
-    complete: Callable[[Episode], bool] | None = None,
-) -> tuple[list[Episode], dict[str, int]]:
+    complete: Callable[[Episode[Any, Any, Any]], bool] | None = None,
+) -> tuple[list[Episode[Any, Any, Any]], dict[str, int]]:
     """Load the good saved rollouts and diff them against the run's target: returns
     (kept episodes, rollouts owed per task key). `selected_keys` is one key per
     selected task (duplicates allowed — a key selected k times is owed up to
@@ -40,13 +40,8 @@ def load(
         key: count * num_rollouts for key, count in Counter(selected_keys).items()
     }
 
-    def parse(row: dict) -> Episode:
-        if sniff_episode(row):
-            return WireEpisode.model_validate(row)
-        return Episode.of(WireTrace.model_validate(row))
-
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[str, list[tuple[bytes, Episode]]] = defaultdict(list)
+    good: dict[str, list[tuple[bytes, Episode[Any, Any, Any]]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -65,7 +60,9 @@ def load(
                 if key not in targets or len(good[key]) >= targets[key]:
                     continue
                 try:
-                    episode = parse(row)
+                    if "traces" not in row:
+                        raise ValueError("rollout record is not an episode")
+                    episode = WireEpisode.model_validate(row)
                     if not verdict(episode):
                         continue
                 # A malformed row from any task/episode plugin is owed again.
@@ -75,7 +72,7 @@ def load(
                     (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
-    episodes: list[Episode] = []
+    episodes: list[Episode[Any, Any, Any]] = []
     owed: dict[str, int] = {}
     for key, target in targets.items():
         rows = good.get(key, [])
