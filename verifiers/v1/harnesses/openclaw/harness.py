@@ -229,8 +229,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             prompt=prompt,
             mcp_urls={},
             system_prompt=system_prompt,
-            # OpenClaw can end after its final tool completes without a text message.
-            allow_empty_tool_reply=True,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

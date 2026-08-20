@@ -30,8 +30,6 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
-    ToolCall,
-    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
@@ -41,20 +39,13 @@ class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
-        self.tool_calls: dict[str, str] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
-        self.tool_calls = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        if isinstance(update, ToolCall):
-            self.tool_calls[update.tool_call_id] = update.status or "pending"
-        elif isinstance(update, ToolCallUpdate):
-            if update.status:
-                self.tool_calls[update.tool_call_id] = update.status
-        elif isinstance(update, AgentMessageChunk) and isinstance(
+        if isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
             message_id = getattr(update, "message_id", None)
@@ -137,23 +128,10 @@ async def prompt(
         raise ValueError("ACP prompt has no content")
     client.reset()
     try:
-        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        await connection.prompt(session_id=session_id, prompt=blocks)
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-
-    tool_statuses = list(client.tool_calls.values())
-    completed_tool_turn = (
-        config.get("allow_empty_tool_reply", False)
-        and response.stop_reason == "end_turn"
-        and bool(tool_statuses)
-        and all(status in ("completed", "failed") for status in tool_statuses)
-    )
-    if not client.visible_reply.strip() and not completed_tool_turn:
-        raise RuntimeError(
-            "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
-        )
     return client.visible_reply
 
 
