@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, RunInfo, Trace
 from verifiers.v1.types import Usage
 
 
@@ -17,6 +17,8 @@ class EnvInfo(BaseModel):
 
     id: str = ""
     """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k`."""
+    name: str | None = None
+    """The name the consumer runs the env under (e.g. an orchestrator env key)."""
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -32,6 +34,22 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
+    task_key: str | None = None
+    """Stable identity of the task the episode ran (``Task.key``), consumer-stamped."""
+    task_hash: str | None = None
+    """Content hash of the task's data (``Task.hash``), consumer-stamped."""
+    group_id: str | None = None
+    """Consumer-assigned rollout-group identity."""
+    policy_version: int | None = None
+    """Version of the policy weights the episode was generated with."""
+    run: RunInfo | None = None
+    """The run the episode belongs to (eval / train), consumer-stamped."""
+
+    def record_run(self, run: RunInfo) -> None:
+        """Record the run identity on the episode and each of its traces."""
+        self.run = run
+        for trace in self.traces:
+            trace.record_run(run)
 
     @property
     def last_error(self) -> Error | None:
