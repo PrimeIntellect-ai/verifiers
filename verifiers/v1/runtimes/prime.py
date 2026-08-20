@@ -166,11 +166,12 @@ class PrimeRuntime(Runtime):
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
             # -1 is prime's convention for no lifetime limit; containers with an
-            # idle timeout must carry a finite lifetime as a safety fallback
+            # idle timeout must carry a finite lifetime as a safety fallback (which
+            # must exceed the idle timeout)
             "timeout_minutes": (
                 -1
                 if self.config.vm or idle_minutes is None
-                else IDLE_FALLBACK_LIFETIME // 60
+                else max(IDLE_FALLBACK_LIFETIME // 60, idle_minutes + 1)
             ),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
