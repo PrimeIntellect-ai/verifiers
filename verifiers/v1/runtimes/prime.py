@@ -36,10 +36,6 @@ from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
-MAX_LIFETIME = 24 * 60 * 60
-"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
-
-
 BASE_LABELS: list[str] = []
 
 
@@ -77,6 +73,9 @@ class PrimeConfig(NetworkPolicyConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    timeout: float | None = None
+    """Seconds until the sandbox is deleted regardless of activity (None disables;
+    only VM sandboxes support running without a lifetime limit)."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
@@ -101,11 +100,20 @@ class PrimeConfig(NetworkPolicyConfig):
         return self
 
     @model_validator(mode="after")
-    def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
+    def _validate_timeouts(self) -> "PrimeConfig":
+        if self.timeout is None and not self.vm:
+            raise ValueError(
+                "container sandboxes (vm=false) require a lifetime timeout - "
+                "running without one is only supported for VM sandboxes"
+            )
+        if (
+            self.timeout is not None
+            and self.idle_timeout is not None
+            and self.idle_timeout > self.timeout
+        ):
             raise ValueError(
                 f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
+                f"sandbox lifetime timeout ({self.timeout}s)"
             )
         return self
 
@@ -160,8 +168,13 @@ class PrimeRuntime(Runtime):
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
-        # prime's idle timeout is in whole minutes; convert from the seconds config surface
-        # (floored to the SDK's 1-minute minimum).
+        # prime's timeouts are in whole minutes; convert from the seconds config surface
+        # (raised to the SDK's 1-minute minimum). A negative lifetime means no limit.
+        lifetime_minutes = (
+            max(1, math.ceil(self.config.timeout / 60))
+            if self.config.timeout is not None
+            else -1
+        )
         idle_minutes = (
             max(1, math.ceil(self.config.idle_timeout / 60))
             if self.config.idle_timeout is not None
@@ -172,7 +185,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            "timeout_minutes": lifetime_minutes,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -278,7 +291,13 @@ class PrimeRuntime(Runtime):
             result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=MAX_LIFETIME,
+                # the SDK poll needs a finite deadline: the sandbox lifetime when
+                # capped, else effectively unbounded
+                timeout=(
+                    int(self.config.timeout)
+                    if self.config.timeout is not None
+                    else 365 * 24 * 60 * 60
+                ),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
                 poll_interval=1,
