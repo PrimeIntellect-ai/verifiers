@@ -18,7 +18,7 @@ from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
-from pydantic import BaseModel, Field, InstanceOf, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -44,7 +44,6 @@ BASE_LABELS: list[str] = []
 
 
 class PrimeClientPool(BaseModel):
-    loop: InstanceOf[asyncio.AbstractEventLoop]
     client: Any
     leases: int = 0
 
@@ -155,7 +154,6 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
-        self.client_pool: PrimeClientPool | None = None
 
     @property
     def supports_live_processes(self) -> bool:
@@ -169,13 +167,11 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         loop = asyncio.get_running_loop()
-        client_pool = client_pools.get(loop)
-        if client_pool is None:
-            client_pool = PrimeClientPool(loop=loop, client=AsyncSandboxClient())
-            client_pools[loop] = client_pool
-        client_pool.leases += 1
-        self.client_pool = client_pool
-        self._client = client_pool.client
+        pool = client_pools.get(loop)
+        if pool is None:
+            pool = client_pools[loop] = PrimeClientPool(client=AsyncSandboxClient())
+        pool.leases += 1
+        self._client = pool.client
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -415,21 +411,18 @@ class PrimeRuntime(Runtime):
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
         client, self._client = self._client, None  # `_client` is the idempotency guard
-        client_pool, self.client_pool = self.client_pool, None
         if client is None:
             return
-        assert client_pool is not None
+        loop = asyncio.get_running_loop()
+        pool = client_pools[loop]
         try:
             if self.info.id is not None:  # keep info.id available after teardown
-                try:
-                    await client.delete(self.info.id)
-                except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-                    logger.warning(
-                        "prime: failed to delete sandbox %s: %s", self.info.id, e
-                    )
+                await client.delete(self.info.id)
+        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
         finally:
-            client_pool.leases -= 1
-            if client_pool.leases == 0:
-                del client_pools[client_pool.loop]
+            pool.leases -= 1
+            if not pool.leases:
+                del client_pools[loop]
                 with contextlib.suppress(Exception):
                     await client.aclose()
