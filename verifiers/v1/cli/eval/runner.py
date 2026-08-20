@@ -98,29 +98,31 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
         await asyncio.to_thread(run.log_traces, [episode])
 
     # Serving resources (shared tool servers, interception) come up once for the
-    # run; plan slots inside so the env's agents borrow them.
-    async with env.serving():
-        planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
-        slots = [RunSlot.finished(episode) for episode in finished] + planned
-        display = (
-            dashboard(slots, config, start, push=push_state)
-            if config.rich
-            else contextlib.nullcontext()
-        )
-        async with display:
-            try:
+    # run; plan slots inside so the env's agents borrow them. Everything from
+    # bringing those up to tearing them down is inside the try: a run that was
+    # opened is closed out whatever breaks, so none of them sits at running.
+    try:
+        async with env.serving():
+            planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
+            slots = [RunSlot.finished(episode) for episode in finished] + planned
+            display = (
+                dashboard(slots, config, start, push=push_state)
+                if config.rich
+                else contextlib.nullcontext()
+            )
+            async with display:
                 results = await asyncio.gather(
                     *(
                         env.run_slot(slot, ctx, semaphore, on_complete)
                         for slot in planned
                     )
                 )
-            except BaseException as e:  # a killed eval must not sit at running
-                await asyncio.to_thread(abort_run, run, e, push_state)
-                raise
-            episodes = finished + list(results)
-            # Drain and close out off the event loop so the view keeps refreshing.
-            await asyncio.to_thread(finish_run, run, episodes, push_state)
+                episodes = finished + list(results)
+                # Drain and close out off the event loop so the view keeps refreshing.
+                await asyncio.to_thread(finish_run, run, episodes, push_state)
+    except BaseException as e:
+        await asyncio.to_thread(abort_run, run, e, push_state)
+        raise
     return episodes
 
 
@@ -239,12 +241,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]
         try:
             results = await asyncio.gather(*units)
-        except BaseException as e:  # a killed eval must not sit at running
+            await client.close()
+            episodes = finished + [record for unit in results for record in unit]
+            await asyncio.to_thread(finish_run, run, episodes)
+        except BaseException as e:
             await asyncio.to_thread(abort_run, run, e)
             raise
-        await client.close()
-        episodes = finished + [record for unit in results for record in unit]
-        await asyncio.to_thread(finish_run, run, episodes)
         return episodes
     finally:
         proc.terminate()

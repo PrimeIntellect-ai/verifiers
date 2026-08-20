@@ -180,7 +180,12 @@ def abort_run(
     Ctrl-C is a decision, not a fault: it lands as `crashed` (the process stopped
     without the run ever saying), which is what tells whoever looks whether to
     read the run's own error or go look at the machine it ran on. A cancellation
-    is the same thing arriving from the other direction."""
+    is the same thing arriving from the other direction.
+
+    A run that already finished keeps the status it reported: teardown failing
+    after a clean upload does not retroactively make the run a failure."""
+    if run.finished:
+        return
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
         status, message = pr.RunStatus.CRASHED, "interrupted"
     else:

@@ -287,7 +287,13 @@ def _push_footer(push: "PushState | None") -> Group | None:
     or the run stayed local."""
     if push is None or not push.started:
         return None
-    if push.error:
+    if push.error and push.url:
+        # The run exists and holds everything that streamed up; only closing it out
+        # failed. Say so and keep the URL, rather than reporting a failed push and
+        # hiding the run it did produce.
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+        line.append(f"  not closed out: {push.error}", style="red")
+    elif push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
     elif not push.done:
         line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
