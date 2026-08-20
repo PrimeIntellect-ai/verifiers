@@ -29,6 +29,7 @@ CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
 hookSource = Path(__file__).with_name("tool_hook.mjs").read_text()
+adapterSource = Path(__file__).with_name("adapter.mjs").read_bytes()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -52,7 +53,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -197,6 +199,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             **self.config.resolved_env,
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
+            "CODEX_PATH": CODEX_BIN.format(
+                version=self.config.version, acp_version=ACP_VERSION
+            ),
             "DEFAULT_AUTH_REQUEST": json.dumps(
                 {
                     "methodId": "gateway",
@@ -238,6 +243,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         config.env["VF_CODEX_TOOL_SECRET"] = secret
 
         home = config.env["CODEX_HOME"]
+        adapterPath = f"{home}/adapter.mjs"
+        patchedAdapterPath = f"{home}/codex-acp.mjs"
+        await runtime.write(adapterPath, adapterSource)
+        config.command = [
+            f"{NODE_BIN_DIR}/node",
+            adapterPath,
+            ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
+            patchedAdapterPath,
+        ]
         hooksPath = f"{home}/hooks.json"
         command = shlex.join(
             [f"{NODE_BIN_DIR}/node", "--input-type=module", "--eval", hookSource]

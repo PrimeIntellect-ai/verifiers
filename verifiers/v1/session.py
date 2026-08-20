@@ -125,9 +125,10 @@ class RolloutSession:
     response_interceptors: list[Callable] = field(default_factory=list)
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
-    native_tool_interception: bool = False
-    """Buffer streamed model turns until their assistant node is committed, so a
-    native pre-execution hook cannot outrun the graph entry that identifies its call."""
+    pre_tool_interception: bool = False
+    """Whether native policy runs before tool execution."""
+    post_tool_interception: bool = False
+    """Whether native policy runs after execution and before the next model turn."""
     client: Client | None = None
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
@@ -153,8 +154,8 @@ class RolloutSession:
     prepared_tool_results: dict[tuple[int, str], ToolMessage | None] = field(
         default_factory=dict
     )
-    """Native call state keyed by issuing assistant node and call ID: None while an
-    allowed call awaits its post-execution hook, then its intercepted result."""
+    """Native call state keyed by issuing assistant node and call ID: None after an
+    allowed pre hook, then the exact result approved by a pre rewrite or post hook."""
     tool_interception_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, repr=False
     )
@@ -242,15 +243,21 @@ class RolloutSession:
                         "native tool interception did not preserve the approved result "
                         f"for call {message.tool_call_id!r}"
                     )
-                elif (
-                    self.native_tool_interception
-                    and require_native_results
-                    and assistant_node is not None
-                ):
-                    raise HarnessError(
-                        "native tool result reached the model request before its "
-                        f"post-execution hook for call {message.tool_call_id!r}"
-                    )
+                elif require_native_results and assistant_node is not None:
+                    tool_call = (assistant_node, message.tool_call_id)
+                    if self.post_tool_interception:
+                        raise HarnessError(
+                            "native tool result reached the model request before its "
+                            f"post-execution hook for call {message.tool_call_id!r}"
+                        )
+                    if (
+                        self.pre_tool_interception
+                        and tool_call not in self.prepared_tool_results
+                    ):
+                        raise HarnessError(
+                            "native tool result reached the model request without its "
+                            f"pre-execution hook for call {message.tool_call_id!r}"
+                        )
         if not candidates and (not run_stops or not self.request_stops):
             return request, [], None
         already_intercepted = candidates == prepared
@@ -441,6 +448,10 @@ class RolloutSession:
         resultSuffix: str = "",
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
+        if phase == "before" and not self.pre_tool_interception:
+            raise HarnessError("this harness does not support pre-tool interception")
+        if phase == "after" and not self.post_tool_interception:
+            raise HarnessError("this harness does not support post-tool interception")
         leaves = graph.leaves(self.trace)
         matches = [
             leaf
@@ -459,15 +470,18 @@ class RolloutSession:
         assistant_node = matches[0]
         tool_call = (assistant_node, message.tool_call_id)
         if phase != "before":
-            if tool_call not in self.prepared_tool_results:
+            if (
+                self.pre_tool_interception
+                and tool_call not in self.prepared_tool_results
+            ):
                 raise HarnessError(
                     f"tool call {message.tool_call_id!r} reached a post-execution hook "
                     "without crossing its pre-execution hook"
                 )
-            if self.prepared_tool_results.pop(tool_call) is not None:
+            if self.prepared_tool_results.pop(tool_call, None) is not None:
                 raise HarnessError(
                     f"harness reported tool call {message.tool_call_id!r} after its "
-                    "pre-execution result was replaced"
+                    "result was already replaced"
                 )
         assistant = self.trace.nodes[assistant_node].message
         assert isinstance(assistant, AssistantMessage)
@@ -510,6 +524,9 @@ class RolloutSession:
         if stopped is None:
             if content == "none" and candidate != message:
                 raise HarnessError("this native hook cannot replace tool results")
+            # Pi normalizes image results to text because its provider transports
+            # serialize their parts differently. Native replacements use that same
+            # stable shape so the next model request can be verified exactly.
             if (
                 content == "nonempty_text"
                 and (phase != "before" or candidate != message)

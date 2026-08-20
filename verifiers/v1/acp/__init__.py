@@ -58,8 +58,6 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
-    allow_empty_tool_reply: bool = False
-    require_terminal_tool_status: bool = False
     toolInterception: tuple[str, str] | None = None
 
 
@@ -281,8 +279,6 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
-            "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
-            "require_terminal_tool_status": self.config.require_terminal_tool_status,
             "toolInterception": (
                 {
                     "url": self.config.toolInterception[0],

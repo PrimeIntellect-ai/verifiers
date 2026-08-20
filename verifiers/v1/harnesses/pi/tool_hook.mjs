@@ -41,20 +41,6 @@ async function intercept(
   return decision;
 }
 
-function piContent(content) {
-  if (content.every((part) => part.type === "text")) {
-    return content.map((part) => part.text).join("\n");
-  }
-  return content.map((part) =>
-    part.type === "text"
-      ? { type: "text", text: part.text }
-      : {
-          type: "image_url",
-          image_url: { url: `data:${part.mimeType};base64,${part.data}` },
-        },
-  );
-}
-
 export default function toolInterceptionExtension(pi) {
   const credentialsPath = process.env.VF_TOOL_INTERCEPTION_CONFIG;
   delete process.env.VF_TOOL_INTERCEPTION_CONFIG;
@@ -118,7 +104,22 @@ export default function toolInterceptionExtension(pi) {
 
   pi.on("tool_result", async (event, ctx) => {
     const toolCallId = event.toolCallId.split("|", 1)[0];
-    const content = piContent(event.content) || "(no tool output)";
+    const textOnly = event.content.every((part) => part.type === "text");
+    const content =
+      (textOnly
+        ? event.content.map((part) => part.text).join("\n")
+        : JSON.stringify(
+            event.content.map((part) =>
+              part.type === "text"
+                ? { type: "text", text: part.text }
+                : {
+                    type: "image_url",
+                    image_url: {
+                      url: `data:${part.mimeType};base64,${part.data}`,
+                    },
+                  },
+            ),
+          )) || "(no tool output)";
     let decision;
     try {
       decision = await intercept(
@@ -136,7 +137,7 @@ export default function toolInterceptionExtension(pi) {
       process.exit(1);
     }
     if (decision.action === "allow") {
-      if (content !== "(no tool output)") return undefined;
+      if (textOnly && content !== "(no tool output)") return undefined;
       return {
         content: [{ type: "text", text: content }],
         isError: event.isError,

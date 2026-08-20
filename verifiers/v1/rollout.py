@@ -130,7 +130,9 @@ class Rollout:
             ],
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
-            native_tool_interception=harness.SUPPORTS_TOOL_INTERCEPTION
+            pre_tool_interception=harness.SUPPORTS_PRE_TOOL_INTERCEPTION
+            and any(boundary is Request for boundary, _ in [*interceptors, *stops]),
+            post_tool_interception=harness.SUPPORTS_POST_TOOL_INTERCEPTION
             and any(boundary is Request for boundary, _ in [*interceptors, *stops]),
         )
         self._stack = AsyncExitStack()
@@ -330,11 +332,8 @@ class Rollout:
                                 tool_secret,
                             )
                         }
-                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                        and (
-                            self._session.request_interceptors
-                            or self._session.request_stops
-                        )
+                        if self._session.pre_tool_interception
+                        or self._session.post_tool_interception
                         else {}
                     )
                     self._harness_session = await self.harness.session(
@@ -396,19 +395,30 @@ class Rollout:
                         return False
                 await self._harness_session.turn(messages)
                 if (
-                    self._session.native_tool_interception
+                    (
+                        self._session.pre_tool_interception
+                        or self._session.post_tool_interception
+                    )
                     and not self._session.stopped
                     and trace.nodes
                 ):
                     leaf = len(trace.nodes) - 1
                     assistant = trace.nodes[leaf].message
                     if isinstance(assistant, AssistantMessage):
-                        missing = [
-                            call.id
-                            for call in assistant.tool_calls or []
-                            if self._session.prepared_tool_results.get((leaf, call.id))
-                            is None
-                        ]
+                        missing = []
+                        for call in assistant.tool_calls or []:
+                            tool_call = (leaf, call.id)
+                            if self._session.post_tool_interception:
+                                observed = (
+                                    self._session.prepared_tool_results.get(tool_call)
+                                    is not None
+                                )
+                            else:
+                                observed = (
+                                    tool_call in self._session.prepared_tool_results
+                                )
+                            if not observed:
+                                missing.append(call.id)
                         if missing:
                             raise HarnessError(
                                 "native tool interception did not observe approved "

@@ -33,8 +33,6 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
-    ToolCall,
-    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024

@@ -672,7 +672,14 @@ class InterceptionServer(Interception):
         except RolloutError as error:
             return self._fail(session, dialect, error)
 
-        inspect_response = bool(session.response_interceptors or session.response_stops)
+        # A native hook may run as soon as its SDK sees a complete tool-use block,
+        # before the terminal stream event. Buffering keeps the hook behind commit().
+        inspect_response = bool(
+            session.response_interceptors
+            or session.response_stops
+            or session.pre_tool_interception
+            or session.post_tool_interception
+        )
         if streaming:
             return await self._stream(
                 request,

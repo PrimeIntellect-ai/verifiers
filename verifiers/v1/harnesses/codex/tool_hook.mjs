@@ -84,6 +84,8 @@ async function run() {
       }),
     );
   } else {
+    // Codex PostToolUse has no updatedToolOutput field. Its universal feedback
+    // response replaces the model-visible result without blocking the agent loop.
     console.log(JSON.stringify({ continue: false, stopReason: replacement }));
   }
 }
