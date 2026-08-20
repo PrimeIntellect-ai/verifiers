@@ -21,6 +21,12 @@ class EnvInfo(BaseModel):
     """The name the consumer runs the env under (e.g. an orchestrator env key)."""
 
 
+class GroupInfo(BaseModel):
+    """The consumer-defined rollout group this episode belongs to."""
+
+    id: str
+
+
 class PolicySpan(BaseModel):
     """Live policy versions spanned while generating an episode."""
 
@@ -86,8 +92,8 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The env that produced this episode."""
     task: TraceTask[DataT]
     """The task dispatched to the env, including when no trace was produced."""
-    group_id: str | None = None
-    """Consumer-assigned identity shared by episodes in one rollout group."""
+    group: GroupInfo | None = None
+    """Consumer-assigned rollout group, if this episode was grouped."""
     run: RunInfo | None = None
     """The run this episode belongs to, consumer-stamped."""
     ok: bool = False

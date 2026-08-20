@@ -14,13 +14,14 @@ import hashlib
 import json
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
-from verifiers.v1.trace import Trace
+from verifiers.v1.state import StateT
+from verifiers.v1.task import DataT
+from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
 
 TRACES_FILE = "traces.jsonl"
@@ -85,7 +86,9 @@ def save_config(
     )  # fresh; appended to as rollouts complete
 
 
-def write_episode(results_dir: Path, episode: Episode) -> None:
+def write_episode(
+    results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
+) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
     data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
@@ -93,12 +96,12 @@ def write_episode(results_dir: Path, episode: Episode) -> None:
         f.write(data + b"\n")
 
 
-def read_episodes(results_dir: Path, trace_type: type) -> list[Episode[Any, Any, Any]]:
+def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
     importing it)."""
     trace_adapter = type_adapter(trace_type)
-    episodes: list[Episode[Any, Any, Any]] = []
+    episodes: list[WireEpisode] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -113,7 +116,9 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[Episode[Any, Any,
 
 
 async def append_episode(
-    results_dir: Path, episode: Episode, lock: asyncio.Lock
+    results_dir: Path,
+    episode: Episode[DataT, StateT, AgentConfigT],
+    lock: asyncio.Lock,
 ) -> None:
     """Append one finished rollout episode without blocking the event loop. The run's
     shared lock preserves whole-line ordering, and awaiting the worker preserves

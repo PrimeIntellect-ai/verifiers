@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from typing import cast
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -45,7 +46,13 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     finished: list[Episode] = []
     if config.resume:
         keys = [task.hash for task in tasks]
-        finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
+        loaded, owed = resume.load(
+            out,
+            keys,
+            config.num_rollouts,
+            lambda episode: env.complete(cast(Episode, episode)),
+        )
+        finished = [cast(Episode, episode) for episode in loaded]
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -168,7 +175,8 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         finished: list[Episode] = []
         if config.resume:
             keys = [task.hash for task in tasks]
-            finished, owed = resume.load(out, keys, config.num_rollouts)
+            loaded, owed = resume.load(out, keys, config.num_rollouts)
+            finished = [cast(Episode, episode) for episode in loaded]
             counts = distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(plan), config.num_rollouts))
@@ -205,7 +213,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
-            return [episode]
+            return [cast(Episode, episode)]
 
         # Each rollout is its own `run` request, dispatched least-busy across workers.
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]

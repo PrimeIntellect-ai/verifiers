@@ -13,12 +13,11 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from pydantic_core import from_json
 
 from verifiers.v1.cli.output import TRACES_FILE
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.episode import WireEpisode
 from verifiers.v1.task import task_key
 
 
@@ -26,8 +25,8 @@ def load(
     resume_dir: Path,
     selected_keys: list[str],
     num_rollouts: int,
-    complete: Callable[[Episode[Any, Any, Any]], bool] | None = None,
-) -> tuple[list[Episode[Any, Any, Any]], dict[str, int]]:
+    complete: Callable[[WireEpisode], bool] | None = None,
+) -> tuple[list[WireEpisode], dict[str, int]]:
     """Load the good saved rollouts and diff them against the run's target: returns
     (kept episodes, rollouts owed per task key). `selected_keys` is one key per
     selected task (duplicates allowed — a key selected k times is owed up to
@@ -41,7 +40,7 @@ def load(
     }
 
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[str, list[tuple[bytes, Episode[Any, Any, Any]]]] = defaultdict(list)
+    good: dict[str, list[tuple[bytes, WireEpisode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -52,6 +51,8 @@ def load(
                         row = from_json(line)
                     except ValueError:
                         row = json.loads(line)
+                    if "traces" not in row:
+                        continue
                     key = task_key(row["task"]["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
@@ -60,8 +61,6 @@ def load(
                 if key not in targets or len(good[key]) >= targets[key]:
                     continue
                 try:
-                    if "traces" not in row:
-                        raise ValueError("rollout record is not an episode")
                     episode = WireEpisode.model_validate(row)
                     if not verdict(episode):
                         continue
@@ -72,7 +71,7 @@ def load(
                     (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
-    episodes: list[Episode[Any, Any, Any]] = []
+    episodes: list[WireEpisode] = []
     owed: dict[str, int] = {}
     for key, target in targets.items():
         rows = good.get(key, [])
