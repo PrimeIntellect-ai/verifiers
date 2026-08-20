@@ -401,9 +401,13 @@ class TrainClient(Client):
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
         raw_sampling = sampling.model_dump(exclude_none=True)
+        cache_salt = raw_sampling.pop("cache_salt", None)
         sampling_params: dict[str, Any] = dict(
             raw_sampling.pop("extra_body", None) or {}
         )
+        if cache_salt is None:
+            cache_salt = sampling_params.get("cache_salt")
+        sampling_params.pop("cache_salt", None)
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
         pool = ElasticRendererPool(
@@ -471,6 +475,7 @@ class TrainClient(Client):
                     prompt_attribution=prompt_attribution,
                     tools=wire_tools,
                     sampling_params=sampling_params,
+                    cache_salt=cache_salt,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,

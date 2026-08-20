@@ -1,10 +1,15 @@
 import base64
 import io
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
-from verifiers.v1.clients.train import response_from_generate
+from verifiers.v1.clients.train import TrainClient, response_from_generate
+from verifiers.v1.dialects.chat import ChatDialect
+from verifiers.v1.types import SamplingConfig
 
 
 def _result(routed_experts):
@@ -95,3 +100,59 @@ def test_response_from_generate_rejects_pickled_routed_experts():
             "test-model",
             routed_experts_prompt_start=0,
         )
+
+
+@pytest.mark.asyncio
+async def test_train_client_promotes_cache_salt_out_of_sampling_params():
+    captured = {}
+    client = object.__new__(TrainClient)
+    client.client = object()
+    client.config = SimpleNamespace(
+        renderer_model_name=None,
+        renderer=None,
+        multiplex=1,
+    )
+
+    class FakeRenderer:
+        def render(self, *args, **kwargs):
+            return SimpleNamespace(
+                token_ids=[1, 2],
+                multi_modal_data=None,
+            )
+
+    class FakeSlot:
+        renderer = FakeRenderer()
+
+        async def run(self, function):
+            return function()
+
+    class FakePool:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield FakeSlot()
+
+    async def fake_generate(**kwargs):
+        captured.update(kwargs)
+        return _result(None)
+
+    with (
+        patch("verifiers.v1.clients.train.ElasticRendererPool", FakePool),
+        patch("renderers.client.generate", side_effect=fake_generate),
+    ):
+        await client.get_response(
+            dialect=ChatDialect(),
+            body={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            sampling=SamplingConfig(
+                max_tokens=16,
+                extra_body={"cache_salt": "policy-1", "top_k": 20},
+            ),
+        )
+
+    assert captured["cache_salt"] == "policy-1"
+    assert captured["sampling_params"] == {"max_tokens": 16, "top_k": 20}
