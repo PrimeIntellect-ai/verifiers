@@ -197,6 +197,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
+            "PATH": f"{NODE_BIN_DIR}:"
+            + self.config.resolved_env.get(
+                "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ),
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
             "CODEX_PATH": CODEX_BIN.format(
