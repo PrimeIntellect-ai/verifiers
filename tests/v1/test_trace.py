@@ -38,13 +38,15 @@ def test_bare_trace_round_trip():
     assert rt.reward == 0.0 and rt.errors == []
 
 
-def test_agent_timeout_is_truncated() -> None:
+def test_agent_timeout_is_scoreable_truncation() -> None:
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
     )
     trace.stop("agent_timeout")
+    trace.record_reward("partial", 0.5)
     assert trace.is_truncated
+    assert trace.reward == 0.5
 
 
 def test_custom_task_state_round_trip():

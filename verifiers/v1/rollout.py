@@ -46,7 +46,7 @@ class RolloutTimeouts:
     """Timeout (in seconds) for the task + harness setup hooks."""
     agent: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
-    agent_outcome: Literal["error", "zero"] = "error"
+    agent_outcome: Literal["error", "truncate"] = "error"
     """How to record an expired agent timeout."""
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
@@ -130,7 +130,6 @@ class Rollout:
         )
         self._stack = AsyncExitStack()
         self._failed = False
-        self._zero_reward_on_timeout = False
         self._failure: Exception | None = None
         self._opened = False
         self._closed = False
@@ -394,8 +393,7 @@ class Rollout:
             # stays the raw failure. The configured policy controls only expiry of
             # this rollout's agent deadline.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                if self._timeouts.agent_outcome == "zero":
-                    self._zero_reward_on_timeout = True
+                if self._timeouts.agent_outcome == "truncate":
                     trace.stop("agent_timeout")
                 else:
                     self.fail(
@@ -488,20 +486,17 @@ class Rollout:
                     )
                 now = time.time()
                 trace.timing.finalize.end = now
-                if not self._zero_reward_on_timeout:
-                    trace.timing.scoring.start = now
-                    async with boundary(TaskError, "scoring"):
-                        # Cross-trace judgement runs later, after the runtime is gone.
-                        await asyncio.wait_for(
-                            asyncio.gather(
-                                self.task.score(trace, runtime),
-                                self.harness.score(trace, runtime),
-                            ),
-                            self._timeouts.scoring,
-                        )
-                    trace.timing.scoring.end = time.time()
-                else:
-                    trace.rewards.clear()
+                trace.timing.scoring.start = now
+                async with boundary(TaskError, "scoring"):
+                    # Cross-trace judgement runs later, after the runtime is gone.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            self.task.score(trace, runtime),
+                            self.harness.score(trace, runtime),
+                        ),
+                        self._timeouts.scoring,
+                    )
+                trace.timing.scoring.end = time.time()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
