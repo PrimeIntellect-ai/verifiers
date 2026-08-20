@@ -48,6 +48,16 @@ async def read_answer_file_or_last_reply(
     return answer or trace.last_reply
 
 
+def _choice_on_marker_line(
+    text_upper: str, marker_end: int, choice_re: str
+) -> re.Match[str] | None:
+    """Choice must appear on the verdict marker's line, not later CoT."""
+    remainder = text_upper[marker_end:]
+    line_end = remainder.find("\n")
+    line = remainder if line_end == -1 else remainder[:line_end]
+    return re.search(choice_re, line)
+
+
 def parse_judge_choice(
     content: str | None, choices: Sequence[str] = ("A", "B", "C")
 ) -> str | None:
@@ -55,23 +65,32 @@ def parse_judge_choice(
         return None
 
     text = content.rsplit("</think>", 1)[-1].strip()
-    text = extract_boxed_answer(text, strict=True).strip() or text
-
-    text_upper = text.upper()
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
-    verdict_re = (
-        r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT|"
-        r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
+    final_verdict_re = (
+        r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT)"
+        r"\s*(?:IS\s*)?[:\-]?\s*"
+    )
+    bare_verdict_re = (
+        r"(?:^|\n)\s*(?:JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
     )
 
-    verdict = re.search(verdict_re, text_upper)
-    if verdict:
-        match = re.search(choice_re, text_upper[verdict.end() :])
-        return choices_by_upper.get(match.group(1)) if match else None
+    # Prefer explicit Final * markers on the full reply (last wins) so a draft
+    # \boxed{...} cannot shadow a later verdict line. Only accept a choice on the
+    # marker's own line so an empty "Final Judgment:" falls through to boxed.
+    text_upper = text.upper()
+    for verdict_re in (final_verdict_re, bare_verdict_re):
+        for verdict in reversed(list(re.finditer(verdict_re, text_upper))):
+            match = _choice_on_marker_line(text_upper, verdict.end(), choice_re)
+            if match:
+                return choices_by_upper.get(match.group(1))
 
-    matches = re.findall(choice_re, text_upper)
+    # No usable marker choice: keep boxed answers preferred over CoT mentions,
+    # then last match.
+    boxed = extract_boxed_answer(text, strict=True).strip()
+    search_upper = (boxed or text).upper()
+    matches = re.findall(choice_re, search_upper)
     return choices_by_upper.get(matches[-1]) if matches else None
 
 
@@ -101,7 +120,7 @@ def verify_boxed_math_answer(
                 timeout_seconds=timeout_seconds,
             )
         )
-    except (Exception, MathVerifyTimeout):  # noqa: BLE001 - malformed answers score zero
+    except (Exception, MathVerifyTimeout):
         return 0.0
 
 
