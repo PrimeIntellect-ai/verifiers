@@ -36,8 +36,9 @@ from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
-MAX_LIFETIME = 24 * 60 * 60
-"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
+CONTAINER_LIFETIME = 24 * 60 * 60
+"""Fixed lifetime (seconds) of container sandboxes; only VM sandboxes support an
+unbounded lifetime."""
 
 
 BASE_LABELS: list[str] = []
@@ -102,10 +103,15 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
+        if (
+            not self.vm
+            and self.idle_timeout is not None
+            and self.idle_timeout > CONTAINER_LIFETIME
+        ):
             raise ValueError(
                 f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
+                f"{CONTAINER_LIFETIME}s ({CONTAINER_LIFETIME // 3600}h) container "
+                "sandbox lifetime"
             )
         return self
 
@@ -161,7 +167,7 @@ class PrimeRuntime(Runtime):
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
-        # (floored to the SDK's 1-minute minimum).
+        # (raised to the SDK's 1-minute minimum).
         idle_minutes = (
             max(1, math.ceil(self.config.idle_timeout / 60))
             if self.config.idle_timeout is not None
@@ -172,7 +178,8 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            # -1 is prime's convention for no lifetime limit (VM-only)
+            "timeout_minutes": -1 if self.config.vm else CONTAINER_LIFETIME // 60,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -278,7 +285,9 @@ class PrimeRuntime(Runtime):
             result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=MAX_LIFETIME,
+                # the SDK poll needs a finite deadline: the container lifetime, or
+                # effectively unbounded for VM sandboxes
+                timeout=365 * 24 * 60 * 60 if self.config.vm else CONTAINER_LIFETIME,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
                 poll_interval=1,
