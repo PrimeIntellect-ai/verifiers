@@ -1,6 +1,9 @@
 """Train client: renders prompts to token ids and calls a vLLM generate endpoint."""
 
 import asyncio
+import base64
+import binascii
+import io
 import json
 import logging
 import threading
@@ -9,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
+import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
@@ -96,8 +100,47 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
+def _normalize_routed_experts(payload: Any, prompt_start: int) -> Any:
+    if payload is None or isinstance(payload, Mapping):
+        return payload
+    if not isinstance(payload, str):
+        raise TypeError(
+            "routed_experts must be a Base64 NumPy string or compact object"
+        )
+    if (
+        isinstance(prompt_start, bool)
+        or not isinstance(prompt_start, int)
+        or prompt_start < 0
+    ):
+        raise ValueError("routed_experts_prompt_start must be a non-negative integer")
+    try:
+        encoded = base64.b64decode(payload, validate=True)
+        array = np.load(io.BytesIO(encoded), allow_pickle=False)
+    except (binascii.Error, ValueError, OSError) as error:
+        raise ValueError(
+            "routed_experts is not a valid non-pickled NumPy array"
+        ) from error
+    if not isinstance(array, np.ndarray):
+        raise TypeError("routed_experts must contain one NumPy array")
+    if array.ndim != 3:
+        raise ValueError(f"routed_experts must have rank 3, got shape {array.shape}")
+    if array.dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
+        raise ValueError(f"routed_experts must use uint8 or uint16, got {array.dtype}")
+    array = np.ascontiguousarray(array)
+    return {
+        "data": base64.b64encode(array.tobytes()).decode("ascii"),
+        "shape": list(array.shape),
+        "start": prompt_start,
+        "dtype": str(array.dtype),
+    }
+
+
 def response_from_generate(
-    result: dict, model: str, bridged_turn: PendingTurn | None = None
+    result: dict,
+    model: str,
+    bridged_turn: PendingTurn | None = None,
+    *,
+    routed_experts_prompt_start: int = 0,
 ) -> Response:
     """Parse a `renderers.client.generate` result dict into a typed `Response`,
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
@@ -154,7 +197,9 @@ def response_from_generate(
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
-            routed_experts=result.get("routed_experts"),
+            routed_experts=_normalize_routed_experts(
+                result.get("routed_experts"), routed_experts_prompt_start
+            ),
             kept_tokens=KeptTokens(**kept)
             if (kept := result.get("kept_tokens"))
             else None,
@@ -356,9 +401,13 @@ class TrainClient(Client):
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
         raw_sampling = sampling.model_dump(exclude_none=True)
+        cache_salt = raw_sampling.pop("cache_salt", None)
         sampling_params: dict[str, Any] = dict(
             raw_sampling.pop("extra_body", None) or {}
         )
+        if cache_salt is None:
+            cache_salt = sampling_params.get("cache_salt")
+        sampling_params.pop("cache_salt", None)
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
         pool = ElasticRendererPool(
@@ -426,6 +475,7 @@ class TrainClient(Client):
                     prompt_attribution=prompt_attribution,
                     tools=wire_tools,
                     sampling_params=sampling_params,
+                    cache_salt=cache_salt,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,
@@ -434,7 +484,14 @@ class TrainClient(Client):
                 raise OverlongPromptError(str(e)) from e
             except OpenAIError as e:
                 raise model_error(e) from e
-        response = response_from_generate(result, model, bridged_turn)
+        response = response_from_generate(
+            result,
+            model,
+            bridged_turn,
+            routed_experts_prompt_start=sampling_params.get(
+                "routed_experts_prompt_start", 0
+            ),
+        )
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)
