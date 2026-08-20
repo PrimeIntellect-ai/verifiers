@@ -4,7 +4,8 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import cast
+from collections.abc import Awaitable, Iterable
+from typing import TypeVar, cast
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -21,6 +22,29 @@ from verifiers.v1.episode import Episode, EvalRunInfo
 from verifiers.v1.utils.platform import PushState, abort_run, finish_run, open_run
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
+    """`asyncio.gather`, but nothing is left running when it raises.
+
+    `gather` re-raises the first failure without touching its siblings, so a
+    caller that reacts to the failure — closing the run out, tearing the env
+    down — does so while rollouts are still in flight, and their `on_complete`
+    streams into a run that has already been finished. Cancelling and awaiting
+    them first runs each one's teardown `finally` (the same unwind a Ctrl-C
+    asks for) and leaves nothing behind to race the caller's cleanup."""
+    tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        # return_exceptions: every task is awaited, and the failure that is
+        # about to propagate is the one worth reporting — not a cancellation.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
@@ -110,11 +134,8 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
                 else contextlib.nullcontext()
             )
             async with display:
-                results = await asyncio.gather(
-                    *(
-                        env.run_slot(slot, ctx, semaphore, on_complete)
-                        for slot in planned
-                    )
+                results = await gather_rollouts(
+                    env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned
                 )
                 episodes = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
@@ -240,7 +261,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         # Each rollout is its own `run` request, dispatched least-busy across workers.
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]
         try:
-            results = await asyncio.gather(*units)
+            results = await gather_rollouts(units)
             await client.close()
             episodes = finished + [record for unit in results for record in unit]
             await asyncio.to_thread(finish_run, run, episodes)
