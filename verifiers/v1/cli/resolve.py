@@ -47,13 +47,7 @@ def references_config_file(argv: list[str]) -> bool:
 
 
 def config_file_ref(argv: list[str]) -> str | None:
-    """The file a run was launched from — the root-level `@ <path>` — or None.
-
-    Only the root form counts: `--env @ env.toml` configures one block, whereas
-    `@ eval.toml` *is* the run's config, which is what gets recorded on the run —
-    so a `@` right after a flag is somebody else's file. Several root files merge
-    into one config that no single path describes, so that case records nothing
-    rather than half of it."""
+    """The file a run was launched from — the root-level `@ <path>` or None."""
     paths = [
         argv[i + 1]
         for i, arg in enumerate(argv)

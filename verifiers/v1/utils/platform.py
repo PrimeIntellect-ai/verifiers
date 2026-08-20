@@ -1,19 +1,4 @@
-"""The eval's run on the Prime Intellect platform (`--no-push` to keep it local).
-
-`prime-runs` owns the run lifecycle now. `open_run` opens the run *before* the
-first rollout, so the platform's id is `config.run.id` and every trace carries
-it; episodes stream out through `run.log_traces` as they land, instead of being
-held in memory and posted in one blast at the end; `finish_run` writes the
-terminal status. Ctrl-C, a crash or an exit that never reaches `finish_run` are
-reported too, so a killed eval stops showing as running forever.
-
-What lives here is only the verifiers half of that wiring: which config fields
-are the run's identity, what counts as the run's config, and the dashboard's
-view of the upload. The batching, retries and the v0 sample projection are the
-SDK's — `trace_to_sample`/`build_samples` moved to `prime_runs.projection`,
-which is the package that owns that wire format, and are re-exported here for
-callers that still import them from verifiers.
-"""
+"""The eval's run on the Prime Intellect platform (`--no-push` to keep it local)."""
 
 import asyncio
 import logging
@@ -49,9 +34,6 @@ class PushState:
 
     run: "pr.Run | None" = None
     error: str | None = None
-    """Why there is no run — it could not be opened, or could not be closed out.
-    Not set for a run that pushed with something degraded along the way; that is
-    a `warning`, since the records mostly landed."""
     done: bool = False
 
     @property

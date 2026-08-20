@@ -69,8 +69,7 @@ def main(argv: list[str] | None = None) -> None:
             *argv,
         ]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
-    # The `@ eval.toml` this run was launched from — uploaded verbatim with the
-    # run, so its Config tab shows what someone actually wrote.
+    # The `@ eval.toml` this run was launched from.
     config.run.record_source(config_file_ref(argv))
     # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
     # other write into it — the dry-run config.toml included, which would clobber the

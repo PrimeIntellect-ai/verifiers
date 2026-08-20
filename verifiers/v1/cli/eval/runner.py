@@ -102,13 +102,12 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
     write_lock = asyncio.Lock()
     push_state = PushState() if config.push and config.rich else None
-    # Opened before the first rollout so the platform's id *is* the run's id:
-    # every trace is stamped with it once, at rollout time, and nothing is
-    # re-stamped or rewritten afterwards.
+
+    # Opened before the first rollout so the platform's id is the run's id
     run = open_run(config, push_state)
     config.run.adopt_id(run.id)
     # A resume's kept rollouts are part of this run too, so they carry its id and
-    # go up with the rest — otherwise the platform would hold half a run.
+    # go up with the rest
     for episode in finished:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
     run.log_traces(finished)

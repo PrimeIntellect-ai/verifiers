@@ -61,8 +61,7 @@ class RunConfig(BaseConfig):
         """Take the platform's run id as this run's id.
 
         Called once, before the first rollout, so that every trace is stamped
-        with the id the platform knows the run by — one id, minted in one place,
-        never re-stamped afterwards."""
+        with the id the platform knows the run by."""
         self._id = run_id
 
     def record_source(self, path: str | None) -> None:
