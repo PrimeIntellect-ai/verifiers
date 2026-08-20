@@ -269,6 +269,33 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_persists_native_acp_session(run_v1, tmp_path):
+    """Prime Agent retains its native ACP session and cleans its rollout state."""
+    (trace,) = await run_v1(
+        "prime-agent-persistence-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["persisted"].score == 1.0
+    assert trace.info["prime_agent_state_cleaned"] is True
+    # Transcript replay serializes the old assistant turn into a new user prompt;
+    # a live native session keeps it as a distinct assistant message instead.
+    assert not any(
+        isinstance(message.content, str) and "[assistant]\n" in message.content
+        for message in trace.branches[-1].messages
+        if message.role == "user"
+    )
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize("harness_runtime,tool_runtime", TOOL_PLACEMENTS, indirect=True)
 async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     """A `vf.Toolset` (an echo tool) across its placement (`tool_runtime`: colocated in
