@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const adapterPath = process.argv[2];
 const patchedPath = process.argv[3];
+process.env.PATH = `/var/tmp/vf-node/bin:${process.env.PATH ?? ""}`;
 let source = await readFile(adapterPath, "utf8");
 const original = '    { "type": "dangerFullAccess" },\n    "danger-full-access"';
 const replacement = `    {

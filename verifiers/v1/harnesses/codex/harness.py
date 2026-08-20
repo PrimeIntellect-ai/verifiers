@@ -197,15 +197,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
-            "PATH": f"{NODE_BIN_DIR}:"
-            + self.config.resolved_env.get(
-                "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            ),
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "CODEX_PATH": CODEX_BIN.format(
-                version=self.config.version, acp_version=ACP_VERSION
-            ),
             "DEFAULT_AUTH_REQUEST": json.dumps(
                 {
                     "methodId": "gateway",
@@ -243,6 +236,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         config.env["CODEX_CONFIG"] = json.dumps(codexConfig)
         config.env["NODE_USE_ENV_PROXY"] = "1"
+        config.env["CODEX_PATH"] = CODEX_BIN.format(
+            version=self.config.version, acp_version=ACP_VERSION
+        )
         config.env["VF_CODEX_TOOL_URL"] = url
         config.env["VF_CODEX_TOOL_SECRET"] = secret
 
