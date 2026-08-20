@@ -20,11 +20,17 @@ router pins a rollout's turns to one engine and its growing prefix stays KV-cach
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
+    """A streaming response: complete SSE events, cleanup, and optional result future.
+
+    Eval clients relay provider bytes and leave ``result`` unset. Renderer-backed training
+    clients synthesize SSE from a completed generation and retain its result future here so the
+    trace keeps the exact token ids and logprobs while the server can send keepalives meanwhile.
+    """
 
     content_type: str
     chunks: AsyncIterator[bytes]
     close: Callable[[], Awaitable[None]]
+    result: Awaitable[Response] | None = None
 
 
 class Client(ABC):
@@ -48,11 +54,16 @@ class Client(ABC):
         self,
         dialect: Dialect,
         body: dict,
+        sampling: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        """Stream a response for the final effective `body`, relaying the provider's bytes.
-        Only the relay (eval) client supports it; the renderer generates and cannot stream."""
+        """Return SSE to the intercepted program.
+
+        Eval clients relay provider bytes. Training clients may render and generate a complete
+        response, then expose it as a protocol-compatible stream.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
     async def relay_aux(
