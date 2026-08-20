@@ -26,6 +26,14 @@ SEARCH_PROMPT = (
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
 
+# Appended when search_mixedbread is enabled, so the model knows the extra tool exists.
+MIXEDBREAD_PROMPT = (
+    "You also have a search_mixedbread tool that searches the web via Mixedbread (mixedbread/web "
+    "web store) and returns title, URL, relevance score, and page content (a large chunk of each "
+    "page's text, often the whole page for short pages); use it to research, and use bash "
+    "(e.g. curl) to read result pages in full when needed."
+)
+
 
 class BashHarnessConfig(HarnessConfig):
     edit: bool = True
@@ -36,6 +44,11 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
+
+    search_mixedbread: bool = False
+    """Offer a `search_mixedbread` tool (Mixedbread Basic Web Search, web store `mixedbread/web`).
+    Requires `MIXEDBREAD_API_KEY` in the eval environment; the key is handed to the program over
+    argv (like the Serper key) so the agent's `bash` subprocesses don't inherit it."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
@@ -65,6 +78,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
+        if self.config.search_mixedbread:
+            fragments.append(MIXEDBREAD_PROMPT)
         system_prompt = "\n\n".join(
             p for p in (" ".join(fragments), system_prompt) if p
         )
@@ -97,6 +112,19 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "(the host env or the harness config's env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
+        if self.config.search_mixedbread:
+            # Same secret hygiene as the Serper key above: the Mixedbread key is popped from the
+            # program env and handed over argv (--mixedbread-key) so the agent's `bash`
+            # subprocesses never inherit it via $MIXEDBREAD_API_KEY / /proc/self/environ.
+            mixedbread_key = env.pop("MIXEDBREAD_API_KEY", None)
+            if mixedbread_key is None:
+                mixedbread_key = os.environ.get("MIXEDBREAD_API_KEY")
+            if not mixedbread_key:
+                raise ValueError(
+                    "bash search_mixedbread=true requires MIXEDBREAD_API_KEY in the eval "
+                    "environment (the host env or the harness config's env)"
+                )
+            args += ["--mixedbread-search", f"--mixedbread-key={mixedbread_key}"]
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).

@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
+MIXEDBREAD_URL = "https://api.mixedbread.com/v1/stores/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
@@ -86,6 +87,33 @@ SEARCH_TOOL = {
 }
 
 
+SEARCH_MIXEDBREAD_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_mixedbread",
+        "description": (
+            "Run a web search via Mixedbread's web store (store identifier \"mixedbread/web\", "
+            "Basic Web Search) and return the top results as title, URL, relevance score, and "
+            "page content (a large chunk of each page's text, often the whole page for short "
+            "pages). Results are always reranked for relevance. Issue focused queries and call it "
+            "several times to cover different angles; each query returns the most relevant chunk "
+            "of a page, so re-query to see other parts of a long page."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5, maps to top_k).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
 def format_results(results, query: str) -> str:
     """Format Serper organic results as title/URL/snippet blocks."""
     sections = []
@@ -131,6 +159,61 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return format_results(organic[:num_results], query)
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
+
+
+def format_mixedbread_results(chunks, query: str) -> str:
+    """Format Mixedbread web-store chunks as title/URL/score/content blocks."""
+    sections = []
+    for i, chunk in enumerate(chunks, 1):
+        if not isinstance(chunk, dict):
+            continue
+        metadata = chunk.get("metadata") or {}
+        title = (metadata.get("title") or "").strip() or "Untitled"
+        url = (metadata.get("url") or chunk.get("filename") or "").strip()
+        lines = [f"Result {i}: {title}"]
+        if url:
+            lines.append(f"URL: {url}")
+        score = chunk.get("score")
+        if score is not None:
+            lines.append(f"Score: {score}")
+        text = (chunk.get("text") or "").strip()
+        if text:
+            lines.append(f"Content: {text}")
+        sections.append("\n".join(lines))
+    if not sections:
+        return f"No results returned for query: {query}"
+    return "\n\n---\n\n".join(sections)
+
+
+def run_mixedbread_search(query: str, api_key: str, num_results: int = 5) -> str:
+    """Mixedbread Basic Web Search (store identifier `mixedbread/web`) -> formatted chunks.
+
+    The key arrives as an argument (handed in by the harness over argv, like the Serper key and
+    the interception secret) instead of from `$MIXEDBREAD_API_KEY`, so the agent's `bash`
+    subprocesses never inherit it. The whole call is wrapped so a bad query or malformed payload
+    becomes a tool error rather than raising out of the chat loop and killing the rollout."""
+    if not api_key:
+        return "Error: no Mixedbread API key (MIXEDBREAD_API_KEY was not set in the eval environment)"
+    try:
+        num_results = max(1, int(num_results))
+    except (TypeError, ValueError):
+        num_results = 5
+    try:
+        response = httpx.post(
+            MIXEDBREAD_URL,
+            json={
+                "query": query,
+                "store_identifiers": ["mixedbread/web"],
+                "top_k": num_results,
+            },
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=45,
+        )
+        response.raise_for_status()
+        chunks = response.json().get("data") or []
+        return format_mixedbread_results(chunks[:num_results], query)
+    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
+        return f"search_mixedbread failed ({e}). Try again or rephrase the query."
 
 
 def run_bash(command: str) -> str:
@@ -331,6 +414,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    parser.add_argument("--mixedbread-search", action="store_true")
+    parser.add_argument("--mixedbread-key", default="")
     return parser.parse_args()
 
 
@@ -357,6 +442,9 @@ async def main() -> None:
     if args.search:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
+    if args.mixedbread_search:
+        tools.append(SEARCH_MIXEDBREAD_TOOL)
+        reserved.add("search_mixedbread")
     mcp_tools, dispatch, servers = (
         await connect_mcp(config, reserved)
         if config.get("mcpServers")
@@ -423,6 +511,13 @@ async def main() -> None:
                         run_search,
                         tool_args.get("query", ""),
                         args.serper_key,
+                        tool_args.get("num_results", 5),
+                    )
+                elif name == "search_mixedbread" and args.mixedbread_search:
+                    content = await asyncio.to_thread(
+                        run_mixedbread_search,
+                        tool_args.get("query", ""),
+                        args.mixedbread_key,
                         tool_args.get("num_results", 5),
                     )
                 else:
