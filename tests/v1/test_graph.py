@@ -1,6 +1,7 @@
 import base64
 
 import numpy as np
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -230,6 +231,51 @@ def test_renderer_level_break_forks_by_token_id():
         [1, 2, 3, 4, 5],
         [1, 2, 3, 99, 5, 6, 7, 8],
     ]
+
+
+def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="image")
+    assistant = vf.AssistantMessage(content="looked")
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=assistant,
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3],
+                renderer_prompt_ids=[1, 2, 3],
+                completion_ids=[4],
+                message_spans=[(0, 2)],
+            ),
+        )
+    )
+
+    assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
+    turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
+    assert turn.previous_token_ids() == ([1, 2, 3], [4])
+
+    with pytest.raises(ValueError, match="exactly extend"):
+        turn.commit(
+            vf.Response(
+                id="b",
+                created=0,
+                model="t",
+                message=vf.AssistantMessage(content="bad"),
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=[1, 9, 8, 3, 4, 5],
+                    renderer_prompt_ids=[1, 2, 3, 4, 5],
+                    completion_ids=[6],
+                    message_spans=[None, None, (4, 5)],
+                ),
+            )
+        )
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():

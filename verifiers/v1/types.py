@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
 
@@ -200,6 +199,7 @@ class TurnTokens(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     prompt_ids: list[int] = Field(default_factory=list)
+    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
@@ -209,9 +209,6 @@ class TurnTokens(BaseModel):
         default=None, exclude=True
     )
     is_content: list[bool] | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
-    # attributed per node by the turn's `commit`, then dropped — never persisted.
-    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
