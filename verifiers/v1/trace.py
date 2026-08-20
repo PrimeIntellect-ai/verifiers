@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr
-from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -41,7 +40,6 @@ TRACE_VERSION = 1
 EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
-            "multi_modal_data",
             "routed_experts",
             "kept_tokens",
         }
@@ -282,22 +280,6 @@ class Branch(BaseModel):
                 )
             weights.extend(node_weights)
         return weights
-
-    @property
-    def multi_modal_data(self) -> MultiModalData | None:
-        """Node image data concatenated in token order for training; never persisted."""
-        merged = MultiModalData()
-        found = False
-        for node in self.nodes:
-            mmd = node.multi_modal_data
-            if mmd is None or mmd.is_empty():
-                continue
-            found = True
-            for modality, items in mmd.mm_items.items():
-                merged.mm_items.setdefault(modality, []).extend(items)
-            for modality, hashes in mmd.mm_hashes.items():
-                merged.mm_hashes.setdefault(modality, []).extend(hashes)
-        return merged if found else None
 
     @property
     def routed_experts(self) -> np.ndarray | None:

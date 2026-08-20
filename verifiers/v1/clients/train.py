@@ -149,11 +149,11 @@ def response_from_generate(
         # million-token contexts synchronously on the event loop.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
+            renderer_prompt_ids=result.get("renderer_prompt_ids"),
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
-            multi_modal_data=result.get("multi_modal_data"),
             routed_experts=result.get("routed_experts"),
             kept_tokens=KeptTokens(**kept)
             if (kept := result.get("kept_tokens"))
@@ -348,11 +348,9 @@ class TrainClient(Client):
         from renderers.client import generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
-        wire_messages = (
-            [message_to_wire(m) for m in turn.tail] if turn is not None else []
-        )
+        wire_messages = [message_to_wire(m) for m in prompt]
+        wire_tail = [message_to_wire(m) for m in turn.tail] if turn is not None else []
         prompt_ids: list[int] | None = None
-        multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
         raw_sampling = sampling.model_dump(exclude_none=True)
@@ -371,13 +369,15 @@ class TrainClient(Client):
 
         async with pool.acquire() as slot:
             renderer = slot.renderer
-            # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
-            # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
-            can_bridge = (
-                turn is not None
-                and not _has_multimodal_content(prompt)
-                and _is_valid_incremental_tail(wire_messages)
-            )
+            raw_multimodal = _has_multimodal_content(prompt)
+            if raw_multimodal and not getattr(
+                renderer, "supports_raw_multimodal", False
+            ):
+                raise NotImplementedError(
+                    f"{type(renderer).__name__} does not support raw multimodal inference"
+                )
+            # Only build the O(context) previous token stream for a bridgeable tail.
+            can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
             previous_ids = turn.previous_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
@@ -386,33 +386,33 @@ class TrainClient(Client):
                     return renderer.bridge_to_next_turn(
                         previous_prompt_ids,
                         previous_completion_ids,
-                        wire_messages,
+                        wire_tail,
                         tools=wire_tools,
+                        **({"process_multimodal": False} if raw_multimodal else {}),
                     )
 
                 bridged = await slot.run(bridge)
                 if bridged is not None:
                     prompt_ids = bridged.token_ids
-                    multi_modal_data = bridged.multi_modal_data
                     prompt_attribution = bridged
                     bridged_turn = turn
                     sampling_params["routed_experts_prompt_start"] = max(
-                        len(previous_prompt_ids) + len(previous_completion_ids) - 1,
-                        0,
+                        turn.path_len - 1, 0
                     )
 
             # Render here (encode-side, so through the slot) rather than inside `generate`:
             # handed prebuilt prompt_ids, generate's own renderer touches are decode-side
             # and stop-id reads, safe on a bare renderer without lock or thread hop.
             if prompt_ids is None:
-                wire_messages = [message_to_wire(m) for m in prompt]
                 rendered = await slot.run(
                     lambda: renderer.render(
-                        wire_messages, tools=wire_tools, add_generation_prompt=True
+                        wire_messages,
+                        tools=wire_tools,
+                        add_generation_prompt=True,
+                        **({"process_multimodal": False} if raw_multimodal else {}),
                     )
                 )
                 prompt_ids = rendered.token_ids
-                multi_modal_data = rendered.multi_modal_data
                 prompt_attribution = rendered
 
             try:
@@ -422,10 +422,10 @@ class TrainClient(Client):
                     messages=wire_messages,
                     model=model,
                     prompt_ids=prompt_ids,
-                    multi_modal_data=multi_modal_data,
                     prompt_attribution=prompt_attribution,
                     tools=wire_tools,
                     sampling_params=sampling_params,
+                    raw_multimodal=raw_multimodal,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,
