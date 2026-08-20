@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import math
 import shlex
 
 from pydantic import Field
@@ -25,6 +26,22 @@ PROVIDER = "intercept"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
+
+
+def _autonomous_args(enabled: bool, trace: Trace) -> list[str]:
+    if not enabled:
+        return []
+    config = trace.agent.config
+    args = ["--autonomous"]
+    if config.max_turns is not None and config.max_turns > 0:
+        args += ["--autonomous-max-turns", str(config.max_turns)]
+    if config.max_total_tokens is not None and config.max_total_tokens > 0:
+        args += ["--autonomous-max-tokens", str(config.max_total_tokens)]
+    rollout_timeout = config.timeout.rollout
+    if rollout_timeout is not None and rollout_timeout > 0:
+        args += ["--autonomous-timeout-ms", str(math.ceil(rollout_timeout * 1000))]
+    return args
+
 
 INSTALL = r"""
 set -e
@@ -157,8 +174,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             f"{root}/daemon.sock",
             "--offline",
         ]
-        if self.config.autonomous:
-            args.append("--autonomous")
+        args.extend(_autonomous_args(self.config.autonomous, trace))
         for skill in self.config.skills:
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:

@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from verifiers.v1.acp import ACPHarnessSession, _record_lifecycle_status
-from verifiers.v1.harnesses.prime_agent.harness import PrimeAgentHarnessConfig
+from verifiers.v1.harnesses.prime_agent.harness import (
+    PrimeAgentHarnessConfig,
+    _autonomous_args,
+)
 from verifiers.v1.utils.score import read_answer_file_or_last_reply
 
 NAMESPACE = "ai.primeintellect.prime-agent"
@@ -294,6 +297,29 @@ def test_prime_agent_eval_defaults_to_autonomous_with_lifecycle_opt_in():
         ).require_terminal_quiescence
         is True
     )
+
+
+def test_autonomous_mode_receives_verifiers_rollout_budget():
+    trace = types.SimpleNamespace(
+        agent=types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                max_turns=9,
+                max_total_tokens=65_536,
+                timeout=types.SimpleNamespace(rollout=123.4561),
+            )
+        )
+    )
+
+    assert _autonomous_args(True, trace) == [
+        "--autonomous",
+        "--autonomous-max-turns",
+        "9",
+        "--autonomous-max-tokens",
+        "65536",
+        "--autonomous-timeout-ms",
+        "123457",
+    ]
+    assert _autonomous_args(False, trace) == []
 
 
 @pytest.mark.parametrize("version", [".", "..", "+", "-unsafe"])
