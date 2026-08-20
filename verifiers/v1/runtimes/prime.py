@@ -46,12 +46,12 @@ BASE_LABELS: list[str] = []
 class PrimeClientPool(BaseModel):
     loop: InstanceOf[asyncio.AbstractEventLoop]
     client: Any
-    users: int = 0
+    leases: int = 0
 
 
 # The SDK batches concurrent status polls per client. One client per event loop lets
 # every runtime share that batcher while keeping the client's tasks on their owning loop.
-clientPools: dict[asyncio.AbstractEventLoop, PrimeClientPool] = {}
+client_pools: dict[asyncio.AbstractEventLoop, PrimeClientPool] = {}
 
 
 def set_base_sandbox_labels(labels: list[str]) -> None:
@@ -155,7 +155,7 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
-        self.clientPool: PrimeClientPool | None = None
+        self.client_pool: PrimeClientPool | None = None
 
     @property
     def supports_live_processes(self) -> bool:
@@ -169,13 +169,13 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         loop = asyncio.get_running_loop()
-        clientPool = clientPools.get(loop)
-        if clientPool is None:
-            clientPool = PrimeClientPool(loop=loop, client=AsyncSandboxClient())
-            clientPools[loop] = clientPool
-        clientPool.users += 1
-        self.clientPool = clientPool
-        self._client = clientPool.client
+        client_pool = client_pools.get(loop)
+        if client_pool is None:
+            client_pool = PrimeClientPool(loop=loop, client=AsyncSandboxClient())
+            client_pools[loop] = client_pool
+        client_pool.leases += 1
+        self.client_pool = client_pool
+        self._client = client_pool.client
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -415,10 +415,10 @@ class PrimeRuntime(Runtime):
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
         client, self._client = self._client, None  # `_client` is the idempotency guard
-        clientPool, self.clientPool = self.clientPool, None
+        client_pool, self.client_pool = self.client_pool, None
         if client is None:
             return
-        assert clientPool is not None
+        assert client_pool is not None
         try:
             if self.info.id is not None:  # keep info.id available after teardown
                 try:
@@ -428,8 +428,8 @@ class PrimeRuntime(Runtime):
                         "prime: failed to delete sandbox %s: %s", self.info.id, e
                     )
         finally:
-            clientPool.users -= 1
-            if clientPool.users == 0:
-                del clientPools[clientPool.loop]
+            client_pool.leases -= 1
+            if client_pool.leases == 0:
+                del client_pools[client_pool.loop]
                 with contextlib.suppress(Exception):
                     await client.aclose()
