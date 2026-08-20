@@ -41,8 +41,7 @@ class PushState:
 
     @property
     def finished(self) -> bool:
-        """Whether the run has been closed out. The run's own flag, not a copy of
-        it: one that a caller has to remember to set is one that can disagree."""
+        """Whether the run has been closed out."""
         return self.run is not None and self.run.finished
 
     @property
@@ -76,13 +75,7 @@ class PushState:
 
 
 def open_run(config: EvalConfig, state: PushState | None = None) -> "pr.Run":
-    """Open the run this eval streams into, before the first rollout.
-
-    Never raises: the eval is the point and the upload is not, so a platform
-    that won't answer (or a missing `PRIME_API_KEY`) degrades to a disabled run
-    — a real handle whose calls are no-ops — and the reason lands on `state` for
-    the dashboard. `--no-push` takes the same path, so there is one set of call
-    sites either way. The run's id is the caller's to adopt (`config.run.adopt_id`)."""
+    """Open the run this eval streams into, before the first rollout."""
     identity: dict[str, Any] = {
         "name": config.run.name,
         # The environment is resolved by name through the hub's get-or-create, so
@@ -121,14 +114,7 @@ def open_run(config: EvalConfig, state: PushState | None = None) -> "pr.Run":
 
 def run_config(config: EvalConfig) -> dict[str, Any]:
     """What the run was configured with — the fields somebody actually set, plus
-    the file it was launched from, kept byte for byte.
-
-    `exclude_unset` is the point: a resolved `EvalConfig` dump is hundreds of
-    defaults nobody chose, and the two or three values that were the experiment
-    are invisible in it. A `@ eval.toml` is stored verbatim under the SDK's
-    reserved `config_source` key — comments, key order and section grouping
-    included — because that file *is* the run's configuration and nothing
-    reconstructed from a dump can reproduce it."""
+    the file it was launched from, kept byte for byte."""
     values: dict[str, Any] = config.model_dump(mode="json", exclude_unset=True)
     source = config.run.source
     if source is not None:
@@ -161,15 +147,7 @@ def finish_run(
 def abort_run(
     run: "pr.Run", error: BaseException, state: PushState | None = None
 ) -> None:
-    """Close the run out after the eval broke, so it doesn't sit at running.
-
-    Ctrl-C is a decision, not a fault: it lands as `crashed` (the process stopped
-    without the run ever saying), which is what tells whoever looks whether to
-    read the run's own error or go look at the machine it ran on. A cancellation
-    is the same thing arriving from the other direction.
-
-    A run that already finished keeps the status it reported: teardown failing
-    after a clean upload does not retroactively make the run a failure."""
+    """Close the run out after the eval broke, so it doesn't sit at running."""
     if run.finished:
         return
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
