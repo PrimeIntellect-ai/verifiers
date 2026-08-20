@@ -30,9 +30,9 @@ def test_eval_config_parses(path: Path) -> None:
 def test_rollout_timeout_outcome_parses() -> None:
     assert AgentConfig().timeout.on_rollout_timeout == "error"
     config = AgentConfig.model_validate(
-        {"timeout": {"rollout": 60, "on_rollout_timeout": "zero"}}
+        {"timeout": {"rollout": 60, "on_rollout_timeout": "truncate"}}
     )
-    assert config.timeout.on_rollout_timeout == "zero"
+    assert config.timeout.on_rollout_timeout == "truncate"
 
     with pytest.raises(ValueError):
         AgentConfig.model_validate(

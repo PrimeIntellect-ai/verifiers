@@ -79,8 +79,6 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
         solution = episode.traces[0]
-        if solution.stop_condition == "agent_timeout":
-            return
         if not solution.ok:
             return
         grader = HarborTask(verifier_box_data(task.data))

@@ -287,9 +287,6 @@ class Env(ABC, Generic[ConfigT]):
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
                     await self.finalize(task, episode)
-                    for trace in episode.traces:
-                        if trace.stop_condition == "agent_timeout":
-                            trace.rewards.clear()
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
