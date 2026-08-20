@@ -225,7 +225,7 @@ class PrimeRuntime(Runtime):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id)
+            await self._client.wait_for_creation(self.info.id, max_attempts=180)
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
