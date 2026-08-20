@@ -71,6 +71,7 @@ def _renderer_has_extension_property(renderer) -> bool:
 _MODEL_FAMILIES = [
     ("Qwen/Qwen3-0.6B", "auto"),
     ("Qwen/Qwen3.5-9B", "auto"),
+    ("Qwen/Qwen3.8-27B", "auto"),
     ("THUDM/GLM-4.5-Air", "auto"),
     ("MiniMaxAI/MiniMax-M2.5", "auto"),
     ("Qwen/Qwen2.5-0.5B-Instruct", "default"),
