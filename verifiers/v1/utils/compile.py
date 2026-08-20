@@ -115,12 +115,12 @@ def validate_pairing(
 def cap_remote_agent_timeout(
     agent_timeout: float | None, runtime_config: RuntimeConfig, task: Task
 ) -> float | None:
-    """Remote sandboxes other than Prime VMs (which have no lifetime limit) live at
+    """Remote sandboxes other than Prime's (which have no lifetime limit) live at
     most 24 hours: cap the agent timeout there (with a warning) so a long run times
     out cleanly instead of the provider killing the box mid-run."""
     if agent_timeout is None or runtime_is_local(runtime_config):
         return agent_timeout
-    if isinstance(runtime_config, PrimeConfig) and runtime_config.vm:
+    if isinstance(runtime_config, PrimeConfig):
         return agent_timeout
     if agent_timeout > 24 * 60 * 60:
         logger.warning(

@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import Any
+from typing import cast
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -17,17 +17,10 @@ from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
-from verifiers.v1.episode import Episode
-from verifiers.v1.trace import EvalRunInfo
+from verifiers.v1.episode import Episode, EvalRunInfo
 from verifiers.v1.utils.platform import PushState, abort_run, finish_run, open_run
 
 logger = logging.getLogger(__name__)
-
-
-def record_run(episode: "Episode[Any, Any, Any]", config: EvalConfig) -> None:
-    """Stamp the run onto an episode's traces — the id the platform knows it by."""
-    for trace in episode.traces:
-        trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
 
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
@@ -54,7 +47,13 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     finished: list[Episode] = []
     if config.resume:
         keys = [task.hash for task in tasks]
-        finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
+        loaded, owed = resume.load(
+            out,
+            keys,
+            config.num_rollouts,
+            lambda episode: env.complete(cast(Episode, episode)),
+        )
+        finished = [cast(Episode, episode) for episode in loaded]
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -87,11 +86,11 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # A resume's kept rollouts are part of this run too, so they carry its id and
     # go up with the rest — otherwise the platform would hold half a run.
     for episode in finished:
-        record_run(episode, config)
+        episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
     run.log_traces(finished)
 
     async def on_complete(episode: Episode) -> None:
-        record_run(episode, config)
+        episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
         # A queue put, but a bounded one: handing it to a thread keeps a full
         # queue from stalling every other rollout (and freezing the dashboard).
@@ -190,7 +189,8 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         finished: list[Episode] = []
         if config.resume:
             keys = [task.hash for task in tasks]
-            finished, owed = resume.load(out, keys, config.num_rollouts)
+            loaded, owed = resume.load(out, keys, config.num_rollouts)
+            finished = [cast(Episode, episode) for episode in loaded]
             counts = distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(plan), config.num_rollouts))
@@ -221,7 +221,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         run = open_run(config)
         config.run.adopt_id(run.id)
         for episode in finished:
-            record_run(episode, config)
+            episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         run.log_traces(finished)
 
         async def run_unit(payload: dict) -> list[Episode]:
@@ -232,10 +232,10 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     sampling=config.sampling,
                     **payload,
                 )
-            record_run(episode, config)
+            episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
             await asyncio.to_thread(run.log_traces, [episode])
-            return [episode]
+            return [cast(Episode, episode)]
 
         # Each rollout is its own `run` request, dispatched least-busy across workers.
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]

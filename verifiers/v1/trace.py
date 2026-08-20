@@ -4,7 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr
@@ -141,28 +141,6 @@ class Reward(BaseModel):
         return self.score * self.weight
 
 
-class EvalRunInfo(BaseModel):
-    type: Literal["eval"] = "eval"
-
-    id: str
-    name: str | None = None
-    """Human-readable run name, consumer-stamped."""
-    step: int | None = None
-
-
-class TrainRunInfo(BaseModel):
-    type: Literal["train"] = "train"
-
-    id: str
-    name: str | None = None
-    """Human-readable run name, consumer-stamped."""
-    step: int | None = None
-
-
-RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
-"""The run a trace belongs to, discriminated on `type`."""
-
-
 class PolicyEvent(BaseModel):
     """A framework policy decision applied to a model call before inference."""
 
@@ -278,6 +256,34 @@ class Branch(BaseModel):
         return self.spread(lambda node: node.advantages)
 
     @property
+    def reference_logprobs(self) -> list[float] | None:
+        """Reference-model logprobs aligned to `token_ids`, or None when unscored."""
+        if all(node.reference_logprobs is None for node in self.nodes):
+            return None
+        return self.spread(lambda node: node.reference_logprobs)
+
+    def loss_weights(self, name: str) -> list[float] | None:
+        """One named loss-weight stream aligned to `token_ids`, or None when absent."""
+        if all(
+            node.loss_weights is None or name not in node.loss_weights
+            for node in self.nodes
+        ):
+            return None
+        weights: list[float] = []
+        for node in self.nodes:
+            node_weights = (node.loss_weights or {}).get(name)
+            if node_weights is None:
+                weights.extend([0.0] * len(node.token_ids))
+                continue
+            if len(node_weights) != len(node.token_ids):
+                raise ValueError(
+                    f"loss weight stream {name!r} must align with node token_ids: "
+                    f"got {len(node_weights)}, expected {len(node.token_ids)}"
+                )
+            weights.extend(node_weights)
+        return weights
+
+    @property
     def multi_modal_data(self) -> MultiModalData | None:
         """Node image data concatenated in token order for training; never persisted."""
         merged = MultiModalData()
@@ -361,9 +367,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Unique ID for this trace, auto-generated."""
     verifiers: VersionInfo = Field(default_factory=_current_build)
     """The verifiers version that produced this trace."""
-    run: RunInfo | None = None
-    """The run this trace belongs to (eval or train), consumer-stamped."""
-
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
     agent: AgentInfo[AgentConfigT]
@@ -563,12 +566,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
-
-    def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
-        """Record the run identity (eval / train), and optional extra info."""
-        if run is not None:
-            self.run = run
-        self.info.update(info)
 
     def stop(self, condition: str) -> None:
         """Stop the trace, optionally with a stop condition."""
