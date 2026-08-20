@@ -64,7 +64,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
-    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -218,7 +219,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             raise HarnessError(
                 f"Pi tool interception is verified only for version {PI_VERSION}"
             )
-        config.require_terminal_tool_status = True
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
         hook_path = f"{agent_dir}/extensions/tool-hook.js"
         await runtime.write(

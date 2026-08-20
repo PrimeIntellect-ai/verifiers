@@ -552,7 +552,8 @@ class InterceptionServer(Interception):
         inspect_response = bool(
             session.response_interceptors
             or session.response_stops
-            or session.native_tool_interception
+            or session.pre_tool_interception
+            or session.post_tool_interception
         )
         if streaming:
             return await self._stream(

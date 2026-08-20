@@ -43,7 +43,8 @@ class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
-    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
     NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
