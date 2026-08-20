@@ -27,22 +27,25 @@ T = TypeVar("T")
 
 
 async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
-    """`asyncio.gather`, but nothing is left running when it raises.
+    """`asyncio.gather`, but one rollout failing stops the others too.
 
-    `gather` re-raises the first failure without touching its siblings, so a
-    caller that reacts to the failure — closing the run out, tearing the env
-    down — does so while rollouts are still in flight, and their `on_complete`
-    streams into a run that has already been finished. Cancelling and awaiting
-    them first runs each one's teardown `finally` (the same unwind a Ctrl-C
-    asks for) and leaves nothing behind to race the caller's cleanup."""
+    Plain `gather` raises the first error and leaves the rest running. They then
+    keep going while the caller is already handling that error — still uploading
+    to a run it has just closed, still using an env it is tearing down.
+    Cancelling them here, and waiting for each one to finish unwinding, keeps
+    those two things from overlapping.
+
+    The error is re-raised exactly as it arrived, which is why this is not an
+    `asyncio.TaskGroup`: a TaskGroup wraps everything in an `ExceptionGroup`, and
+    `main` would stop recognizing a `KeyboardInterrupt` as Ctrl-C."""
     tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
     try:
         return await asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
             task.cancel()
-        # return_exceptions: every task is awaited, and the failure that is
-        # about to propagate is the one worth reporting — not a cancellation.
+        # return_exceptions so this waits for all of them; without it the first
+        # cancellation would raise and the rest would be left running again.
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
 
@@ -115,8 +118,6 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
-        # A queue put, but a bounded one: handing it to a thread keeps a full
-        # queue from stalling every other rollout (and freezing the dashboard).
         await asyncio.to_thread(run.log_traces, [episode])
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -236,8 +237,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
         )
         write_lock = asyncio.Lock()
-        # Same contract as the in-process runner: the run opens before the first
-        # rollout, so its id is the one every trace carries.
+
         run = open_run(config)
         config.run.adopt_id(run.id)
         for episode in finished:

@@ -40,11 +40,9 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # The platform's run id once `prime_runs.init()` has opened the run (see
-    # `adopt_id`); the local uuid until then, and for a run that never reaches
-    # the platform. Private so it stays out of the saved config and its digest —
-    # two runs of the same config differ by id, and resume compares configs.
     _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+    """The platform's run id once `prime_runs.init()` has opened the run (see
+    `adopt_id`); the local uuid until then, and for a run that stays local."""
 
     _source: str | None = PrivateAttr(default=None)
     """The `@ file.toml` this run was launched from, recorded by the CLI."""
