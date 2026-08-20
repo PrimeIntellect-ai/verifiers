@@ -4,28 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "verifiers"
-authors = [{ name = "William Brown", email = "williambrown97@gmail.com" }]
-dynamic = ["version"] # derived from git tags via hatch-vcs
+authors = [
+    {name = "William Brown", email = "williambrown97@gmail.com"},
+]
+dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11,<3.14"
-keywords = [
-    "reinforcement-learning",
-    "llm",
-    "rl",
-    "grpo",
-    "environments",
-    "multi-turn",
-    "agents",
-    "agentic-rl",
-    "tool-use",
-    "train",
-    "eval",
-    "harness",
-    "verifiers",
-    "rlvr",
-]
+keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -110,16 +97,30 @@ examples = [
 ]
 
 [project.optional-dependencies]
-rg = ["reasoning-gym>=0.1.8"]
-ta = ["textarena==0.7.4", "nltk>=3.9.2"]
-browser = ["stagehand>=3.4.0", "python-dotenv>=1.0.0"]
+rg = [
+    "reasoning-gym>=0.1.8",
+]
+ta = [
+    "textarena==0.7.4",
+    "nltk>=3.9.2",
+]
+browser = [
+    "stagehand>=3.4.0",
+    "python-dotenv>=1.0.0",
+]
 harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "harbor==0.21.0 ; python_full_version >= '3.12'",
 ]
-modal = ["modal>=1.4.0"]
-notebook = ["nest-asyncio>=1.6.0"]
-openenv = ["openenv>=0.4.1"]
+modal = [
+    "modal>=1.4.0",
+]
+notebook = [
+    "nest-asyncio>=1.6.0",
+]
+openenv = [
+    "openenv>=0.4.1",
+]
 nemo-gym = [
     # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "nemo-gym==0.4.0; python_version >= '3.12'",
@@ -236,8 +237,18 @@ git_describe_command = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["/verifiers", "/tests", "/README.md", "/LICENSE"]
-exclude = ["/wandb", "/scratch", "/configs", "/environments"]
+include = [
+    "/verifiers",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+]
+exclude = [
+    "/wandb",
+    "/scratch",
+    "/configs",
+    "/environments",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["verifiers"]
@@ -262,7 +273,12 @@ pythonpath = ["tests/v1/fixtures"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["--strict-markers", "--tb=short", "-ra", "--quiet"]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-ra",
+    "--quiet",
+]
 markers = [
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
     "integration: marks tests as integration tests",
@@ -322,7 +338,11 @@ not-iterable = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]
-omit = ["*/tests/*", "*/__pycache__/*", "*/site-packages/*"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [
