@@ -106,6 +106,11 @@ class MessageNode(BaseModel):
     consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
     rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
     never scored at all."""
+    reference_logprobs: list[float] | None = None
+    """Reference-model logprobs over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no reference model scored this node."""
+    loss_weights: dict[str, list[float]] | None = None
+    """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the

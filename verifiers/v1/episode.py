@@ -1,14 +1,14 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
-from typing import Any, Generic
+from typing import Annotated, Any, Generic, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace, TraceTask
 from verifiers.v1.types import Usage
 
 
@@ -17,6 +17,70 @@ class EnvInfo(BaseModel):
 
     id: str = ""
     """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k`."""
+    name: str | None = None
+    """The name the consumer runs the env under (e.g. an orchestrator env key)."""
+
+
+class GroupInfo(BaseModel):
+    """The consumer-defined rollout group this episode belongs to."""
+
+    id: str
+
+
+class PolicySpan(BaseModel):
+    """Live policy versions spanned while generating an episode."""
+
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if self.end < self.start:
+            raise ValueError("policy span end must be at least its start")
+        return self
+
+    @property
+    def drift(self) -> int:
+        return self.end - self.start
+
+
+class TrainWorkInfo(BaseModel):
+    type: Literal["train"] = "train"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+class EvalWorkInfo(BaseModel):
+    type: Literal["eval"] = "eval"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
+
+
+class TrainRunInfo(BaseModel):
+    """A training run and the kind of work this episode performed for it."""
+
+    type: Literal["train"] = "train"
+    id: str
+    name: str | None = None
+    work: WorkInfo
+
+
+class EvalRunInfo(BaseModel):
+    """A standalone evaluation run."""
+
+    type: Literal["eval"] = "eval"
+    id: str
+    name: str | None = None
+
+
+RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -26,12 +90,22 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
+    task: TraceTask[DataT]
+    """The task dispatched to the env, including when no trace was produced."""
+    group: GroupInfo | None = None
+    """Consumer-assigned rollout group, if this episode was grouped."""
+    run: RunInfo | None = None
+    """The run this episode belongs to, consumer-stamped."""
     ok: bool = False
     """Whether the episode completed successfully."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
+
+    def record_run(self, run: RunInfo) -> None:
+        """Record the run identity on the dispatched episode."""
+        self.run = run
 
     @property
     def last_error(self) -> Error | None:
@@ -79,11 +153,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
             exclude_none=True,
         )
-
-    @classmethod
-    def of(cls, trace: Trace, env: str = "") -> "Episode":
-        """The single-agent record: one trace as its own episode."""
-        return cls(env=EnvInfo(id=env), traces=[trace], ok=trace.ok)
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
