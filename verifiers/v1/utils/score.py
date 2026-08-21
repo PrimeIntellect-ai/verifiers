@@ -45,10 +45,7 @@ async def read_answer_file_or_last_reply(
         answer = (await runtime.read(path)).decode(errors="replace").strip()
     except (FileNotFoundError, OSError, SandboxError):
         answer = ""
-    acp_fallback = trace.info.get("acp_answer_fallback")
-    return answer or (
-        acp_fallback if isinstance(acp_fallback, str) else trace.last_reply
-    )
+    return answer or trace.last_reply
 
 
 def parse_judge_choice(

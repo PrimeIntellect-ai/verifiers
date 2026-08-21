@@ -3,7 +3,6 @@
 import hashlib
 import json
 import logging
-import math
 import shlex
 
 from pydantic import Field
@@ -23,24 +22,8 @@ PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
 PROVIDER = "intercept"
-LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
-
-
-def _autonomous_args(enabled: bool, trace: Trace) -> list[str]:
-    if not enabled:
-        return []
-    config = trace.agent.config
-    args = ["--autonomous"]
-    if config.max_turns is not None and config.max_turns > 0:
-        args += ["--autonomous-max-turns", str(config.max_turns)]
-    if config.max_total_tokens is not None and config.max_total_tokens > 0:
-        args += ["--autonomous-max-tokens", str(config.max_total_tokens)]
-    rollout_timeout = config.timeout.rollout
-    if rollout_timeout is not None and rollout_timeout > 0:
-        args += ["--autonomous-timeout-ms", str(math.ceil(rollout_timeout * 1000))]
-    return args
 
 
 INSTALL = r"""
@@ -58,14 +41,11 @@ sh "$installer"
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+    version: str = Field(
+        default="0.7.4-beta.533.1.848081e",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+    )
     """Prime Agent release to install, pinned for reproducibility."""
-
-    autonomous: bool = True
-    """Run Prime Agent in autonomous mode unless an evaluation opts out."""
-
-    require_terminal_quiescence: bool = False
-    """Require the correlated lifecycle contract provided by compatible releases."""
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -174,7 +154,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             f"{root}/daemon.sock",
             "--offline",
         ]
-        args.extend(_autonomous_args(self.config.autonomous, trace))
         for skill in self.config.skills:
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:
@@ -201,11 +180,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             command=[wrapper],
             prompt=prompt,
             allow_empty_tool_reply=True,
-            lifecycle_meta_namespace=(
-                LIFECYCLE_META_NAMESPACE
-                if self.config.require_terminal_quiescence
-                else None
-            ),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

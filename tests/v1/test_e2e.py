@@ -85,6 +85,12 @@ ACP_RESUME_PLACEMENTS = [
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pytest.param(
+        "prime-agent",
+        "prime",
+        marks=[mark.prime],
+        id="prime-agent-acp-in-prime-vm",
+    ),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
@@ -257,8 +263,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
-    # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
-    if harness.id != "kimi-code":
+    # Kimi Code drops message `phase` on replay. Prime Agent's Chat Completions
+    # replay omits provider-only response state; the interception server retains
+    # those model calls as separate branches instead of guessing a false lineage.
+    if harness.id not in ("kimi-code", "prime-agent"):
         assert trace.num_branches == 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.
