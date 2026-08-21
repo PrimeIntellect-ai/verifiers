@@ -85,6 +85,12 @@ ACP_RESUME_PLACEMENTS = [
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pytest.param(
+        "prime-agent",
+        "prime",
+        marks=[mark.prime],
+        id="prime-agent-acp-in-prime-vm",
+    ),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
