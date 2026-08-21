@@ -36,6 +36,7 @@ dependencies = [
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.37",
+    "prime-runs>=0.1.0",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",
@@ -163,6 +164,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# TEMPORARY: prime-runs is not on PyPI yet
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", branch = "feature/prime-runs-sdk" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }
@@ -192,6 +195,7 @@ ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
+prime-runs = false
 prime-pydantic-config = false
 renderers = false
 

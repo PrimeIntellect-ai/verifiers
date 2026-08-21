@@ -4,7 +4,8 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import cast
+from collections.abc import Awaitable, Iterable
+from typing import TypeVar, cast
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -18,8 +19,35 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
+from verifiers.v1.utils.platform import PushState, abort_run, finish_run, open_run
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
+    """`asyncio.gather`, but one rollout failing stops the others too.
+
+    Plain `gather` raises the first error and leaves the rest running. They then
+    keep going while the caller is already handling that error — still uploading
+    to a run it has just closed, still using an env it is tearing down.
+    Cancelling them here, and waiting for each one to finish unwinding, keeps
+    those two things from overlapping.
+
+    The error is re-raised exactly as it arrived, which is why this is not an
+    `asyncio.TaskGroup`: a TaskGroup wraps everything in an `ExceptionGroup`, and
+    `main` would stop recognizing a `KeyboardInterrupt` as Ctrl-C."""
+    tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        # return_exceptions so this waits for all of them; without it the first
+        # cancellation would raise and the rest would be left running again.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
@@ -76,38 +104,45 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("results: %s", out)
 
     write_lock = asyncio.Lock()
+    push_state = PushState() if config.push and config.rich else None
+
+    # Opened before the first rollout so the platform's id is the run's id
+    run = open_run(config, push_state)
+    config.run.adopt_id(run.id)
+    # A resume's kept rollouts are part of this run too, so they carry its id and
+    # go up with the rest
+    for episode in finished:
+        episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+    run.log_traces(finished)
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
+        await asyncio.to_thread(run.log_traces, [episode])
 
     # Serving resources (shared tool servers, interception) come up once for the
-    # run; plan slots inside so the env's agents borrow them.
-    async with env.serving():
-        planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
-        slots = [RunSlot.finished(episode) for episode in finished] + planned
-        push_state = None
-        if config.push and config.rich:
-            from verifiers.v1.utils.platform import PushState
-
-            push_state = PushState()
-        display = (
-            dashboard(slots, config, start, push=push_state)
-            if config.rich
-            else contextlib.nullcontext()
-        )
-        async with display:
-            results = await asyncio.gather(
-                *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
+    # run; plan slots inside so the env's agents borrow them. Everything from
+    # bringing those up to tearing them down is inside the try: a run that was
+    # opened is closed out whatever breaks, so none of them sits at running.
+    try:
+        async with env.serving():
+            planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
+            slots = [RunSlot.finished(episode) for episode in finished] + planned
+            display = (
+                dashboard(slots, config, start, push=push_state)
+                if config.rich
+                else contextlib.nullcontext()
             )
-            episodes = finished + list(results)
-            if (
-                push_state is not None
-            ):  # upload off the event loop so the view keeps refreshing
-                from verifiers.v1.utils.platform import push_traces
-
-                push_state.started = True
-                await asyncio.to_thread(push_traces, episodes, config, push_state)
+            async with display:
+                results = await gather_rollouts(
+                    env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned
+                )
+                episodes = finished + list(results)
+                # Drain and close out off the event loop so the view keeps refreshing.
+                await asyncio.to_thread(finish_run, run, episodes, push_state)
+    except BaseException as e:
+        await asyncio.to_thread(abort_run, run, e, push_state)
+        raise
     return episodes
 
 
@@ -203,6 +238,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         )
         write_lock = asyncio.Lock()
 
+        run = open_run(config)
+        config.run.adopt_id(run.id)
+        for episode in finished:
+            episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+        run.log_traces(finished)
+
         async def run_unit(payload: dict) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
                 episode = await client.run(
@@ -213,13 +254,20 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
+            await asyncio.to_thread(run.log_traces, [episode])
             return [cast(Episode, episode)]
 
         # Each rollout is its own `run` request, dispatched least-busy across workers.
         units = [run_unit(payload) for payload, n in plan for _ in range(n)]
-        results = await asyncio.gather(*units)
-        await client.close()
-        return finished + [record for unit in results for record in unit]
+        try:
+            results = await gather_rollouts(units)
+            await client.close()
+            episodes = finished + [record for unit in results for record in unit]
+            await asyncio.to_thread(finish_run, run, episodes)
+        except BaseException as e:
+            await asyncio.to_thread(abort_run, run, e)
+            raise
+        return episodes
     finally:
         proc.terminate()
         with contextlib.suppress(Exception):

@@ -18,13 +18,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-prime-tunnel = false
-prime-sandboxes = false
+prime-pydantic-config = false
 harbor = "2026-08-11T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
-prime-pydantic-config = false
-renderers = false
 ruff = "2026-07-28T00:00:00Z"
+prime-runs = false
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
 
 [manifest]
 
@@ -3332,6 +3333,15 @@ toml = [
 ]
 
 [[package]]
+name = "prime-runs"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-sdk#97d6482a21b31fcdb6bfdbcf7ccdb962e5659c56" }
+dependencies = [
+    { name = "httpx" },
+    { name = "prime-traces" },
+]
+
+[[package]]
 name = "prime-sandboxes"
 version = "0.2.37"
 source = { registry = "https://pypi.org/simple" }
@@ -3348,6 +3358,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5d/18/837603f47eae2cc86bd6652dbbebe955caaca8c0f987dfc7cb947e4c993b/prime_sandboxes-0.2.37.tar.gz", hash = "sha256:44a7cb4bc97ee04bbef824b7ccf185da78cffa90c3f0345ef69fbfbd75ca6bce", size = 89684, upload-time = "2026-08-17T17:07:18.985Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/4c/346abc72f6891267f490abfbe9de867c3ba2ed64ae8a4f964ffc4065492a/prime_sandboxes-0.2.37-py3-none-any.whl", hash = "sha256:9687e1b698c183798138b5e2ca116554773e3e300307a599beb7fbe8ed65e783", size = 49587, upload-time = "2026-08-17T17:07:17.403Z" },
+]
+
+[[package]]
+name = "prime-traces"
+version = "0.0.2"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-sdk#97d6482a21b31fcdb6bfdbcf7ccdb962e5659c56" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [[package]]
@@ -5100,6 +5119,7 @@ dependencies = [
     { name = "openai" },
     { name = "openai-agents" },
     { name = "prime-pydantic-config", extra = ["toml"] },
+    { name = "prime-runs" },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
