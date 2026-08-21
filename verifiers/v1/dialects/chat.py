@@ -550,7 +550,10 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
+        # Some OpenAI-compatible providers reject an explicit JSON null for `tools`; omitting it
+        # has the same no-tools meaning and keeps tool-less harness turns portable.
+        steered = {k: v for k, v in body.items() if k != "tools" or v is not None}
         return cast(
             CompletionCreateParams,
-            {**body, **sampling.model_dump(exclude_none=True), "model": model},
+            {**steered, **sampling.model_dump(exclude_none=True), "model": model},
         )
