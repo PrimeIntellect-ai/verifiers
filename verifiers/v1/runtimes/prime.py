@@ -36,8 +36,10 @@ from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
-MAX_LIFETIME = 24 * 60 * 60
-"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
+IDLE_FALLBACK_LIFETIME = 30 * 24 * 60 * 60
+"""Lifetime (seconds) given to container sandboxes that set an idle timeout: the
+platform requires a finite lifetime there as a safety fallback should idle detection
+fail. Far above any real run, so effectively unbounded."""
 
 
 BASE_LABELS: list[str] = []
@@ -100,15 +102,6 @@ class PrimeConfig(NetworkPolicyConfig):
         )
         return self
 
-    @model_validator(mode="after")
-    def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
-            raise ValueError(
-                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
-            )
-        return self
-
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
@@ -161,7 +154,7 @@ class PrimeRuntime(Runtime):
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
-        # (floored to the SDK's 1-minute minimum).
+        # (raised to the SDK's 1-minute minimum).
         idle_minutes = (
             max(1, math.ceil(self.config.idle_timeout / 60))
             if self.config.idle_timeout is not None
@@ -172,7 +165,14 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            # -1 is prime's convention for no lifetime limit; containers with an
+            # idle timeout must carry a finite lifetime as a safety fallback (which
+            # must exceed the idle timeout)
+            "timeout_minutes": (
+                -1
+                if self.config.vm or idle_minutes is None
+                else max(IDLE_FALLBACK_LIFETIME // 60, idle_minutes + 1)
+            ),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -218,7 +218,7 @@ class PrimeRuntime(Runtime):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id)
+            await self._client.wait_for_creation(self.info.id, max_attempts=180)
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
@@ -274,15 +274,21 @@ class PrimeRuntime(Runtime):
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        # Poll the job by hand: the SDK's run_background_job needs a finite deadline,
+        # but the sandbox has no lifetime limit — the rollout's stage timeouts bound
+        # this via cancellation instead.
         try:
-            result = await self._client.run_background_job(
+            job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
-                poll_interval=1,
             )
+            while True:
+                result = await self._client.get_background_job(self.info.id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(1)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
