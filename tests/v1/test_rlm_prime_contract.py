@@ -109,10 +109,13 @@ def _completion(body: dict[str, Any], sequence: int) -> tuple[dict[str, Any], st
 @pytest.mark.prime
 async def test_rlm_training_contract_in_prime_vm(run_v1, tmp_path, monkeypatch):
     calls: list[str] = []
+    children_started = 0
+    both_children_started = asyncio.Event()
 
     async def handle(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        nonlocal children_started
         try:
             head = await reader.readuntil(b"\r\n\r\n")
             headers = {
@@ -126,6 +129,11 @@ async def test_rlm_training_contract_in_prime_vm(run_v1, tmp_path, monkeypatch):
             )
             response, label = _completion(body, len(calls))
             calls.append(label)
+            if label in {"child-one", "child-two"}:
+                children_started += 1
+                if children_started == 2:
+                    both_children_started.set()
+                await asyncio.wait_for(both_children_started.wait(), timeout=30)
             payload = json.dumps(response, separators=(",", ":")).encode()
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
@@ -180,6 +188,13 @@ async def test_rlm_training_contract_in_prime_vm(run_v1, tmp_path, monkeypatch):
 
     assert trace.ok, trace.errors
     assert trace.rewards["resumed"].score == 1.0
+    assert trace.primary_reply == f"{CODEWORD} [{TOOL_STAMP}]"
+    assert trace.num_branches == 3
+    assert {branch.last_reply for branch in trace.branches} == {
+        "CHILD-ONE",
+        "CHILD-TWO",
+        f"{CODEWORD} [{TOOL_STAMP}]",
+    }
     assert set(calls) == {
         "root-ready",
         "root-tool",

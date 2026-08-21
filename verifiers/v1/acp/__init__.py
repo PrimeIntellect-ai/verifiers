@@ -251,6 +251,7 @@ class ACPHarnessSession(HarnessSession):
             raise TypeError("ACP session reply must be a string")
         result = ProgramResult(exit_code=0, stdout=reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
+        self.trace.primary_reply = reply
         return result
 
     async def _stop(self, *, graceful: bool) -> None:
