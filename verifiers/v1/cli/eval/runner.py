@@ -72,9 +72,12 @@ async def _server(
     from verifiers.v1.utils.logging import setup_logging
 
     # Spawned processes inherit no logging — hand them the main process's setup so
-    # their rollout logs land in the output dir.
+    # their rollout logs land in the output dir. They share its stderr, so console
+    # output follows the main process's choice: off under the dashboard (worker log
+    # lines would print over the Live view and shift it), on otherwise.
     level = "DEBUG" if config.verbose else "INFO"
     log_file = str(output_path(config) / "logs" / "eval.log")
+    console = config.rich is None
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
     # Death pipe: serve_env self-terminates if this process dies abruptly — we keep
@@ -87,7 +90,7 @@ async def _server(
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
             death_pipe=child_conn,
-            log_setup=partial(setup_logging, level, log_file),
+            log_setup=partial(setup_logging, level, log_file, console),
             config_data=env_config_data(config.env),  # picklable across the spawn
             # `-c` seeds each worker's episode bound unless `[serve]` pins one — so a
             # pool carries `workers * bound` episodes, as `multiplex` implies.

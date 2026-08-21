@@ -119,12 +119,7 @@ def main(argv: list[str] | None = None) -> None:
     # default) the workers write there too, and `--rich.show-logs` tails it live.
     log_file = str(output_path(config) / "logs" / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if config.rich is not None:
-        setup_logging(level, log_file=log_file, console=False)
-        # drop stray stdlib records that bypass loguru (else they print over the UI)
-        logging.lastResort = None
-    else:
-        setup_logging(level, log_file=log_file, console=True)
+    setup_logging(level, log_file=log_file, console=config.rich is None)
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
