@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx[socks]", "tenacity"]
 # ///
 """Secrets arrive through argv so local tool subprocesses do not inherit them."""
 

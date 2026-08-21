@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx[socks]", "tenacity"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
 
