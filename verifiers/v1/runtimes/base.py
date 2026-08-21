@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import copy
 import hashlib
 import logging
 import shlex
@@ -150,7 +151,8 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
-        # A borrowed box is one mutable world, so its rollouts must own it one at a time.
+        # Restricted network policy is box-global, so borrowed rollouts must
+        # own a restricted runtime one at a time.
         self.borrow_lock = asyncio.Lock()
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
@@ -197,6 +199,12 @@ class Runtime(ABC):
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         """Combine the task's runtime-wide environment with one process's values."""
         return {**self.env, **env}
+
+    def with_env(self, env: dict[str, str]) -> "Runtime":
+        """Share this physical runtime through a view with its own process environment."""
+        runtime = copy.copy(self)
+        runtime.env = dict(env)
+        return runtime
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
