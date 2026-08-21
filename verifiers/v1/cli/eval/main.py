@@ -12,6 +12,7 @@ from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import (
     TRACES_FILE,
     config_digest,
+    create_attempt_log_dir,
     output_path,
     saved_config_path,
     write_config,
@@ -115,9 +116,10 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
-    # Always tee the run's logs to a file under the output dir — in server mode (the
-    # default) the workers write there too, and `--rich.show-logs` tails it live.
-    log_file = str(output_path(config) / "logs" / "eval.log")
+    # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
+    # points there) — in server mode (the default) the workers write there too, and
+    # `--rich.show-logs` tails it live.
+    log_file = str(create_attempt_log_dir(output_path(config)) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level, log_file=log_file, console=config.rich is None)
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still

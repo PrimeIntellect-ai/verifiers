@@ -36,8 +36,8 @@ class RichConfig(BaseConfig):
     """The live dashboard."""
 
     show_logs: bool = False
-    """Replace the dashboard's per-rollout rows with a live tail of the run's log file
-    (`logs/eval.log`) — the env's own log lines included."""
+    """Replace the dashboard's per-rollout rows with a live tail of the attempt's log
+    file (`logs/latest/eval.log`) — the env's own log lines included."""
 
 
 class RunConfig(BaseConfig):

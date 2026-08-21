@@ -15,7 +15,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
-from verifiers.v1.cli.output import output_path
+from verifiers.v1.cli.output import attempt_log_file, output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
@@ -697,14 +697,18 @@ class Pager:
         return self.page
 
 
+_TAIL_BYTES = 256 * 1024
+"""How far back into a pre-existing log file the tail's first read reaches."""
+
+
 class LogTail:
-    """Incremental tail of the run's log file for `--show-logs`: read only what was
-    appended since the last frame, keep a bounded window of whole lines."""
+    """Incremental tail of the run's log file for `--rich.show-logs`: read only what
+    was appended since the last frame, keep a bounded window of whole lines."""
 
     def __init__(self, path: Path, max_lines: int = 1000) -> None:
         self.path = path
         self.lines: deque[str] = deque(maxlen=max_lines)
-        self._pos = 0
+        self._pos: int | None = None
         self._partial = ""
 
     def _poll(self) -> None:
@@ -712,15 +716,24 @@ class LogTail:
             size = self.path.stat().st_size
         except OSError:  # not written yet — the first record creates it
             return
-        if size < self._pos:  # truncated/replaced — start over
-            self._pos, self._partial = 0, ""
+        if (
+            self._pos is not None and size < self._pos
+        ):  # truncated/replaced — start over
+            self._pos, self._partial = None, ""
         if size == self._pos:
             return
-        with self.path.open("r", encoding="utf-8", errors="replace") as file:
-            file.seek(self._pos)
-            chunk = file.read()
+        # The first read starts at most _TAIL_BYTES from the end: a pre-existing file
+        # (a reused run dir) must not be read whole on the render path.
+        first = self._pos is None
+        start = max(0, size - _TAIL_BYTES) if first else self._pos
+        with self.path.open("rb") as file:
+            file.seek(start)
+            data = file.read()
             self._pos = file.tell()
+        chunk = data.decode("utf-8", errors="replace")
         *complete, self._partial = (self._partial + chunk).split("\n")
+        if first and start:  # landed mid-line — drop the cut first line
+            complete = complete[1:]
         self.lines.extend(complete)
 
     def view(self, height: int) -> Group:
@@ -834,7 +847,7 @@ async def dashboard(
 ):
     pager = Pager()
     tail = (
-        LogTail(output_path(config) / "logs" / "eval.log")
+        LogTail(attempt_log_file(output_path(config)))
         if config.rich is not None and config.rich.show_logs
         else None
     )

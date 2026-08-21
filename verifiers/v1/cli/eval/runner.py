@@ -20,6 +20,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
     append_episode,
+    attempt_log_file,
     output_path,
     save_config,
 )
@@ -78,7 +79,7 @@ async def _server(
     # output follows the main process's choice: off under the dashboard (worker log
     # lines would print over the Live view and shift it), on otherwise.
     level = "DEBUG" if config.verbose else "INFO"
-    log_file = str(output_path(config) / "logs" / "eval.log")
+    log_file = str(attempt_log_file(output_path(config)))
     console = config.rich is None
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
