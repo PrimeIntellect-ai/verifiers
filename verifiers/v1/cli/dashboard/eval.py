@@ -2,6 +2,8 @@
 
 import contextlib
 import time
+from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -499,10 +501,11 @@ def _stage(trace: Trace) -> str:
 
 def _started(slot: RunSlot) -> float:
     # Sort key: when a rollout began (its first trace's boot start; setup for
-    # pre-boot-span traces on resume). A still-pending rollout has no trace yet, so it
-    # sorts last (+inf) — behind everything already in flight, in task order.
+    # pre-boot-span traces on resume; the slot's own dispatch stamp on a served run).
+    # A still-pending rollout has neither, so it sorts last (+inf) — behind everything
+    # already in flight, in task order.
     if not slot.traces:
-        return float("inf")
+        return slot.started if slot.started is not None else float("inf")
     return min(t.timing.boot.start or t.timing.setup.start for t in slot.traces)
 
 
@@ -548,6 +551,13 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                             error.type if error is not None else "error",
                             "",
                         )
+                    )
+                elif slot.started is not None:
+                    # Dispatched to an env server: running, but with no live trace to
+                    # read stages/turns from — detail lands when the episode completes.
+                    elapsed = format_time(now - slot.started)
+                    group_rows.append(
+                        ("running", [f"task {base}", *[""] * 7], "", elapsed)
                     )
                 else:  # queued behind the concurrency cap — only its task is known yet
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
@@ -687,6 +697,42 @@ class Pager:
         return self.page
 
 
+class LogTail:
+    """Incremental tail of the run's log file for `--show-logs`: read only what was
+    appended since the last frame, keep a bounded window of whole lines."""
+
+    def __init__(self, path: Path, max_lines: int = 1000) -> None:
+        self.path = path
+        self.lines: deque[str] = deque(maxlen=max_lines)
+        self._pos = 0
+        self._partial = ""
+
+    def _poll(self) -> None:
+        try:
+            size = self.path.stat().st_size
+        except OSError:  # not written yet — the first record creates it
+            return
+        if size < self._pos:  # truncated/replaced — start over
+            self._pos, self._partial = 0, ""
+        if size == self._pos:
+            return
+        with self.path.open("r", encoding="utf-8", errors="replace") as file:
+            file.seek(self._pos)
+            chunk = file.read()
+            self._pos = file.tell()
+        *complete, self._partial = (self._partial + chunk).split("\n")
+        self.lines.extend(complete)
+
+    def view(self, height: int) -> Group:
+        """The newest lines that fit, one Text per line (no markup parsing — log
+        content stays literal), each cropped to the terminal width."""
+        self._poll()
+        window = list(self.lines)[-height:]
+        return Group(
+            *(Text(line, no_wrap=True, overflow="ellipsis") for line in window)
+        )
+
+
 def _rows_of(group: list[RunSlot]) -> int:
     """How many display rows a task's slots take: one per trace, one for a slot with
     none yet (pending) or none at all (the env's hook failed before any trace)."""
@@ -727,6 +773,7 @@ def _render(
     start: float,
     pager: Pager,
     push: "PushState | None" = None,
+    tail: LogTail | None = None,
 ) -> Group:
     now = time.time()
     warning = _warning(config)
@@ -741,6 +788,16 @@ def _render(
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
+    if tail is not None:  # --show-logs: the run's log stream in place of rollout rows
+        parts = [
+            header,
+            Progress(slots, start),
+            Rule(style="dim"),
+            tail.view(rows_per_page),
+        ]
+        if footer is not None:
+            parts.append(footer)
+        return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     progress = Progress(
         slots,
@@ -776,8 +833,13 @@ async def dashboard(
     push: "PushState | None" = None,
 ):
     pager = Pager()
+    tail = (
+        LogTail(output_path(config) / "logs" / "eval.log")
+        if config.rich is not None and config.rich.show_logs
+        else None
+    )
     async with live_view(
-        lambda: _render(slots, config, start, pager, push),
+        lambda: _render(slots, config, start, pager, push, tail),
         on_key=pager.on_key,
     ):
         yield

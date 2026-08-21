@@ -32,6 +32,14 @@ def default_run_name(env: EnvConfig, model: str) -> str:
     return slug.lower()
 
 
+class RichConfig(BaseConfig):
+    """The live dashboard."""
+
+    show_logs: bool = False
+    """Replace the dashboard's per-rollout rows with a live tail of the run's log file
+    (`logs/eval.log`) — the env's own log lines included."""
+
+
 class RunConfig(BaseConfig):
     name: str | None = None
     """Run name. Auto-generated as `<env>--<model>--<harness>--<short-id>` when unset."""
@@ -53,8 +61,8 @@ class EvalConfig(BaseConfig):
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
     serve: ServeConfig = ServeConfig()
-    """How the env is hosted under `--server`: the worker pool, each worker's episode
-    bound. Ignored by an in-process run."""
+    """How the env is hosted: the worker pool, each worker's episode bound. Ignored
+    by an in-process run (`--no-server`)."""
     run: RunConfig = Field(default_factory=RunConfig)
     """Run identity: `run.name` names the run directory under `output_dir`, `run.id` is
     stamped on traces."""
@@ -95,12 +103,13 @@ class EvalConfig(BaseConfig):
     clean: bool = Field(False, exclude=True)
     """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
     previous run's results. Excluded from the saved config."""
-    rich: bool = True
-    """Show a live dashboard instead of per-rollout logs (in-process only; an unset
-    `rich` defaults off under `--server`)."""
-    server: bool = False
-    """Drive rollouts through the env-server worker pool (sized by `[serve]`) instead of
-    in-process — the path prime-rl trains through. Incompatible with `--rich`."""
+    rich: RichConfig | None = Field(default_factory=RichConfig)
+    """The live dashboard (on by default; `--no-rich` streams logs to the console
+    instead). A server run has no live per-turn view, so its rollout rows fill in as
+    each episode completes; `--rich.show-logs` swaps the rows for the run's logs."""
+    server: bool = True
+    """Drive rollouts through the env-server worker pool (sized by `[serve]`, elastic
+    by default) — the path prime-rl trains through. `--no-server` runs in-process."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -115,21 +124,6 @@ class EvalConfig(BaseConfig):
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
     run's own config — e.g. `uv run eval @ <run-dir>/config.toml --resume`. Excluded
     from the saved config."""
-
-    @model_validator(mode="after")
-    def reject_rich_with_server(self):
-        """The dashboard reads live in-process run slots, so it can't ride the
-        worker pool: an unset `rich` defaults off under `--server`; an explicit
-        `--rich --server` is refused."""
-        if self.server and self.rich:
-            if "rich" not in self.model_fields_set:
-                self.rich = False
-                return self
-            raise ValueError(
-                "`--rich` (the live dashboard) runs in-process and can't be combined with "
-                "`--server`; drop `--rich`."
-            )
-        return self
 
     @property
     def env_id(self) -> str:

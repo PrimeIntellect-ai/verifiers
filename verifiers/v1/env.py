@@ -50,12 +50,15 @@ def _as_error(e: Exception) -> Error:
 @dataclass
 class RunSlot:
     """One planned episode, observable while it happens: `traces` collects the
-    current attempt (a retry restarts the list), `episode`/`done` land when final."""
+    current attempt (a retry restarts the list), `episode`/`done` land when final.
+    A runner that can't watch live traces (the env-server path) stamps `started`
+    at dispatch so the slot still reads as running."""
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
+    started: float | None = None
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":

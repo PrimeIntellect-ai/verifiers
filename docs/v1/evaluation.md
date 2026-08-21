@@ -42,6 +42,12 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
+- `server` — on by default: rollouts run through an elastic env-server worker pool
+  (sized by `[serve]`); `--no-server` runs them in-process
+- `rich` — the live dashboard (default); `--no-rich` streams logs to the console and
+  prints each trace as JSON at the end
+- `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the
+  run's logs (`logs/eval.log`), the env workers' lines included
 
 ## Resuming evaluations
 
