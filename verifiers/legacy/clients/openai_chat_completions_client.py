@@ -3,6 +3,7 @@
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
+from urllib.parse import urlsplit
 
 from openai import (
     AsyncOpenAI,
@@ -171,6 +172,131 @@ OpenAIChatMessages: TypeAlias = list[OpenAIChatMessage]
 OpenAIChatResponse: TypeAlias = ChatCompletion
 OpenAITool: TypeAlias = ChatCompletionToolParam
 
+_QWEN3_MAX_MODEL = "qwen/qwen3-max"
+_EXPLICIT_PROMPT_CACHE_HOSTS = frozenset({"openrouter.ai", "api.pinference.ai"})
+_PROMPT_CACHE_MARKERS = frozenset({"cache_control", "prompt_cache_breakpoint"})
+
+
+def _ephemeral_cache_control() -> dict[str, str]:
+    return {"type": "ephemeral"}
+
+
+def _uses_qwen3_max_explicit_prompt_cache(model: str, api_base_url: str | None) -> bool:
+    if model != _QWEN3_MAX_MODEL or not api_base_url:
+        return False
+
+    hostname = urlsplit(api_base_url).hostname
+    if hostname is None:
+        return False
+    return hostname.casefold() in _EXPLICIT_PROMPT_CACHE_HOSTS
+
+
+def _has_prompt_cache_marker(value: Mapping[str, Any]) -> bool:
+    return not _PROMPT_CACHE_MARKERS.isdisjoint(value)
+
+
+def _has_caller_prompt_cache_intent(
+    prompt: OpenAIChatMessages,
+    tools: list[OpenAITool] | None,
+    extra_body: Mapping[str, Any],
+) -> bool:
+    if _has_prompt_cache_marker(extra_body):
+        return True
+    for message in prompt:
+        if not isinstance(message, Mapping):
+            continue
+        if _has_prompt_cache_marker(message):
+            return True
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(part, Mapping) and _has_prompt_cache_marker(part)
+            for part in content
+        ):
+            return True
+    return bool(
+        tools
+        and any(
+            isinstance(tool, Mapping) and _has_prompt_cache_marker(tool)
+            for tool in tools
+        )
+    )
+
+
+def _with_cache_control_on_last_text(
+    message: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content:
+            return None
+        updated_message = dict(message)
+        updated_message["content"] = [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": _ephemeral_cache_control(),
+            }
+        ]
+        return updated_message
+
+    if not isinstance(content, list):
+        return None
+    for part_index in range(len(content) - 1, -1, -1):
+        part = content[part_index]
+        if (
+            not isinstance(part, Mapping)
+            or part.get("type") != "text"
+            or not isinstance(part.get("text"), str)
+            or not part["text"]
+        ):
+            continue
+        updated_part = dict(part)
+        updated_part["cache_control"] = _ephemeral_cache_control()
+        updated_content = list(content)
+        updated_content[part_index] = updated_part
+        updated_message = dict(message)
+        updated_message["content"] = updated_content
+        return updated_message
+    return None
+
+
+def _with_cache_control_on_instruction_prefix(
+    prompt: OpenAIChatMessages,
+) -> OpenAIChatMessages:
+    instruction_prefix: list[tuple[int, Mapping[str, Any]]] = []
+    for message_index, message in enumerate(prompt):
+        if not isinstance(message, Mapping) or message.get("role") not in {
+            "system",
+            "developer",
+        }:
+            break
+        instruction_prefix.append((message_index, message))
+
+    for message_index, message in reversed(instruction_prefix):
+        updated_message = _with_cache_control_on_last_text(message)
+        if updated_message is None:
+            continue
+        updated_prompt = list(prompt)
+        updated_prompt[message_index] = cast(OpenAIChatMessage, updated_message)
+        return updated_prompt
+    return prompt
+
+
+def _with_cache_control_on_last_tool(
+    tools: list[OpenAITool] | None,
+) -> list[OpenAITool] | None:
+    if not tools:
+        return tools
+    last_tool = tools[-1]
+    if not isinstance(last_tool, Mapping) or last_tool.get("type") != "function":
+        return tools
+
+    updated_tool = dict(last_tool)
+    updated_tool["cache_control"] = _ephemeral_cache_control()
+    updated_tools = list(tools)
+    updated_tools[-1] = cast(OpenAITool, updated_tool)
+    return updated_tools
+
 
 class OpenAIChatCompletionsClient(
     Client[
@@ -278,13 +404,14 @@ class OpenAIChatCompletionsClient(
         tools: list[OpenAITool] | None = None,
         **kwargs,
     ) -> OpenAIChatResponse:
+        api_base_url = None
+        if hasattr(self.client, "base_url"):
+            api_base_url = str(self.client.base_url)
+        elif self._config is not None:
+            api_base_url = self._config.api_base_url
+
         def normalize_sampling_args(sampling_args: SamplingArgs):
             sampling_args = dict(sampling_args)
-            api_base_url = None
-            if hasattr(self.client, "base_url"):
-                api_base_url = str(self.client.base_url)
-            elif self._config is not None:
-                api_base_url = self._config.api_base_url
             reasoning_effort = sampling_args.pop("reasoning_effort", None)
             model_id = model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
             is_anthropic_route = (
@@ -332,6 +459,14 @@ class OpenAIChatCompletionsClient(
         extra_headers = kwargs.pop("extra_headers", None)
         request_args = normalize_sampling_args(sampling_args)
         extra_body = request_args.pop("extra_body", {})
+
+        if _uses_qwen3_max_explicit_prompt_cache(
+            model, api_base_url
+        ) and not _has_caller_prompt_cache_intent(prompt, tools, extra_body):
+            # Alibaba's Qwen endpoint uses explicit Anthropic-style breakpoints.
+            # Only mark the reusable instruction/tool prefix; rollout turns are dynamic.
+            prompt = _with_cache_control_on_instruction_prefix(prompt)
+            tools = _with_cache_control_on_last_tool(tools)
 
         body: dict[str, Any] = {
             "model": model,

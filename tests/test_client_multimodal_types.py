@@ -1,8 +1,13 @@
+from copy import deepcopy
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.legacy.clients import (
+    openai_chat_completions_client as openai_chat_completions_module,
+)
 from verifiers.types import (
     AssistantMessage,
     ImageUrlContentPart,
@@ -22,6 +27,46 @@ from verifiers.utils.response_utils import parse_response_message
 class _OpenAIMessage(SimpleNamespace):
     def model_dump(self):
         return self.__dict__
+
+
+async def _capture_chat_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base_url: str,
+    model: str,
+    prompt: Any,
+    tools: Any = None,
+    sampling_args: Any = None,
+) -> dict[str, Any]:
+    captured_body: dict[str, Any] = {}
+    sentinel = cast(Any, object())
+
+    async def fake_post_chat_completion(
+        _client: object,
+        path: str,
+        *,
+        body: dict[str, Any],
+        extra_headers: Any = None,
+    ) -> Any:
+        assert path == "/chat/completions"
+        assert extra_headers is None
+        captured_body.update(body)
+        return sentinel
+
+    monkeypatch.setattr(
+        openai_chat_completions_module,
+        "post_chat_completion_with_routed_experts_sidecar",
+        fake_post_chat_completion,
+    )
+    client = OpenAIChatCompletionsClient(SimpleNamespace(base_url=base_url))
+    response = await client.get_native_response(
+        prompt=prompt,
+        model=model,
+        sampling_args=sampling_args or {},
+        tools=tools,
+    )
+    assert response is sentinel
+    return captured_body
 
 
 @pytest.mark.asyncio
@@ -56,6 +101,159 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
             "input_audio": {"data": "ZHVtbXk=", "format": "wav"},
         },
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://openrouter.ai/api/v1", "https://api.pinference.ai/api/v1"],
+)
+async def test_qwen3_max_gateway_marks_only_static_prompt_cache_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+):
+    prompt = cast(
+        Any,
+        [
+            {"role": "system", "content": "first static instruction"},
+            {
+                "role": "developer",
+                "content": [
+                    {"type": "text", "text": "end of static instructions"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/static.png"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "dynamic rollout turn"}],
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1", "type": "function"}],
+            },
+        ],
+    )
+    tools = cast(
+        Any,
+        [
+            {
+                "type": "function",
+                "function": {"name": "first", "parameters": {}},
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "last",
+                    "parameters": {"properties": {"cache_control": {"type": "string"}}},
+                },
+            },
+        ],
+    )
+    original_prompt = deepcopy(prompt)
+    original_tools = deepcopy(tools)
+
+    body = await _capture_chat_request_body(
+        monkeypatch,
+        base_url=base_url,
+        model="qwen/qwen3-max",
+        prompt=prompt,
+        tools=tools,
+    )
+
+    assert prompt == original_prompt
+    assert tools == original_tools
+    assert body["messages"][0] == original_prompt[0]
+    assert body["messages"][1]["content"][0] == {
+        "type": "text",
+        "text": "end of static instructions",
+        "cache_control": {"type": "ephemeral"},
+    }
+    assert body["messages"][1]["content"][1] == original_prompt[1]["content"][1]
+    assert body["messages"][2:] == original_prompt[2:]
+    assert body["tools"][0] == original_tools[0]
+    assert body["tools"][1]["cache_control"] == {"type": "ephemeral"}
+    assert set(body["messages"][1]["content"][0]["cache_control"]) == {"type"}
+    assert set(body["tools"][1]["cache_control"]) == {"type"}
+
+
+@pytest.mark.parametrize(
+    ("prompt", "tools", "extra_body"),
+    [
+        ([{"role": "system", "content": "static", "cache_control": {}}], None, {}),
+        (
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "dynamic",
+                            "prompt_cache_breakpoint": True,
+                        }
+                    ],
+                }
+            ],
+            None,
+            {},
+        ),
+        ([], [{"type": "function", "cache_control": {}}], {}),
+        ([], None, {"prompt_cache_breakpoint": True}),
+    ],
+)
+def test_qwen3_max_prompt_cache_recognizes_caller_intent(
+    prompt: Any,
+    tools: Any,
+    extra_body: dict[str, Any],
+):
+    assert openai_chat_completions_module._has_caller_prompt_cache_intent(
+        prompt, tools, extra_body
+    )
+
+
+@pytest.mark.asyncio
+async def test_qwen3_max_top_level_prompt_cache_intent_suppresses_auto_markers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    prompt = cast(Any, [{"role": "system", "content": "stable instruction"}])
+    tools = cast(Any, [{"type": "function", "function": {"name": "lookup"}}])
+    caller_marker = {"source": "caller"}
+
+    body = await _capture_chat_request_body(
+        monkeypatch,
+        base_url="https://openrouter.ai/api/v1",
+        model="qwen/qwen3-max",
+        prompt=prompt,
+        tools=tools,
+        sampling_args={"extra_body": {"prompt_cache_breakpoint": caller_marker}},
+    )
+
+    assert body["messages"] is prompt
+    assert body["tools"] is tools
+    assert body["prompt_cache_breakpoint"] is caller_marker
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        ("qwen/qwen3-max", "https://api.openai.com/v1"),
+        ("qwen/qwen3-max-turbo", "https://openrouter.ai/api/v1"),
+        ("QWEN/QWEN3-MAX", "https://openrouter.ai/api/v1"),
+        ("qwen/qwen3-max", "https://api.openrouter.ai/v1"),
+        ("qwen/qwen3-max", "https://foo.pinference.ai/v1"),
+        ("qwen/qwen3-max", "https://notopenrouter.ai/v1"),
+    ],
+)
+def test_qwen3_max_prompt_cache_is_exactly_scoped(
+    model: str,
+    base_url: str,
+):
+    assert not openai_chat_completions_module._uses_qwen3_max_explicit_prompt_cache(
+        model, base_url
+    )
 
 
 @pytest.mark.asyncio
