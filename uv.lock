@@ -3335,7 +3335,7 @@ toml = [
 [[package]]
 name = "prime-runs"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-sdk#4a367dc08f5c56101fc16a458ac4a7895e879bd5" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-sdk#97d6482a21b31fcdb6bfdbcf7ccdb962e5659c56" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
@@ -3363,7 +3363,7 @@ wheels = [
 [[package]]
 name = "prime-traces"
 version = "0.0.2"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-sdk#4a367dc08f5c56101fc16a458ac4a7895e879bd5" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-sdk#97d6482a21b31fcdb6bfdbcf7ccdb962e5659c56" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
