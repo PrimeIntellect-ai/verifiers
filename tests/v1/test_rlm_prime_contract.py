@@ -27,6 +27,13 @@ def _message_text(message: dict[str, Any]) -> str:
     return str(content)
 
 
+def _branch_reply(branch: Any) -> str:
+    for node in reversed(branch.nodes):
+        if node.sampled and node.message.role == "assistant":
+            return str(node.message.content or "")
+    return ""
+
+
 def _completion(body: dict[str, Any], sequence: int) -> tuple[dict[str, Any], str]:
     messages = body["messages"]
     users = [
@@ -190,7 +197,7 @@ async def test_rlm_training_contract_in_prime_vm(run_v1, tmp_path, monkeypatch):
     assert trace.rewards["resumed"].score == 1.0
     assert trace.primary_reply == f"{CODEWORD} [{TOOL_STAMP}]"
     assert trace.num_branches == 3
-    assert {branch.last_reply for branch in trace.branches} == {
+    assert {_branch_reply(branch) for branch in trace.branches} == {
         "CHILD-ONE",
         "CHILD-TWO",
         f"{CODEWORD} [{TOOL_STAMP}]",
