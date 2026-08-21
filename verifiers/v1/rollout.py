@@ -80,6 +80,7 @@ class Rollout:
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
+        self._borrowed_runtime = runtime
         self._owns_runtime = runtime is None
         self._previous_runtime_env: dict[str, str] | None = None
         self.trace: Trace = Trace(
@@ -158,12 +159,12 @@ class Rollout:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
         itself couldn't see, e.g. its user raising between segments."""
-        if not self._owns_runtime and self.runtime is not None and self.runtime.stopped:
+        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
             # misattributed error onto the trace.
             raise ValueError(
-                f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
+                f"borrowed runtime {self._borrowed_runtime.name!r} was torn down by its owner "
                 "mid-run; keep the provisioning context open until every run "
                 "placed into the box has completed"
             ) from error
@@ -188,7 +189,7 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         if self._owns_runtime:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
-        elif self.runtime.stopped:
+        elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
             raise ValueError(
@@ -210,12 +211,17 @@ class Rollout:
             runtime_env = dict(self.task.runtime_env())
             if self._owns_runtime:
                 runtime.env = runtime_env
-            else:
+            elif runtime.network_restricted:
                 await runtime.borrow_lock.acquire()
                 self._previous_runtime_env = runtime.env
                 # The owner's defaults return after the borrow; they do not belong to
                 # this task and must not flow into its processes.
                 runtime.env = runtime_env
+            else:
+                # The sandbox handles stay shared while each rollout gets its
+                # own task environment.
+                runtime = runtime.with_env(runtime_env)
+                self.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
