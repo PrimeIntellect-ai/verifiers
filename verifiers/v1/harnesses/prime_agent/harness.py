@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import math
 import shlex
 
 from pydantic import Field
@@ -26,6 +27,23 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 
+def _autonomous_args(enabled: bool, trace: Trace) -> list[str]:
+    if not enabled:
+        return []
+    config = trace.agent.config
+    args = ["--autonomous"]
+    if config.max_turns is not None and config.max_turns > 0:
+        args += ["--autonomous-max-turns", str(config.max_turns)]
+    if config.max_total_tokens is not None and config.max_total_tokens > 0:
+        args += ["--autonomous-max-tokens", str(config.max_total_tokens)]
+    if config.timeout.rollout is not None and config.timeout.rollout > 0:
+        args += [
+            "--autonomous-timeout-ms",
+            str(math.ceil(config.timeout.rollout * 1000)),
+        ]
+    return args
+
+
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -46,6 +64,9 @@ class PrimeAgentHarnessConfig(HarnessConfig):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
     )
     """Prime Agent release to install, pinned for reproducibility."""
+
+    autonomous: bool = False
+    """Enable Prime Agent's autonomous continuation loop."""
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -154,6 +175,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             f"{root}/daemon.sock",
             "--offline",
         ]
+        args.extend(_autonomous_args(self.config.autonomous, trace))
         for skill in self.config.skills:
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:
