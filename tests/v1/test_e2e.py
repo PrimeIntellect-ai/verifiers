@@ -263,10 +263,8 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
-    # Kimi Code drops message `phase` on replay. Prime Agent's Chat Completions
-    # replay omits provider-only response state; the interception server retains
-    # those model calls as separate branches instead of guessing a false lineage.
-    if harness.id not in ("kimi-code", "prime-agent"):
+    # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
+    if harness.id != "kimi-code":
         assert trace.num_branches == 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.
