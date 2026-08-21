@@ -86,11 +86,6 @@ def open_run(config: EvalConfig, state: PushState | None = None) -> "pr.Run":
         "model": config.model,
         "framework": FRAMEWORK,
         "config": run_config(config),
-        # verifiers installs its own SIGINT/SIGTERM handler (`install_interrupt`)
-        # so a killed eval still tears down its sandboxes; the runner reports the
-        # terminal status from the unwind rather than letting the SDK take the
-        # signal. The SDK's atexit hook still catches an exit that gets neither.
-        "handle_signals": False,
     }
     if config.push:
         try:
