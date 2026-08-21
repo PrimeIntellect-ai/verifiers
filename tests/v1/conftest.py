@@ -5,7 +5,7 @@ settings that still exercise the path, then assert on the resulting `Trace`(s) â
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
 without one the `e2e`-marked tests skip (config parsing still runs).
 
-`run_v1` mirrors the eval CLI's in-process path (`run_eval` with `--no-server`). Placement coverage (harness x harness runtime x tool
+`run_v1` mirrors the eval CLI's in-process path (`run_eval` with `--no-serve`). Placement coverage (harness x harness runtime x tool
 server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
 combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
 distinct networking. The full cross bought flake exposure and CI minutes, not coverage â€” add
@@ -184,17 +184,16 @@ def _eval_config(
             "reasoning_effort": reasoning_effort,
         },
         rich=None,
-        server=server,
+        serve=({"pool": pool} if pool else {}) if server else None,
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
-        **({"serve": {"pool": pool}} if pool else {}),
         model=CI_MODEL,
     )
 
 
 @pytest.fixture
 def run_v1():
-    """Run a v1 taskset end-to-end in-process (`run_eval` with `--no-server`) and return
+    """Run a v1 taskset end-to-end in-process (`run_eval` with `--no-serve`) and return
     its traces."""
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:

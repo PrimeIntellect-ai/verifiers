@@ -2,7 +2,7 @@
 
 Rollouts run through the env-server worker pool by default (`[serve]` sizes it;
 elastic — one worker, scaling on demand), the same path prime-rl trains through.
-`--no-server` runs them in-process instead. Both paths share this runner — task
+`--no-serve` runs them in-process instead. Both paths share this runner — task
 selection, resume, persistence, the dashboard — and differ only in how one slot
 becomes one episode: `env.run_slot` in-process, a `run` request to the pool
 otherwise. The dashboard watches the same `RunSlot`s either way; a served slot
@@ -26,6 +26,7 @@ from verifiers.v1.cli.output import (
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
 
@@ -58,6 +59,7 @@ async def _in_process(
 @contextlib.asynccontextmanager
 async def _server(
     config: EvalConfig,
+    serve: ServeConfig,
     semaphore: asyncio.Semaphore | None,
     on_complete: OnComplete,
 ) -> AsyncIterator[RunSlotFn]:
@@ -86,7 +88,7 @@ async def _server(
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
-            **pool_serve_kwargs(config.serve.pool),
+            **pool_serve_kwargs(serve.pool),
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
             death_pipe=child_conn,
@@ -94,7 +96,9 @@ async def _server(
             config_data=env_config_data(config.env),  # picklable across the spawn
             # `-c` seeds each worker's episode bound unless `[serve]` pins one — so a
             # pool carries `workers * bound` episodes, as `multiplex` implies.
-            max_concurrent=config.worker_max_concurrent,
+            max_concurrent=serve.max_concurrent
+            if serve.max_concurrent is not None
+            else config.max_concurrent,
         ),
         daemon=False,
     )
@@ -138,7 +142,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     # The env comes up in this process only for an in-process run; a served run's
     # workers each load their own, and this process owns just the taskset.
-    env = None if config.server else load_environment(config.env)
+    env = None if config.serve is not None else load_environment(config.env)
     taskset = env.taskset if env is not None else load_taskset(config.env.taskset)
     if config.num_tasks is None and taskset.INFINITE:
         raise ValueError(
@@ -179,7 +183,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         save_config(config, out)
         via = (
             f" via the env-server {config.serve.pool.type} pool"
-            if config.server
+            if config.serve is not None
             else ""
         )
         logger.info(
@@ -204,7 +208,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     backend = (
         _in_process(env, config, semaphore, on_complete)
         if env is not None
-        else _server(config, semaphore, on_complete)
+        else _server(config, config.serve, semaphore, on_complete)
     )
     async with backend as run_slot:
         # The display slots: in-process ones are the env's own (it fills their live

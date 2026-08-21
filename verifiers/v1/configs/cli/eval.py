@@ -60,9 +60,10 @@ class EvalConfig(BaseConfig):
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
-    serve: ServeConfig = ServeConfig()
-    """How the env is hosted: the worker pool, each worker's episode bound. Ignored
-    by an in-process run (`--no-server`)."""
+    serve: ServeConfig | None = Field(default_factory=ServeConfig)
+    """How the env is hosted: the env-server worker pool (elastic by default) and each
+    worker's episode bound — the path prime-rl trains through. `--no-serve` runs the
+    rollouts in-process instead."""
     run: RunConfig = Field(default_factory=RunConfig)
     """Run identity: `run.name` names the run directory under `output_dir`, `run.id` is
     stamped on traces."""
@@ -93,7 +94,7 @@ class EvalConfig(BaseConfig):
     )
     """Episodes in flight at once, `None` for no limit. An episode plays its agents one
     at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
-    says otherwise. Under `--server` it seeds each worker's bound, unless
+    says otherwise. Under `[serve]` it also seeds each worker's bound, unless
     `--serve.max-concurrent` pins one."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
@@ -105,11 +106,8 @@ class EvalConfig(BaseConfig):
     previous run's results. Excluded from the saved config."""
     rich: RichConfig | None = Field(default_factory=RichConfig)
     """The live dashboard (on by default; `--no-rich` streams logs to the console
-    instead). A server run has no live per-turn view, so its rollout rows fill in as
+    instead). A served run has no live per-turn view, so its rollout rows fill in as
     each episode completes; `--rich.show-logs` swaps the rows for the run's logs."""
-    server: bool = True
-    """Drive rollouts through the env-server worker pool (sized by `[serve]`, elastic
-    by default) — the path prime-rl trains through. `--no-server` runs in-process."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -128,15 +126,6 @@ class EvalConfig(BaseConfig):
     @property
     def env_id(self) -> str:
         return self.env.env_id or ""
-
-    @property
-    def worker_max_concurrent(self) -> int | None:
-        """A served worker's episode bound: its own pin, else the run's `--max-concurrent`."""
-        return (
-            self.serve.max_concurrent
-            if self.serve.max_concurrent is not None
-            else self.max_concurrent
-        )
 
     @model_validator(mode="before")
     @classmethod

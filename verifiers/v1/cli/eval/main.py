@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     try:
-        # Through the env-server worker pool by default; in-process with --no-server.
+        # Through the env-server worker pool by default; in-process with --no-serve.
         episodes = asyncio.run(run_eval(config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
