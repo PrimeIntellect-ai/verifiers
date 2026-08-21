@@ -13,8 +13,9 @@ import math
 import shlex
 import tempfile
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
@@ -43,6 +44,20 @@ fail. Far above any real run, so effectively unbounded."""
 
 
 BASE_LABELS: list[str] = []
+
+
+@dataclass
+class _SharedClient:
+    client: Any
+    leases: int = 0
+
+
+# One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
+# coalesces concurrent status polls per client into batched requests (up to 100 ids
+# each), so sharing a client turns N runtimes' creation/job polls into a few batch
+# calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
+# that created it.
+_shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
 
 
 def set_base_sandbox_labels(labels: list[str]) -> None:
@@ -149,7 +164,12 @@ class PrimeRuntime(Runtime):
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
-        self._client = AsyncSandboxClient()
+        loop = asyncio.get_running_loop()
+        shared = _shared_clients.get(loop)
+        if shared is None:
+            shared = _shared_clients[loop] = _SharedClient(AsyncSandboxClient())
+        shared.leases += 1
+        self._client = shared.client
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -404,12 +424,16 @@ class PrimeRuntime(Runtime):
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
-        if self.info.id is not None:  # keep info.id available after teardown
-            try:
+        try:
+            if self.info.id is not None:  # keep info.id available after teardown
                 await client.delete(self.info.id)
-            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-                logger.warning(
-                    "prime: failed to delete sandbox %s: %s", self.info.id, e
-                )
-        with contextlib.suppress(Exception):
-            await client.aclose()
+        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+        finally:
+            loop = asyncio.get_running_loop()
+            shared = _shared_clients[loop]
+            shared.leases -= 1
+            if not shared.leases:  # last runtime on this loop closes the client
+                del _shared_clients[loop]
+                with contextlib.suppress(Exception):
+                    await client.aclose()
