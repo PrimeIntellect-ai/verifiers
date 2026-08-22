@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_serializer
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
@@ -193,6 +193,8 @@ class Branch(BaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
+    mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
+    """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
     @property
     def messages(self) -> Messages:
@@ -300,6 +302,16 @@ class Branch(BaseModel):
         return merged if found else None
 
     @property
+    def mm_token_type_ids(self) -> list[int] | None:
+        """Per-token modality markers aligned to `token_ids` (0 = text, 1 = image
+        placeholder, 2 = video placeholder), driving the trainer's vision-encoder
+        slicing; None for branches carrying no multimodal data."""
+        if self.multi_modal_data is None:
+            return None
+        mapping = self.mm_token_type_id_map
+        return [mapping.get(t, 0) for t in self.token_ids]
+
+    @property
     def routed_experts(self) -> np.ndarray | None:
         """uint8 `[tokens, layers, top_k]` routing; partial data returns None."""
         nodes = [n for n in self.nodes if n.token_ids]
@@ -378,6 +390,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
+    """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
+    from the renderer that tokenized this trace, stamped at turn commit. Applied to a
+    branch's `token_ids` by `Branch.mm_token_type_ids`; empty for text-only renderers."""
     request_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
@@ -408,6 +424,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
+
+    @field_serializer("mm_token_type_id_map")
+    def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
+        """The wire unpacks with msgpack's `strict_map_key`, which forbids int map keys —
+        dump str keys; validation coerces them back to int."""
+        return {str(k): v for k, v in mapping.items()}
 
     @property
     def reward(self) -> float:
@@ -464,6 +486,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     index=i,
                     nodes=[self.nodes[n] for n in path],
                     calls=[by_node[n] for n in path if n in by_node],
+                    mm_token_type_id_map=self.mm_token_type_id_map,
                 )
             )
         return branches
