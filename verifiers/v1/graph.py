@@ -535,6 +535,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     prompt = turn.prompt
     tokens = response.tokens
     multi_modal_data = tokens.multi_modal_data if tokens else None
+    # Constant per renderer, so re-stamping every turn is idempotent.
+    if tokens is not None and tokens.mm_token_type_id_map:
+        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
     is_content = tokens.is_content if tokens else None
