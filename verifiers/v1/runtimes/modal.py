@@ -155,7 +155,32 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            await self._adopt_orphan()
             raise SandboxError(f"modal sandbox provisioning failed: {e}") from e
+        except BaseException:  # cancellation, which is not an Exception
+            await self._adopt_orphan()
+            raise
+
+    async def _adopt_orphan(self) -> None:
+        """Reclaim a sandbox whose `create` did not live long enough to hand back a handle.
+
+        Modal commits the sandbox and schedules it before `Sandbox.create` responds, so a
+        create that does not return — Ctrl-C, a cancelled rollout, a connection dropped on
+        the reply — still boots and bills a sandbox, about a second after the caller stopped
+        waiting for it. `_sandbox` was never assigned, so neither `teardown` nor the atexit
+        backstop can see it and it runs to its 24h maximum lifetime. The name is ours and
+        unique per rollout, so the sandbox is still addressable: claim it here and the
+        owner's `stop` disposes of it like any other. Best effort — this runs while `start`
+        is already unwinding, usually from a cancellation, hence the shield.
+        """
+        if self._sandbox is not None:
+            return
+        import modal
+
+        with contextlib.suppress(Exception):
+            self._sandbox = await asyncio.shield(
+                modal.Sandbox.from_name.aio(_APP_NAME, self.name)
+            )
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox: Modal forwards `port` (named via
