@@ -58,7 +58,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import IdempotentRequest, RolloutSession
+from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
 
@@ -81,6 +81,10 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+# nano-RLM retries for up to 315 seconds. Keep successful results beyond that
+# window, while bounding long-horizon rollout memory independently of turn limits.
+IDEMPOTENCY_CACHE_TTL_SECONDS = 600
+IDEMPOTENCY_CACHE_MAX_COMPLETED = 1024
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -115,6 +119,56 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+def _capture_response(response: web.Response) -> ReplayResponse:
+    body = response.body
+    if body is None:
+        data = b""
+    elif isinstance(body, bytes):
+        data = body
+    elif isinstance(body, bytearray):
+        data = bytes(body)
+    else:
+        raise TypeError("coalesced interception responses must have a byte body")
+    return ReplayResponse(status=response.status, body=data)
+
+
+def _replay_response(response: ReplayResponse) -> web.Response:
+    return web.Response(
+        body=response.body,
+        status=response.status,
+        content_type="application/json",
+        charset="utf-8",
+    )
+
+
+def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
+    """Expire and cap completed replays; active attempts are never evicted."""
+    completed = [
+        (key, request)
+        for key, request in session.idempotent_requests.items()
+        if request.response is not None and request.inflight is None
+    ]
+    for key, request in completed:
+        completed_at = request.completed_at or 0.0
+        if (
+            now - completed_at >= IDEMPOTENCY_CACHE_TTL_SECONDS
+            and session.idempotent_requests.get(key) is request
+        ):
+            session.idempotent_requests.pop(key)
+    completed = [
+        (key, request)
+        for key, request in completed
+        if session.idempotent_requests.get(key) is request
+    ]
+    excess = len(completed) - IDEMPOTENCY_CACHE_MAX_COMPLETED
+    if excess > 0:
+        for key, request in sorted(
+            completed, key=lambda item: item[1].completed_at or 0.0
+        )[:excess]:
+            if session.idempotent_requests.get(key) is request:
+                session.idempotent_requests.pop(key)
 
 
 async def _queue_chunks(
@@ -416,7 +470,8 @@ class InterceptionServer(Interception):
         # request), and a stale replay would loop the rollout.
         retried = is_retried_request(request.headers)
         idempotent: IdempotentRequest | None = None
-        if idempotency_key := request.headers.get(IDEMPOTENCY_KEY_HEADER):
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        if idempotency_key:
             if streaming:
                 return web.json_response(
                     dialect.error_body(
@@ -424,6 +479,8 @@ class InterceptionServer(Interception):
                     ),
                     status=400,
                 )
+            now = time.monotonic()
+            _prune_idempotent_requests(session, now)
             binding = (request.path, req_hash)
             idempotent = session.idempotent_requests.get(idempotency_key)
             if idempotent is not None and idempotent.binding != binding:
@@ -433,13 +490,11 @@ class InterceptionServer(Interception):
                     ),
                     status=400,
                 )
-            if idempotent is None:
-                idempotent = IdempotentRequest(binding=binding)
-                session.idempotent_requests[idempotency_key] = idempotent
-            if idempotent.response is not None:
+            if idempotent is not None and idempotent.response is not None:
                 logger.debug(
                     "intercept replay: id=%s (idempotent request)", session.trace.id
                 )
+                idempotent.completed_at = now
                 return _completion_response(idempotent.response)
             upstream_headers = {
                 name: value
@@ -477,19 +532,24 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
                 status=400,
             )
+        if idempotency_key and idempotent is None:
+            idempotent = IdempotentRequest(binding=(request.path, req_hash))
+            session.idempotent_requests[idempotency_key] = idempotent
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[ReplayResponse | None]",
+        ) -> web.Response:
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            completion = await asyncio.shield(inflight)
-            if completion is None:
+            response = await asyncio.shield(inflight)
+            if response is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
-            return _completion_response(completion)
+            return _replay_response(response)
 
-        fut: asyncio.Future[dict | None] | None = None
+        fut: asyncio.Future[ReplayResponse | None] | None = None
         if not streaming:
             if idempotent is not None and idempotent.inflight is not None:
                 return await coalesced(idempotent.inflight)
@@ -505,22 +565,33 @@ class InterceptionServer(Interception):
             else:
                 session.inflight[req_hash] = fut
 
-        def finish_inflight(completion: dict | None = None) -> None:
+        def finish_inflight(response: ReplayResponse | None = None) -> None:
             if fut is None:
                 return
             if idempotent is not None and idempotent.inflight is fut:
                 idempotent.inflight = None
+                if (
+                    idempotent.response is None
+                    and idempotency_key
+                    and session.idempotent_requests.get(idempotency_key) is idempotent
+                ):
+                    session.idempotent_requests.pop(idempotency_key)
             elif session.inflight.get(req_hash) is fut:
                 session.inflight.pop(req_hash, None)
             if not fut.done():
-                fut.set_result(completion)
+                fut.set_result(response)
+
+        def finish_response(response: web.Response) -> web.Response:
+            finish_inflight(_capture_response(response))
+            return response
 
         try:
             refused = await session.refused()
             if refused is not None:
-                finish_inflight()
-                return web.json_response(
-                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                return finish_response(
+                    web.json_response(
+                        dialect.error_body(f"rollout stopped: {refused}"), status=400
+                    )
                 )
             original_request = model_request
             model_request, request_rewrites, stopped = await session.rewrite_request(
@@ -531,15 +602,15 @@ class InterceptionServer(Interception):
                 if stopped is None:
                     dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            finish_inflight()
-            return self._fail(session, dialect, error)
+            return finish_response(self._fail(session, dialect, error))
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            finish_inflight()
-            return self._fail(
-                session,
-                dialect,
-                TaskError(
-                    f"model boundary hook failed: {type(error).__name__}: {error}"
+            return finish_response(
+                self._fail(
+                    session,
+                    dialect,
+                    TaskError(
+                        f"model boundary hook failed: {type(error).__name__}: {error}"
+                    ),
                 ),
             )
         except BaseException:
@@ -549,10 +620,11 @@ class InterceptionServer(Interception):
             turn = graph.prepare_turn(session.trace, model_request.messages)
             turn.commit_prompt(model_request.tools)
             session.trace.stop(stopped)
-            finish_inflight()
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {stopped}"),
-                status=400,
+            return finish_response(
+                web.json_response(
+                    dialect.error_body(f"rollout stopped: {stopped}"),
+                    status=400,
+                )
             )
 
         try:
@@ -560,11 +632,11 @@ class InterceptionServer(Interception):
             model_request = dialect.parse_request(body)
             turn = graph.prepare_turn(session.trace, model_request.messages)
         except ValueError as error:
-            finish_inflight()
-            return web.json_response(dialect.error_body(str(error)), status=400)
+            return finish_response(
+                web.json_response(dialect.error_body(str(error)), status=400)
+            )
         except RolloutError as error:
-            finish_inflight()
-            return self._fail(session, dialect, error)
+            return finish_response(self._fail(session, dialect, error))
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
         if streaming:
@@ -586,11 +658,15 @@ class InterceptionServer(Interception):
             # completion) that the server serializes back to the program.
             if idempotent is not None:
                 idempotent.response = response.raw
+                idempotent.completed_at = time.monotonic()
             else:
                 session.last_request = req_hash
                 session.last_response = response.raw
-            finish_inflight(response.raw)
-            return _completion_response(response.raw)
+            served = _completion_response(response.raw)
+            finish_inflight(_capture_response(served))
+            if idempotent is not None:
+                _prune_idempotent_requests(session, time.monotonic())
+            return served
 
         try:
             session.error = None
@@ -616,8 +692,10 @@ class InterceptionServer(Interception):
                         len(call_response.message.tool_calls or []),
                     )
                     if session.released:  # concluded while sampling — seal holds
-                        return web.json_response(
-                            dialect.error_body("rollout concluded"), status=409
+                        return finish_response(
+                            web.json_response(
+                                dialect.error_body("rollout concluded"), status=409
+                            )
                         )
                     response_rewrites = []
                     stopped = None
@@ -638,20 +716,24 @@ class InterceptionServer(Interception):
                             )
                             call_response.raw = raw_response
                     if session.stopped:
-                        return web.json_response(
-                            dialect.error_body(
-                                f"rollout stopped: {session.trace.stop_condition}"
-                            ),
-                            status=400,
+                        return finish_response(
+                            web.json_response(
+                                dialect.error_body(
+                                    f"rollout stopped: {session.trace.stop_condition}"
+                                ),
+                                status=400,
+                            )
                         )
                     node = turn.commit(call_response, model_request.tools)
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
                         session.trace.stop(stopped)
-                        return web.json_response(
-                            dialect.error_body(f"rollout stopped: {stopped}"),
-                            status=400,
+                        return finish_response(
+                            web.json_response(
+                                dialect.error_body(f"rollout stopped: {stopped}"),
+                                status=400,
+                            )
                         )
                 except OverlongPromptError as e:
                     # An overlong prompt is a budget limit, not a crash: end the rollout
@@ -660,9 +742,11 @@ class InterceptionServer(Interception):
                     error = e
                     session.trace.stop("context_length")
                     logger.debug("prompt too long: id=%s", session.trace.id)
-                    return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
-                        status=400,
+                    return finish_response(
+                        web.json_response(
+                            dialect.error_body("rollout stopped: context_length"),
+                            status=400,
+                        )
                     )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
@@ -675,9 +759,11 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                    return finish_response(
+                        web.json_response(
+                            dialect.error_body(str(e)),
+                            status=getattr(e, "status_code", 502),
+                        )
                     )
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
@@ -687,7 +773,9 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(dialect.error_body(str(e)), status=502)
+                    return finish_response(
+                        web.json_response(dialect.error_body(str(e)), status=502)
+                    )
                 except BaseException as e:
                     # A cancelled exchange (harness disconnect, shutdown) is still
                     # recorded, coupled to its cancellation.
@@ -711,8 +799,8 @@ class InterceptionServer(Interception):
                 )
             return serve(call_response)
         finally:
-            # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
-            # response" (an error/refuse return above), so the waiter surfaces a retryable error.
+            # Free the slot after cancellation or an otherwise unrendered failure. Every
+            # ordinary return above publishes its exact HTTP result first.
             finish_inflight()
 
     async def _stream(
