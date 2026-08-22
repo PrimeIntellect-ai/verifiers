@@ -41,6 +41,7 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
+    toolInterception: tuple[str, str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -64,6 +65,15 @@ class ACPHarness(Harness[ConfigT]):
     ) -> ACPConfig:
         pass
 
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        """Install an adapter bridge when the agent cannot use the ACP capability directly."""
+
     async def session(
         self,
         ctx: ModelContext,
@@ -73,6 +83,7 @@ class ACPHarness(Harness[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception: tuple[str, str] | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             raise HarnessError(
@@ -81,6 +92,9 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
+        if tool_interception is not None:
+            config.toolInterception = tool_interception
+            await self.configure_tool_interception(config, runtime, *tool_interception)
         return ACPHarnessSession(
             self,
             ctx,
@@ -214,6 +228,14 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "toolInterception": (
+                {
+                    "url": self.config.toolInterception[0],
+                    "secret": self.config.toolInterception[1],
+                }
+                if self.config.toolInterception is not None
+                else None
+            ),
         }
         async with self._lock:
             if self._closed:

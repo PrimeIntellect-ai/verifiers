@@ -4,16 +4,17 @@ from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
-NODE_VERSION = "22.19.0"
+# This is the first 22.x release whose global fetch honors environment proxies.
+NODE_VERSION = "22.21.0"
 
 INSTALL = r"""
 set -e
 node=/var/tmp/vf-node
-node_ok() { "$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
+node_ok() { "$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=21 ? 0 : 1)'; }
 
 if [ -f /etc/alpine-release ]; then
     apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; then
+    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=21 ? 0 : 1)'; then
         sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
         apk upgrade --available --no-cache >/dev/null
         apk add --no-cache nodejs-current npm >/dev/null
@@ -33,7 +34,7 @@ else
             | tar -xz -C "$node" --strip-components=1
     fi
 fi
-node_ok || { echo "ACP adapters require Node.js 22.19 or newer" >&2; exit 1; }
+node_ok || { echo "ACP adapters require Node.js 22.21 or newer" >&2; exit 1; }
 """
 
 

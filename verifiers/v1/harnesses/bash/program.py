@@ -2,12 +2,14 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
 # ///
-"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
+"""Keep harness credentials out of local tool subprocess environments."""
 
 import argparse
 import asyncio
 import json
+import os
 import subprocess
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -107,8 +109,8 @@ def format_results(results, query: str) -> str:
 def run_search(query: str, api_key: str, num_results: int = 5) -> str:
     """Serper Google web search -> formatted organic results.
 
-    The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    The key arrives as an argument handed in by the harness over argv instead of from
+    `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
     The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
     raising out of the chat loop and killing the rollout."""
     if not api_key:
@@ -328,6 +330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-secret-bytes", type=int, default=0)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -336,6 +339,17 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
+    tool_interception_secret = ""
+    if args.tool_interception_secret_bytes:
+        secret_payload = sys.stdin.buffer.read(args.tool_interception_secret_bytes)
+        if len(secret_payload) != args.tool_interception_secret_bytes:
+            raise RuntimeError("Bash interception credential handoff ended early")
+        tool_interception_secret = secret_payload.decode()
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(devnull, sys.stdin.fileno())
+        finally:
+            os.close(devnull)
     initial = []
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)
@@ -390,7 +404,7 @@ async def main() -> None:
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
+                    tool_interception_secret,
                     "before",
                     tool_message,
                 )
@@ -433,7 +447,7 @@ async def main() -> None:
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
+                    tool_interception_secret,
                     "after",
                     tool_message,
                 )

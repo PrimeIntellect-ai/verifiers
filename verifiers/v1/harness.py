@@ -34,7 +34,11 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
-    SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
+    SUPPORTS_PRE_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether native hooks synchronously run policy before tool execution."""
+    SUPPORTS_POST_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether native hooks synchronously run policy after execution and before the
+    harness advances to its next model turn. ACP lifecycle notifications do not qualify."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
@@ -169,7 +173,7 @@ class Harness(ABC, Generic[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> HarnessSession:
         """Create the rollout-scoped handle that drives this harness.
 
@@ -186,7 +190,7 @@ class Harness(ABC, Generic[ConfigT]):
             secret,
             mcp_urls,
             data,
-            tool_interception_url,
+            tool_interception,
         )
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
@@ -215,7 +219,7 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages: Messages,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         """Run the next segment of an exchange this trace already carries: the user
         spoke (`messages`), the program answers — with the whole conversation behind
@@ -240,8 +244,9 @@ class Harness(ABC, Generic[ConfigT]):
             *messages,
         ]
         kwargs = (
-            {"tool_interception_url": tool_interception_url}
-            if self.SUPPORTS_TOOL_INTERCEPTION
+            {"tool_interception": tool_interception}
+            if self.SUPPORTS_PRE_TOOL_INTERCEPTION
+            or self.SUPPORTS_POST_TOOL_INTERCEPTION
             else {}
         )
         return await self.launch(
@@ -302,7 +307,7 @@ class HarnessSession:
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> None:
         self.harness = harness
         self.ctx = ctx
@@ -312,7 +317,7 @@ class HarnessSession:
         self.secret = secret
         self.mcp_urls = mcp_urls
         self.data = data
-        self.tool_interception_url = tool_interception_url
+        self.tool_interception = tool_interception
         self._closed = False
 
     async def turn(self, messages: Messages | None = None) -> None:
@@ -326,12 +331,13 @@ class HarnessSession:
         await self.harness._check_result(self.trace, self.runtime, result)
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
+        kwargs = (
+            {"tool_interception": self.tool_interception}
+            if self.harness.SUPPORTS_PRE_TOOL_INTERCEPTION
+            or self.harness.SUPPORTS_POST_TOOL_INTERCEPTION
+            else {}
+        )
         if messages is None:
-            kwargs = (
-                {"tool_interception_url": self.tool_interception_url}
-                if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                else {}
-            )
             return await self.harness.launch(
                 self.ctx,
                 self.trace,
@@ -351,7 +357,7 @@ class HarnessSession:
             self.mcp_urls,
             self.data,
             messages,
-            self.tool_interception_url,
+            **kwargs,
         )
 
     async def close(self) -> None:

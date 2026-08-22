@@ -12,6 +12,8 @@ import sys
 import traceback
 from contextlib import AsyncExitStack, suppress
 from typing import Any
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen as openUrl
 
 from acp import (
     PROTOCOL_VERSION,
@@ -35,14 +37,19 @@ from acp.schema import (
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
-class VerifiersACPClient(Client):
+class LiveACPClient(Client):
+    """ACP client with an awaited metadata channel for native tool policy."""
+
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
+        self.toolInterception: dict[str, str] | None = None
+        self.promptError: Exception | None = None
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
+        self.promptError = None
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         if isinstance(update, AgentMessageChunk) and isinstance(
@@ -61,16 +68,51 @@ class VerifiersACPClient(Client):
         options: list[PermissionOption],
         **kwargs: Any,
     ) -> RequestPermissionResponse:
+        interception = (tool_call.field_meta or {}).get("toolInterception")
         option = next(
             (item for item in options if item.kind in ("allow_once", "allow_always")),
             None,
         )
+        responseMeta = None
+        if interception is not None:
+            try:
+                if self.toolInterception is None:
+                    raise RuntimeError("Tool interception is not configured")
+                if not isinstance(interception, dict):
+                    raise TypeError("Tool interception metadata must be an object")
+                if error := interception.get("error"):
+                    raise RuntimeError(str(error))
+                request = UrlRequest(
+                    self.toolInterception["url"],
+                    data=json.dumps(interception).encode(),
+                    headers={
+                        "Authorization": f"Bearer {self.toolInterception['secret']}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                response = await asyncio.to_thread(openUrl, request, timeout=35)
+                with response:
+                    decision = json.loads(await asyncio.to_thread(response.read))
+                if not isinstance(decision, dict) or decision.get("action") not in (
+                    "allow",
+                    "rewrite",
+                    "stop",
+                ):
+                    raise ValueError("Tool interception returned an invalid decision")
+                responseMeta = {"toolInterception": decision}
+            except Exception as error:  # noqa: BLE001 - fail closed across ACP
+                self.promptError = RuntimeError(
+                    f"Tool interception is unavailable: {error}"
+                )
+                responseMeta = {"toolInterception": {"error": str(error)}}
+                option = None
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
             if option
             else DeniedOutcome(outcome="cancelled")
         )
-        return RequestPermissionResponse(outcome=outcome)
+        return RequestPermissionResponse(outcome=outcome, field_meta=responseMeta)
 
 
 def user_content_blocks(contents: list, supports_images: bool) -> list:
@@ -110,7 +152,7 @@ def mcp_servers(config: dict) -> list[HttpMcpServer]:
 
 
 async def prompt(
-    client: VerifiersACPClient,
+    client: LiveACPClient,
     connection: Any,
     capabilities: Any,
     session_id: str,
@@ -130,8 +172,13 @@ async def prompt(
     try:
         await connection.prompt(session_id=session_id, prompt=blocks)
     except RequestError as error:
+        if client.promptError is not None:
+            raise client.promptError from error
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+
+    if client.promptError is not None:
+        raise client.promptError
     return client.visible_reply
 
 
@@ -139,7 +186,7 @@ class ACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
     def __init__(self) -> None:
-        self.client = VerifiersACPClient()
+        self.client = LiveACPClient()
         self._reset()
 
     def _reset(self) -> None:
@@ -151,6 +198,7 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
+        self.client.toolInterception = config.get("toolInterception")
         try:
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
@@ -162,9 +210,16 @@ class ACPSession:
                 )
             )
             self.connection = agent_process[0]
+            clientCapabilities = ClientCapabilities(
+                field_meta=(
+                    {"toolInterception": True}
+                    if self.client.toolInterception is not None
+                    else None
+                )
+            )
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
-                client_capabilities=ClientCapabilities(),
+                client_capabilities=clientCapabilities,
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
