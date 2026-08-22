@@ -15,9 +15,9 @@ from renderers import RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import TrainClientConfig
-from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
+from verifiers.v1.dialects import FINISH_REASONS, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.graph import PendingTurn
@@ -25,6 +25,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     KeptTokens,
+    Message,
     Response,
     SamplingConfig,
     Tool,
@@ -49,51 +50,19 @@ def tool_to_wire(tool: Tool) -> dict:
     return {"type": "function", "function": function}
 
 
-def serialize_completion(response: Response, model: str) -> dict:
-    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
-    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
-    message: dict = {"role": "assistant", "content": response.message.content}
-    if response.message.reasoning_content is not None:
-        message["reasoning_content"] = response.message.reasoning_content
-    if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
-            }
-            for c in response.message.tool_calls
-        ]
-    usage: dict | None = None
-    if response.usage:
-        # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
-        usage = {
-            "completion_tokens": response.usage.completion_tokens,
-            "prompt_tokens": response.usage.input_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-        if response.usage.reasoning_tokens is not None:
-            usage["completion_tokens_details"] = {
-                "reasoning_tokens": response.usage.reasoning_tokens
-            }
-        if response.usage.cached_input_tokens is not None:
-            usage["prompt_tokens_details"] = {
-                "cached_tokens": response.usage.cached_input_tokens
-            }
-    return {
-        "id": response.id or "vf-intercept",
-        "object": "chat.completion",
-        "created": response.created,
-        "model": response.model or model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": response.finish_reason or "stop",
-            }
-        ],
-        "usage": usage,
-    }
+def message_to_renderer_wire(message: Message) -> dict:
+    """Canonical vf message -> the OpenAI-shaped input expected by renderers.
+
+    Opaque provider state is meaningful only to its native API. A Responses output-item list or
+    Anthropic signed-thinking block is not Chat `reasoning_details`; render the canonical reasoning
+    text instead so crossing dialects cannot leak an incompatible native object into a template.
+    """
+    wire = message_to_wire(message)
+    if isinstance(message, AssistantMessage) and message.provider_state:
+        wire.pop("reasoning_details", None)
+        if message.reasoning_content is not None:
+            wire["reasoning_content"] = message.reasoning_content
+    return wire
 
 
 def response_from_generate(
@@ -324,32 +293,17 @@ class TrainClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
-        # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
-        # back), so it can't forward the raw request — it parses `body` via the dialect and renders
-        # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
-        # its `Response` for the program instead of relaying provider bytes.
-        if not isinstance(dialect, ChatDialect):
-            # The renderer renders a chat template, so it's only validated for chat-completions
-            # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
-            # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.
-            raise NotImplementedError(
-                f"The renderer client only supports the chat-completions dialect, got "
-                f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
-                f"renderer support for it."
-            )
-        # Intercepted turns already own the typed prompt, so only their tools need parsing here.
-        if turn is not None:
-            prompt = turn.prompt
-            tools = parse_tools(body.get("tools"))
-        else:
-            request = dialect.parse_request(body)
-            prompt = request.messages
-            tools = request.tools
+        # The dialect canonicalizes the program's native protocol, then the renderer consumes the
+        # same chat-shaped vf prompt for every harness. Intercepted turns already own the resolved
+        # graph prompt; parsing the request here still supplies dialect-native tools.
+        request = dialect.parse_request(body)
+        prompt = turn.prompt if turn is not None else request.messages
+        tools = request.tools
         from renderers.client import generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
         wire_messages = (
-            [message_to_wire(m) for m in turn.tail] if turn is not None else []
+            [message_to_renderer_wire(m) for m in turn.tail] if turn is not None else []
         )
         prompt_ids: list[int] | None = None
         multi_modal_data = None
@@ -405,7 +359,7 @@ class TrainClient(Client):
             # handed prebuilt prompt_ids, generate's own renderer touches are decode-side
             # and stop-id reads, safe on a bare renderer without lock or thread hop.
             if prompt_ids is None:
-                wire_messages = [message_to_wire(m) for m in prompt]
+                wire_messages = [message_to_renderer_wire(m) for m in prompt]
                 rendered = await slot.run(
                     lambda: renderer.render(
                         wire_messages, tools=wire_tools, add_generation_prompt=True
@@ -435,10 +389,48 @@ class TrainClient(Client):
             except OpenAIError as e:
                 raise model_error(e) from e
         response = response_from_generate(result, model, bridged_turn)
-        # No provider response to relay (we generated), so serialize one for the program; the
-        # interception server hands `Response.raw` back regardless of client.
-        response.raw = serialize_completion(response, model)
+        # No provider response exists to relay: the request dialect owns the native response.
+        response.raw = dialect.serialize_response(response, model)
+        dialect.validate_response(response.raw)
         return response
+
+    async def relay(
+        self,
+        dialect: Dialect,
+        body: dict,
+        sampling: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RelayReply:
+        """Generate once, then present the completed training response as a short SSE stream."""
+        result = asyncio.create_task(
+            self.get_response(
+                dialect,
+                body,
+                sampling,
+                session_id=session_id,
+                turn=turn,
+                headers=headers,
+            )
+        )
+
+        async def chunks() -> AsyncIterator[bytes]:
+            response = await result
+            for chunk in dialect.stream_events(response.raw or {}):
+                yield chunk
+
+        async def close() -> None:
+            if not result.done():
+                result.cancel()
+            await asyncio.gather(result, return_exceptions=True)
+
+        return RelayReply(
+            content_type="text/event-stream",
+            chunks=chunks(),
+            close=close,
+            result=result,
+        )
 
     async def close(self) -> None:
         await self.client.close()

@@ -671,9 +671,8 @@ class InterceptionServer(Interception):
         inspect_response: bool,
         policy_paths: list[str] | None = None,
     ) -> web.StreamResponse:
-        """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        incrementally assembling the response to record on the trace (the only client that
-        streams is the eval relay)."""
+        """A streamed (SSE) model turn: relay or synthesize a stream for the program,
+        incrementally assembling the response to record on the trace."""
         session.error = None
         reply = None
         response: Response | None = None
@@ -685,8 +684,10 @@ class InterceptionServer(Interception):
                 reply = await session.client.relay(
                     dialect,
                     body,
+                    session.ctx.sampling,
                     headers=request.headers,
                     session_id=session.trace.id,
+                    turn=turn,
                 )
             except OverlongPromptError as e:
                 error = e
@@ -712,6 +713,133 @@ class InterceptionServer(Interception):
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
 
+            if reply.result is not None:
+                # Renderer-backed inference is intentionally buffered: the engine returns exact
+                # completion token ids/logprobs only with the completed generation. Prepare the
+                # SSE response now and emit dialect-valid, content-free progress events until that
+                # result arrives; ordinary SSE comments never reach some SDK watchdogs.
+                resp = web.StreamResponse(
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+                )
+                resp.content_type = reply.content_type.split(";")[0].strip()
+                result = asyncio.ensure_future(reply.result)
+                stream_sequence = 0
+                try:
+                    await resp.prepare(request)
+                    start_events = dialect.stream_start(
+                        body, sequence_number=stream_sequence
+                    )
+                    for event in start_events:
+                        await resp.write(event)
+                    stream_sequence += len(start_events)
+                    while not result.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(result),
+                                timeout=KEEPALIVE_INTERVAL_SECONDS,
+                            )
+                        except TimeoutError:
+                            await resp.write(
+                                dialect.stream_heartbeat(
+                                    body, sequence_number=stream_sequence
+                                )
+                            )
+                            stream_sequence += 1
+                    response = result.result()
+
+                    response_rewrites = []
+                    stopped = None
+                    if inspect_response:
+                        (
+                            response,
+                            response_rewrites,
+                            stopped,
+                        ) = await session.rewrite_response(response)
+                        if response_rewrites:
+                            assert response.raw is not None
+                            dialect.rewrite_response(
+                                response.raw, response.message.content or ""
+                            )
+                            raw_response = response.raw
+                            response = dialect.parse_response(
+                                dialect.validate_response(raw_response)
+                            )
+                            response.raw = raw_response
+
+                    if session.released or session.stopped:
+                        message = (
+                            "rollout concluded"
+                            if session.released
+                            else f"rollout stopped: {session.trace.stop_condition}"
+                        )
+                        await resp.write(
+                            dialect.stream_error(
+                                message, sequence_number=stream_sequence
+                            )
+                        )
+                        await resp.write_eof()
+                        return resp
+
+                    node = turn.commit(response, model_request.tools)
+                    session.consume_prepared(turn.tail)
+                    session.trace.response_rewrites.extend(response_rewrites)
+                    if stopped is not None:
+                        session.trace.stop(stopped)
+                        await resp.write(
+                            dialect.stream_error(
+                                f"rollout stopped: {stopped}",
+                                sequence_number=stream_sequence,
+                            )
+                        )
+                    else:
+                        for event in dialect.stream_events(
+                            response.raw or {},
+                            include_start=False,
+                            sequence_number=stream_sequence,
+                        ):
+                            await resp.write(event)
+                    await resp.write_eof()
+                    return resp
+                except ConnectionResetError as e:
+                    error = e
+                    return resp
+                except OverlongPromptError as e:
+                    error = e
+                    session.trace.stop("context_length")
+                    with contextlib.suppress(ConnectionResetError):
+                        await resp.write(
+                            dialect.stream_error(
+                                "rollout stopped: context_length",
+                                sequence_number=stream_sequence,
+                            )
+                        )
+                        await resp.write_eof()
+                    return resp
+                except RolloutError as e:
+                    error = e
+                    session.error = e
+                    with contextlib.suppress(ConnectionResetError):
+                        await resp.write(
+                            dialect.stream_error(
+                                str(e), sequence_number=stream_sequence
+                            )
+                        )
+                        await resp.write_eof()
+                    return resp
+                except Exception as e:  # noqa: BLE001 - surface as a streamed API error
+                    error = ProviderError(str(e))
+                    session.error = error
+                    with contextlib.suppress(ConnectionResetError):
+                        await resp.write(
+                            dialect.stream_error(
+                                str(error), sequence_number=stream_sequence
+                            )
+                        )
+                        await resp.write_eof()
+                    return resp
+                finally:
+                    await reply.close()
+
             if inspect_response:
                 buffered = SpooledTemporaryFile(  # noqa: SIM115 - closed before every exit
                     max_size=STREAM_MEMORY_BUFFER
@@ -729,7 +857,12 @@ class InterceptionServer(Interception):
                         raise ProviderError(
                             "upstream stream ended before its terminal event"
                         )
-                    response = parser.finish()
+                    parsed_response = parser.finish()
+                    response = (
+                        await reply.result
+                        if reply.result is not None
+                        else parsed_response
+                    )
                     response_rewrites = []
                     stopped = None
                     if session.response_interceptors or session.response_stops:
@@ -877,7 +1010,10 @@ class InterceptionServer(Interception):
             try:
                 if parser_error is not None:
                     raise parser_error
-                response = parser.finish()
+                parsed_response = parser.finish()
+                response = (
+                    await reply.result if reply.result is not None else parsed_response
+                )
                 if not session.released and not session.stopped:
                     node = turn.commit(response, model_request.tools)
                     session.consume_prepared(turn.tail)
