@@ -113,12 +113,12 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # go up with the rest
     for episode in finished:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
-    run.log_traces(finished)
+    run.log_episodes(finished)
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
-        await asyncio.to_thread(run.log_traces, [episode])
+        await asyncio.to_thread(run.log_episodes, [episode])
 
     # Serving resources (shared tool servers, interception) come up once for the
     # run; plan slots inside so the env's agents borrow them. Everything from
@@ -242,7 +242,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         config.run.adopt_id(run.id)
         for episode in finished:
             episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
-        run.log_traces(finished)
+        run.log_episodes(finished)
 
         async def run_unit(payload: dict) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
@@ -254,7 +254,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
-            await asyncio.to_thread(run.log_traces, [episode])
+            await asyncio.to_thread(run.log_episodes, [episode])
             return [cast(Episode, episode)]
 
         # Each rollout is its own `run` request, dispatched least-busy across workers.
