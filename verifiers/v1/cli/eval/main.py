@@ -8,11 +8,11 @@ import sys
 
 from pydantic_config import cli
 
-import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import (
     TRACES_FILE,
     config_digest,
+    create_attempt_log_dir,
     output_path,
     saved_config_path,
     write_config,
@@ -116,18 +116,12 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
-    # Execution path: in-process by default; `--server` opts into the env-server worker pool
-    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
-    # slots, so it's in-process only (`server + rich` is rejected at config validation).
-    # Always tee the run's logs to a file under the output dir (in-process and server mode).
-    log_file = str(output_path(config) / "logs" / "eval.log")
+    # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
+    # points there) — in server mode (the default) the workers write there too, and
+    # `--rich.show-logs` tails it live.
+    log_file = str(create_attempt_log_dir(output_path(config)) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if config.rich:
-        setup_logging(level, log_file=log_file, console=False)
-        # drop stray stdlib records that bypass loguru (else they print over the UI)
-        logging.lastResort = None
-    else:
-        setup_logging(level, log_file=log_file, console=True)
+    setup_logging(level, log_file=log_file, console=config.rich is None)
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
@@ -135,22 +129,19 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     try:
-        if config.server:  # opt-in: drive rollouts through the env-server worker pool
-            from verifiers.v1.cli.eval.runner import run_eval_server
-
-            episodes = asyncio.run(run_eval_server(config))
-        else:  # in-process (default), with or without the live dashboard
-            env = vf.load_environment(config.env)
-            episodes = asyncio.run(run_eval(env, config))
+        # Through the env-server worker pool by default; in-process with --no-serve.
+        episodes = asyncio.run(run_eval(config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if config.push and not config.rich:
+    if config.push and config.rich is None:
         from verifiers.v1.utils.platform import push_traces
 
         push_traces(episodes, config)
-    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if (
+        config.rich is None
+    ):  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
                 print(trace.model_dump_json(indent=2, exclude_none=True))

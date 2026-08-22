@@ -503,8 +503,6 @@ def main(argv: list[str] | None = None) -> None:
         log_file=str(out / LOG_FILE),
         console=not config.rich,
     )
-    if config.rich:
-        logging.lastResort = None  # drop stdlib records that bypass loguru
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
     # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
     install_interrupt()
