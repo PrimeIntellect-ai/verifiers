@@ -100,6 +100,7 @@ class ElasticInterceptionPool(Interception):
         self.requires_tunnel = requires_tunnel
         self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
+        self._retired: set[InterceptionServer] = set()
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
 
@@ -148,4 +149,30 @@ class ElasticInterceptionPool(Interception):
         try:
             yield server.base_url, model_secret, state_secret
         finally:
-            server.unregister(model_secret, state_secret)
+            stop_server = False
+            async with self._lock:
+                server.unregister(model_secret, state_secret)
+                tunnel_failed = any(
+                    error.type == "TunnelError" for error in session.trace.errors
+                )
+                if tunnel_failed and server in self.servers:
+                    self.servers.remove(server)
+                    self._retired.add(server)
+                    logger.warning(
+                        "interception pool: retiring failed tunnel %s with %d active "
+                        "rollout(s)",
+                        server.base_url,
+                        server.load,
+                    )
+                if server in self._retired and server.load == 0:
+                    self._retired.remove(server)
+                    stop_server = True
+            if stop_server:
+                try:
+                    await server.stop()
+                except Exception:
+                    logger.warning(
+                        "failed to stop retired interception server %s",
+                        server.base_url,
+                        exc_info=True,
+                    )
