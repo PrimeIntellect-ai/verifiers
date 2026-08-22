@@ -4,7 +4,7 @@
 #     "browser-harness==0.1.8",
 #     "openai",
 #     "mcp>=1.24.0,<2",
-#     "httpx",
+#     "httpx[socks]",
 #     "tenacity",
 # ]
 # ///
