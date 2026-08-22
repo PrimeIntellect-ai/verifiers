@@ -77,6 +77,8 @@ def tool_runtime(request) -> dict:
 @pytest.fixture
 def harness(request) -> HarnessConfig:
     config = {"id": request.param} if isinstance(request.param, str) else request.param
+    if config["id"] == "rlm" and (version := os.environ.get("NANO_RLM_E2E_VERSION")):
+        config.setdefault("version", version)
     return harness_config_type(config["id"]).model_validate(config)
 
 

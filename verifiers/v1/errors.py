@@ -56,6 +56,14 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
+class HarnessFinalizationError(HarnessError):
+    """A harness failed to publish required terminal artifacts during session close.
+
+    Unlike an ordinary teardown failure, losing these artifacts changes the meaning of
+    the rollout (for example, dropping trainer metrics), so the rollout must fail.
+    """
+
+
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 

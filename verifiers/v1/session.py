@@ -95,6 +95,24 @@ class RolloutLimits:
 
 
 @dataclass
+class IdempotentRequest:
+    """One non-streaming request shared by every attempt carrying the same key."""
+
+    binding: tuple[str, bytes]
+    response: dict | None = None
+    completed_at: float | None = None
+    inflight: "asyncio.Future[ReplayResponse | None] | None" = None
+
+
+@dataclass(frozen=True)
+class ReplayResponse:
+    """The exact HTTP result handed to coalesced in-flight request attempts."""
+
+    status: int
+    body: bytes
+
+
+@dataclass
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
@@ -122,8 +140,12 @@ class RolloutSession:
     replays the common SDK retry of the latest completed exchange without re-sampling it."""
     last_response: dict | None = None
     """The response returned for `last_request`, replayed verbatim on a retry."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    inflight: dict[bytes, "asyncio.Future[ReplayResponse | None]"] = field(
+        default_factory=dict
+    )
     """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
+    idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
+    """Explicit idempotency key -> request binding and replay state for this rollout."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record

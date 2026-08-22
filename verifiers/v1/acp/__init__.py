@@ -3,15 +3,16 @@
 import asyncio
 import contextlib
 import json
+import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, HarnessFinalizationError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -21,6 +22,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 __all__ = ["ACPConfig", "ACPHarness"]
 
@@ -50,6 +52,12 @@ class ACPHarness(Harness[ConfigT]):
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
+
+    def acp_close_metrics(
+        self, trace: Trace, metadata: JsonObject
+    ) -> Mapping[str, float]:
+        """Extract harness metrics from a successful ACP session/close response."""
+        return {}
 
     @abstractmethod
     async def prepare_acp(
@@ -243,6 +251,7 @@ class ACPHarnessSession(HarnessSession):
             raise TypeError("ACP session reply must be a string")
         result = ProgramResult(exit_code=0, stdout=reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
+        self.trace.primary_reply = reply.strip()
         return result
 
     async def _stop(self, *, graceful: bool) -> None:
@@ -251,11 +260,37 @@ class ACPHarnessSession(HarnessSession):
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
             return
+        finalization_error: HarnessFinalizationError | None = None
         try:
+            metadata: JsonObject = {}
             if graceful and reader is not None:
-                with contextlib.suppress(BaseException):
+                try:
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    if not response.get("ok"):
+                        raise RuntimeError(
+                            response.get("error") or "ACP session shutdown failed"
+                        )
+                except BaseException:
+                    logger.warning("ACP session shutdown failed", exc_info=True)
+                else:
+                    value = response.get("metadata", {})
+                    if isinstance(value, dict):
+                        metadata = value
+                    else:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP close metadata must be an object"
+                        )
+            if graceful and finalization_error is None:
+                try:
+                    self.trace.record_metrics(
+                        self.harness.acp_close_metrics(self.trace, metadata)
+                    )
+                except Exception as error:  # noqa: BLE001 - type artifact failures
+                    finalization_error = HarnessFinalizationError(
+                        "ACP session finalization failed: "
+                        f"{type(error).__name__}: {error}"
+                    )
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
@@ -269,6 +304,8 @@ class ACPHarnessSession(HarnessSession):
                     break
                 except TimeoutError:
                     continue
+            if finalization_error is not None:
+                raise finalization_error
         finally:
             if stderr_task is not None:
                 if not stderr_task.done():

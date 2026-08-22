@@ -80,6 +80,7 @@ def test_wire_trace_round_trip():
     tr.rewards.setdefault("solved", None)  # seeded: expected but never scored
     tr.metrics.setdefault("acc", None)
     tr.info = {"build": "ok"}
+    tr.primary_reply = "primary answer"
     tr.stop("done")
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
@@ -95,6 +96,11 @@ def test_wire_trace_round_trip():
     assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
+    assert rt.primary_reply == "primary answer"
+    assert rt.last_reply == "primary answer"
+    # An intentionally empty primary reply must not leak a child response.
+    rt.primary_reply = ""
+    assert rt.last_reply == ""
     assert (
         rt.tools == tr.tools
     )  # the advertised tools persist (tool-use SFT reads them)

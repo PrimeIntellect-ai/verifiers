@@ -49,6 +49,7 @@ from verifiers.v1.episode import (
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
+    HarnessFinalizationError,
     InterceptionError,
     ProviderError,
     RolloutError,
@@ -256,6 +257,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EnvError",
     "ProviderError",
     "HarnessError",
+    "HarnessFinalizationError",
     "ToolsetError",
     "SandboxError",
     "TaskError",

@@ -390,6 +390,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
+    primary_reply: str | None = None
+    """The harness-declared user-visible reply when graph leaf order does not
+    identify the primary agent. Protocol-backed harnesses set this directly."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
 
@@ -520,7 +523,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def last_reply(self) -> str:
-        """The last recorded model response, in text format."""
+        """The primary user-visible reply, or the last recorded model response."""
+        if self.primary_reply is not None:
+            return self.primary_reply.strip()
         msgs = self.assistant_messages
         return (msgs[-1].content or "").strip() if msgs else ""
 
