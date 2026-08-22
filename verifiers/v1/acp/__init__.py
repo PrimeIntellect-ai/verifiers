@@ -12,7 +12,7 @@ from typing import TypeAlias, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, HarnessFinalizationError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -260,7 +260,9 @@ class ACPHarnessSession(HarnessSession):
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
             return
+        finalization_error: HarnessFinalizationError | None = None
         try:
+            metadata: JsonObject = {}
             if graceful and reader is not None:
                 try:
                     await process.write(_packet({"operation": "shutdown"}))
@@ -269,14 +271,26 @@ class ACPHarnessSession(HarnessSession):
                         raise RuntimeError(
                             response.get("error") or "ACP session shutdown failed"
                         )
-                    metadata = response.get("metadata", {})
-                    if not isinstance(metadata, dict):
-                        raise TypeError("ACP close metadata must be an object")
+                except BaseException:
+                    logger.warning("ACP session shutdown failed", exc_info=True)
+                else:
+                    value = response.get("metadata", {})
+                    if isinstance(value, dict):
+                        metadata = value
+                    else:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP close metadata must be an object"
+                        )
+            if graceful and finalization_error is None:
+                try:
                     self.trace.record_metrics(
                         self.harness.acp_close_metrics(self.trace, metadata)
                     )
-                except BaseException:
-                    logger.warning("ACP session shutdown failed", exc_info=True)
+                except Exception as error:  # noqa: BLE001 - type artifact failures
+                    finalization_error = HarnessFinalizationError(
+                        "ACP session finalization failed: "
+                        f"{type(error).__name__}: {error}"
+                    )
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
@@ -290,6 +304,8 @@ class ACPHarnessSession(HarnessSession):
                     break
                 except TimeoutError:
                     continue
+            if finalization_error is not None:
+                raise finalization_error
         finally:
             if stderr_task is not None:
                 if not stderr_task.done():
