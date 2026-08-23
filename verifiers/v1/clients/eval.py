@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import ValidationError
@@ -9,7 +10,11 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    PRIME_INFERENCE_HOST,
+    BaseClientConfig,
+    resolve_api_key,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -61,6 +66,10 @@ class EvalClient(Client):
     def __init__(self, config: BaseClientConfig) -> None:
         self.base_url = config.base_url
         self.api_key = resolve_api_key(config)
+        host = urlparse(self.base_url).hostname or ""
+        self.is_prime_inference = host == PRIME_INFERENCE_HOST or host.endswith(
+            f".{PRIME_INFERENCE_HOST}"
+        )
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
@@ -126,6 +135,19 @@ class EvalClient(Client):
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
+        model = body.get("model")
+        cache_key = headers.get(SESSION_ID_HEADER)
+        if (
+            self.is_prime_inference
+            and isinstance(model, str)
+            and model.rsplit("/", 1)[-1].startswith("gpt-5.6")
+            and url.endswith(("/chat/completions", "/responses"))
+            and cache_key
+            and "prompt_cache_key" not in body
+        ):
+            # Prime's session header pins the gateway hop, while OpenAI uses this body field
+            # to route every turn in a GPT-5.6 rollout to the same prompt-cache bucket.
+            body = {**body, "prompt_cache_key": cache_key}
         request = self.client.build_request(
             "POST",
             url,
