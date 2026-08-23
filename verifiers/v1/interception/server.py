@@ -94,7 +94,7 @@ class ToolHookRequest(BaseModel):
     content: Literal["any", "none", "nonempty_text"] = "any"
     result_prefix: str = Field(default="", alias="resultPrefix")
     result_suffix: str = Field(default="", alias="resultSuffix")
-    result_framing: Literal["exact", "codex_code_mode"] = Field(
+    result_framing: Literal["exact", "codex_code_mode", "text_part"] = Field(
         default="exact", alias="resultFraming"
     )
     tool_arguments: dict | None = Field(default=None, alias="toolArguments")
@@ -993,10 +993,12 @@ class InterceptionServer(Interception):
                     if chunk is None:
                         await producer
                         break
-                    # We send our own keepalive above. Some clients treat a complete
-                    # comment-only event from upstream as an empty JSON payload.
+                    # We send our own keepalive above. Some clients treat comment-only
+                    # or empty-data events from upstream as an empty JSON payload.
                     if not any(
-                        line.startswith(b"data:") for line in chunk.splitlines()
+                        line.removeprefix(b"data:").strip()
+                        for line in chunk.splitlines()
+                        if line.startswith(b"data:")
                     ):
                         await resp.write(b": keepalive\n")
                         continue

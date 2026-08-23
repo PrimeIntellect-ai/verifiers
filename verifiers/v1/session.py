@@ -517,7 +517,7 @@ class RolloutSession:
         content: str = "any",
         result_prefix: str = "",
         result_suffix: str = "",
-        result_framing: Literal["exact", "codex_code_mode"] = "exact",
+        result_framing: Literal["exact", "codex_code_mode", "text_part"] = "exact",
         tool_arguments: dict | None = None,
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
@@ -662,6 +662,12 @@ class RolloutSession:
                 update={
                     "content": f"{result_prefix}{candidate.content.strip()}{result_suffix}"
                 }
+            )
+        if result_framing == "text_part":
+            if not isinstance(delivered.content, str):
+                raise HarnessError("native tool result framing requires text")
+            delivered = delivered.model_copy(
+                update={"content": [TextContentPart(text=delivered.content)]}
             )
         self.prepared_tool_results[tool_call] = delivered
         if result_framing == "codex_code_mode":

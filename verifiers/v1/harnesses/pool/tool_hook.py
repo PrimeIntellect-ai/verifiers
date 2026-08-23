@@ -48,6 +48,7 @@ try:
         "phase": "before" if before else "after",
         "content": "nonempty_text",
         "resultSuffix": "" if before else POST_SUFFIX,
+        "resultFraming": "text_part",
         "message": {
             "role": "tool",
             "tool_call_id": call_id,
