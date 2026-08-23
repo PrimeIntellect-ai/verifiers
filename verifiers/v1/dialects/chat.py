@@ -106,7 +106,9 @@ def parse_message(raw: dict) -> Message:
         )
         calls = []
         for call in raw.get("tool_calls") or []:
-            kind = call.get("type", "function")
+            kind = call.get("type") or (
+                "custom" if call.get("custom") is not None else "function"
+            )
             native = call[kind]
             calls.append(
                 ToolCall(
@@ -279,9 +281,17 @@ class ChatStreamParser(StreamParser):
                 index = tool_call.get("index", 0)
                 slot = self.tool_calls.setdefault(index, {})
                 slot["id"] = tool_call.get("id") or slot.get("id", "")
-                kind = tool_call.get("type") or (
-                    "custom" if tool_call.get("custom") is not None else "function"
-                )
+                kind = tool_call.get("type")
+                if kind is None:
+                    kind = (
+                        "custom"
+                        if tool_call.get("custom") is not None
+                        else "function"
+                        if tool_call.get("function") is not None
+                        else slot.get("type")
+                    )
+                if kind is None:
+                    continue
                 slot["type"] = kind
                 native = slot.setdefault(kind, {"name": ""})
                 delta_native = tool_call.get(kind) or {}
