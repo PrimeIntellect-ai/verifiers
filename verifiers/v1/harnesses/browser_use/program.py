@@ -33,6 +33,8 @@ from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 
+# {toolInterception}
+
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
@@ -198,11 +200,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-secret-bytes", type=int, default=0)
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    tool_secret = readToolSecret(  # noqa: F821 - injected runtime client
+        args.tool_interception_secret_bytes, "Browser"
+    )
+    tool_interceptor = (
+        ToolInterceptionClient(args.tool_interception_url, tool_secret)  # noqa: F821 - injected runtime client
+        if args.tool_interception_url
+        else None
+    )
     initial = []
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)
@@ -248,41 +260,48 @@ async def main() -> None:
             break
         for call in message.tool_calls:
             name = call.function.name
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": "",
+                "name": name,
+            }
+            if tool_interceptor is not None:
+                decision = await asyncio.to_thread(
+                    tool_interceptor.call, "before", tool_message
+                )
+                if decision["action"] == "rewrite":
+                    messages.append(decision["message"])
+                    continue
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
             except json.JSONDecodeError as e:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                    }
-                )
-                continue
+                content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
             # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
             # below assume a dict, so reject anything else as a tool error rather than crashing.
-            if not isinstance(tool_args, dict):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                    }
-                )
-                continue
-            if name in dispatch:
-                content = await call_mcp(servers, dispatch, name, tool_args)
-            elif name == "browser":
-                content = await asyncio.to_thread(
-                    run_browser,
-                    tool_args.get("code", ""),
-                    browser_env,
-                )
             else:
-                content = f"error: unknown tool {name!r}"
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": content}
-            )
+                if not isinstance(tool_args, dict):
+                    content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
+                elif name in dispatch:
+                    content = await call_mcp(servers, dispatch, name, tool_args)
+                elif name == "browser":
+                    content = await asyncio.to_thread(
+                        run_browser,
+                        tool_args.get("code", ""),
+                        browser_env,
+                    )
+                else:
+                    content = f"error: unknown tool {name!r}"
+            tool_message["content"] = content
+            if tool_interceptor is not None:
+                decision = await asyncio.to_thread(
+                    tool_interceptor.call, "after", tool_message
+                )
+                if decision["action"] == "rewrite":
+                    tool_message = decision["message"]
+            messages.append(tool_message)
+    if tool_interceptor is not None:
+        tool_interceptor.close()
 
 
 if __name__ == "__main__":

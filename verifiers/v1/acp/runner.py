@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 import traceback
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.request import Request as UrlRequest
@@ -44,6 +44,40 @@ class ACPTurn:
     stop_reason: str | None
     response_metadata: dict[str, Any]
     update_metadata: list[dict[str, Any]]
+
+
+@asynccontextmanager
+async def runningToolProxy(command: list[str], interception: dict[str, str]):
+    """Bootstrap a trusted local policy proxy without exposing its bearer to the agent."""
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,
+        env=os.environ.copy(),
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    try:
+        process.stdin.write(json.dumps(interception).encode())
+        await process.stdin.drain()
+        process.stdin.close()
+        await process.stdin.wait_closed()
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
+        url = line.decode().strip()
+        if not url.startswith("ws://127.0.0.1:"):
+            raise RuntimeError(
+                f"Tool interception proxy returned an invalid endpoint: {url!r}"
+            )
+        yield url
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
 
 
 class LiveACPClient(Client):
@@ -254,12 +288,20 @@ class ACPSession:
         command = config["command"]
         self.client.toolInterception = config.get("toolInterception")
         try:
+            agentEnv = os.environ.copy()
+            if proxyCommand := config.get("toolInterceptionProxy"):
+                if self.client.toolInterception is None:
+                    raise RuntimeError("Tool interception is not configured")
+                proxyUrl = await self.stack.enter_async_context(
+                    runningToolProxy(proxyCommand, self.client.toolInterception)
+                )
+                agentEnv["VF_CODE_MODE_HOST_URL"] = proxyUrl
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=agentEnv,
                     transport_kwargs={"stderr": None},
                 )
             )

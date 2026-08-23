@@ -9,12 +9,14 @@ budget (turns / tokens), checked between turns.
 
 import asyncio
 import inspect
+import json
 import logging
+import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import get_origin, get_type_hints
+from typing import Literal, get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -27,12 +29,70 @@ from verifiers.v1.types import (
     AssistantMessage,
     Request,
     Response,
+    TextContentPart,
     ToolMessage,
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
+
+
+def matchesCodeModeResult(expected: ToolMessage, actual: ToolMessage) -> bool:
+    """Match the deterministic content below Codex's dynamic Code Mode status header."""
+    if expected.tool_call_id != actual.tool_call_id or actual.name not in (
+        None,
+        expected.name,
+    ):
+        return False
+    expectedParts = (
+        []
+        if expected.content == ""
+        else [TextContentPart(text=expected.content)]
+        if isinstance(expected.content, str)
+        else expected.content
+    )
+    actualParts = (
+        [TextContentPart(text=actual.content)]
+        if isinstance(actual.content, str)
+        else actual.content
+    )
+    if not actualParts or not isinstance(actualParts[0], TextContentPart):
+        return False
+    lines = actualParts[0].text.splitlines()
+    if len(lines) != 3 or lines[2] != "Output:":
+        return False
+    status = lines[0]
+    if status not in {
+        "Script completed",
+        "Script failed",
+        "Script terminated",
+    } and not status.startswith("Script running with cell ID "):
+        return False
+    if not lines[1].startswith("Wall time ") or not lines[1].endswith(" seconds"):
+        return False
+    if actualParts[1:] == expectedParts:
+        return True
+    if not all(isinstance(part, TextContentPart) for part in expectedParts):
+        return False
+    if len(actualParts) != 2 or not isinstance(actualParts[1], TextContentPart):
+        return False
+    truncated = re.fullmatch(
+        r"Warning: truncated output \(original token count: \d+\)\n"
+        r"Total output lines: \d+\n\n"
+        r"(.*)…\d+ tokens truncated…(.*)",
+        actualParts[1].text,
+        re.DOTALL,
+    )
+    if truncated is None:
+        return False
+    expectedText = "\n".join(part.text for part in expectedParts)
+    prefix, suffix = truncated.groups()
+    return (
+        bool(prefix or suffix)
+        and expectedText.startswith(prefix)
+        and expectedText.endswith(suffix)
+    )
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -156,6 +216,10 @@ class RolloutSession:
     )
     """Native call state keyed by issuing assistant node and call ID: None after an
     allowed pre hook, then the exact result approved by a pre rewrite or post hook."""
+    preparedToolFramings: dict[tuple[int, str], Literal["codex_code_mode"]] = field(
+        default_factory=dict
+    )
+    """Known harness framing applied after policy and before the next model request."""
     tool_interception_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, repr=False
     )
@@ -233,6 +297,12 @@ class RolloutSession:
                     or prepared_result is not None
                     and message.name is None
                     and prepared_result.model_copy(update={"name": None}) == message
+                    or prepared_result is not None
+                    and self.preparedToolFramings.get(
+                        (assistant_node, message.tool_call_id)
+                    )
+                    == "codex_code_mode"
+                    and matchesCodeModeResult(prepared_result, message)
                 )
                 candidates.add(position)
                 if is_prepared:
@@ -365,6 +435,7 @@ class RolloutSession:
             if isinstance(message, ToolMessage) and assistant_node is not None:
                 tool_call = (assistant_node, message.tool_call_id)
                 self.prepared_tool_results.pop(tool_call, None)
+                self.preparedToolFramings.pop(tool_call, None)
 
     async def prepare_users(
         self, request: Request
@@ -446,6 +517,8 @@ class RolloutSession:
         content: str = "any",
         resultPrefix: str = "",
         resultSuffix: str = "",
+        resultFraming: Literal["exact", "codex_code_mode"] = "exact",
+        toolArguments: dict | None = None,
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
         if phase == "before" and not self.pre_tool_interception:
@@ -453,6 +526,26 @@ class RolloutSession:
         if phase == "after" and not self.post_tool_interception:
             raise HarnessError("this harness does not support post-tool interception")
         leaves = graph.leaves(self.trace)
+        if not message.tool_call_id:
+            if phase != "before" or message.name is None or toolArguments is None:
+                raise HarnessError("native hook omitted the tool call ID")
+            unresolved = [
+                (leaf, call)
+                for leaf in leaves
+                if isinstance(self.trace.nodes[leaf].message, AssistantMessage)
+                for call in self.trace.nodes[leaf].message.tool_calls or []
+                if call.name == message.name
+                and (leaf, call.id) not in self.prepared_tool_results
+                and all(
+                    json.loads(call.arguments).get(key) == value
+                    for key, value in toolArguments.items()
+                )
+            ]
+            if len(unresolved) != 1:
+                raise HarnessError(
+                    f"before tool {message.name!r} matched {len(unresolved)} calls"
+                )
+            message.tool_call_id = unresolved[0][1].id
         matches = [
             leaf
             for leaf in leaves
@@ -483,6 +576,7 @@ class RolloutSession:
                     f"harness reported tool call {message.tool_call_id!r} after its "
                     "result was already replaced"
                 )
+            self.preparedToolFramings.pop(tool_call, None)
         assistant = self.trace.nodes[assistant_node].message
         assert isinstance(assistant, AssistantMessage)
         tool_name = next(
@@ -561,15 +655,17 @@ class RolloutSession:
             self.prepared_tool_results.setdefault(tool_call, None)
             return {"action": "allow"}
         delivered = candidate
-        if phase == "before" and (resultPrefix or resultSuffix):
+        if candidate != message and (resultPrefix or resultSuffix):
             if not isinstance(candidate.content, str):
-                raise HarnessError("native pre-tool result framing requires text")
+                raise HarnessError("native tool result framing requires text")
             delivered = candidate.model_copy(
                 update={
                     "content": f"{resultPrefix}{candidate.content.strip()}{resultSuffix}"
                 }
             )
         self.prepared_tool_results[tool_call] = delivered
+        if resultFraming == "codex_code_mode":
+            self.preparedToolFramings[tool_call] = resultFraming
         if candidate != message:
             return {
                 "action": "rewrite",

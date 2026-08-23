@@ -1,0 +1,49 @@
+"""Runtime-side client embedded in harness programs with in-process tool loops."""
+
+import os
+import sys
+
+import httpx
+
+
+class ToolInterceptionClient:
+    def __init__(self, url: str, secret: str) -> None:
+        self.url = url
+        self.secret = secret
+        self.client = httpx.Client(timeout=httpx.Timeout(35.0, connect=5.0))
+
+    def call(self, phase: str, message: dict) -> dict:
+        response = self.client.post(
+            self.url,
+            headers={"Authorization": f"Bearer {self.secret}"},
+            json={"phase": phase, "message": message},
+        )
+        response.raise_for_status()
+        decision = response.json()
+        action = decision.get("action")
+        if action == "stop":
+            raise RuntimeError(
+                decision.get("reason") or "tool policy stopped the rollout"
+            )
+        if action not in {"allow", "rewrite"}:
+            raise RuntimeError(f"invalid tool policy action: {action!r}")
+        if action == "rewrite" and not isinstance(decision.get("message"), dict):
+            raise RuntimeError("tool policy rewrite omitted its message")
+        return decision
+
+    def close(self) -> None:
+        self.client.close()
+
+
+def readToolSecret(size: int, harness: str) -> str:
+    if not size:
+        return ""
+    payload = sys.stdin.buffer.read(size)
+    if len(payload) != size:
+        raise RuntimeError(f"{harness} interception credential handoff ended early")
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(devnull, sys.stdin.fileno())
+    finally:
+        os.close(devnull)
+    return payload.decode()

@@ -5,11 +5,19 @@ from pydantic import Field
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.interception import (
+    DIRECT_TOOL_SOURCE,
+    prepare_tool_interception,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+PROGRAM_SOURCE = (
+    (Path(__file__).resolve().parent / "program.py")
+    .read_text()
+    .replace("# {toolInterception}", DIRECT_TOOL_SOURCE)
+)
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -20,6 +28,8 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
@@ -34,6 +44,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
@@ -66,10 +77,23 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "-c",
             f"model.model_kwargs.api_key={secret}",
         ]
+        toolInterceptionSecret = prepare_tool_interception(
+            args, runtime, tool_interception, "Mini-SWE"
+        )
+        if toolInterceptionSecret is not None:
+            args += ["--agent-class", "__main__.InterceptingAgent"]
         env = {
             **self.config.resolved_env,
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
-        program = await runtime.prepare_uv_script(source, self.config.resolved_env)
+        program = await runtime.prepare_uv_script(
+            source,
+            self.config.resolved_env,
+            activate=toolInterceptionSecret is None,
+        )
+        if toolInterceptionSecret is not None:
+            return await runtime.run_with_input(
+                [*program, *args], env, toolInterceptionSecret
+            )
         return await runtime.run_program([*program, *args], env)

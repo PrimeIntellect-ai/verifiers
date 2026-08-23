@@ -1,10 +1,12 @@
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 from pydantic import Field
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.pool import (
     ElasticInterceptionPool,
@@ -29,6 +31,30 @@ InterceptionConfig = Annotated[
     | ElasticInterceptionPoolConfig,
     Field(discriminator="type"),
 ]
+
+DIRECT_TOOL_SOURCE = (Path(__file__).resolve().parent / "direct.py").read_text()
+
+
+def prepare_tool_interception(
+    args: list[str],
+    runtime: Runtime,
+    configuration: tuple[str, str] | None,
+    harness: str,
+) -> bytes | None:
+    """Add direct-hook transport arguments and return the stdin credential payload."""
+    if configuration is None:
+        return None
+    if not runtime.supports_live_processes:
+        raise HarnessError(
+            f"{harness} tool interception requires a runtime with live process support"
+        )
+    url, secret = configuration
+    payload = secret.encode()
+    args += [
+        f"--tool-interception-url={url}",
+        f"--tool-interception-secret-bytes={len(payload)}",
+    ]
+    return payload
 
 
 def requires_tunnel(
@@ -102,6 +128,7 @@ async def serve_interception(
 
 
 __all__ = [
+    "DIRECT_TOOL_SOURCE",
     "BaseInterceptionConfig",
     "ElasticInterceptionPool",
     "ElasticInterceptionPoolConfig",
@@ -113,6 +140,7 @@ __all__ = [
     "StaticInterceptionPool",
     "StaticInterceptionPoolConfig",
     "make_interception",
+    "prepare_tool_interception",
     "requires_tunnel",
     "serve_interception",
 ]

@@ -8,12 +8,16 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils import mcp
 from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
+from verifiers.v1.interception import DIRECT_TOOL_SOURCE, prepare_tool_interception
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = bundle_program(
-    (Path(__file__).resolve().parent / "program.py").read_text(), mcp
+    (Path(__file__).resolve().parent / "program.py")
+    .read_text()
+    .replace("# {toolInterception}", DIRECT_TOOL_SOURCE),
+    mcp,
 )
 
 # The helper names and persistence rules the model needs to use the local tool.
@@ -53,6 +57,8 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
@@ -68,6 +74,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
@@ -91,6 +98,9 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             # A resumed segment reuses this trace's browser and profile.
             f"--state-dir={state}",
         ]
+        tool_interception_secret = prepare_tool_interception(
+            args, runtime, tool_interception, "Browser"
+        )
         if self.config.cdp_url:
             args.append(f"--cdp-url={self.config.cdp_url}")
         return await launch_chat_program(
@@ -106,4 +116,6 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             prompt,
             extra_args=args,
             env=env,
+            activate=tool_interception_secret is None,
+            stdin=tool_interception_secret,
         )

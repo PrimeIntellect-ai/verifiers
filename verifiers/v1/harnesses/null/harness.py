@@ -5,6 +5,7 @@ from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
+from verifiers.v1.interception import prepare_tool_interception
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -18,6 +19,8 @@ class NullHarness(Harness[NullHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 
@@ -33,8 +36,13 @@ class NullHarness(Harness[NullHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception: tuple[str, str] | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        args: list[str] = []
+        tool_interception_secret = prepare_tool_interception(
+            args, runtime, tool_interception, "Null"
+        )
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,
@@ -46,4 +54,7 @@ class NullHarness(Harness[NullHarnessConfig]):
             mcp_urls,
             system_prompt,
             prompt,
+            extra_args=args,
+            activate=tool_interception_secret is None,
+            stdin=tool_interception_secret,
         )

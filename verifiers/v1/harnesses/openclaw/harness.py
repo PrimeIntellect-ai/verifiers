@@ -5,17 +5,25 @@ import json
 import logging
 import secrets
 import shlex
+import uuid
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+TOOL_INTERCEPTION_PLUGIN_ID = "verifiers-tool-interception"
+TOOL_INTERCEPTION_PLUGIN_SOURCE = (
+    Path(__file__).with_name("tool_interception.mjs").read_bytes()
+)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -74,6 +82,10 @@ if [ -z "$gateway_pid" ]; then
     tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
     exit 1
 fi
+if [ -n "${VF_TOOL_INTERCEPTION_CONFIG:-}" ]; then
+    rm -f -- "$VF_TOOL_INTERCEPTION_CONFIG"
+    unset VF_TOOL_INTERCEPTION_CONFIG
+fi
 setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
 acp_pid=$!
 wait "$acp_pid"
@@ -92,6 +104,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         if not hasattr(self, "_staged_skills_dir"):
@@ -230,6 +244,86 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             mcp_urls={},
             system_prompt=system_prompt,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+        url: str,
+        secret: str,
+    ) -> None:
+        if self.config.version != "2026.7.1-2":
+            raise HarnessError(
+                "OpenClaw tool interception is verified only for version 2026.7.1-2"
+            )
+
+        state_dir = config.env["OPENCLAW_STATE_DIR"]
+        plugin_dir = f"{state_dir}/tool-interception"
+        await runtime.write(f"{plugin_dir}/index.mjs", TOOL_INTERCEPTION_PLUGIN_SOURCE)
+        await runtime.write(
+            f"{plugin_dir}/package.json",
+            json.dumps(
+                {
+                    "name": TOOL_INTERCEPTION_PLUGIN_ID,
+                    "version": "1.0.0",
+                    "type": "module",
+                    "private": True,
+                    "openclaw": {"extensions": ["./index.mjs"]},
+                }
+            ).encode(),
+        )
+        await runtime.write(
+            f"{plugin_dir}/openclaw.plugin.json",
+            json.dumps(
+                {
+                    "id": TOOL_INTERCEPTION_PLUGIN_ID,
+                    "name": "Verifiers tool interception",
+                    "description": "Routes native tool calls through rollout policy.",
+                    "activation": {"onStartup": True},
+                    "contracts": {"agentToolResultMiddleware": ["openclaw"]},
+                    "configSchema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                    },
+                }
+            ).encode(),
+        )
+
+        credentials_path = f"{plugin_dir}/{uuid.uuid4().hex}.credentials"
+        payload = json.dumps({"url": url, "secret": secret}).encode()
+        result = await runtime.run_with_input(
+            [
+                "sh",
+                "-c",
+                'umask 077; set -C; head -c "$1" > "$2"',
+                "write-tool-credentials",
+                str(len(payload)),
+                credentials_path,
+            ],
+            {},
+            payload,
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                "failed to write OpenClaw interception credentials privately: "
+                f"{result.stderr.strip()[-500:]}"
+            )
+        # OpenClaw cannot originate our ACP metadata request, so its plugin owns
+        # this capability directly instead of advertising an unusable client route.
+        config.toolInterception = None
+        config.env["NODE_USE_ENV_PROXY"] = "1"
+        config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
+
+        config_path = config.env["OPENCLAW_CONFIG_PATH"]
+        openclaw = json.loads(await runtime.read(config_path))
+        # Only the generated plugin joins the process that holds the policy capability.
+        openclaw["plugins"] = {
+            "enabled": True,
+            "allow": [TOOL_INTERCEPTION_PLUGIN_ID],
+            "load": {"paths": [plugin_dir]},
+            "entries": {TOOL_INTERCEPTION_PLUGIN_ID: {"enabled": True}},
+        }
+        await runtime.write(config_path, json.dumps(openclaw).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         state_dir = f".vf-openclaw/{trace.id}"

@@ -59,6 +59,7 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     toolInterception: tuple[str, str] | None = None
+    toolInterceptionProxy: list[str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -287,6 +288,7 @@ class ACPHarnessSession(HarnessSession):
                 if self.config.toolInterception is not None
                 else None
             ),
+            "toolInterceptionProxy": self.config.toolInterceptionProxy,
         }
         async with self._lock:
             if self._closed:

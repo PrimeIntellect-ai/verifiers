@@ -94,6 +94,8 @@ class ToolHookRequest(BaseModel):
     content: Literal["any", "none", "nonempty_text"] = "any"
     resultPrefix: str = ""
     resultSuffix: str = ""
+    resultFraming: Literal["exact", "codex_code_mode"] = "exact"
+    toolArguments: dict | None = None
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -427,7 +429,10 @@ class InterceptionServer(Interception):
                     hook.content,
                     hook.resultPrefix,
                     hook.resultSuffix,
+                    hook.resultFraming,
+                    hook.toolArguments,
                 )
+                decision["toolCallId"] = hook.message.tool_call_id
             return web.json_response(decision)
         except Exception as error:  # noqa: BLE001 - malformed native-hook traffic is fatal
             failure = (

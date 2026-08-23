@@ -28,8 +28,7 @@ codexVersion = "0.147.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
-hookSource = Path(__file__).with_name("tool_hook.mjs").read_text()
-adapterSource = Path(__file__).with_name("adapter.mjs").read_bytes()
+proxySource = Path(__file__).with_name("proxy.py").read_text()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -226,94 +225,41 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise HarnessError(
                 f"Codex tool interception is verified only for version {codexVersion}"
             )
+        if not url or not secret:
+            raise HarnessError("Codex tool interception requires policy credentials")
 
         codexConfig = json.loads(config.env["CODEX_CONFIG"])
         features = codexConfig.setdefault("features", {})
-        features["code_mode"] = False
-        features["unified_exec"] = False
-        codexConfig["shell_environment_policy"] = {
-            "exclude": ["^VF_CODEX_TOOL_URL$", "^VF_CODEX_TOOL_SECRET$"]
+        features["code_mode"] = True
+        features["code_mode_only"] = True
+        codexConfig.setdefault("tools", {})["experimental_request_user_input"] = {
+            "enabled": False
         }
         config.env["CODEX_CONFIG"] = json.dumps(codexConfig)
-        config.env["NODE_USE_ENV_PROXY"] = "1"
-        config.env["CODEX_PATH"] = CODEX_BIN.format(
+        realCodex = CODEX_BIN.format(
             version=self.config.version, acp_version=ACP_VERSION
         )
-        config.env["VF_CODEX_TOOL_URL"] = url
-        config.env["VF_CODEX_TOOL_SECRET"] = secret
-
         home = config.env["CODEX_HOME"]
-        adapterPath = f"{home}/adapter.mjs"
-        patchedAdapterPath = f"{home}/codex-acp.mjs"
-        await runtime.write(adapterPath, adapterSource)
-        config.command = [
-            f"{NODE_BIN_DIR}/node",
-            adapterPath,
-            ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
-            patchedAdapterPath,
+        launcher = f"{home}/codex"
+        await runtime.write(
+            launcher,
+            (
+                "#!/bin/sh\n"
+                f'exec {shlex.quote(realCodex)} "$@" '
+                '--code-mode-host "$VF_CODE_MODE_HOST_URL"\n'
+            ).encode(),
+        )
+        executable = await runtime.run(["chmod", "+x", launcher], {})
+        if executable.exit_code != 0:
+            raise RuntimeError(
+                f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
+            )
+        config.env["CODEX_PATH"] = launcher
+        config.toolInterceptionProxy = [
+            *await runtime.prepare_uv_script(
+                proxySource,
+                {**config.env, "UV_FROZEN": "false"},
+                activate=False,
+            ),
+            realCodex,
         ]
-        hooksPath = f"{home}/hooks.json"
-        command = shlex.join(
-            [f"{NODE_BIN_DIR}/node", "--input-type=module", "--eval", hookSource]
-        )
-        handler = {"type": "command", "command": command, "timeout": 35}
-        hooks = {
-            "hooks": {
-                "PreToolUse": [{"hooks": [handler]}],
-                "PostToolUse": [{"hooks": [handler]}],
-            }
-        }
-        await runtime.write(hooksPath, json.dumps(hooks).encode())
-        resolved = await runtime.run(
-            [
-                "sh",
-                "-c",
-                'cd "$(dirname "$1")" && printf "%s/%s\\n" "$(pwd -P)" "$(basename "$1")"',
-                "resolve-hook-path",
-                hooksPath,
-            ],
-            {},
-        )
-        if resolved.exit_code != 0:
-            raise RuntimeError(
-                f"failed to resolve Codex hook path: {resolved.stderr.strip()[-500:]}"
-            )
-        resolvedHooksPath = resolved.stdout.strip()
-
-        states = []
-        for event in ("pre_tool_use", "post_tool_use"):
-            identity = {
-                "event_name": event,
-                "hooks": [
-                    {
-                        "async": False,
-                        "command": command,
-                        "timeout": 35,
-                        "type": "command",
-                    }
-                ],
-            }
-            canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-            trustedHash = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-            key = f"{resolvedHooksPath}:{event}:0:0"
-            states.append(
-                f"[hooks.state.{json.dumps(key)}]\n"
-                f"trusted_hash = {json.dumps(trustedHash)}\n"
-            )
-        statePayload = ("\n" + "\n".join(states)).encode()
-        result = await runtime.run_with_input(
-            [
-                "sh",
-                "-c",
-                'head -c "$1" >> "$2"',
-                "append-hook-state",
-                str(len(statePayload)),
-                f"{home}/config.toml",
-            ],
-            {},
-            statePayload,
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"failed to trust Codex interception hooks: {result.stderr.strip()[-500:]}"
-            )
