@@ -17,18 +17,18 @@ from verifiers.v1.trace import Trace
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.67.0"
-claudeVersion = "2.1.232"
+CLAUDE_VERSION = "2.1.232"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
-acpLib = (
+ACP_LIB = (
     f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/lib.js"
 )
-acpIndex = (
+ACP_INDEX = (
     f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
 )
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
-wrapperSource = Path(__file__).with_name("wrapper.mjs").read_text()
+WRAPPER_SOURCE = Path(__file__).with_name("wrapper.mjs").read_text()
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -42,7 +42,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: str = Field(default=claudeVersion, pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=CLAUDE_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Claude Code release to install, pinned for reproducibility."""
 
 
@@ -131,24 +131,24 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != claudeVersion:
+        if self.config.version != CLAUDE_VERSION:
             raise HarnessError(
                 "Claude Code tool interception is verified only for version "
-                f"{claudeVersion}"
+                f"{CLAUDE_VERSION}"
             )
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         config.command = [
             f"{NODE_BIN_DIR}/node",
             "--input-type=module",
             "--eval",
-            wrapperSource,
-            acpLib.format(**versions),
-            acpIndex.format(**versions),
+            WRAPPER_SOURCE,
+            ACP_LIB.format(**versions),
+            ACP_INDEX.format(**versions),
         ]
         assert config.session_meta is not None
-        claudeCode = config.session_meta["claudeCode"]
-        assert isinstance(claudeCode, dict)
-        options = claudeCode["options"]
+        claude_code = config.session_meta["claudeCode"]
+        assert isinstance(claude_code, dict)
+        options = claude_code["options"]
         assert isinstance(options, dict)
         options["settingSources"] = ["user"]
         await self.install_skills(runtime, f"{config.env['CLAUDE_CONFIG_DIR']}/skills")

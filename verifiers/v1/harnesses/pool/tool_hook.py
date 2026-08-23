@@ -9,30 +9,29 @@ import os
 import signal
 import sys
 from pathlib import Path
-from urllib.request import Request
-from urllib.request import urlopen as openUrl
+from urllib.request import Request, urlopen
 
-hookName = "verifiers-tool-interception"
-postSuffix = (
-    f'\n<hook name="{hookName}" event="PostToolUse">'
+HOOK_NAME = "verifiers-tool-interception"
+POST_SUFFIX = (
+    f'\n<hook name="{HOOK_NAME}" event="PostToolUse">'
     "modified this observation before it was shown to you</hook>"
 )
-maxResultBytes = 32 * 1024
+MAX_RESULT_BYTES = 32 * 1024
 
 try:
-    hookEvent = json.load(sys.stdin)
-    if hookEvent.get("hook_api_version") != "1.0":
+    hook_event = json.load(sys.stdin)
+    if hook_event.get("hook_api_version") != "1.0":
         raise ValueError("Pool returned an unsupported hook API version")
-    eventName = hookEvent.get("hook_event_name")
-    if eventName not in ("PreToolUse", "PostToolUse"):
-        raise ValueError(f"Pool returned unsupported hook event {eventName!r}")
-    toolName = hookEvent.get("tool_name")
-    callId = hookEvent.get("tool_call_id")
-    if not isinstance(toolName, str) or not isinstance(callId, str):
+    event_name = hook_event.get("hook_event_name")
+    if event_name not in ("PreToolUse", "PostToolUse"):
+        raise ValueError(f"Pool returned unsupported hook event {event_name!r}")
+    tool_name = hook_event.get("tool_name")
+    call_id = hook_event.get("tool_call_id")
+    if not isinstance(tool_name, str) or not isinstance(call_id, str):
         raise TypeError("Pool returned an invalid tool identity")
     # Pool invokes an internal exit action after the model has already completed.
     # It has no issuing model tool call and therefore no policy boundary to cross.
-    if toolName == "exit":
+    if tool_name == "exit":
         raise SystemExit(0)
 
     credentials = json.loads(Path(sys.argv[1]).read_text())
@@ -41,31 +40,31 @@ try:
     if not isinstance(url, str) or not isinstance(secret, str):
         raise TypeError("Pool tool interception credentials are invalid")
 
-    before = eventName == "PreToolUse"
-    content = "" if before else hookEvent.get("tool_output")
+    before = event_name == "PreToolUse"
+    content = "" if before else hook_event.get("tool_output")
     if not isinstance(content, str):
         raise TypeError("Pool tool interception supports only text results")
-    requestBody = {
+    request_body = {
         "phase": "before" if before else "after",
         "content": "nonempty_text",
-        "resultSuffix": "" if before else postSuffix,
+        "resultSuffix": "" if before else POST_SUFFIX,
         "message": {
             "role": "tool",
-            "tool_call_id": callId,
+            "tool_call_id": call_id,
             "content": content,
-            "name": toolName,
+            "name": tool_name,
         },
     }
     request = Request(
         url,
-        data=json.dumps(requestBody).encode(),
+        data=json.dumps(request_body).encode(),
         headers={
             "Authorization": f"Bearer {secret}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
-    with openUrl(request, timeout=30) as response:
+    with urlopen(request, timeout=30) as response:
         decision = json.load(response)
     action = decision.get("action") if isinstance(decision, dict) else None
     if action not in ("allow", "rewrite", "stop"):
@@ -80,7 +79,7 @@ try:
             raise TypeError(
                 "Pool tool interception requires non-empty text replacements"
             )
-        if message.get("name", toolName) != toolName:
+        if message.get("name", tool_name) != tool_name:
             raise ValueError("Pool tool interception cannot replace the tool name")
     else:
         replacement = decision.get("reason") or "Rollout terminated by interception."
@@ -92,8 +91,8 @@ try:
         replacement = replacement.strip()
         if not replacement:
             raise ValueError("Pool tool interception requires non-empty text results")
-    suffix = "" if before else postSuffix
-    if len((replacement + suffix).encode()) > maxResultBytes:
+    suffix = "" if before else POST_SUFFIX
+    if len((replacement + suffix).encode()) > MAX_RESULT_BYTES:
         raise ValueError("Pool tool replacement exceeds its 32 KiB model-visible limit")
 
     if before:

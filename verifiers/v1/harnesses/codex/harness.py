@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "1.2.0"
-codexVersion = "0.147.0"
+CODEX_VERSION = "0.147.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
-proxySource = Path(__file__).with_name("proxy.py").read_text()
+PROXY_SOURCE = Path(__file__).with_name("proxy.py").read_text()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -42,7 +42,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = Field(default=codexVersion, pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=CODEX_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -221,22 +221,22 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != codexVersion:
+        if self.config.version != CODEX_VERSION:
             raise HarnessError(
-                f"Codex tool interception is verified only for version {codexVersion}"
+                f"Codex tool interception is verified only for version {CODEX_VERSION}"
             )
         if not url or not secret:
             raise HarnessError("Codex tool interception requires policy credentials")
 
-        codexConfig = json.loads(config.env["CODEX_CONFIG"])
-        features = codexConfig.setdefault("features", {})
+        codex_config = json.loads(config.env["CODEX_CONFIG"])
+        features = codex_config.setdefault("features", {})
         features["code_mode"] = True
         features["code_mode_only"] = True
-        codexConfig.setdefault("tools", {})["experimental_request_user_input"] = {
+        codex_config.setdefault("tools", {})["experimental_request_user_input"] = {
             "enabled": False
         }
-        config.env["CODEX_CONFIG"] = json.dumps(codexConfig)
-        realCodex = CODEX_BIN.format(
+        config.env["CODEX_CONFIG"] = json.dumps(codex_config)
+        real_codex = CODEX_BIN.format(
             version=self.config.version, acp_version=ACP_VERSION
         )
         home = config.env["CODEX_HOME"]
@@ -245,7 +245,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             launcher,
             (
                 "#!/bin/sh\n"
-                f'exec {shlex.quote(realCodex)} "$@" '
+                f'exec {shlex.quote(real_codex)} "$@" '
                 '--code-mode-host "$VF_CODE_MODE_HOST_URL"\n'
             ).encode(),
         )
@@ -255,11 +255,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
             )
         config.env["CODEX_PATH"] = launcher
-        config.toolInterceptionProxy = [
+        config.tool_interception_proxy = [
             *await runtime.prepare_uv_script(
-                proxySource,
+                PROXY_SOURCE,
                 {**config.env, "UV_FROZEN": "false"},
                 activate=False,
             ),
-            realCodex,
+            real_codex,
         ]

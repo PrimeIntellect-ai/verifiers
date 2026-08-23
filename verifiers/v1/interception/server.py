@@ -35,7 +35,7 @@ from typing import Literal
 
 import httpx
 from aiohttp import web
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
@@ -92,10 +92,12 @@ class ToolHookRequest(BaseModel):
     phase: Literal["before", "after"]
     message: ToolMessage
     content: Literal["any", "none", "nonempty_text"] = "any"
-    resultPrefix: str = ""
-    resultSuffix: str = ""
-    resultFraming: Literal["exact", "codex_code_mode"] = "exact"
-    toolArguments: dict | None = None
+    result_prefix: str = Field(default="", alias="resultPrefix")
+    result_suffix: str = Field(default="", alias="resultSuffix")
+    result_framing: Literal["exact", "codex_code_mode"] = Field(
+        default="exact", alias="resultFraming"
+    )
+    tool_arguments: dict | None = Field(default=None, alias="toolArguments")
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -427,10 +429,10 @@ class InterceptionServer(Interception):
                     hook.phase,
                     hook.message,
                     hook.content,
-                    hook.resultPrefix,
-                    hook.resultSuffix,
-                    hook.resultFraming,
-                    hook.toolArguments,
+                    hook.result_prefix,
+                    hook.result_suffix,
+                    hook.result_framing,
+                    hook.tool_arguments,
                 )
                 decision["toolCallId"] = hook.message.tool_call_id
             return web.json_response(decision)

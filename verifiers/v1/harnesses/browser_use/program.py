@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 
-# {toolInterception}
+# {tool_interception}
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    tool_secret = readToolSecret(  # noqa: F821 - injected runtime client
+    tool_secret = read_tool_secret(  # noqa: F821 - injected runtime client
         args.tool_interception_secret_bytes, "Browser"
     )
     tool_interceptor = (

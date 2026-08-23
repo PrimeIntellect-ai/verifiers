@@ -14,7 +14,7 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.request import Request as UrlRequest
-from urllib.request import urlopen as openUrl
+from urllib.request import urlopen
 
 from acp import (
     PROTOCOL_VERSION,
@@ -47,7 +47,7 @@ class ACPTurn:
 
 
 @asynccontextmanager
-async def runningToolProxy(command: list[str], interception: dict[str, str]):
+async def running_tool_proxy(command: list[str], interception: dict[str, str]):
     """Bootstrap a trusted local policy proxy without exposing its bearer to the agent."""
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -90,8 +90,8 @@ class LiveACPClient(Client):
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
         self.tool_calls: dict[str, str] = {}
-        self.toolInterception: dict[str, str] | None = None
-        self.promptError: Exception | None = None
+        self.tool_interception: dict[str, str] | None = None
+        self.prompt_error: Exception | None = None
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -100,7 +100,7 @@ class LiveACPClient(Client):
         self.response_metadata = {}
         self.update_metadata = []
         self.tool_calls = {}
-        self.promptError = None
+        self.prompt_error = None
 
     def turn_result(self) -> ACPTurn:
         return ACPTurn(
@@ -142,25 +142,25 @@ class LiveACPClient(Client):
             (item for item in options if item.kind in ("allow_once", "allow_always")),
             None,
         )
-        responseMeta = None
+        response_meta = None
         if interception is not None:
             try:
-                if self.toolInterception is None:
+                if self.tool_interception is None:
                     raise RuntimeError("Tool interception is not configured")
                 if not isinstance(interception, dict):
                     raise TypeError("Tool interception metadata must be an object")
                 if error := interception.get("error"):
                     raise RuntimeError(str(error))
                 request = UrlRequest(
-                    self.toolInterception["url"],
+                    self.tool_interception["url"],
                     data=json.dumps(interception).encode(),
                     headers={
-                        "Authorization": f"Bearer {self.toolInterception['secret']}",
+                        "Authorization": f"Bearer {self.tool_interception['secret']}",
                         "Content-Type": "application/json",
                     },
                     method="POST",
                 )
-                response = await asyncio.to_thread(openUrl, request, timeout=35)
+                response = await asyncio.to_thread(urlopen, request, timeout=35)
                 with response:
                     decision = json.loads(await asyncio.to_thread(response.read))
                 if not isinstance(decision, dict) or decision.get("action") not in (
@@ -169,19 +169,19 @@ class LiveACPClient(Client):
                     "stop",
                 ):
                     raise ValueError("Tool interception returned an invalid decision")
-                responseMeta = {"toolInterception": decision}
+                response_meta = {"toolInterception": decision}
             except Exception as error:  # noqa: BLE001 - fail closed across ACP
-                self.promptError = RuntimeError(
+                self.prompt_error = RuntimeError(
                     f"Tool interception is unavailable: {error}"
                 )
-                responseMeta = {"toolInterception": {"error": str(error)}}
+                response_meta = {"toolInterception": {"error": str(error)}}
                 option = None
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
             if option
             else DeniedOutcome(outcome="cancelled")
         )
-        return RequestPermissionResponse(outcome=outcome, field_meta=responseMeta)
+        return RequestPermissionResponse(outcome=outcome, field_meta=response_meta)
 
 
 def user_content_blocks(contents: list, supports_images: bool) -> list:
@@ -243,12 +243,12 @@ async def prompt(
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
     except RequestError as error:
-        if client.promptError is not None:
-            raise client.promptError from error
+        if client.prompt_error is not None:
+            raise client.prompt_error from error
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-    if client.promptError is not None:
-        raise client.promptError
+    if client.prompt_error is not None:
+        raise client.prompt_error
 
     tool_statuses = list(client.tool_calls.values())
     tools_finished = all(status in ("completed", "failed") for status in tool_statuses)
@@ -286,36 +286,36 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
-        self.client.toolInterception = config.get("toolInterception")
+        self.client.tool_interception = config.get("toolInterception")
         try:
-            agentEnv = os.environ.copy()
-            if proxyCommand := config.get("toolInterceptionProxy"):
-                if self.client.toolInterception is None:
+            agent_env = os.environ.copy()
+            if proxy_command := config.get("toolInterceptionProxy"):
+                if self.client.tool_interception is None:
                     raise RuntimeError("Tool interception is not configured")
-                proxyUrl = await self.stack.enter_async_context(
-                    runningToolProxy(proxyCommand, self.client.toolInterception)
+                proxy_url = await self.stack.enter_async_context(
+                    running_tool_proxy(proxy_command, self.client.tool_interception)
                 )
-                agentEnv["VF_CODE_MODE_HOST_URL"] = proxyUrl
+                agent_env["VF_CODE_MODE_HOST_URL"] = proxy_url
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=agentEnv,
+                    env=agent_env,
                     transport_kwargs={"stderr": None},
                 )
             )
             self.connection = agent_process[0]
-            clientCapabilities = ClientCapabilities(
+            client_capabilities = ClientCapabilities(
                 field_meta=(
                     {"toolInterception": True}
-                    if self.client.toolInterception is not None
+                    if self.client.tool_interception is not None
                     else None
                 )
             )
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
-                client_capabilities=clientCapabilities,
+                client_capabilities=client_capabilities,
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(

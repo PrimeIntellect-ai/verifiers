@@ -9,24 +9,24 @@ from minisweagent.agents.interactive import InteractiveAgent
 from minisweagent.exceptions import Submitted
 from minisweagent.run.mini import app
 
-# {toolInterception}
+# {tool_interception}
 
-toolInterceptionUrl = ""
-toolInterceptionSecretBytes = 0
-appArguments = [sys.argv[0]]
+tool_interception_url = ""
+tool_interception_secret_bytes = 0
+app_arguments = [sys.argv[0]]
 for argument in sys.argv[1:]:
     if argument.startswith("--tool-interception-url="):
-        toolInterceptionUrl = argument.partition("=")[2]
+        tool_interception_url = argument.partition("=")[2]
     elif argument.startswith("--tool-interception-secret-bytes="):
-        toolInterceptionSecretBytes = int(argument.partition("=")[2])
+        tool_interception_secret_bytes = int(argument.partition("=")[2])
     else:
-        appArguments.append(argument)
-sys.argv = appArguments
+        app_arguments.append(argument)
+sys.argv = app_arguments
 
-toolSecret = readToolSecret(toolInterceptionSecretBytes, "Mini-SWE")  # noqa: F821 - injected runtime client
-toolInterceptor = (
-    ToolInterceptionClient(toolInterceptionUrl, toolSecret)  # noqa: F821 - injected runtime client
-    if toolInterceptionUrl
+tool_secret = read_tool_secret(tool_interception_secret_bytes, "Mini-SWE")  # noqa: F821 - injected runtime client
+tool_interceptor = (
+    ToolInterceptionClient(tool_interception_url, tool_secret)  # noqa: F821 - injected runtime client
+    if tool_interception_url
     else None
 )
 
@@ -38,13 +38,13 @@ class InterceptingAgent(InteractiveAgent):
         observations = []
         submitted = None
         for action in actions:
-            toolMessage = {
+            tool_message = {
                 "role": "tool",
                 "tool_call_id": action["tool_call_id"],
                 "content": "",
                 "name": "bash",
             }
-            decision = toolInterceptor.call("before", toolMessage)
+            decision = tool_interceptor.call("before", tool_message)
             if decision["action"] == "rewrite":
                 observations.append(decision["message"])
                 continue
@@ -64,15 +64,15 @@ class InterceptingAgent(InteractiveAgent):
                     "returncode": -1,
                     "exception_info": "action was not executed",
                 }
-            singleMessage = {
+            single_message = {
                 **message,
                 "extra": {**message.get("extra", {}), "actions": [action]},
             }
             observation = self.model.format_observation_messages(
-                singleMessage, [output], self.get_template_vars()
+                single_message, [output], self.get_template_vars()
             )[0]
             observation["name"] = "bash"
-            decision = toolInterceptor.call("after", observation)
+            decision = tool_interceptor.call("after", observation)
             observations.append(
                 decision["message"] if decision["action"] == "rewrite" else observation
             )
@@ -85,5 +85,5 @@ class InterceptingAgent(InteractiveAgent):
 try:
     app()
 finally:
-    if toolInterceptor is not None:
-        toolInterceptor.close()
+    if tool_interceptor is not None:
+        tool_interceptor.close()

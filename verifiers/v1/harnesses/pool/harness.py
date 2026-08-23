@@ -120,8 +120,8 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
                 f"Pool tool interception is verified only for version {POOL_VERSION}"
             )
 
-        stateDir = config.env["VF_POOL_STATE_DIR"]
-        credentialsPath = f"{stateDir}/{uuid.uuid4().hex}.credentials"
+        state_dir = config.env["VF_POOL_STATE_DIR"]
+        credentials_path = f"{state_dir}/{uuid.uuid4().hex}.credentials"
         payload = json.dumps({"url": url, "secret": secret}).encode()
         result = await runtime.run_with_input(
             [
@@ -129,9 +129,9 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
                 "-c",
                 'umask 077; mkdir -p "$1"; set -C; head -c "$2" > "$3"',
                 "write-tool-credentials",
-                stateDir,
+                state_dir,
                 str(len(payload)),
-                credentialsPath,
+                credentials_path,
             ],
             {},
             payload,
@@ -142,11 +142,11 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
                 f"{result.stderr.strip()[-500:]}"
             )
 
-        hookProgram = await runtime.prepare_uv_script(HOOK_SOURCE, activate=False)
+        hook_program = await runtime.prepare_uv_script(HOOK_SOURCE, activate=False)
         hook = {
             "name": HOOK_NAME,
             "matcher": "*",
-            "command": shlex.join(["exec", *hookProgram, credentialsPath]),
+            "command": shlex.join(["exec", *hook_program, credentials_path]),
             "timeout": 35,
         }
         settings = json.loads(config.env["VF_POOL_SETTINGS"])
@@ -157,7 +157,7 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
         config.env["VF_POOL_SETTINGS"] = json.dumps(settings)
         # Pool's closed ACP server cannot originate our metadata request, so its
         # synchronous command hooks call the rollout policy endpoint directly.
-        config.toolInterception = None
+        config.tool_interception = None
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f".vf-pool/{trace.id}"], {})

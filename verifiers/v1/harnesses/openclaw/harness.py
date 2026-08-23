@@ -310,7 +310,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             )
         # OpenClaw cannot originate our ACP metadata request, so its plugin owns
         # this capability directly instead of advertising an unusable client route.
-        config.toolInterception = None
+        config.tool_interception = None
         config.env["NODE_USE_ENV_PROXY"] = "1"
         config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 

@@ -16,7 +16,7 @@ from verifiers.v1.trace import Trace
 PROGRAM_SOURCE = bundle_program(
     (Path(__file__).resolve().parent / "program.py")
     .read_text()
-    .replace("# {toolInterception}", DIRECT_TOOL_SOURCE),
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE),
     mcp,
 )
 

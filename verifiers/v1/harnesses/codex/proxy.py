@@ -10,50 +10,49 @@ import signal
 import sys
 from contextlib import suppress
 from pathlib import Path
-from urllib.request import Request as UrlRequest
-from urllib.request import urlopen as openUrl
+from urllib.request import Request, urlopen
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-maxFrameBytes = 64 * 1024 * 1024
-dualWebsocket = "dual-websocket-v1"
+MAX_FRAME_BYTES = 64 * 1024 * 1024
+DUAL_WEBSOCKET = "dual-websocket-v1"
 
 
-def unpackFrame(frame: bytes) -> dict:
+def unpack_frame(frame: bytes) -> dict:
     if len(frame) < 4:
         raise ValueError("Code Mode frame is missing its length prefix")
     size = int.from_bytes(frame[:4], "little")
-    if size > maxFrameBytes or len(frame) != size + 4:
+    if size > MAX_FRAME_BYTES or len(frame) != size + 4:
         raise ValueError("Code Mode frame has an invalid payload length")
     return json.loads(frame[4:])
 
 
-def packFrame(message: dict) -> bytes:
+def pack_frame(message: dict) -> bytes:
     payload = json.dumps(message, separators=(",", ":")).encode()
-    if len(payload) > maxFrameBytes:
+    if len(payload) > MAX_FRAME_BYTES:
         raise ValueError("Code Mode frame exceeds the protocol limit")
     return len(payload).to_bytes(4, "little") + payload
 
 
-def findHost() -> str:
+def find_host() -> str:
     launcher = Path(sys.argv[1]).resolve()
-    nodeModules = next(
+    node_modules = next(
         (parent for parent in launcher.parents if parent.name == "node_modules"), None
     )
-    if nodeModules is None:
+    if node_modules is None:
         raise RuntimeError(f"Cannot locate Codex package from {launcher}")
     matches = list(
-        nodeModules.glob("@openai/codex-*/vendor/*/bin/codex-code-mode-host")
+        node_modules.glob("@openai/codex-*/vendor/*/bin/codex-code-mode-host")
     )
     if len(matches) != 1:
         raise RuntimeError(f"Found {len(matches)} Codex Code Mode hosts")
     return str(matches[0])
 
 
-def callPolicy(configuration: dict[str, str], body: dict) -> dict:
-    request = UrlRequest(
+def call_policy(configuration: dict[str, str], body: dict) -> dict:
+    request = Request(
         configuration["url"],
         data=json.dumps(body).encode(),
         headers={
@@ -62,7 +61,7 @@ def callPolicy(configuration: dict[str, str], body: dict) -> dict:
         },
         method="POST",
     )
-    with openUrl(request, timeout=35) as response:
+    with urlopen(request, timeout=35) as response:
         decision = json.loads(response.read())
     if not isinstance(decision, dict) or decision.get("action") not in {
         "allow",
@@ -76,10 +75,10 @@ def callPolicy(configuration: dict[str, str], body: dict) -> dict:
 async def intercept(
     configuration: dict[str, str],
     phase: str,
-    callId: str,
+    call_id: str,
     name: str,
     content,
-    toolArguments: dict | None = None,
+    tool_arguments: dict | None = None,
 ) -> dict:
     body = {
         "phase": phase,
@@ -87,26 +86,26 @@ async def intercept(
         "resultFraming": "codex_code_mode",
         "message": {
             "role": "tool",
-            "tool_call_id": callId,
+            "tool_call_id": call_id,
             "content": content,
             "name": name,
         },
     }
-    if toolArguments is not None:
-        body["toolArguments"] = toolArguments
+    if tool_arguments is not None:
+        body["toolArguments"] = tool_arguments
     decision = await asyncio.to_thread(
-        callPolicy,
+        call_policy,
         configuration,
         body,
     )
-    resolvedId = decision.get("toolCallId", callId)
-    if not isinstance(resolvedId, str) or not resolvedId:
+    resolved_id = decision.get("toolCallId", call_id)
+    if not isinstance(resolved_id, str) or not resolved_id:
         raise ValueError("Tool interception did not resolve the tool call ID")
-    decision["toolCallId"] = resolvedId
+    decision["toolCallId"] = resolved_id
     return decision
 
 
-def responseContent(response: dict):
+def response_content(response: dict):
     if len(response) != 1:
         raise ValueError("Code Mode returned an invalid runtime response")
     variant, value = next(iter(response.items()))
@@ -134,7 +133,7 @@ def responseContent(response: dict):
     return parts
 
 
-def wireContent(content) -> list[dict]:
+def wire_content(content) -> list[dict]:
     parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
     result = []
     for part in parts:
@@ -152,45 +151,45 @@ def wireContent(content) -> list[dict]:
     return result
 
 
-def replacement(decision: dict, callId: str, name: str):
+def replacement(decision: dict, call_id: str, name: str):
     if decision["action"] == "rewrite":
         message = decision.get("message")
         if not isinstance(message, dict):
             raise ValueError("Tool interception omitted its replacement")
-        if message.get("tool_call_id") != callId or message.get("name") != name:
+        if message.get("tool_call_id") != call_id or message.get("name") != name:
             raise ValueError("Tool interception changed the Code Mode tool identity")
         return message.get("content", "")
     return decision.get("reason") or "Rollout terminated by interception."
 
 
-async def runConnection(client, hostUrl: str, configuration: dict[str, str]) -> None:
+async def run_connection(client, host_url: str, configuration: dict[str, str]) -> None:
     requests: dict[int, tuple[str, str]] = {}
-    sendLock = asyncio.Lock()
+    send_lock = asyncio.Lock()
     async with connect(
-        hostUrl,
+        host_url,
         compression=None,
-        max_size=maxFrameBytes + 4,
+        max_size=MAX_FRAME_BYTES + 4,
         proxy=None,
     ) as host:
 
-        async def sendClient(message: dict) -> None:
-            async with sendLock:
-                await client.send(packFrame(message))
+        async def send_client(message: dict) -> None:
+            async with send_lock:
+                await client.send(pack_frame(message))
 
-        async def forwardClient() -> None:
+        async def forward_client() -> None:
             async for frame in client:
                 if not isinstance(frame, bytes):
                     raise TypeError("Code Mode websocket messages must be binary")
-                message = unpackFrame(frame)
+                message = unpack_frame(frame)
                 if message.get("type") == "connection/hello":
-                    if dualWebsocket in message.get("requiredCapabilities", []):
+                    if DUAL_WEBSOCKET in message.get("requiredCapabilities", []):
                         raise ValueError(
                             "Code Mode proxy cannot satisfy required dual websockets"
                         )
                     message["optionalCapabilities"] = [
                         item
                         for item in message.get("optionalCapabilities", [])
-                        if item != dualWebsocket
+                        if item != DUAL_WEBSOCKET
                     ]
                 operation = message.get("request", {})
                 method = operation.get("method")
@@ -199,98 +198,98 @@ async def runConnection(client, hostUrl: str, configuration: dict[str, str]) -> 
                     "session/wait",
                     "session/terminate",
                 }:
-                    requestId = message["id"]
+                    request_id = message["id"]
                     if method == "session/execute":
                         name = "exec"
-                        callId = operation["request"]["tool_call_id"]
-                        toolArguments = None
+                        call_id = operation["request"]["tool_call_id"]
+                        tool_arguments = None
                     else:
                         name = "wait"
-                        callId = ""
-                        cellId = (
+                        call_id = ""
+                        cell_id = (
                             operation["request"]["cell_id"]
                             if method == "session/wait"
                             else operation["cellId"]
                         )
-                        toolArguments = {"cell_id": cellId}
+                        tool_arguments = {"cell_id": cell_id}
                     decision = await intercept(
                         configuration,
                         "before",
-                        callId,
+                        call_id,
                         name,
                         "",
-                        toolArguments,
+                        tool_arguments,
                     )
-                    callId = decision["toolCallId"]
+                    call_id = decision["toolCallId"]
                     if decision["action"] == "allow":
-                        requests[requestId] = (callId, name)
+                        requests[request_id] = (call_id, name)
                     else:
-                        content = replacement(decision, callId, name)
-                        cellId = (
-                            f"vf-blocked-{requestId}"
+                        content = replacement(decision, call_id, name)
+                        cell_id = (
+                            f"vf-blocked-{request_id}"
                             if method == "session/execute"
-                            else cellId
+                            else cell_id
                         )
-                        runtimeResponse = {
+                        runtime_response = {
                             "Result": {
-                                "cell_id": cellId,
-                                "content_items": wireContent(content),
+                                "cell_id": cell_id,
+                                "content_items": wire_content(content),
                                 "error_text": None,
                             }
                         }
                         if method != "session/execute":
-                            await sendClient(
+                            await send_client(
                                 {
                                     "type": "operation/response",
-                                    "id": requestId,
+                                    "id": request_id,
                                     "result": {
                                         "status": "ok",
                                         "value": {
                                             "type": "wait/completed",
-                                            "outcome": {"LiveCell": runtimeResponse},
+                                            "outcome": {"LiveCell": runtime_response},
                                         },
                                     },
                                 }
                             )
                             continue
-                        await sendClient(
+                        await send_client(
                             {
                                 "type": "operation/response",
-                                "id": requestId,
+                                "id": request_id,
                                 "result": {
                                     "status": "ok",
                                     "value": {
                                         "type": "execution/started",
-                                        "cellId": cellId,
+                                        "cellId": cell_id,
                                     },
                                 },
                             }
                         )
-                        await sendClient(
+                        await send_client(
                             {
                                 "type": "execute/initialResponse",
-                                "id": requestId,
+                                "id": request_id,
                                 "result": {
                                     "status": "ok",
-                                    "value": {**runtimeResponse},
+                                    "value": {**runtime_response},
                                 },
                             }
                         )
-                        await sendClient(
+                        await send_client(
                             {
                                 "type": "cell/closed",
                                 "sessionId": operation["sessionId"],
-                                "cellId": cellId,
+                                "cellId": cell_id,
                             }
                         )
                         continue
-                await host.send(packFrame(message))
+                await host.send(pack_frame(message))
 
-        async def forwardHost() -> None:
+        async def forward_host() -> None:
             async for frame in host:
                 if not isinstance(frame, bytes):
                     raise TypeError("Code Mode websocket messages must be binary")
-                message = unpackFrame(frame)
+                message = unpack_frame(frame)
                 pending = requests.get(message.get("id"))
                 result = message.get("result", {})
                 response = None
@@ -311,25 +310,25 @@ async def runConnection(client, hostUrl: str, configuration: dict[str, str]) -> 
                         raise ValueError("Code Mode returned an invalid wait result")
                     response = next(iter(outcome.values()))
                 if response is not None:
-                    callId, name = requests.pop(message["id"])
+                    call_id, name = requests.pop(message["id"])
                     decision = await intercept(
                         configuration,
                         "after",
-                        callId,
+                        call_id,
                         name,
-                        responseContent(response),
+                        response_content(response),
                     )
                     if decision["action"] != "allow":
-                        content = replacement(decision, callId, name)
+                        content = replacement(decision, call_id, name)
                         variant, value = next(iter(response.items()))
-                        value["content_items"] = wireContent(content)
+                        value["content_items"] = wire_content(content)
                         if variant == "Result":
                             value["error_text"] = None
-                await sendClient(message)
+                await send_client(message)
 
         tasks = [
-            asyncio.create_task(forwardClient()),
-            asyncio.create_task(forwardHost()),
+            asyncio.create_task(forward_client()),
+            asyncio.create_task(forward_host()),
         ]
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -347,7 +346,7 @@ async def run() -> None:
     ):
         raise ValueError("Code Mode interception credentials are invalid")
     host = await asyncio.create_subprocess_exec(
-        findHost(),
+        find_host(),
         "--listen",
         "ws://127.0.0.1:0",
         stdout=asyncio.subprocess.PIPE,
@@ -355,14 +354,14 @@ async def run() -> None:
     )
     assert host.stdout is not None
     try:
-        hostUrl = (
+        host_url = (
             (await asyncio.wait_for(host.stdout.readline(), timeout=15))
             .decode()
             .strip()
         )
-        if not hostUrl.startswith("ws://127.0.0.1:"):
+        if not host_url.startswith("ws://127.0.0.1:"):
             raise RuntimeError(
-                f"Codex Code Mode host returned an invalid endpoint: {hostUrl!r}"
+                f"Codex Code Mode host returned an invalid endpoint: {host_url!r}"
             )
         claimed = False
 
@@ -372,14 +371,14 @@ async def run() -> None:
                 await client.close(1008, "Code Mode host is already connected")
                 return
             claimed = True
-            await runConnection(client, hostUrl, configuration)
+            await run_connection(client, host_url, configuration)
 
         async with serve(
             accept,
             "127.0.0.1",
             0,
             compression=None,
-            max_size=maxFrameBytes + 4,
+            max_size=MAX_FRAME_BYTES + 4,
         ) as server:
             port = server.sockets[0].getsockname()[1]
             print(f"ws://127.0.0.1:{port}", flush=True)

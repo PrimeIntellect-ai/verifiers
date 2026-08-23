@@ -16,7 +16,7 @@ from verifiers.v1.trace import Trace
 PROGRAM_SOURCE = (
     (Path(__file__).resolve().parent / "program.py")
     .read_text()
-    .replace("# {toolInterception}", DIRECT_TOOL_SOURCE)
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
 )
 
 
@@ -77,10 +77,10 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "-c",
             f"model.model_kwargs.api_key={secret}",
         ]
-        toolInterceptionSecret = prepare_tool_interception(
+        tool_interception_secret = prepare_tool_interception(
             args, runtime, tool_interception, "Mini-SWE"
         )
-        if toolInterceptionSecret is not None:
+        if tool_interception_secret is not None:
             args += ["--agent-class", "__main__.InterceptingAgent"]
         env = {
             **self.config.resolved_env,
@@ -90,10 +90,10 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         program = await runtime.prepare_uv_script(
             source,
             self.config.resolved_env,
-            activate=toolInterceptionSecret is None,
+            activate=tool_interception_secret is None,
         )
-        if toolInterceptionSecret is not None:
+        if tool_interception_secret is not None:
             return await runtime.run_with_input(
-                [*program, *args], env, toolInterceptionSecret
+                [*program, *args], env, tool_interception_secret
             )
         return await runtime.run_program([*program, *args], env)

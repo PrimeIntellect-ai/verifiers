@@ -58,8 +58,8 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
-    toolInterception: tuple[str, str] | None = None
-    toolInterceptionProxy: list[str] | None = None
+    tool_interception: tuple[str, str] | None = None
+    tool_interception_proxy: list[str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -128,7 +128,7 @@ class ACPHarness(Harness[ConfigT]):
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
         if tool_interception is not None:
-            config.toolInterception = tool_interception
+            config.tool_interception = tool_interception
             await self.configure_tool_interception(config, runtime, *tool_interception)
         return ACPHarnessSession(
             self,
@@ -282,13 +282,13 @@ class ACPHarnessSession(HarnessSession):
             "session_meta": self.config.session_meta or {},
             "toolInterception": (
                 {
-                    "url": self.config.toolInterception[0],
-                    "secret": self.config.toolInterception[1],
+                    "url": self.config.tool_interception[0],
+                    "secret": self.config.tool_interception[1],
                 }
-                if self.config.toolInterception is not None
+                if self.config.tool_interception is not None
                 else None
             ),
-            "toolInterceptionProxy": self.config.toolInterceptionProxy,
+            "toolInterceptionProxy": self.config.tool_interception_proxy,
         }
         async with self._lock:
             if self._closed:

@@ -35,7 +35,7 @@ class ToolInterceptionClient:
         self.client.close()
 
 
-def readToolSecret(size: int, harness: str) -> str:
+def read_tool_secret(size: int, harness: str) -> str:
     if not size:
         return ""
     payload = sys.stdin.buffer.read(size)
