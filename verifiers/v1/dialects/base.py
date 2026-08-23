@@ -14,21 +14,20 @@ exception is `apply_overrides` (impose the eval's model + sampling in this forma
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from typing import ClassVar, Generic, TypeVar
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, BaseModel, TypeAdapter, ValidationError
+from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
 from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
-ReqT = TypeVar("ReqT")
+ReqT = TypeVar("ReqT", bound=Mapping[str, object])
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
-HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
 CAPABILITY_NOTICE = (
@@ -43,7 +42,7 @@ def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
     if value.lower().startswith("data:"):
         return False
     try:
-        url = HTTP_URL_ADAPTER.validate_python(value)
+        url = AnyHttpUrl(value)
     except ValidationError:
         return True
     host = url.host.lower().rstrip(".").strip("[]")
@@ -173,26 +172,6 @@ def parse_sse_event(raw: bytes) -> dict | None:
             "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
         )
         return json.loads(data.decode("utf-8", errors="replace"))
-
-
-def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
-    """Yield JSON SSE payloads from the end without decoding earlier events."""
-    decoded = raw.decode("utf-8", errors="replace")
-    first_newline = decoded.find("\n")
-    separator = (
-        "\r\n\r\n"
-        if first_newline > 0 and decoded[first_newline - 1] == "\r"
-        else "\n\n"
-    )
-    for block in reversed(decoded.split(separator)):
-        data = "\n".join(
-            line.removeprefix("data:").strip()
-            for line in block.splitlines()
-            if line.startswith("data:")
-        )
-        if not data or data == "[DONE]":
-            continue
-        yield json.loads(data)
 
 
 class StreamParser(ABC):

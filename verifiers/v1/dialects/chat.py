@@ -84,12 +84,6 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _content_text(content) -> str:
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
-
-
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
     image parts (multimodal ingress); assistant bodies flatten to text."""
@@ -105,6 +99,11 @@ def parse_message(raw: dict) -> Message:
         )
     if role == "assistant":
         details = raw.get("reasoning_details")
+        text = (
+            "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            if isinstance(content, list)
+            else content or ""
+        )
         calls = [
             ToolCall(
                 id=c["id"],
@@ -114,7 +113,7 @@ def parse_message(raw: dict) -> Message:
             for c in (raw.get("tool_calls") or [])
         ] or None
         return AssistantMessage(
-            content=_content_text(content) or None,
+            content=text or None,
             reasoning_content=reasoning_text(raw),
             tool_calls=calls,
             provider_state=details if isinstance(details, list) and details else None,
@@ -224,9 +223,7 @@ class ChatStreamParser(StreamParser):
     message: dict = dataclass_field(
         default_factory=lambda: {"role": "assistant", "content": None}
     )
-    message_parts: dict[str, list[str]] = dataclass_field(
-        default_factory=lambda: {key: [] for key in REASONING_FIELDS[:2] + ("content",)}
-    )
+    message_parts: dict[str, list[str]] = dataclass_field(default_factory=dict)
     tool_calls: dict[int, dict] = dataclass_field(default_factory=dict)
     tool_arguments: dict[int, list[str]] = dataclass_field(default_factory=dict)
     reasoning_details: list[dict] = dataclass_field(default_factory=list)
@@ -251,7 +248,7 @@ class ChatStreamParser(StreamParser):
             delta = choice.get("delta") or {}
             for key in ("content", "reasoning_content", "reasoning"):
                 if delta.get(key) is not None:
-                    self.message_parts[key].append(delta[key])
+                    self.message_parts.setdefault(key, []).append(delta[key])
             for detail in delta.get("reasoning_details") or []:
                 previous = self.reasoning_details[-1] if self.reasoning_details else {}
                 detail_type = detail.get("type")
@@ -511,7 +508,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
             body.get("messages", []), before.messages, after.messages, strict=True
         ):
             if rewritten != original:
-                native["content"] = message_to_wire(rewritten)["content"]
+                native["content"] = _content_to_wire(rewritten.content)
                 if isinstance(rewritten, ToolMessage):
                     if rewritten.name is None:
                         native.pop("name", None)

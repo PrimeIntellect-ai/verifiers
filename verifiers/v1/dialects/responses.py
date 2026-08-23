@@ -12,10 +12,12 @@ import re
 from collections import deque
 from typing import cast
 
-from openai.types.responses import (
+from openai.types.responses.response_create_params import ResponseCreateParams
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
     ResponseUsage,
 )
-from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -24,7 +26,7 @@ from verifiers.v1.dialects.base import (
     StreamParser,
     append_user_notice,
     blocked_url,
-    iter_sse_reverse,
+    parse_sse_event,
     provider_allowed_domains,
 )
 from verifiers.v1.errors import OverlongPromptError, model_error
@@ -97,19 +99,17 @@ BLANK_PNG = (
 )
 
 
-class ProviderUsageInputTokensDetails(BaseModel):
+class ProviderUsageInputTokensDetails(InputTokensDetails):
     """Permissive input token details: OpenAI-compatible providers may omit fields
     the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
 
-    model_config = ConfigDict(extra="allow")
     cache_write_tokens: int | None = None
     cached_tokens: int | None = None
 
 
-class ProviderUsageOutputTokensDetails(BaseModel):
+class ProviderUsageOutputTokensDetails(OutputTokensDetails):
     """Permissive output token details: providers may omit ``reasoning_tokens``."""
 
-    model_config = ConfigDict(extra="allow")
     reasoning_tokens: int | None = None
 
 
@@ -275,16 +275,17 @@ def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     return mediated, capabilities
 
 
-def fold_assistant(items: list[dict]) -> AssistantMessage:
-    """One run of assistant-side items -> one typed assistant message."""
+def fold_assistant(items: list[dict] | None) -> AssistantMessage:
+    """Assistant-side Responses items -> one typed assistant message."""
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
-    for item in items:
-        if item.get("type") == "reasoning":
+    for item in items or []:
+        kind = item.get("type")
+        if kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif item.get("type") in ("function_call", "custom_tool_call"):
+        elif kind in ("function_call", "custom_tool_call"):
             calls.append(
                 ToolCall(
                     id=item.get("call_id", ""),
@@ -292,7 +293,7 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
                     arguments=item.get("arguments", item.get("input", "")),
                 )
             )
-        else:  # an assistant message item
+        else:
             raw = item.get("content")
             content += (
                 raw
@@ -336,33 +337,11 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             f"upstream Responses request did not complete: {detail}",
             status_code=status_code,
         )
-    content = ""
-    reasoning: list[str] = []
-    calls: list[ToolCall] = []
-    for item in data.get("output") or []:
-        kind = item.get("type")
-        if kind == "message":
-            content += "".join(
-                p.get("text", "")
-                for p in item.get("content") or []
-                if p.get("type") == "output_text"
-            )
-        elif kind == "reasoning":
-            reasoning += [s.get("text", "") for s in item.get("summary") or []]
-            reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif kind in ("function_call", "custom_tool_call"):
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", item.get("input", "")),
-                )
-            )
-    tool_calls = calls or None
+    message = fold_assistant(data.get("output"))
     finish: FinishReason = (
         "length"
         if data.get("status") == "incomplete"
-        else ("tool_calls" if tool_calls else "stop")
+        else ("tool_calls" if message.tool_calls else "stop")
     )
     usage = None
     if response.usage:
@@ -384,12 +363,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         id=data.get("id", ""),
         created=data.get("created_at", 0),
         model=data.get("model", ""),
-        message=AssistantMessage(
-            content=content or None,
-            reasoning_content="\n".join(r for r in reasoning if r) or None,
-            tool_calls=tool_calls,
-            provider_state=data.get("output"),
-        ),
+        message=message,
         finish_reason=finish,
         usage=usage,
     )
@@ -409,8 +383,9 @@ class ResponsesStreamParser(StreamParser):
 
     def finish(self) -> Response:
         events = self.terminal_events or self.events
-        for event in iter_sse_reverse(b"".join(events)):
-            if event.get("type") in FINAL_EVENTS:
+        for raw in reversed(events):
+            event = parse_sse_event(raw)
+            if event and event.get("type") in FINAL_EVENTS:
                 response = response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
@@ -595,10 +570,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                 run = []
             if assistant:
                 run.append(item)
-            elif item.get("type") in (
-                "function_call_output",
-                "custom_tool_call_output",
-            ):
+            elif item.get("type") in TEXT_TOOL_OUTPUT_TYPES:
                 output = item.get("output")
                 content = (
                     parse_content(output)

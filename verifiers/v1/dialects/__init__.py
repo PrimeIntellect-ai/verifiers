@@ -5,7 +5,6 @@ from verifiers.v1.dialects.chat import (
     ChatDialect,
     parse_message,
     parse_tools,
-    response_from_wire,
 )
 from verifiers.v1.dialects.responses import ResponsesDialect
 
@@ -23,5 +22,4 @@ __all__ = [
     "StreamParser",
     "parse_message",
     "parse_tools",
-    "response_from_wire",
 ]
