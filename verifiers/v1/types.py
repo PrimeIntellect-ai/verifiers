@@ -253,7 +253,10 @@ class SamplingConfig(BaseModel):
     def wire_args(self) -> dict[str, Any]:
         """Flatten OpenAI-style ``extra_body`` before building a provider request."""
         args = self.model_dump(exclude_none=True)
-        return {**(args.pop("extra_body", None) or {}), **args}
+        extra_body = args.pop("extra_body", None) or {}
+        if "max_tokens" in args:
+            extra_body.pop("max_completion_tokens", None)
+        return {**extra_body, **args}
 
 
 Sampling = SamplingConfig
