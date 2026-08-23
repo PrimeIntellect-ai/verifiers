@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval @ <run-dir>/configs/eval.json --resume   (re-run the run's missing/errored rollouts)"
+    "       uv run eval @ <run-dir>/configs/resolved/eval.json --resume   (re-run the run's missing/errored rollouts)"
 )
 
 

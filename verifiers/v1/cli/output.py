@@ -29,9 +29,13 @@ TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
 
 CONFIG_DIR = "configs"
-"""Directory inside a run dir holding its resolved config (one `<cli>.json`, re-runnable
-via `@ <run-dir>/configs/<cli>.json`). Resolved configs are JSON, not TOML: JSON keeps
-nulls, so explicit None settings round-trip exactly on re-parse."""
+"""Directory inside a run dir holding its configs: the launch TOML copied verbatim to
+`configs/<cli>.toml`, and the resolved config at `configs/resolved/<cli>.json`
+(re-runnable via `@ <run-dir>/configs/resolved/<cli>.json`). Resolved configs are JSON,
+not TOML: JSON keeps nulls, so explicit None settings round-trip exactly on re-parse."""
+
+RESOLVED_DIR = "resolved"
+"""Subdirectory of `configs/` holding the resolved per-component JSON dumps."""
 
 
 def create_attempt_log_dir(run_dir: Path) -> Path:
@@ -76,13 +80,13 @@ def config_digest(config: BaseModel) -> str:
 
 
 def saved_config_path(run_dir: Path) -> Path | None:
-    """The run's saved resolved config (`configs/<cli>.json`), None if absent."""
-    candidates = (
-        sorted((run_dir / CONFIG_DIR).glob("*.json"))
-        if (run_dir / CONFIG_DIR).is_dir()
-        else []
-    )
-    return candidates[0] if candidates else None
+    """The run's saved resolved config (`configs/resolved/<cli>.json`; legacy runs
+    kept it at `configs/<cli>.json`), None if absent."""
+    for config_dir in (run_dir / CONFIG_DIR / RESOLVED_DIR, run_dir / CONFIG_DIR):
+        candidates = sorted(config_dir.glob("*.json")) if config_dir.is_dir() else []
+        if candidates:
+            return candidates[0]
+    return None
 
 
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.
@@ -100,22 +104,45 @@ def output_path(config: EvalConfig) -> Path:
 def write_config(
     config: BaseModel, results_dir: Path, filename: str = "eval.json"
 ) -> Path:
-    """Write the run's resolved config to `configs/<filename>` (re-readable via
+    """Write the run's resolved config to `configs/resolved/<filename>` (re-readable via
     `@ <path>`); return its path. The full model dump is written, nulls included, so the
     file round-trips exactly."""
-    config_dir = results_dir / CONFIG_DIR
+    config_dir = results_dir / CONFIG_DIR / RESOLVED_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / filename
     config_path.write_text(json.dumps(config.model_dump(mode="json"), indent=2))
     return config_path
 
 
+def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
+    """Copy the launch `@` TOML file(s) verbatim to `configs/<name>.toml`."""
+    import sys
+
+    argv = sys.argv[1:]
+    paths = []
+    for i, arg in enumerate(argv):
+        if arg == "@" and i + 1 < len(argv):
+            paths.append(Path(argv[i + 1]))
+        elif arg.startswith("@") and len(arg) > 1:
+            paths.append(Path(arg[1:]))
+    texts = [p.read_text() for p in paths if p.is_file()]
+    if not texts:
+        return
+    if len(texts) > 1:
+        texts = [f"# @ {p}\n{t}" for p, t in zip(paths, texts)]
+    config_dir = results_dir / CONFIG_DIR
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / f"{name}.toml").write_text("\n".join(texts))
+
+
 def save_config(
     config: BaseModel, results_dir: Path, filename: str = "eval.json"
 ) -> None:
-    """Set up the run's output dir: write the resolved config and start a fresh (empty)
-    `traces.jsonl`. Call once up front, before episodes start landing."""
+    """Set up the run's output dir: write the resolved config, copy the launch TOML,
+    and start a fresh (empty) `traces.jsonl`. Call once up front, before episodes start
+    landing."""
     write_config(config, results_dir, filename)
+    write_launch_toml(results_dir, Path(filename).stem)
     (results_dir / TRACES_FILE).write_text(
         ""
     )  # fresh; appended to as rollouts complete
