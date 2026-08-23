@@ -10,15 +10,14 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import cast
 
 from anthropic.types import Message as AnthropicMessage
-from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
@@ -428,7 +427,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
     usage: ModdedUsage  # type: ignore[assignment]
 
 
-class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
+class AnthropicDialect(Dialect[AnthropicMessage]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -447,8 +446,8 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     response_type = ModdedAnthropicMessage
 
     def mediate_external_capabilities(
-        self, body: MessageCreateParams, policy: NetworkPolicyConfig
-    ) -> tuple[MessageCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
@@ -561,7 +560,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(self, body: MessageCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         tools = [
             Tool(
                 name=t["name"],
@@ -672,7 +671,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
-    def parse_sampling(self, body: MessageCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `output_config.effort` (where `apply_overrides` puts the eval's
         # reasoning effort) onto the typed knob; keep any other output-config keys.
@@ -687,8 +686,8 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         return Sampling.model_validate(settings)
 
     def apply_overrides(
-        self, body: MessageCreateParams, model: str, sampling: SamplingConfig
-    ) -> MessageCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
@@ -710,4 +709,4 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return cast(MessageCreateParams, {**steered, **overrides})
+        return {**steered, **overrides}

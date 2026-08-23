@@ -10,9 +10,7 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 import json
 import re
 from collections import deque
-from typing import cast
 
-from openai.types.responses.response_create_params import ResponseCreateParams
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -23,6 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
@@ -289,6 +288,7 @@ def fold_assistant(items: list[dict] | None) -> AssistantMessage:
             calls.append(
                 ToolCall(
                     id=item.get("call_id", ""),
+                    type="custom" if kind == "custom_tool_call" else "function",
                     name=item.get("name", ""),
                     arguments=item.get("arguments", item.get("input", "")),
                 )
@@ -394,7 +394,7 @@ class ResponsesStreamParser(StreamParser):
         raise ValueError("Responses stream ended without a terminal event")
 
 
-class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
+class ResponsesDialect(Dialect[OpenAIResponse]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -414,8 +414,8 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
     response_type = OpenAIResponse
 
     def mediate_external_capabilities(
-        self, body: ResponseCreateParams, policy: NetworkPolicyConfig
-    ) -> tuple[ResponseCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
@@ -425,7 +425,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
 
         if mediated.pop("prompt", None) is not None:
             capabilities.append("prompt")
-        if cast(dict, mediated).pop("plugins", None) is not None:
+        if mediated.pop("plugins", None) is not None:
             capabilities.append("plugins")
 
         raw_input = mediated.get("input")
@@ -533,7 +533,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
-    def parse_sampling(self, body: ResponseCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
         # (e.g. `summary`) as the wire sent them.
@@ -549,7 +549,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             settings["max_tokens"] = settings.pop("max_output_tokens")
         return Sampling.model_validate(settings)
 
-    def parse_request(self, body: ResponseCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         prompt: Messages = []
         if instructions := body.get("instructions"):
             prompt.append(SystemMessage(content=instructions))
@@ -724,8 +724,8 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         return ResponsesStreamParser()
 
     def apply_overrides(
-        self, body: ResponseCreateParams, model: str, sampling: SamplingConfig
-    ) -> ResponseCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
         s = sampling.model_dump(exclude_none=True)
@@ -761,4 +761,4 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             for k, v in body.items()
             if k not in _SAMPLING_KEYS and k not in overrides
         }
-        return cast(ResponseCreateParams, {**steered, **overrides})
+        return {**steered, **overrides}

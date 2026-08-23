@@ -11,15 +11,15 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit
 
 from openai.types.chat import ChatCompletion
-from openai.types.chat.completion_create_params import CompletionCreateParams
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
@@ -104,18 +104,22 @@ def parse_message(raw: dict) -> Message:
             if isinstance(content, list)
             else content or ""
         )
-        calls = [
-            ToolCall(
-                id=c["id"],
-                name=c["function"]["name"],
-                arguments=c["function"]["arguments"],
+        calls = []
+        for call in raw.get("tool_calls") or []:
+            kind = call.get("type", "function")
+            native = call[kind]
+            calls.append(
+                ToolCall(
+                    id=call["id"],
+                    type=kind,
+                    name=native["name"],
+                    arguments=native["input" if kind == "custom" else "arguments"],
+                )
             )
-            for c in (raw.get("tool_calls") or [])
-        ] or None
         return AssistantMessage(
             content=text or None,
             reasoning_content=reasoning_text(raw),
-            tool_calls=calls,
+            tool_calls=calls or None,
             provider_state=details if isinstance(details, list) and details else None,
         )
     return UserMessage(content=content_to_parts(content))
@@ -168,8 +172,13 @@ def message_to_wire(message: Message) -> dict:
             wire["tool_calls"] = [
                 {
                     "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
+                    "type": call.type,
+                    call.type: {
+                        "name": call.name,
+                        "input"
+                        if call.type == "custom"
+                        else "arguments": call.arguments,
+                    },
                 }
                 for call in message.tool_calls
             ]
@@ -190,13 +199,8 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
     choice = completion.choices[0]
-    message = choice.message
-    data = message.model_dump()
-    details = data.get("reasoning_details")
-    tool_calls = [
-        ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
-        for tc in (message.tool_calls or [])
-    ] or None
+    message = parse_message(choice.message.model_dump())
+    assert isinstance(message, AssistantMessage)
     finish: FinishReason = (
         choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
     )
@@ -205,12 +209,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         id=completion.id,
         created=completion.created,
         model=completion.model,
-        message=AssistantMessage(
-            content=message.content,
-            reasoning_content=reasoning_text(data),
-            tool_calls=tool_calls,
-            provider_state=details if isinstance(details, list) and details else None,
-        ),
+        message=message,
         finish_reason=finish,
         usage=usage,
     )
@@ -225,7 +224,7 @@ class ChatStreamParser(StreamParser):
     )
     message_parts: dict[str, list[str]] = dataclass_field(default_factory=dict)
     tool_calls: dict[int, dict] = dataclass_field(default_factory=dict)
-    tool_arguments: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    tool_inputs: dict[int, list[str]] = dataclass_field(default_factory=dict)
     reasoning_details: list[dict] = dataclass_field(default_factory=list)
     reasoning_detail_parts: dict[int, tuple[str, list[str]]] = dataclass_field(
         default_factory=dict
@@ -278,16 +277,19 @@ class ChatStreamParser(StreamParser):
                     self.reasoning_details.append(detail)
             for tool_call in delta.get("tool_calls") or []:
                 index = tool_call.get("index", 0)
-                slot = self.tool_calls.setdefault(
-                    index,
-                    {"type": "function", "function": {"name": "", "arguments": ""}},
-                )
+                slot = self.tool_calls.setdefault(index, {})
                 slot["id"] = tool_call.get("id") or slot.get("id", "")
-                function = tool_call.get("function") or {}
-                if function.get("name"):
-                    slot["function"]["name"] = function["name"]
-                self.tool_arguments.setdefault(index, []).append(
-                    function.get("arguments") or ""
+                kind = tool_call.get("type") or (
+                    "custom" if tool_call.get("custom") is not None else "function"
+                )
+                slot["type"] = kind
+                native = slot.setdefault(kind, {"name": ""})
+                delta_native = tool_call.get(kind) or {}
+                if delta_native.get("name"):
+                    native["name"] = delta_native["name"]
+                input_field = "input" if kind == "custom" else "arguments"
+                self.tool_inputs.setdefault(index, []).append(
+                    delta_native.get(input_field) or ""
                 )
 
     def finish(self) -> Response:
@@ -296,8 +298,10 @@ class ChatStreamParser(StreamParser):
                 self.message[key] = "".join(parts)
         for index, (content_field, parts) in self.reasoning_detail_parts.items():
             self.reasoning_details[index][content_field] = "".join(parts)
-        for index, parts in self.tool_arguments.items():
-            self.tool_calls[index]["function"]["arguments"] = "".join(parts)
+        for index, parts in self.tool_inputs.items():
+            call = self.tool_calls[index]
+            input_field = "input" if call["type"] == "custom" else "arguments"
+            call[call["type"]][input_field] = "".join(parts)
         if self.tool_calls:
             self.message["tool_calls"] = [
                 self.tool_calls[index] for index in sorted(self.tool_calls)
@@ -324,7 +328,7 @@ class ChatStreamParser(StreamParser):
         return response
 
 
-class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
+class ChatDialect(Dialect[ChatCompletion]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -354,14 +358,14 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
     response_type = ModdedChatCompletion
 
     def mediate_external_capabilities(
-        self, body: CompletionCreateParams, policy: NetworkPolicyConfig
-    ) -> tuple[CompletionCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
         if mediated.pop("web_search_options", None) is not None:
             capabilities.append("web_search_options")
-        if cast(dict, mediated).pop("plugins", None) is not None:
+        if mediated.pop("plugins", None) is not None:
             capabilities.append("plugins")
 
         audio = mediated.get("audio")
@@ -475,7 +479,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
         append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
-    def parse_request(self, body: CompletionCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
@@ -492,7 +496,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
                     tool_names[call.id] = call.name
         return Request(messages=messages, tools=parse_tools(body.get("tools")))
 
-    def parse_sampling(self, body: CompletionCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Canonicalize the max-tokens alias; when both ride the wire (an eval override
         # on top of a harness's `max_completion_tokens`), the override wins.
@@ -542,12 +546,9 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
         return ChatStreamParser()
 
     def apply_overrides(
-        self, body: CompletionCreateParams, model: str, sampling: SamplingConfig
-    ) -> CompletionCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
-        return cast(
-            CompletionCreateParams,
-            {**body, **sampling.model_dump(exclude_none=True), "model": model},
-        )
+        return {**body, **sampling.model_dump(exclude_none=True), "model": model}
