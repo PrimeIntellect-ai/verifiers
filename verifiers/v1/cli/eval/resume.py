@@ -53,6 +53,8 @@ def load(
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
                     continue
+                if not isinstance(key, str):
+                    continue
                 if key not in targets or len(good[key]) >= targets[key]:
                     continue
                 try:
