@@ -312,10 +312,13 @@ class ChatStreamParser(StreamParser):
             call = self.tool_calls[index]
             input_field = "input" if call["type"] == "custom" else "arguments"
             call[call["type"]][input_field] = "".join(parts)
-        if self.tool_calls:
-            self.message["tool_calls"] = [
-                self.tool_calls[index] for index in sorted(self.tool_calls)
-            ]
+        tool_calls = [
+            self.tool_calls[index]
+            for index in sorted(self.tool_calls)
+            if self.tool_calls[index].get("type") in _CLIENT_TOOL_TYPES
+        ]
+        if tool_calls:
+            self.message["tool_calls"] = tool_calls
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
