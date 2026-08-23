@@ -39,7 +39,14 @@ class CreationLimiter:
                 f.seek(0)
                 data = f.read().strip()
                 now = time.time()
-                slot = max(now, float(data) if data else 0.0)
+                # flock does not interlock reliably on every shared filesystem
+                # (NFS), so a torn read can surface here. A corrupted cursor
+                # resets the bucket instead of failing every creation.
+                try:
+                    cursor = float(data) if data else 0.0
+                except ValueError:
+                    cursor = 0.0
+                slot = max(now, cursor)
                 wait = slot - now
                 if wait > 5 * 60:
                     raise TimeoutError(
