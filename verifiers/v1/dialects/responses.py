@@ -402,6 +402,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             "max_output_tokens",
             "max_tool_calls",
             "reasoning",
+            "service_tier",
             "text",
             "tool_choice",
             "parallel_tool_calls",
@@ -728,32 +729,32 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
     ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
-        s = sampling.model_dump(exclude_none=True)
+        s = sampling.wire_args()
+        max_tokens = s.pop("max_tokens", None)
+        reasoning_effort = s.pop("reasoning_effort", None)
+        sampling_reasoning = s.pop("reasoning", None)
         name = model.rsplit("/", 1)[-1]
         reasoning_model = (
             name.startswith(("gpt-5", "o1", "o3", "o4"))
             and "-chat" not in name
             and ("/" not in model or model.startswith("openai/"))
         )
-        overrides: dict = {"model": model}
+        overrides: dict = {**s, "model": model}
         if reasoning_model:
             # Preserve opaque reasoning state so it can be replayed on the next turn.
-            include = list(body.get("include") or [])
+            include = list(overrides.get("include") or body.get("include") or [])
             if "reasoning.encrypted_content" not in include:
                 include.append("reasoning.encrypted_content")
             overrides["include"] = include
-        if "temperature" in s:
-            overrides["temperature"] = s["temperature"]
-        if "top_p" in s:
-            overrides["top_p"] = s["top_p"]
-        if "max_tokens" in s:
-            overrides["max_output_tokens"] = s["max_tokens"]
-        reasoning = dict(body.get("reasoning") or {})
-        if reasoning_model:
-            # Summaries provide the trace's readable reasoning text.
-            reasoning = {"summary": "auto", **reasoning}
-        if "reasoning_effort" in s:
-            reasoning["effort"] = s["reasoning_effort"]
+        if max_tokens is not None:
+            overrides["max_output_tokens"] = max_tokens
+        reasoning = {
+            **({"summary": "auto"} if reasoning_model else {}),
+            **dict(body.get("reasoning") or {}),
+            **dict(sampling_reasoning or {}),
+        }
+        if reasoning_effort is not None:
+            reasoning["effort"] = reasoning_effort
         if reasoning:
             overrides["reasoning"] = reasoning
         steered = {

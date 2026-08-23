@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -46,11 +46,7 @@ def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
     except ValidationError:
         return True
     host = url.host.lower().rstrip(".").strip("[]")
-    return any(
-        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.block
-    ) or not any(
-        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.allow
-    )
+    return not policy.permits(url.scheme, host, url.port)
 
 
 def provider_allowed_domains(

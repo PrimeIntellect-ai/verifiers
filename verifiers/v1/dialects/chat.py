@@ -358,6 +358,7 @@ class ChatDialect(Dialect[ChatCompletion]):
             "presence_penalty",
             "repetition_penalty",
             "response_format",
+            "service_tier",
             "tool_choice",
             "parallel_tool_calls",
             "extra_body",
@@ -561,4 +562,12 @@ class ChatDialect(Dialect[ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
-        return {**body, **sampling.model_dump(exclude_none=True), "model": model}
+        overrides = sampling.wire_args()
+        max_token_keys = {"max_tokens", "max_completion_tokens"}
+        max_tokens_overridden = not max_token_keys.isdisjoint(overrides)
+        steered = {
+            k: v
+            for k, v in body.items()
+            if not max_tokens_overridden or k not in max_token_keys
+        }
+        return {**steered, **overrides, "model": model}

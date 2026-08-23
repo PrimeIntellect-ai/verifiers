@@ -65,8 +65,8 @@ class EvalConfig(BaseConfig):
     worker's episode bound — the path prime-rl trains through. `--no-serve` runs the
     rollouts in-process instead."""
     run: RunConfig = Field(default_factory=RunConfig)
-    """Run identity: `run.name` names the run directory under `output_dir`, `run.id` is
-    stamped on traces."""
+    """Run identity: `run.name` is the display name, `run.dir` names the directory
+    under `output_dir`, and `run.id` is stamped on traces."""
     model: str = Field(
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
@@ -100,7 +100,7 @@ class EvalConfig(BaseConfig):
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the saved
-    config so re-running `@ config.toml` (or resuming/replaying the dir) actually runs."""
+    config so re-running `@ configs/eval.json` (or resuming/replaying the dir) actually runs."""
     clean: bool = Field(False, exclude=True)
     """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
     previous run's results. Excluded from the saved config."""
@@ -115,17 +115,13 @@ class EvalConfig(BaseConfig):
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Directory that groups related runs. The run itself (config.toml + traces.jsonl)
-    writes to `output_dir / run.name`."""
+    """Directory that groups related runs. The run itself (`configs/eval.json` +
+    `traces.jsonl`) writes to `output_dir / run.dir`."""
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
-    run's own config — e.g. `uv run eval @ <run-dir>/config.toml --resume`. Excluded
+    run's own config — e.g. `uv run eval @ <run-dir>/configs/eval.json --resume`. Excluded
     from the saved config."""
-
-    @property
-    def env_id(self) -> str:
-        return self.env.env_id or ""
 
     @model_validator(mode="before")
     @classmethod

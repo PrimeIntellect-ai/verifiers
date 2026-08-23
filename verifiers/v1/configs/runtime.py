@@ -54,6 +54,12 @@ class NetworkPolicyConfig(BaseConfig):
     def network_restricted(self) -> bool:
         return "*" not in self.allow or bool(self.block)
 
+    def permits(self, scheme: str, host: str, port: int) -> bool:
+        """Whether the destination is allowed by the configured egress rules."""
+        return not any(
+            network_rule_matches(rule, scheme, host, port) for rule in self.block
+        ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
+
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
         values = self.model_dump()
         if "*" in allow:
