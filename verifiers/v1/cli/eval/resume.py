@@ -4,9 +4,10 @@
 it. `load` keeps the good saved rollouts and re-runs what's owed: missing rollouts
 (never written) and errored ones (dropped and redone).
 
-A saved episode is matched to a selected task by its persisted `episode.task.hash`.
-Tasks with identical data are interchangeable, a task whose data changed since the
-interrupted run re-runs, and nothing depends on `data.idx`.
+A saved episode is matched to a selected task by its persisted `episode.task.hash`,
+falling back to hashing `episode.task.data` for older rows without one. Tasks with
+identical data are interchangeable, a task whose data changed since the interrupted
+run re-runs, and nothing depends on `data.idx`.
 """
 
 from collections import Counter, defaultdict
@@ -17,6 +18,7 @@ from pydantic_core import from_json
 
 from verifiers.v1.cli.output import TRACES_FILE
 from verifiers.v1.episode import WireEpisode
+from verifiers.v1.task import task_key
 
 
 def load(
@@ -48,7 +50,12 @@ def load(
                     row = from_json(line)
                     if "traces" not in row:
                         continue
-                    key = row["task"]["hash"]
+                    task = row["task"]
+                    if not isinstance(task, dict):
+                        continue
+                    key = task.get("hash")
+                    if key is None:
+                        key = task_key(task["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
