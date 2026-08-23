@@ -170,7 +170,10 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         loaded, owed = resume.load(out, keys, config.num_rollouts, complete)
         finished = [cast(Episode, episode) for episode in loaded]
         if not owed:  # already complete - report it and exit successfully
-            print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
+            print(
+                f"nothing to resume in {out}: all {len(tasks)}x{config.num_rollouts} "
+                "rollouts already completed without error"
+            )
             raise SystemExit(0)
         counts = distribute(keys, owed, config.num_rollouts)
         plan = [(task, n) for task, n in zip(tasks, counts) if n]

@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
-from rich.console import Console, Group
+from rich import get_console
+from rich.console import Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
-_CONSOLE = Console()
+_CONSOLE = get_console()
 _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
 # The under-bar breakdown pads its label column to the Overview's widest label, so the two
 # `label  value` grids (above and below the progress bar) line their values up.
@@ -188,10 +189,9 @@ def overrides(
     skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """`field=value` segments for the fields the *user* customized, sorted, diffed against each
-    field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
-    `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
-    `model_fields_set` would flag them all. `default` is the reference instance, threaded through
-    recursion so a pinned nested default (`taskset.task.tools`) reads as
+    field's declared default. Not `model_fields_set`: a `--resume` run reloads the full saved
+    JSON config, so `model_fields_set` would flag every field. `default` is the reference instance,
+    threaded through recursion so a pinned nested default (`taskset.task.tools`) reads as
     unchanged. `skip` holds dotted paths (`runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
@@ -782,21 +782,21 @@ def _paginate(
 
 def _render(
     slots: list[RunSlot],
-    config: EvalConfig,
     start: float,
     pager: Pager,
+    header: Group | Table,
+    runtime_type: str,
     push: "PushState | None" = None,
     tail: LogTail | None = None,
 ) -> Group:
     now = time.time()
-    warning = _warning(config)
-    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
     footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
     footer = Group(*footers) if footers else None
-    top = Group(header, Progress(slots, start), Rule(style="dim"))
+    progress = Progress(slots, start)
+    top = Group(header, progress, Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
@@ -804,7 +804,7 @@ def _render(
     if tail is not None:  # --show-logs: the run's log stream in place of rollout rows
         parts = [
             header,
-            Progress(slots, start),
+            progress,
             Rule(style="dim"),
             tail.view(rows_per_page),
         ]
@@ -812,26 +812,13 @@ def _render(
             parts.append(footer)
         return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
-    progress = Progress(
-        slots,
-        start,
-        page=(index + 1, count) if count > 1 else None,
-    )
+    if count > 1:
+        progress = Progress(slots, start, page=(index + 1, count))
     parts = [
         header,
         progress,
         Rule(style="dim"),
-        Rows(
-            page_groups,
-            now,
-            "/".join(
-                dict.fromkeys(
-                    getattr(config.env, role).runtime.type
-                    for role in config.env.agent_harnesses()
-                )
-            )
-            or "subprocess",
-        ),
+        Rows(page_groups, now, runtime_type),
     ]
     if footer is not None:
         parts.append(footer)
@@ -846,13 +833,24 @@ async def dashboard(
     push: "PushState | None" = None,
 ):
     pager = Pager()
+    warning = _warning(config)
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    runtime_type = (
+        "/".join(
+            dict.fromkeys(
+                getattr(config.env, role).runtime.type
+                for role in config.env.agent_harnesses()
+            )
+        )
+        or "subprocess"
+    )
     tail = (
         LogTail(attempt_log_file(output_path(config)))
         if config.rich is not None and config.rich.show_logs
         else None
     )
     async with live_view(
-        lambda: _render(slots, config, start, pager, push, tail),
-        on_key=pager.on_key,
+        lambda: _render(slots, start, pager, header, runtime_type, push, tail),
+        on_key=None if tail is not None else pager.on_key,
     ):
         yield
