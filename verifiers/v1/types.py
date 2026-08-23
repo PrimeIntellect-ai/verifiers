@@ -250,6 +250,11 @@ class SamplingConfig(BaseModel):
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
 
+    def wire_args(self) -> dict[str, Any]:
+        """Flatten OpenAI-style ``extra_body`` before building a provider request."""
+        args = self.model_dump(exclude_none=True)
+        return {**(args.pop("extra_body", None) or {}), **args}
+
 
 Sampling = SamplingConfig
 

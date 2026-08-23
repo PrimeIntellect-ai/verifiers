@@ -359,12 +359,8 @@ class TrainClient(Client):
         multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
-        raw_sampling = sampling.model_dump(exclude_none=True)
-        sampling_params: dict[str, Any] = dict(
-            raw_sampling.pop("extra_body", None) or {}
-        )
+        sampling_params = sampling.wire_args()
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
-        sampling_params.update(raw_sampling)
         pool = ElasticRendererPool(
             self.config.renderer_model_name or model,
             self.config.renderer,
