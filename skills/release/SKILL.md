@@ -5,8 +5,8 @@ description: Release a stable verifiers version from main to PyPI and GitHub.
 
 # Release Verifiers
 
-Use the `vX.Y.Z` version specified by the user. Complete only the release steps
-that the user authorizes.
+Use the next minor version by default. Use a different `vX.Y.Z` version when the
+user specifies one. Complete only the release steps that the user authorizes.
 
 ## 1. Prepare main
 
