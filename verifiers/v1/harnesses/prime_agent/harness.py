@@ -125,9 +125,15 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             "response_boundary": boundary,
             "terminal_quiescence": terminal,
         }
-        trace.info.setdefault("acp_lifecycle", {}).setdefault(
-            LIFECYCLE_META_NAMESPACE, []
-        ).append(status)
+        lifecycle = trace.info.get("acp_lifecycle")
+        if not isinstance(lifecycle, dict):
+            lifecycle = {}
+            trace.info["acp_lifecycle"] = lifecycle
+        statuses = lifecycle.get(LIFECYCLE_META_NAMESPACE)
+        if not isinstance(statuses, list):
+            statuses = []
+            lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
+        statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
