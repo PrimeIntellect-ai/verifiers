@@ -4,12 +4,12 @@
 it. `load` keeps the good saved rollouts and re-runs what's owed: missing rollouts
 (never written) and errored ones (dropped and redone).
 
-A saved episode is matched to a selected task by hashing `episode.task.data`.
-Tasks with identical data are interchangeable, a task whose data changed since the
-interrupted run re-runs, and nothing depends on `data.idx`.
+A saved episode is matched to a selected task by its persisted `episode.task.hash`,
+falling back to hashing `episode.task.data` for older rows without one. Tasks with
+identical data are interchangeable, a task whose data changed since the interrupted
+run re-runs, and nothing depends on `data.idx`.
 """
 
-import json
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
@@ -47,16 +47,20 @@ def load(
                 if not line.strip():
                     continue
                 try:
-                    try:
-                        row = from_json(line)
-                    except ValueError:
-                        row = json.loads(line)
+                    row = from_json(line)
                     if "traces" not in row:
                         continue
-                    key = task_key(row["task"]["data"])
+                    task = row["task"]
+                    if not isinstance(task, dict):
+                        continue
+                    key = task.get("hash")
+                    if key is None:
+                        key = task_key(task["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
+                    continue
+                if not isinstance(key, str):
                     continue
                 if key not in targets or len(good[key]) >= targets[key]:
                     continue
@@ -83,11 +87,3 @@ def load(
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
     return episodes, owed
-
-
-def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    """Shown (before exit 0) when every selected rollout already completed."""
-    return (
-        f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
-        f"already completed without error"
-    )

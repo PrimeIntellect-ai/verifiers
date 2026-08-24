@@ -24,14 +24,10 @@ def _names(name: str) -> tuple[str, str, str, str]:
     return dash, pkg, stem, prefix
 
 
-def _write(path: Path, content: str, force: bool) -> bool:
-    if path.exists() and not force:
-        print(f"  skip   {path} (exists)")
-        return False
+def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     print(f"  write  {path}")
-    return True
 
 
 def _pyproject(dash: str, pkg: str) -> str:
@@ -67,7 +63,6 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool) -> str:
     local_imports: list[str] = []
     task_config_fields = ""
     task_decls = ""
-    state = "vf.State"
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         task_config_fields += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
@@ -79,24 +74,18 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool) -> str:
         )
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
-    methods_block = ""
-    has_task_config = add_tool
     task_config = (
         f"\n\nclass {prefix}TaskConfig(vf.TaskConfig):\n"
         '    """Knobs the task reads from ``self.config``; configure them under '
         f'``--env.taskset.task.*``."""{task_config_fields}\n'
-        if has_task_config
+        if add_tool
         else ""
     )
     task_generic = (
-        f"{prefix}Data, {state}, {prefix}TaskConfig"
-        if has_task_config
-        else f"{prefix}Data"
+        f"{prefix}Data, vf.State, {prefix}TaskConfig" if add_tool else f"{prefix}Data"
     )
     config_body = '    num_tasks: int = 5\n    """How many tasks to build."""\n' + (
-        f"    task: {prefix}TaskConfig = {prefix}TaskConfig()\n"
-        if has_task_config
-        else ""
+        f"    task: {prefix}TaskConfig = {prefix}TaskConfig()\n" if add_tool else ""
     )
     return f'''\
 {imports}
@@ -107,7 +96,7 @@ class {prefix}Data(vf.TaskData):
 {task_config}
 
 class {prefix}Task(vf.Task[{task_generic}]):
-    """Rewards, hooks, and servers, with row data available on ``self.data``."""{task_decls}{methods_block}
+    """Rewards, hooks, and servers, with row data available on ``self.data``."""{task_decls}
     @vf.reward(weight=1.0)
     async def reward(self, trace: vf.Trace) -> float:
         raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
@@ -223,25 +212,21 @@ def scaffold(config: InitConfig) -> Path:
         )
     print(f"scaffolding v1 environment {dash!r} in {env_dir}")
 
-    _write(env_dir / "pyproject.toml", _pyproject(dash, pkg), config.force)
+    _write(env_dir / "pyproject.toml", _pyproject(dash, pkg))
     _write(
         env_dir / "README.md",
         _readme(dash, pkg, add_tool=config.add_tool, add_harness=config.add_harness),
-        config.force,
     )
-    _write(
-        pkg_dir / "__init__.py", _init_py(pkg, prefix, config.add_harness), config.force
-    )
+    _write(pkg_dir / "__init__.py", _init_py(pkg, prefix, config.add_harness))
     _write(
         pkg_dir / "taskset.py",
         _taskset_py(pkg, prefix, add_tool=config.add_tool),
-        config.force,
     )
     if config.add_harness:
-        _write(pkg_dir / "harness.py", _harness_py(prefix), config.force)
+        _write(pkg_dir / "harness.py", _harness_py(prefix))
     if config.add_tool:
-        _write(pkg_dir / "servers" / "__init__.py", "", config.force)
-        _write(pkg_dir / "servers" / "tool.py", _tool_py(stem, prefix), config.force)
+        _write(pkg_dir / "servers" / "__init__.py", "")
+        _write(pkg_dir / "servers" / "tool.py", _tool_py(stem, prefix))
 
     print(f"\ndone. next:\n  uv pip install -e {env_dir}\n  uv run eval {dash} -n 3")
     return env_dir
@@ -260,8 +245,6 @@ def main(argv: list[str] | None = None) -> None:
 
     sys.argv = [sys.argv[0], *argv]
     config = cli(InitConfig)
-    if not config.name:
-        raise SystemExit(USAGE)
     scaffold(config)
 
 
