@@ -123,7 +123,11 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
     for i, arg in enumerate(argv):
         # root config references only: `@ file`; a `--flag @ file` / `--flag @file`
         # is a nested reference and belongs under its flag, not in the launch copy
-        if arg == "@" and i + 1 < len(argv) and (i == 0 or not argv[i - 1].startswith("--")):
+        if (
+            arg == "@"
+            and i + 1 < len(argv)
+            and (i == 0 or not argv[i - 1].startswith("--"))
+        ):
             paths.append(Path(argv[i + 1]))
     texts = [p.read_text() for p in paths if p.suffix == ".toml" and p.is_file()]
     if not texts:
