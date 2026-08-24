@@ -45,6 +45,7 @@ AGENTIC_PLACEMENTS = [
         marks=[mark.kimi_code, mark.docker],
         id="kimi-code-responses-harness-in-docker",
     ),
+    pair("cline", "docker", "cline-harness-in-docker"),
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
