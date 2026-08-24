@@ -81,7 +81,6 @@ jobs:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      NANO_RLM_E2E_VERSION: c27f8ea151061e31497a5831fda4c168de6d0587
 
     steps:
       - uses: actions/checkout@v7
