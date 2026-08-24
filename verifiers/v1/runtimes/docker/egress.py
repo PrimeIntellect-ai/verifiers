@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import h11
 
-from verifiers.v1.configs.runtime import network_rule_matches
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
 
 HOST_ALIAS = "vf.host.internal"
 _HEADER_TIMEOUT = 10
@@ -30,8 +30,7 @@ async def _drain(writer: asyncio.StreamWriter) -> None:
 
 @dataclass
 class NetworkPolicy:
-    allow: list[str]
-    block: list[str]
+    config: NetworkPolicyConfig
     routes: list[str]
     allow_non_global: bool = False  # trusted setup only
 
@@ -47,7 +46,7 @@ class NetworkPolicy:
                     rule.lower().startswith(f"{scheme}://")
                     and network_rule_matches(rule, scheme, host, port)
                 )
-                for rule in [*self.routes, *self.allow]
+                for rule in [*self.routes, *self.config.allow]
             )
         ):
             return False
@@ -65,11 +64,7 @@ class NetworkPolicy:
         with contextlib.suppress(ValueError):
             if ip_address(hostname).is_loopback:
                 return False
-        if any(network_rule_matches(rule, scheme, host, port) for rule in self.block):
-            return False
-        return any(
-            network_rule_matches(rule, scheme, host, port) for rule in self.allow
-        )
+        return self.config.permits(scheme, host, port)
 
 
 async def _read_client_hello(

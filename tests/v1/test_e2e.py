@@ -265,7 +265,9 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["terminated"] is False
     assert trace.primary_reply == segments[1]["last_reply"]
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
-    if harness.id != "kimi-code":
+    # Prime Agent may spawn subagents; interception preserves each child model lineage as
+    # another branch while the primary ACP session still owns the reply and lifecycle.
+    if harness.id not in {"kimi-code", "prime-agent"}:
         assert trace.num_branches == 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.

@@ -40,7 +40,7 @@ _OUTCOMES = {
 
 
 def _render(
-    states: list[TaskProgress], taskset_name: str, source: str, out: str, start: float
+    states: list[ReplayProgress], taskset_name: str, source: str, out: str, start: float
 ) -> Group:
     overview = Table.grid(padding=(0, 2))
     overview.add_column(style="dim")
@@ -57,11 +57,7 @@ def _render(
         if s.state == "pending":  # show only in-flight/done rows (like eval/validate)
             continue
         label = f"name={s.name[:40]}" if s.name else f"idx={s.idx}"
-        parts = [
-            p
-            for p in (s.state if s.state in _DONE else "", getattr(s, "detail", ""))
-            if p
-        ]
+        parts = [p for p in (s.state if s.state in _DONE else "", s.detail) if p]
         result = " ".join(parts) + " ·" if parts else ""
         elapsed = format_time((s.end or now) - s.start) if s.start else ""
         rows.add_row(
@@ -75,7 +71,7 @@ def _render(
 
 @contextlib.asynccontextmanager
 async def replay_dashboard(
-    states: list[TaskProgress], taskset_name: str, source: str, out: str, start: float
+    states: list[ReplayProgress], taskset_name: str, source: str, out: str, start: float
 ):
     """Refresh the live replay view until the `with` block exits, then a final frame."""
     async with live_view(lambda: _render(states, taskset_name, source, out, start)):
