@@ -22,7 +22,8 @@ VERSION=vX.Y.Z
 Require a clean worktree. Confirm that `$VERSION` is absent from GitHub and
 PyPI. Review `pyproject.toml` and require published stable dependency versions.
 For example, replace any `.dev`, alpha, beta, or release-candidate version and
-update `uv.lock`.
+update `uv.lock`. Land dependency changes through the normal PR process. Pull
+`main` again and require a clean worktree before tagging.
 
 ## 2. Tag latest main
 
