@@ -25,34 +25,6 @@ PACKAGES_DIR = f"{CLINE_DIR}/packages"
 CLINE_BIN = f"{PACKAGES_DIR}/node_modules/cline/bin/cline"
 CLINE_DATA_ROOT = "/tmp/vf-cline"
 
-# Keep the initial coding harness local to the task runtime. These tools add
-# external information, human interaction, or nested agents whose work would not
-# be represented as the primary harness's ordinary tool loop.
-RESTRICTED_TOOLS = (
-    "fetch_web_content",
-    "skills",
-    "ask_question",
-    "spawn_agent",
-    "team_spawn_teammate",
-    "team_shutdown_teammate",
-    "team_status",
-    "team_task",
-    "team_run_task",
-    "team_cancel_run",
-    "team_list_runs",
-    "team_await_runs",
-    "team_send_message",
-    "team_broadcast",
-    "team_read_mailbox",
-    "team_mission_log",
-    "team_cleanup",
-    "team_create_outcome",
-    "team_attach_outcome_fragment",
-    "team_review_outcome_fragment",
-    "team_finalize_outcome",
-    "team_list_outcomes",
-)
-
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -119,12 +91,9 @@ class ClineHarness(Harness[ClineHarnessConfig]):
         data_dir = self.data_dir(trace)
         settings_dir = f"{data_dir}/settings"
         mcp_settings = f"{settings_dir}/cline_mcp_settings.json"
-        disabled_tools = list(
-            dict.fromkeys([*RESTRICTED_TOOLS, *(self.config.disabled_tools or [])])
-        )
         await runtime.write(
             f"{settings_dir}/global-settings.json",
-            json.dumps({"disabledTools": disabled_tools}).encode(),
+            json.dumps({"disabledTools": self.config.disabled_tools or []}).encode(),
         )
         await runtime.write(mcp_settings, b'{"mcpServers":{}}')
 

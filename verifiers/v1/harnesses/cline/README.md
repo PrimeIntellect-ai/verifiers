@@ -32,7 +32,7 @@ id = "cline"
 version = "3.0.57"
 compaction = "basic" # basic | agentic | off
 max_retries = 6
-disabled_tools = []  # additional native Cline tool names
+disabled_tools = []  # native Cline tool names to disable
 ```
 
 Use the agent and sampling blocks for settings owned by verifiers:
@@ -59,8 +59,7 @@ Cline's requests before forwarding them upstream.
 - Cline telemetry and update checks are disabled.
 - Cline MCP configuration starts empty. The harness does not advertise MCP or
   resume support yet.
-- Network/human/nested-agent tools are disabled by default. The retained tools
-  read, search, edit, and run commands in the task runtime.
+- Native Cline tools remain enabled unless they are listed in `disabled_tools`.
 - The adapter uses Cline's one-shot headless mode. Multi-turn tool use inside one
   task is captured, but env-driven user simulation requires future ACP support.
 - Cline `3.0.57` has no max-step flag. Use verifiers' `max_turns`, token caps, and
