@@ -68,7 +68,10 @@ def narrow_plugin_field(
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    module = plugin_id.replace("-", "_").lower()
+    # Hub ids are `owner/name[@version]` (installed as just `name`); strip both
+    # before normalizing so a hub id imports the same module a bare id would.
+    name = plugin_id.rsplit("/", 1)[-1].split("@", 1)[0]
+    module = name.replace("-", "_").lower()
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
     try:

@@ -12,7 +12,7 @@ from typing import Any, ClassVar, TypeVar
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
-from renderers.base import ToolCallParseStatus
+from renderers.base import ToolCallParseStatus, is_multimodal
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -97,7 +97,10 @@ def serialize_completion(response: Response, model: str) -> dict:
 
 
 def response_from_generate(
-    result: dict, model: str, bridged_turn: PendingTurn | None = None
+    result: dict,
+    model: str,
+    bridged_turn: PendingTurn | None = None,
+    mm_token_type_id_map: dict[int, int] | None = None,
 ) -> Response:
     """Parse a `renderers.client.generate` result dict into a typed `Response`,
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
@@ -154,6 +157,7 @@ def response_from_generate(
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
+            mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
             kept_tokens=KeptTokens(**kept)
             if (kept := result.get("kept_tokens"))
@@ -353,12 +357,8 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
-        raw_sampling = sampling.model_dump(exclude_none=True)
-        sampling_params: dict[str, Any] = dict(
-            raw_sampling.pop("extra_body", None) or {}
-        )
+        sampling_params = sampling.wire_args()
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
-        sampling_params.update(raw_sampling)
         pool = ElasticRendererPool(
             self.config.renderer_model_name or model,
             self.config.renderer,
@@ -369,6 +369,9 @@ class TrainClient(Client):
 
         async with pool.acquire() as slot:
             renderer = slot.renderer
+            mm_token_type_id_map = (
+                renderer.mm_token_type_id_map if is_multimodal(renderer) else None
+            )
             raw_multimodal = _has_multimodal_content(prompt)
             if raw_multimodal and not getattr(
                 renderer, "supports_raw_multimodal", False
@@ -434,7 +437,9 @@ class TrainClient(Client):
                 raise OverlongPromptError(str(e)) from e
             except OpenAIError as e:
                 raise model_error(e) from e
-        response = response_from_generate(result, model, bridged_turn)
+        response = response_from_generate(
+            result, model, bridged_turn, mm_token_type_id_map
+        )
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)

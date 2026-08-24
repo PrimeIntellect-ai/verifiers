@@ -5,7 +5,7 @@ from pydantic_config import BaseConfig
 
 
 class InitConfig(BaseConfig):
-    name: str = ""
+    name: str = Field(min_length=1)
     """The new environment id, e.g. `my-task-v1` (positional: `init my-task-v1`)."""
     path: str = Field("./environments", validation_alias=AliasChoices("path", "p"))
     """Parent directory the package is created in (default `./environments`)."""

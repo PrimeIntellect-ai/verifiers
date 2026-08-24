@@ -1,17 +1,17 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + config.toml.
+"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
 
 Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
 next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
 whole episode owed on resume, and a failure before any trace minted still leaves
-its errors on disk. config.toml is the run's resolved config in the format the
-CLI reads (`@ config.toml`), so a run is re-runnable from its own output. Lines
+its errors on disk. The JSON file is the run's resolved config in the format the
+CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
 append as episodes complete, so results are durable mid-run. Files written
 by this surface contain episodes only.
 """
 
 import asyncio
-import hashlib
 import json
+import os
 from functools import cache
 from pathlib import Path
 
@@ -33,11 +33,38 @@ via `@ <run-dir>/configs/<cli>.json`). Resolved configs are JSON, not TOML: JSON
 nulls, so explicit None settings round-trip exactly on re-parse."""
 
 
-def config_digest(config: BaseModel) -> str:
-    """Canonical hash of a resolved config's full model dump (nulls included)."""
-    dump = config.model_dump(mode="json")
-    canonical = json.dumps(dump, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+def create_attempt_log_dir(run_dir: Path) -> Path:
+    """Create `logs/attempt_<n>` for this launch attempt and atomically repoint the
+    relative `logs/latest` symlink at it (prime-rl's log layout). Every launch —
+    fresh or `--resume` — gets its own numbered log directory, so a resume never
+    appends to an earlier attempt's logs."""
+    logs_dir = run_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    attempts = (
+        int(p.name.removeprefix("attempt_"))
+        for p in logs_dir.glob("attempt_*")
+        if p.name.removeprefix("attempt_").isdigit()
+    )
+    attempt_dir = logs_dir / f"attempt_{1 + max(attempts, default=0)}"
+    attempt_dir.mkdir()
+    # Atomically repoint the relative `latest` symlink: create a temp link, then rename.
+    tmp_link = logs_dir / f".{attempt_dir.name}"
+    if tmp_link.is_symlink() or tmp_link.exists():
+        tmp_link.unlink()
+    os.symlink(attempt_dir.name, tmp_link)
+    os.replace(tmp_link, logs_dir / "latest")
+    return attempt_dir
+
+
+def attempt_log_file(run_dir: Path) -> Path:
+    """The current attempt's `eval.log`. The CLI creates the attempt dir once at
+    startup; everyone after it — the runner's worker spawn, the dashboard's log
+    tail — resolves through `logs/latest`, so the whole invocation shares one file.
+    A direct `run_eval` call (no CLI) creates the first attempt itself."""
+    latest = run_dir / "logs" / "latest"
+    if not latest.exists():
+        create_attempt_log_dir(run_dir)
+    return latest / "eval.log"
 
 
 def saved_config_path(run_dir: Path) -> Path | None:
@@ -136,9 +163,8 @@ async def append_episode(
 async def append_trace(
     results_dir: Path, trace: Trace, lock: asyncio.Lock, env: str = ""
 ) -> None:
-    """Append one finished trace as a single-agent rollout episode — the writers that
-    complete trace-at-a-time (eval runners, gepa, replay) all go
-    through here."""
+    """Append one finished trace as a single-agent rollout episode — debug and replay,
+    which complete trace-at-a-time, both go through here."""
     episode = Episode(
         env=EnvInfo(id=env),
         task=trace.task,

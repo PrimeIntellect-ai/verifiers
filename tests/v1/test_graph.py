@@ -252,11 +252,13 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
                 renderer_prompt_ids=[1, 2, 3],
                 completion_ids=[4],
                 message_spans=[(0, 2)],
+                mm_token_type_id_map={9: 1},
             ),
         )
     )
 
     assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
+    assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
     assert turn.previous_token_ids() == ([1, 2, 3], [4])
 

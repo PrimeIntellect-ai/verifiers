@@ -448,6 +448,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
+    # Constant per renderer, so re-stamping every turn is idempotent.
+    if tokens is not None and tokens.mm_token_type_id_map:
+        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
     renderer_prompt_ids = (
         tokens.renderer_prompt_ids
