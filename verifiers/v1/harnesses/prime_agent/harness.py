@@ -3,12 +3,11 @@
 import hashlib
 import json
 import logging
-import math
 import shlex
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
@@ -23,26 +22,9 @@ PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
 PROVIDER = "intercept"
+LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
-
-
-def _autonomous_args(enabled: bool, trace: Trace) -> list[str]:
-    if not enabled:
-        return []
-    config = trace.agent.config
-    args = ["--autonomous"]
-    if config.max_turns is not None and config.max_turns > 0:
-        args += ["--autonomous-max-turns", str(config.max_turns)]
-    if config.max_total_tokens is not None and config.max_total_tokens > 0:
-        args += ["--autonomous-max-tokens", str(config.max_total_tokens)]
-    if config.timeout.rollout is not None and config.timeout.rollout > 0:
-        args += [
-            "--autonomous-timeout-ms",
-            str(math.ceil(config.timeout.rollout * 1000)),
-        ]
-    return args
-
 
 INSTALL = r"""
 set -e
@@ -66,7 +48,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     """Prime Agent release to install, pinned for reproducibility."""
 
     autonomous: bool = False
-    """Enable Prime Agent's autonomous continuation loop."""
+    """Enable Prime Agent's autonomous continuation loop. Verifiers' rollout limits remain
+    independent outer limits because the two systems count tool and subagent work differently."""
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -74,6 +57,76 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
+
+    def acp_turn_metadata(
+        self,
+        trace: Trace,
+        stop_reason: str | None,
+        update_metadata: list[JsonObject],
+    ) -> None:
+        events = [
+            event
+            for metadata in update_metadata
+            if isinstance(event := metadata.get(LIFECYCLE_META_NAMESPACE), dict)
+        ]
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("phase") == "terminalQuiescence"
+            ),
+            None,
+        )
+        prompt_turn_id = terminal.get("promptTurnId") if terminal else None
+        boundary = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("phase") == "responseBoundary"
+                and event.get("promptTurnId") == prompt_turn_id
+            ),
+            None,
+        )
+        ordered = True
+        previous_sequence = 0
+        for event in events:
+            sequence = event.get("eventSequence")
+            if type(sequence) is not int or sequence <= previous_sequence:
+                ordered = False
+                break
+            previous_sequence = sequence
+        quiescence = terminal.get("quiescence") if terminal else None
+        infrastructure_ok = bool(
+            ordered
+            and boundary
+            and terminal
+            and boundary.get("outcome") in ("result", "error")
+            and boundary.get("terminalQuiescenceExpected") is True
+            and terminal.get("outcome") == boundary.get("outcome")
+            and isinstance(quiescence, dict)
+            and quiescence.get("outstandingSubagents") == 0
+            and type(quiescence.get("remainingAutonomousContinuations")) is int
+            and quiescence["remainingAutonomousContinuations"] >= 0
+        )
+        status = {
+            "prompt_turn_id": prompt_turn_id,
+            "stop_reason": stop_reason,
+            "infrastructure_status": "ok" if infrastructure_ok else "error",
+            "autonomous_completion": bool(
+                infrastructure_ok and terminal and terminal.get("outcome") == "result"
+            ),
+            "terminal_quiescence_observed": terminal is not None,
+            "last_lifecycle_phase": terminal.get("phase")
+            if terminal
+            else boundary.get("phase")
+            if boundary
+            else None,
+            "response_boundary": boundary,
+            "terminal_quiescence": terminal,
+        }
+        trace.info.setdefault("acp_lifecycle", {}).setdefault(
+            LIFECYCLE_META_NAMESPACE, []
+        ).append(status)
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -175,7 +228,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             f"{root}/daemon.sock",
             "--offline",
         ]
-        args.extend(_autonomous_args(self.config.autonomous, trace))
+        if self.config.autonomous:
+            args.append("--autonomous")
         for skill in self.config.skills:
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:

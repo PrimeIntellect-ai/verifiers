@@ -273,6 +273,15 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
+    if harness.id == "prime_agent":
+        lifecycle = trace.info["acp_lifecycle"]["ai.primeintellect.prime-agent"]
+        assert len(lifecycle) == 2
+        for status in lifecycle:
+            assert status["infrastructure_status"] == "ok"
+            assert status["terminal_quiescence_observed"] is True
+            assert (
+                status["terminal_quiescence"]["quiescence"]["outstandingSubagents"] == 0
+            )
 
 
 @pytest.mark.e2e
