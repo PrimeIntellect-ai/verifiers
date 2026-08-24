@@ -14,7 +14,6 @@ id = "gsm8k"
 
 [env.agent.harness]
 id = "rlm"
-version = "main"
 
 [env.agent.runtime]
 type = "docker"
