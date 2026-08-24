@@ -81,7 +81,7 @@ class _SessionSnapshot(_ContractModel):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="c27f8ea1502ecd2a30f716de9d9b5a2a26df0d6c", min_length=1)
+    version: str = Field(default="c27f8ea151061e31497a5831fda4c168de6d0587", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install.
 
     Pinned: every fresh sandbox installs this ref, and the host ACP client
