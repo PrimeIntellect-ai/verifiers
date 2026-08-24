@@ -10,15 +10,14 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import cast
 
 from anthropic.types import Message as AnthropicMessage
-from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
@@ -46,7 +45,7 @@ from verifiers.v1.types import (
 )
 
 # Anthropic stop_reason -> vf finish_reason.
-STOP_REASONS = {
+STOP_REASONS: dict[str, FinishReason] = {
     "end_turn": "stop",
     "max_tokens": "length",
     "tool_use": "tool_calls",
@@ -299,30 +298,29 @@ def parse_messages(body: dict) -> Messages:
 def response_from_wire(message: AnthropicMessage) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
-    data = message.model_dump()
-    blocks = data.get("content") or []
-    state = [block for block in blocks if block["type"] in THINKING]
-    state.sort(key=lambda block: THINKING.index(block["type"]))
+    state: list[dict] = []
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
-    for block in blocks:
-        kind = block.get("type")
-        if kind == "text":
-            content.append(block.get("text", ""))
-        elif kind == "thinking":
-            reasoning.append(block.get("thinking", ""))
-        elif kind == "tool_use":
+    for block in message.content:
+        if block.type in THINKING:
+            state.append(block.model_dump())
+        if block.type == "text":
+            content.append(block.text)
+        elif block.type == "thinking":
+            reasoning.append(block.thinking)
+        elif block.type == "tool_use":
             calls.append(
                 ToolCall(
-                    id=block.get("id", ""),
-                    name=block.get("name", ""),
-                    arguments=json.dumps(block.get("input") or {}),
+                    id=block.id,
+                    name=block.name,
+                    arguments=json.dumps(block.input or {}),
                 )
             )
-    finish: FinishReason = STOP_REASONS.get(data.get("stop_reason") or "")
+    state.sort(key=lambda block: THINKING.index(block["type"]))
+    finish = STOP_REASONS.get(message.stop_reason or "")
     provider_usage = message.usage
-    output_details = data.get("usage", {}).get("output_tokens_details")
+    output_details = provider_usage.model_dump().get("output_tokens_details")
     # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
     # cache reads are the reusable subset exposed separately by vf.Usage.
     usage = Usage(
@@ -338,9 +336,9 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         cost=getattr(provider_usage, "cost", None),
     )
     return Response(
-        id=data.get("id", ""),
+        id=message.id,
         created=0,
-        model=data.get("model", ""),
+        model=message.model,
         message=AssistantMessage(
             content="".join(content) or None,
             reasoning_content="".join(reasoning) or None,
@@ -384,21 +382,14 @@ class AnthropicStreamParser(StreamParser):
                 "signature_delta",
             ):
                 field_name = delta_type.removesuffix("_delta")
-                fields = self.block_parts.get(index)
-                if fields is None:
-                    fields = {}
-                    self.block_parts[index] = fields
-                parts = fields.get(field_name)
-                if parts is None:
-                    parts = [block.get(field_name, "")]
-                    fields[field_name] = parts
+                parts = self.block_parts.setdefault(index, {}).setdefault(
+                    field_name, [block.get(field_name, "")]
+                )
                 parts.append(delta.get(field_name, ""))
             elif delta_type == "input_json_delta":
-                parts = self.partial_json.get(index)
-                if parts is None:
-                    parts = []
-                    self.partial_json[index] = parts
-                parts.append(delta.get("partial_json", ""))
+                self.partial_json.setdefault(index, []).append(
+                    delta.get("partial_json", "")
+                )
         elif kind == "message_delta":
             self.message.update(
                 {
@@ -436,7 +427,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
     usage: ModdedUsage  # type: ignore[assignment]
 
 
-class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
+class AnthropicDialect(Dialect[AnthropicMessage]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -456,8 +447,8 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     response_type = ModdedAnthropicMessage
 
     def mediate_external_capabilities(
-        self, body: MessageCreateParams, policy: NetworkPolicyConfig
-    ) -> tuple[MessageCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
@@ -570,7 +561,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(self, body: MessageCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         tools = [
             Tool(
                 name=t["name"],
@@ -681,7 +672,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
-    def parse_sampling(self, body: MessageCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `output_config.effort` (where `apply_overrides` puts the eval's
         # reasoning effort) onto the typed knob; keep any other output-config keys.
@@ -696,8 +687,8 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         return Sampling.model_validate(settings)
 
     def apply_overrides(
-        self, body: MessageCreateParams, model: str, sampling: SamplingConfig
-    ) -> MessageCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
@@ -717,4 +708,4 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return cast(MessageCreateParams, {**steered, **overrides})
+        return {**steered, **overrides}

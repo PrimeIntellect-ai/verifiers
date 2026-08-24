@@ -288,9 +288,14 @@ def message_hash(message: Message) -> str:
             add(json.dumps(state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
+            add(tc.type)
             add(tc.id)
             add(tc.name)
-            add(_canonical_tool_arguments(tc.arguments))
+            add(
+                tc.arguments
+                if tc.type == "custom"
+                else _canonical_tool_arguments(tc.arguments)
+            )
     elif isinstance(message, ToolMessage):
         add("tool_call_id")
         add(message.tool_call_id)
