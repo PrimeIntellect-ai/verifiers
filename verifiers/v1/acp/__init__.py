@@ -285,6 +285,7 @@ class ACPHarnessSession(HarnessSession):
         if process is None:
             return
         finalization_error: HarnessFinalizationError | None = None
+        finalization_cause: BaseException | None = None
         try:
             metadata: JsonObject = {}
             if graceful and reader is not None:
@@ -295,8 +296,15 @@ class ACPHarnessSession(HarnessSession):
                         raise RuntimeError(
                             response.get("error") or "ACP session shutdown failed"
                         )
-                except BaseException:
+                except BaseException as error:
                     logger.warning("ACP session shutdown failed", exc_info=True)
+                    detail = f"{type(error).__name__}: {error}"
+                    if stderr := self._stderr():
+                        detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+                    finalization_error = HarnessFinalizationError(
+                        f"ACP session shutdown failed: {detail}"
+                    )
+                    finalization_cause = error
                 else:
                     value = response.get("metadata", {})
                     if isinstance(value, dict):
@@ -329,7 +337,7 @@ class ACPHarnessSession(HarnessSession):
                 except TimeoutError:
                     continue
             if finalization_error is not None:
-                raise finalization_error
+                raise finalization_error from finalization_cause
         finally:
             if stderr_task is not None:
                 if not stderr_task.done():
