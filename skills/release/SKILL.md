@@ -34,21 +34,7 @@ git push origin "refs/tags/$VERSION"
 
 Confirm that the remote tag points to the current `main` commit.
 
-## 3. Create a draft GitHub Release
-
-Read the previous stable release and use the same release-note format. Describe
-the changes since that release. Create the draft for the existing tag:
-
-```bash
-gh release create "$VERSION" \
-  --repo PrimeIntellect-ai/verifiers \
-  --draft \
-  --verify-tag \
-  --title "$VERSION" \
-  --notes-file <release-notes.md>
-```
-
-## 4. Publish
+## 3. Publish
 
 Manually dispatch the stable release workflow:
 
@@ -61,6 +47,18 @@ gh workflow run publish-verifiers.yml \
 
 Monitor the new run through completion with `gh run watch <run-id>
 --exit-status`.
+
+## 4. Update the release notes
+
+After the workflow creates the public GitHub Release, read the previous stable
+release and use the same release-note format. Describe the changes since that
+release, then update the new release:
+
+```bash
+gh release edit "$VERSION" \
+  --repo PrimeIntellect-ai/verifiers \
+  --notes-file <release-notes.md>
+```
 
 ## 5. Verify
 
