@@ -443,6 +443,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             "top_p",
             "top_k",
             "max_tokens",
+            "service_tier",
             "stop_sequences",
             "thinking",
             "tool_choice",
@@ -700,19 +701,17 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
-        s = sampling.model_dump(exclude_none=True)
-        overrides: dict = {"model": model}
-        if "temperature" in s:
-            overrides["temperature"] = s["temperature"]
-        if "top_p" in s:
-            overrides["top_p"] = s["top_p"]
-        if "max_tokens" in s:
-            overrides["max_tokens"] = s["max_tokens"]
-        if "reasoning_effort" in s:
+        s = sampling.wire_args()
+        reasoning_effort = s.pop("reasoning_effort", None)
+        sampling_output_config = s.pop("output_config", None)
+        overrides: dict = {**s, "model": model}
+        if sampling_output_config is not None or reasoning_effort is not None:
             overrides["output_config"] = {
                 **dict(body.get("output_config") or {}),
-                "effort": s["reasoning_effort"],
+                **dict(sampling_output_config or {}),
             }
+            if reasoning_effort is not None:
+                overrides["output_config"]["effort"] = reasoning_effort
         steered = {
             k: v
             for k, v in body.items()

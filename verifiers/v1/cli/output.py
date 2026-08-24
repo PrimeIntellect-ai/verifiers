@@ -1,16 +1,15 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + config.toml.
+"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
 
 Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
 next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
 whole episode owed on resume, and a failure before any trace minted still leaves
-its errors on disk. config.toml is the run's resolved config in the format the
-CLI reads (`@ config.toml`), so a run is re-runnable from its own output. Lines
+its errors on disk. The JSON file is the run's resolved config in the format the
+CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
 append as episodes complete, so results are durable mid-run. Files written
 by this surface contain episodes only.
 """
 
 import asyncio
-import hashlib
 import json
 import os
 from functools import cache
@@ -70,13 +69,6 @@ def attempt_log_file(run_dir: Path) -> Path:
     if not latest.exists():
         create_attempt_log_dir(run_dir)
     return latest / "eval.log"
-
-
-def config_digest(config: BaseModel) -> str:
-    """Canonical hash of a resolved config's full model dump (nulls included)."""
-    dump = config.model_dump(mode="json")
-    canonical = json.dumps(dump, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def saved_config_path(run_dir: Path) -> Path | None:
@@ -202,9 +194,8 @@ async def append_episode(
 async def append_trace(
     results_dir: Path, trace: Trace, lock: asyncio.Lock, env: str = ""
 ) -> None:
-    """Append one finished trace as a single-agent rollout episode — the writers that
-    complete trace-at-a-time (eval runners, gepa, replay) all go
-    through here."""
+    """Append one finished trace as a single-agent rollout episode — debug and replay,
+    which complete trace-at-a-time, both go through here."""
     episode = Episode(
         env=EnvInfo(id=env),
         task=trace.task,

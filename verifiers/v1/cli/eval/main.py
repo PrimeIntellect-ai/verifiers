@@ -11,7 +11,6 @@ from pydantic_config import cli
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import (
     TRACES_FILE,
-    config_digest,
     create_attempt_log_dir,
     output_path,
     saved_config_path,
@@ -69,7 +68,7 @@ def main(argv: list[str] | None = None) -> None:
         ]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
     # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
-    # other write into it — the dry-run config.toml included, which would clobber the
+    # other write into it — the dry-run config included, which would clobber the
     # config a resume typically re-runs — would overwrite the previous run.
     run_path = output_path(config)
     if config.clean and not config.resume and run_path.exists():
@@ -97,10 +96,12 @@ def main(argv: list[str] | None = None) -> None:
                 f"--resume: no saved config under {run_path} - not a run dir"
             )
         with plugin_errors():
-            saved = config_type.model_validate(json.loads(saved_path.read_text()))
-        if config_digest(saved) != config_digest(config):
-            saved_dump = saved.model_dump(mode="json")
-            current_dump = config.model_dump(mode="json")
+            saved = config_type.model_validate_json(saved_path.read_text())
+        saved_dump = saved.model_dump(mode="json")
+        current_dump = config.model_dump(mode="json")
+        saved_json = json.dumps(saved_dump, sort_keys=True, separators=(",", ":"))
+        current_json = json.dumps(current_dump, sort_keys=True, separators=(",", ":"))
+        if saved_json != current_json:
             changed = sorted(
                 key
                 for key in set(saved_dump) | set(current_dump)
@@ -114,12 +115,12 @@ def main(argv: list[str] | None = None) -> None:
             )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")
-        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        logger.info("wrote config to %s", write_config(config, run_path))
         return
     # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
     # points there) — in server mode (the default) the workers write there too, and
     # `--rich.show-logs` tails it live.
-    log_file = str(create_attempt_log_dir(output_path(config)) / "eval.log")
+    log_file = str(create_attempt_log_dir(run_path) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level, log_file=log_file, console=config.rich is None)
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
