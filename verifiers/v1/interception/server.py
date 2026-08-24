@@ -542,7 +542,13 @@ class InterceptionServer(Interception):
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            response = await asyncio.shield(inflight)
+            if idempotent is not None:
+                idempotent.inflight_waiters += 1
+            try:
+                response = await asyncio.shield(inflight)
+            finally:
+                if idempotent is not None:
+                    idempotent.inflight_waiters -= 1
             if response is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503

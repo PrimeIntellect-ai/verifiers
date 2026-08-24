@@ -172,7 +172,9 @@ async def test_idempotency_key_coalesces_original_error_without_caching_it():
                     f"{server.base_url}/v1/chat/completions", json=body, headers=headers
                 )
             )
-            while len(session.tasks) < 2:
+            while (
+                request := session.idempotent_requests.get("call-error")
+            ) is None or request.inflight_waiters < 1:
                 await asyncio.sleep(0)
             client.release.set()
             first_response, concurrent_response = await asyncio.gather(

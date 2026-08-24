@@ -102,6 +102,8 @@ class IdempotentRequest:
     response: dict | None = None
     completed_at: float | None = None
     inflight: "asyncio.Future[ReplayResponse | None] | None" = None
+    inflight_waiters: int = 0
+    """Concurrent attempts currently coalesced onto ``inflight``."""
 
 
 @dataclass(frozen=True)
