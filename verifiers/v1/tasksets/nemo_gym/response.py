@@ -22,14 +22,17 @@ def trace_to_nemo_response(
         )
 
     output: list[dict[str, Any]] = []
+    call_types: dict[str, str] = {}
     started = False
 
     for node in branches[0].nodes:
         message = node.message
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
+            call_types.update((call.id, call.type) for call in message.tool_calls or [])
             if message.provider_state and all(
-                item.get("type") in {"reasoning", "message", "function_call"}
+                item.get("type")
+                in {"reasoning", "message", "function_call", "custom_tool_call"}
                 for item in message.provider_state
             ):
                 output.extend(message.provider_state)
@@ -62,9 +65,12 @@ def trace_to_nemo_response(
                 )
             output.extend(
                 {
-                    "type": "function_call",
+                    "type": "custom_tool_call"
+                    if call.type == "custom"
+                    else "function_call",
                     "call_id": call.id,
-                    **call.model_dump(exclude={"id"}),
+                    "name": call.name,
+                    ("input" if call.type == "custom" else "arguments"): call.arguments,
                 }
                 for call in message.tool_calls or []
             )
@@ -78,7 +84,9 @@ def trace_to_nemo_response(
             )
             output.append(
                 {
-                    "type": "function_call_output",
+                    "type": "custom_tool_call_output"
+                    if call_types.get(message.tool_call_id) == "custom"
+                    else "function_call_output",
                     "call_id": message.tool_call_id,
                     "output": content,
                 }

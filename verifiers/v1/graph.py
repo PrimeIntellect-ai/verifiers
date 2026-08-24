@@ -288,9 +288,14 @@ def message_hash(message: Message) -> str:
             add(json.dumps(state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
+            add(tc.type)
             add(tc.id)
             add(tc.name)
-            add(_canonical_tool_arguments(tc.arguments))
+            add(
+                tc.arguments
+                if tc.type == "custom"
+                else _canonical_tool_arguments(tc.arguments)
+            )
     elif isinstance(message, ToolMessage):
         add("tool_call_id")
         add(message.tool_call_id)
@@ -535,6 +540,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     prompt = turn.prompt
     tokens = response.tokens
     multi_modal_data = tokens.multi_modal_data if tokens else None
+    # Constant per renderer, so re-stamping every turn is idempotent.
+    if tokens is not None and tokens.mm_token_type_id_map:
+        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
     is_content = tokens.is_content if tokens else None

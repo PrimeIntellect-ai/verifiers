@@ -36,8 +36,8 @@ class GEPAConfig(BaseConfig):
         return resolve_env_field(data, narrowed_env_annotation(cls))
 
     run: RunConfig = Field(default_factory=RunConfig)
-    """Run identity: `run.name` names the run directory under `output_dir`; auto-generated
-    like an eval's when unset."""
+    """Run identity: `run.name` is the display name and `run.dir` names the directory
+    under `output_dir`; both auto-generate like an eval's when unset."""
     model: str = Field(
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
@@ -78,13 +78,14 @@ class GEPAConfig(BaseConfig):
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Directory that groups related runs. The run (config.toml + the streamed traces.jsonl,
-    alongside GEPA's own candidates.json / run_log.json) writes to `output_dir / run.name`."""
+    """Directory that groups related runs. The run (`configs/gepa.json` + the streamed
+    `traces.jsonl`, alongside GEPA's own `candidates.json` / `run_log.json`) writes to
+    `output_dir / run.dir`."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the
-    saved config so re-running `@ config.toml` runs for real."""
+    saved config so re-running `@ configs/gepa.json` runs for real."""
 
     @model_validator(mode="after")
     def auto_setup_run_name(self):
