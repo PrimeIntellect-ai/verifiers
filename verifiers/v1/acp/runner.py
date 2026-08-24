@@ -128,6 +128,7 @@ async def prompt(
     *,
     is_new: bool,
 ) -> dict[str, Any]:
+    client.reset()
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -136,7 +137,6 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
-    client.reset()
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
         client.stop_reason = response.stop_reason
