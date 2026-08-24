@@ -121,11 +121,10 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
             and (i == 0 or not argv[i - 1].startswith("--"))
         ):
             paths.append(Path(argv[i + 1]))
-    texts = [p.read_text() for p in paths if p.suffix == ".toml" and p.is_file()]
-    if not texts:
+    tomls = [(p, p.read_text()) for p in paths if p.suffix == ".toml" and p.is_file()]
+    if not tomls:
         return
-    if len(texts) > 1:
-        texts = [f"# @ {p}\n{t}" for p, t in zip(paths, texts)]
+    texts = [text for _, text in tomls] if len(tomls) == 1 else [f"# @ {p}\n{text}" for p, text in tomls]
     config_dir = results_dir / CONFIG_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / f"{name}.toml").write_text("\n".join(texts))
