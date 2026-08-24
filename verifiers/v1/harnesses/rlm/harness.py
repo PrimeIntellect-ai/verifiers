@@ -81,8 +81,13 @@ class _SessionSnapshot(_ContractModel):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="main", min_length=1)
-    """Git ref (branch, tag, or commit) of nano-rlm to install."""
+    version: str = Field(default="c27f8ea1502ecd2a30f716de9d9b5a2a26df0d6c", min_length=1)
+    """Git ref (branch, tag, or commit) of nano-rlm to install.
+
+    Pinned: every fresh sandbox installs this ref, and the host ACP client
+    is itself pinned, so an unpinned default breaks every new sandbox the
+    moment nano-rlm main changes the wire contract. Move the pin
+    deliberately, together with the client."""
     max_depth: NonNegativeInt = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
     exec_timeout: PositiveInt = 300
