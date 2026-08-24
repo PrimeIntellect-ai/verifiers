@@ -59,6 +59,14 @@ class ACPHarness(Harness[ConfigT]):
         """Extract harness metrics from a successful ACP session/close response."""
         return {}
 
+    def acp_turn_metadata(
+        self,
+        trace: Trace,
+        stop_reason: str | None,
+        update_metadata: list[JsonObject],
+    ) -> None:
+        """Consume opaque metadata from updates emitted during one ACP prompt."""
+
     @abstractmethod
     async def prepare_acp(
         self,
@@ -241,6 +249,22 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        stop_reason = response.get("stop_reason")
+        if stop_reason is not None and not isinstance(stop_reason, str):
+            raise TypeError("ACP stop reason must be a string or null")
+        update_metadata = response.get("update_metadata", [])
+        if not isinstance(update_metadata, list) or any(
+            not isinstance(value, dict) for value in update_metadata
+        ):
+            raise TypeError("ACP update metadata must be a list of objects")
+        try:
+            self.harness.acp_turn_metadata(self.trace, stop_reason, update_metadata)
+        except Exception:
+            if response.get("ok"):
+                raise
+            logger.warning(
+                "ACP failed-turn metadata could not be consumed", exc_info=True
+            )
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():

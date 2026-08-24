@@ -39,12 +39,22 @@ class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
+        self.stop_reason: str | None = None
+        self.update_metadata: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
+        self.stop_reason = None
+        self.update_metadata = []
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        field_meta = getattr(update, "field_meta", None)
+        metadata = dict(kwargs)
+        if isinstance(field_meta, dict):
+            metadata.update(field_meta)
+        if metadata:
+            self.update_metadata.append(metadata)
         if isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
@@ -117,7 +127,7 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> dict[str, Any]:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -128,11 +138,16 @@ async def prompt(
         raise ValueError("ACP prompt has no content")
     client.reset()
     try:
-        await connection.prompt(session_id=session_id, prompt=blocks)
+        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.stop_reason = response.stop_reason
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-    return client.visible_reply
+    return {
+        "reply": client.visible_reply,
+        "stop_reason": client.stop_reason,
+        "update_metadata": client.update_metadata,
+    }
 
 
 class ACPSession:
@@ -180,7 +195,7 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> dict[str, Any]:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -256,7 +271,7 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        **await session.run(request["config"]),
                     }
                 elif operation == "shutdown":
                     stop = True
@@ -269,6 +284,8 @@ async def serve_stream() -> None:
                 response = {
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
+                    "stop_reason": session.client.stop_reason,
+                    "update_metadata": session.client.update_metadata,
                 }
             write_packet(sys.stdout.buffer, response)
             if stop:
