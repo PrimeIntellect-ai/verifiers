@@ -32,9 +32,10 @@ HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
 CAPABILITY_NOTICE = (
-    "Network protocol blocked fetching a resource. Continue without those capabilities; "
-    "use local tools or inline data already present in the conversation, and do not retry "
-    "the blocked provider-side operation."
+    "[Harness notice — environment network policy, not part of the task] Network protocol "
+    "blocked fetching a resource. Continue without those capabilities; use local tools or "
+    "inline data already present in the conversation, and do not retry the blocked "
+    "provider-side operation."
 )
 
 
