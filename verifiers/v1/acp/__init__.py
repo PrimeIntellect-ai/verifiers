@@ -262,6 +262,8 @@ class ACPHarnessSession(HarnessSession):
             return
         finalization_error: HarnessFinalizationError | None = None
         finalization_cause: BaseException | None = None
+        shutdown_error: BaseException | None = None
+        shutdown_detail: str | None = None
         try:
             metadata: JsonObject = {}
             if graceful and reader is not None:
@@ -274,13 +276,12 @@ class ACPHarnessSession(HarnessSession):
                         )
                 except BaseException as error:
                     logger.warning("ACP session shutdown failed", exc_info=True)
-                    detail = f"{type(error).__name__}: {error}"
+                    shutdown_error = error
+                    shutdown_detail = f"{type(error).__name__}: {error}"
                     if stderr := self._stderr():
-                        detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-                    finalization_error = HarnessFinalizationError(
-                        f"ACP session shutdown failed: {detail}"
-                    )
-                    finalization_cause = error
+                        shutdown_detail = (
+                            f"{shutdown_detail}\n\nACP process stderr:\n{stderr}"
+                        )
                 else:
                     value = response.get("metadata", {})
                     if isinstance(value, dict):
@@ -295,10 +296,18 @@ class ACPHarnessSession(HarnessSession):
                         self.harness.acp_close_metrics(self.trace, metadata)
                     )
                 except Exception as error:  # noqa: BLE001 - type artifact failures
-                    finalization_error = HarnessFinalizationError(
-                        "ACP session finalization failed: "
-                        f"{type(error).__name__}: {error}"
-                    )
+                    if shutdown_error is not None:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP session shutdown failed and required finalization "
+                            f"could not complete: {shutdown_detail}; "
+                            f"{type(error).__name__}: {error}"
+                        )
+                        finalization_cause = shutdown_error
+                    else:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP session finalization failed: "
+                            f"{type(error).__name__}: {error}"
+                        )
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
