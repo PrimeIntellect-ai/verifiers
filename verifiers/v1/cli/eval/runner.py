@@ -140,7 +140,6 @@ async def _server(
 async def run_eval(config: EvalConfig) -> list[Episode]:
     from verifiers.v1.utils.loaders import load_environment, load_taskset
 
-    logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     # The env comes up in this process only for an in-process run; a served run's
     # workers each load their own, and this process owns just the taskset.
     env = None if config.serve is not None else load_environment(config.env)

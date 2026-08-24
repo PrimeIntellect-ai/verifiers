@@ -64,9 +64,10 @@ class UserMessage(BaseModel):
 
 class ToolCall(BaseModel):
     id: str
+    type: Literal["function", "custom"] = "function"
     name: str
     arguments: str
-    """Raw JSON string of arguments, exactly as the model emitted it."""
+    """Raw function arguments or custom-tool input, exactly as the model emitted it."""
 
 
 class AssistantMessage(BaseModel):

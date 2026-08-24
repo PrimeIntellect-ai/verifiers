@@ -59,8 +59,11 @@ def serialize_completion(response: Response, model: str) -> dict:
         message["tool_calls"] = [
             {
                 "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
+                "type": c.type,
+                c.type: {
+                    "name": c.name,
+                    "input" if c.type == "custom" else "arguments": c.arguments,
+                },
             }
             for c in response.message.tool_calls
         ]
