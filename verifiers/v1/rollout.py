@@ -178,6 +178,8 @@ class Rollout:
         if self._previous_runtime_env is not None and self.runtime is not None:
             self.runtime.env = self._previous_runtime_env
             self._previous_runtime_env = None
+        if getattr(self, "_holds_borrow_lock", False) and self.runtime is not None:
+            self._holds_borrow_lock = False
             self.runtime.borrow_lock.release()
 
     async def open(self) -> bool:
@@ -213,6 +215,7 @@ class Rollout:
                 runtime.env = runtime_env
             else:
                 await runtime.borrow_lock.acquire()
+                self._holds_borrow_lock = True
                 self._previous_runtime_env = runtime.env
                 # The owner's defaults return after the borrow; they do not belong to
                 # this task and must not flow into its processes.
@@ -352,6 +355,14 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
+        if getattr(self, "_holds_borrow_lock", False) and self._has_user:
+            # A user-driven interaction can stay open for hours while nested
+            # runs borrow its box between turns (a judge adjudicating in the
+            # seat's world). Holding the borrow lock for the interaction's
+            # whole life deadlocks those runs, so release it once setup is
+            # done; the swapped env restores at close as usual.
+            self._holds_borrow_lock = False
+            runtime.borrow_lock.release()
         return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
