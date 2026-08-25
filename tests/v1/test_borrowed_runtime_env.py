@@ -74,14 +74,18 @@ class _Harness(Harness[HarnessConfig]):
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
 
-def _rollout(task: _Task, runtime: _Runtime) -> Rollout:
+def _rollout(
+    task: _Task,
+    runtime: _Runtime,
+    runtime_config: RuntimeConfig | None = None,
+) -> Rollout:
     harness = _Harness(HarnessConfig(id="null"))
     return Rollout(
         task=task,
         agent_config=vf.AgentConfig(harness=harness.config, runtime=runtime.config),
         harness=harness,
         ctx=ModelContext(model="test", client=EvalClientConfig()),
-        runtime_config=runtime.config,
+        runtime_config=runtime_config or runtime.config,
         runtime=runtime,
         timeouts=RolloutTimeouts(setup=1, finalize=1, scoring=1),
         limits=RolloutLimits(),
@@ -89,8 +93,18 @@ def _rollout(task: _Task, runtime: _Runtime) -> Rollout:
 
 
 @pytest.mark.asyncio
-async def test_unrestricted_borrowers_keep_independent_environments() -> None:
-    runtime = _Runtime(SubprocessConfig())
+@pytest.mark.parametrize(
+    "config",
+    [
+        SubprocessConfig(),
+        DockerConfig(allow=[]),
+        DockerConfig(allow=["example.com"]),
+    ],
+)
+async def test_matching_policy_borrowers_keep_independent_environments(
+    config: RuntimeConfig,
+) -> None:
+    runtime = _Runtime(config)
     runtime.env = {"OWNER": "private"}
     both_entered = asyncio.Event()
     entered = 0
@@ -118,7 +132,7 @@ async def test_unrestricted_borrowers_keep_independent_environments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_restricted_borrowers_remain_serialized() -> None:
+async def test_different_policy_borrowers_remain_serialized() -> None:
     runtime = _Runtime(DockerConfig(allow=[]))
     runtime.env = {"OWNER": "private"}
     first_entered = asyncio.Event()
@@ -136,7 +150,9 @@ async def test_restricted_borrowers_remain_serialized() -> None:
         _Task(_Data(idx=0, prompt="test", tenant="alpha"), hold_first), runtime
     )
     second = _rollout(
-        _Task(_Data(idx=1, prompt="test", tenant="beta"), mark_second), runtime
+        _Task(_Data(idx=1, prompt="test", tenant="beta"), mark_second),
+        runtime,
+        DockerConfig(allow=["example.com"]),
     )
     first_open = asyncio.create_task(first.open())
     await first_entered.wait()
@@ -152,3 +168,24 @@ async def test_restricted_borrowers_remain_serialized() -> None:
     await second.abort()
 
     assert runtime.env == {"OWNER": "private"}
+
+
+@pytest.mark.asyncio
+async def test_runtime_views_share_borrow_policy_state() -> None:
+    runtime = _Runtime(DockerConfig(allow=[]))
+    view = runtime.with_env({"VIEW": "one"})
+    first_policy = await view.acquire_borrow(view.config)
+    second_entered = asyncio.Event()
+
+    async def acquire_different_policy() -> None:
+        policy = await runtime.acquire_borrow(DockerConfig(allow=["example.com"]))
+        second_entered.set()
+        await runtime.release_borrow(policy)
+
+    second = asyncio.create_task(acquire_different_policy())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(second_entered.wait()), timeout=0.05)
+
+    await view.release_borrow(first_policy)
+    await asyncio.wait_for(second_entered.wait(), timeout=1)
+    await second
