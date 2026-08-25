@@ -196,6 +196,16 @@ class ACPSession:
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
             )
+            agent_meta = initialized.field_meta or {}
+            mismatched = [
+                name
+                for name, value in config["required_agent_meta"].items()
+                if agent_meta.get(name) != value
+            ]
+            if mismatched:
+                raise RuntimeError(
+                    f"ACP agent metadata does not satisfy {sorted(mismatched)!r}"
+                )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
