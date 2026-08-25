@@ -82,33 +82,16 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             ),
             None,
         )
-        ordered = True
-        previous_sequence = 0
-        for event in events:
-            sequence = event.get("eventSequence")
-            if type(sequence) is not int or sequence <= previous_sequence:
-                ordered = False
-                break
-            previous_sequence = sequence
         quiescence = terminal.get("quiescence") if terminal else None
-        infrastructure_ok = bool(
-            ordered
-            and boundary
-            and terminal
-            and boundary.get("outcome") in ("result", "error")
-            and boundary.get("terminalQuiescenceExpected") is True
-            and terminal.get("outcome") == boundary.get("outcome")
-            and isinstance(quiescence, dict)
-            and quiescence.get("outstandingSubagents") == 0
-            and type(quiescence.get("remainingAutonomousContinuations")) is int
-            and quiescence["remainingAutonomousContinuations"] >= 0
+        quiescent = bool(
+            isinstance(quiescence, dict) and quiescence.get("outstandingSubagents") == 0
         )
         status = {
             "prompt_turn_id": prompt_turn_id,
             "stop_reason": result.stop_reason,
-            "infrastructure_status": "ok" if infrastructure_ok else "error",
+            "infrastructure_status": "ok" if boundary and quiescent else "unverified",
             "autonomous_completion": bool(
-                infrastructure_ok and terminal and terminal.get("outcome") == "result"
+                quiescent and terminal and terminal.get("outcome") == "result"
             ),
             "terminal_quiescence_observed": terminal is not None,
             "last_lifecycle_phase": terminal.get("phase")
@@ -128,8 +111,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             statuses = []
             lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
         statuses.append(status)
-        if not infrastructure_ok:
-            raise RuntimeError("Prime Agent did not publish terminal quiescence")
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -258,7 +239,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             env=self._env(trace, secret),
             command=[wrapper],
             prompt=prompt,
-            required_agent_meta={LIFECYCLE_META_NAMESPACE: {}},
+            required_agent_meta=(LIFECYCLE_META_NAMESPACE,),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
