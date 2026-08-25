@@ -269,16 +269,16 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        turn = _turn_result(response)
+        self.trace.primary_reply = turn.reply.strip()
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        turn = _turn_result(response)
         cast(ACPHarness, self.harness).acp_turn_result(self.trace, turn)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
-        self.trace.primary_reply = turn.reply.strip()
         return result
 
     async def _stop(self, *, graceful: bool) -> None:
