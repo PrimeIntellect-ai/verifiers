@@ -197,18 +197,6 @@ class ACPSession:
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
-            capability_meta = (
-                self.capabilities.field_meta if self.capabilities is not None else None
-            )
-            agent_meta = {
-                **(capability_meta or {}),
-                **(initialized.field_meta or {}),
-            }
-            missing = [
-                name for name in config["required_agent_meta"] if name not in agent_meta
-            ]
-            if missing:
-                raise RuntimeError(f"ACP agent metadata is missing {sorted(missing)!r}")
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
