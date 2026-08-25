@@ -23,7 +23,6 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
-RLM_CONTRACT_METADATA_KEY = "ai.prime.rlm/contract-v1"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
 
@@ -156,7 +155,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             session_meta=self._runtime_metadata(
                 ctx, trace, runtime, endpoint, secret, data, system_prompt
             ),
-            required_agent_meta=(RLM_CONTRACT_METADATA_KEY,),
         )
 
     def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
