@@ -5,15 +5,7 @@ import random
 import shlex
 from typing import Literal
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    NonNegativeInt,
-    PositiveInt,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult, JsonObject
 from verifiers.v1.clients import ModelContext
@@ -45,23 +37,11 @@ class _SessionSnapshot(BaseModel):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="11dcb9c353f1f7c89c8c6f1bc0ddea33b3cffa19", min_length=1
+        default="5ee1c34024a183bbbd3a38a6129995f5b982631d", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
-    max_depth: NonNegativeInt = 0
+    max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
-    exec_timeout: PositiveInt = 300
-    max_output: int = -1
-    max_tokens: PositiveInt | None = None
-    max_compactions: PositiveInt | None = None
-    max_concurrent_subagents: PositiveInt | None = None
-    max_subagent_calls: PositiveInt = 64
-    max_tool_output_chars: PositiveInt | None = None
-    allow_git: bool = False
-    sdk_max_retries: NonNegativeInt = 5
-    system_prompt_path: str | None = None
-    kernel_env: dict[str, str] = Field(default_factory=dict)
-    """Task variables intentionally visible to model-controlled kernel code."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
@@ -78,22 +58,6 @@ class RLMHarnessConfig(HarnessConfig):
             raise ValueError(
                 "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
             )
-        return self
-
-    @field_validator("max_output")
-    @classmethod
-    def validate_max_output(cls, value: int) -> int:
-        if value == 0 or value < -1:
-            raise ValueError("must be positive, or -1 to disable truncation")
-        return value
-
-    @model_validator(mode="after")
-    def validate_concurrency(self) -> "RLMHarnessConfig":
-        if (
-            self.max_concurrent_subagents is not None
-            and self.max_concurrent_subagents < self.max_depth
-        ):
-            raise ValueError("max_concurrent_subagents must be at least max_depth")
         return self
 
     @model_validator(mode="after")
@@ -148,39 +112,28 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
+        runtime: Runtime,
         endpoint: str,
         secret: str,
         data: TaskData,
         system_prompt: str | None,
     ) -> JsonObject:
-        max_concurrent = self.config.max_concurrent_subagents or max(
-            4, self.config.max_depth
-        )
         payload = {
             "session_id": trace.id,
             "model": ctx.model,
             "provider": {
                 "base_url": endpoint,
                 "api_key": secret,
-                "headers": {},
-                "max_retries": self.config.sdk_max_retries,
             },
             "policy": {
                 "max_depth": self.config.max_depth,
-                "exec_timeout": self.config.exec_timeout,
-                "max_output": self.config.max_output,
-                "max_tokens": self.config.max_tokens,
                 "summarize_at_tokens": self.summarize_threshold(data.idx),
-                "max_compactions": self.config.max_compactions,
-                "max_concurrent_subagents": max_concurrent,
-                "max_subagent_calls": self.config.max_subagent_calls,
-                "max_tool_output_chars": self.config.max_tool_output_chars,
-                "allow_git": self.config.allow_git,
+                "max_concurrent_subagents": max(4, self.config.max_depth),
             },
-            "system_prompt_path": self.config.system_prompt_path,
+            "system_prompt_path": None,
             "append_to_system_prompt": system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": self.config.kernel_env,
+            "kernel_env": runtime.env,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         return {RLM_RUNTIME_METADATA_KEY: payload}
@@ -201,7 +154,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx, trace, endpoint, secret, data, system_prompt
+                ctx, trace, runtime, endpoint, secret, data, system_prompt
             ),
             required_agent_meta=(RLM_CONTRACT_METADATA_KEY,),
         )
