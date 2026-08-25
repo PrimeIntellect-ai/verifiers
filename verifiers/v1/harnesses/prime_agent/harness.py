@@ -43,7 +43,7 @@ sh "$installer"
 
 class PrimeAgentHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="0.7.4-beta.533.1.848081e",
+        default="0.8.0-beta.546.1.a9b5d88",
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
     )
     """Prime Agent release to install, pinned for reproducibility."""
