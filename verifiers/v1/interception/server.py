@@ -29,6 +29,7 @@ import time
 import traceback
 from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
 from typing import Literal
 
@@ -58,7 +59,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
 
@@ -80,6 +81,9 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+IDEMPOTENCY_CACHE_TTL_SECONDS = 600
+IDEMPOTENCY_CACHE_MAX_COMPLETED = 1024
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -91,6 +95,11 @@ def is_retried_request(headers: Mapping[str, str]) -> bool:
 
 def _body_digest(raw: bytes) -> bytes:
     return hashlib.blake2b(raw, digest_size=16).digest()
+
+
+def _provider_idempotency_key(session_id: str, key: str) -> str:
+    value = f"{session_id}\0{key}".encode()
+    return hashlib.blake2b(value, digest_size=16).hexdigest()
 
 
 async def _request_digest(raw: bytes) -> bytes:
@@ -109,6 +118,87 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+def _capture_response(response: web.Response) -> ReplayResponse:
+    body = response.body
+    if body is None:
+        data = b""
+    elif isinstance(body, bytes):
+        data = body
+    elif isinstance(body, bytearray):
+        data = bytes(body)
+    else:
+        raise TypeError("coalesced interception responses must have a byte body")
+    return ReplayResponse(status=response.status, body=data)
+
+
+def _replay_response(response: ReplayResponse) -> web.Response:
+    return web.Response(
+        body=response.body,
+        status=response.status,
+        content_type="application/json",
+        charset="utf-8",
+    )
+
+
+@dataclass(frozen=True)
+class _IdempotentAttempt:
+    session: RolloutSession
+    key: str
+    request: IdempotentRequest
+    future: asyncio.Future[ReplayResponse | None]
+
+
+_IDEMPOTENT_ATTEMPT = web.RequestKey("idempotent_attempt", _IdempotentAttempt)
+
+
+def _finish_idempotent_attempt(
+    request: web.Request, response: ReplayResponse | None
+) -> None:
+    attempt = request.get(_IDEMPOTENT_ATTEMPT)
+    if attempt is None:
+        return
+    record = attempt.request
+    if record.inflight is attempt.future:
+        record.inflight = None
+    if (
+        record.response is None
+        and attempt.session.idempotent_requests.get(attempt.key) is record
+    ):
+        attempt.session.idempotent_requests.pop(attempt.key)
+    if not attempt.future.done():
+        attempt.future.set_result(response)
+    if record.response is not None:
+        _prune_idempotent_requests(attempt.session, time.monotonic())
+
+
+def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
+    """Expire and cap completed replays; active attempts are never evicted."""
+    completed = [
+        (key, request)
+        for key, request in session.idempotent_requests.items()
+        if request.response is not None and request.inflight is None
+    ]
+    for key, request in completed:
+        completed_at = request.completed_at or 0.0
+        if (
+            now - completed_at >= IDEMPOTENCY_CACHE_TTL_SECONDS
+            and session.idempotent_requests.get(key) is request
+        ):
+            session.idempotent_requests.pop(key)
+    completed = [
+        (key, request)
+        for key, request in completed
+        if session.idempotent_requests.get(key) is request
+    ]
+    excess = len(completed) - IDEMPOTENCY_CACHE_MAX_COMPLETED
+    if excess > 0:
+        for key, request in sorted(
+            completed, key=lambda item: item[1].completed_at or 0.0
+        )[:excess]:
+            if session.idempotent_requests.get(key) is request:
+                session.idempotent_requests.pop(key)
 
 
 async def _queue_chunks(
@@ -214,7 +304,18 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            return await self.handle_request(request, dialect)
+            try:
+                response = await self.handle_request(request, dialect)
+            except BaseException:
+                _finish_idempotent_attempt(request, None)
+                raise
+            replay = (
+                _capture_response(response)
+                if isinstance(response, web.Response)
+                else None
+            )
+            _finish_idempotent_attempt(request, replay)
+            return response
 
         return handler
 
@@ -396,6 +497,7 @@ class InterceptionServer(Interception):
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        upstream_headers = dict(request.headers)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -408,14 +510,50 @@ class InterceptionServer(Interception):
         # alone is no proof of a retry (compaction can legitimately regenerate an identical
         # request), and a stale replay would loop the rollout.
         retried = is_retried_request(request.headers)
+        idempotent: IdempotentRequest | None = None
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        if idempotency_key:
+            if streaming:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key is not supported for streaming requests"
+                    ),
+                    status=400,
+                )
+            now = time.monotonic()
+            _prune_idempotent_requests(session, now)
+            binding = (request.path, req_hash)
+            idempotent = session.idempotent_requests.get(idempotency_key)
+            if idempotent is not None and idempotent.binding != binding:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key was reused with a different request"
+                    ),
+                    status=400,
+                )
+            if idempotent is not None and idempotent.response is not None:
+                logger.debug(
+                    "intercept replay: id=%s (idempotent request)", session.trace.id
+                )
+                idempotent.completed_at = now
+                return _completion_response(idempotent.response)
+            upstream_headers = {
+                name: value
+                for name, value in upstream_headers.items()
+                if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
+            }
+            upstream_headers[IDEMPOTENCY_KEY_HEADER] = _provider_idempotency_key(
+                session.trace.id, idempotency_key
+            )
         if (
-            retried
+            idempotent is None
+            and retried
             and session.last_request == req_hash
             and session.last_response is not None
         ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
-        if session.last_request == req_hash:
+        if idempotent is None and session.last_request == req_hash:
             # A fresh attempt supersedes the recorded response for the same body: drop it
             # so this attempt's own retries coalesce or re-run instead of replaying the
             # previous turn.
@@ -435,8 +573,32 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
                 status=400,
             )
+        if idempotency_key and idempotent is None:
+            idempotent = IdempotentRequest(binding=(request.path, req_hash))
+            session.idempotent_requests[idempotency_key] = idempotent
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced_idempotent(
+            inflight: "asyncio.Future[ReplayResponse | None]",
+        ) -> web.Response:
+            logger.debug(
+                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
+            )
+            if idempotent is not None:
+                idempotent.inflight_waiters += 1
+            try:
+                response = await asyncio.shield(inflight)
+            finally:
+                if idempotent is not None:
+                    idempotent.inflight_waiters -= 1
+            if response is None:
+                return web.json_response(
+                    dialect.error_body("upstream attempt failed"), status=503
+                )
+            return _replay_response(response)
+
+        async def coalesced_retry(
+            inflight: "asyncio.Future[dict | None]",
+        ) -> web.Response:
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
@@ -449,10 +611,29 @@ class InterceptionServer(Interception):
 
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            if retried and (inflight := session.inflight.get(req_hash)) is not None:
-                return await coalesced(inflight)
-            fut = asyncio.get_running_loop().create_future()
-            session.inflight[req_hash] = fut
+            if idempotent is not None and idempotent.inflight is not None:
+                return await coalesced_idempotent(idempotent.inflight)
+            if (
+                idempotent is None
+                and retried
+                and (inflight := session.inflight.get(req_hash)) is not None
+            ):
+                return await coalesced_retry(inflight)
+            if idempotent is not None:
+                assert idempotency_key is not None
+                idempotent_future: asyncio.Future[ReplayResponse | None] = (
+                    asyncio.get_running_loop().create_future()
+                )
+                idempotent.inflight = idempotent_future
+                request[_IDEMPOTENT_ATTEMPT] = _IdempotentAttempt(
+                    session=session,
+                    key=idempotency_key,
+                    request=idempotent,
+                    future=idempotent_future,
+                )
+            else:
+                fut = asyncio.get_running_loop().create_future()
+                session.inflight[req_hash] = fut
 
         def finish_inflight(completion: dict | None = None) -> None:
             if fut is None:
@@ -531,8 +712,12 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
+            if idempotent is not None:
+                idempotent.response = response.raw
+                idempotent.completed_at = time.monotonic()
+            else:
+                session.last_request = req_hash
+                session.last_response = response.raw
             finish_inflight(response.raw)
             return _completion_response(response.raw)
 
@@ -550,7 +735,7 @@ class InterceptionServer(Interception):
                         dialect,
                         body,
                         session.ctx.sampling,
-                        headers=request.headers,
+                        headers=upstream_headers,
                         session_id=session.trace.id,
                         turn=turn,
                     )
