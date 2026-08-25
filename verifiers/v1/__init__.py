@@ -2,7 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.acp import ACPCloseResult, ACPConfig, ACPHarness, ACPTurnResult
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.clients import (
     BaseClientConfig,
@@ -49,7 +49,6 @@ from verifiers.v1.episode import (
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
-    HarnessFinalizationError,
     InterceptionError,
     ProviderError,
     RolloutError,
@@ -257,7 +256,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EnvError",
     "ProviderError",
     "HarnessError",
-    "HarnessFinalizationError",
     "ToolsetError",
     "SandboxError",
     "TaskError",
@@ -281,7 +279,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "HarnessSession",
     "HarnessConfig",
     "ACPConfig",
-    "ACPCloseResult",
     "ACPHarness",
     "ACPTurnResult",
     "ModelContext",

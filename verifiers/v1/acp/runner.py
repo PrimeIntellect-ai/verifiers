@@ -40,12 +40,8 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 class ACPTurnResult:
     reply: str
     stop_reason: str | None
+    response_metadata: dict[str, Any]
     update_metadata: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class ACPCloseResult:
-    metadata: dict[str, Any]
 
 
 class VerifiersACPClient(Client):
@@ -53,18 +49,21 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.stop_reason: str | None = None
+        self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
         self.stop_reason = None
+        self.response_metadata = {}
         self.update_metadata = []
 
     def turn_result(self) -> ACPTurnResult:
         return ACPTurnResult(
             reply=self.visible_reply,
             stop_reason=self.stop_reason,
+            response_metadata=self.response_metadata,
             update_metadata=self.update_metadata,
         )
 
@@ -159,6 +158,7 @@ async def prompt(
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
         client.stop_reason = response.stop_reason
+        client.response_metadata = dict(response.field_meta or {})
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
@@ -196,16 +196,15 @@ class ACPSession:
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
             )
-            agent_meta = initialized.field_meta or {}
-            mismatched = [
-                name
-                for name, value in config["required_agent_meta"].items()
-                if agent_meta.get(name) != value
+            agent_meta = {
+                **(initialized.agent_capabilities.field_meta or {}),
+                **(initialized.field_meta or {}),
+            }
+            missing = [
+                name for name in config["required_agent_meta"] if name not in agent_meta
             ]
-            if mismatched:
-                raise RuntimeError(
-                    f"ACP agent metadata does not satisfy {sorted(mismatched)!r}"
-                )
+            if missing:
+                raise RuntimeError(f"ACP agent metadata is missing {sorted(missing)!r}")
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
@@ -235,25 +234,20 @@ class ACPSession:
         self.is_new = False
         return result
 
-    async def close(self) -> ACPCloseResult:
-        metadata: dict = {}
+    async def close(self) -> None:
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )
                 if session_capabilities and session_capabilities.close is not None:
-                    response = await self.connection.close_session(
-                        session_id=self.session_id
-                    )
-                    if response is not None:
-                        metadata = dict(response.field_meta or {})
+                    with suppress(Exception):
+                        await self.connection.close_session(session_id=self.session_id)
         finally:
             try:
                 await self.stack.aclose()
             finally:
                 self._reset()
-        return ACPCloseResult(metadata=metadata)
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -300,10 +294,8 @@ async def serve_stream() -> None:
                     }
                 elif operation == "shutdown":
                     stop = True
-                    response = {
-                        "ok": True,
-                        "result": asdict(await session.close()),
-                    }
+                    await session.close()
+                    response = {"ok": True}
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures
