@@ -31,7 +31,7 @@ class FailingSegmentRollout:
 
 
 @pytest.mark.asyncio
-async def test_failed_segment_does_not_reuse_prior_primary_reply():
+async def test_failed_segment_does_not_reuse_prior_root_reply():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
@@ -41,7 +41,7 @@ async def test_failed_segment_does_not_reuse_prior_primary_reply():
             hash="content-digest",
         ),
     )
-    trace.primary_reply = "previous reply"
+    trace.root_reply = "previous reply"
 
     class FailingSession:
         async def turn(self, messages):
@@ -75,7 +75,7 @@ async def test_failed_segment_does_not_reuse_prior_primary_reply():
     segment = await Interaction(run).turn("next")
 
     assert segment.last_reply == "current partial reply"
-    assert trace.primary_reply is None
+    assert trace.root_reply is None
     assert trace.last_reply == "current partial reply"
 
 
@@ -141,7 +141,7 @@ def test_wire_trace_round_trip():
     tr.rewards.setdefault("solved", None)  # seeded: expected but never scored
     tr.metrics.setdefault("acc", None)
     tr.info = {"build": "ok"}
-    tr.primary_reply = "primary answer"
+    tr.root_reply = "root answer"
     tr.stop("done")
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
@@ -157,9 +157,9 @@ def test_wire_trace_round_trip():
     assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
-    assert rt.primary_reply == "primary answer"
-    assert rt.last_reply == "primary answer"
-    rt.primary_reply = ""
+    assert rt.root_reply == "root answer"
+    assert rt.last_reply == "root answer"
+    rt.root_reply = ""
     assert rt.last_reply == ""
     assert (
         rt.tools == tr.tools
