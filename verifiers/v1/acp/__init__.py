@@ -3,15 +3,16 @@
 import asyncio
 import contextlib
 import json
+import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, HarnessFinalizationError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -21,14 +22,36 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
-__all__ = ["ACPConfig", "ACPHarness"]
+__all__ = [
+    "ACPCloseResult",
+    "ACPConfig",
+    "ACPHarness",
+    "ACPTurnResult",
+]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 )
 JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+@dataclass(frozen=True)
+class ACPTurnResult:
+    """One prompt's visible reply and ACP lifecycle metadata."""
+
+    reply: str
+    stop_reason: str | None
+    update_metadata: tuple[JsonObject, ...]
+
+
+@dataclass(frozen=True)
+class ACPCloseResult:
+    """Metadata returned when an ACP session closes."""
+
+    metadata: JsonObject
 
 
 @dataclass
@@ -50,6 +73,15 @@ class ACPHarness(Harness[ConfigT]):
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
+        """Consume the typed result of one ACP prompt."""
+
+    def acp_close_metrics(
+        self, trace: Trace, result: ACPCloseResult
+    ) -> Mapping[str, float]:
+        """Extract harness metrics from a successful ACP session/close response."""
+        return {}
 
     @abstractmethod
     async def prepare_acp(
@@ -73,6 +105,7 @@ class ACPHarness(Harness[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             raise HarnessError(
@@ -91,6 +124,7 @@ class ACPHarness(Harness[ConfigT]):
             mcp_urls if config.mcp_urls is None else config.mcp_urls,
             data,
             config,
+            tool_interception_url,
         )
 
     async def launch(
@@ -113,6 +147,38 @@ def _packet(value: JsonObject) -> bytes:
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
     return len(data).to_bytes(8, "big") + data
+
+
+def _turn_result(response: JsonObject) -> ACPTurnResult:
+    value = response.get("result")
+    if not isinstance(value, dict):
+        raise TypeError("ACP prompt result must be an object")
+    reply = value.get("reply")
+    if not isinstance(reply, str):
+        raise TypeError("ACP prompt reply must be a string")
+    stop_reason = value.get("stop_reason")
+    if stop_reason is not None and not isinstance(stop_reason, str):
+        raise TypeError("ACP stop reason must be a string or null")
+    update_metadata = value.get("update_metadata")
+    if not isinstance(update_metadata, list) or any(
+        not isinstance(item, dict) for item in update_metadata
+    ):
+        raise TypeError("ACP update metadata must be a list of objects")
+    return ACPTurnResult(
+        reply=reply,
+        stop_reason=stop_reason,
+        update_metadata=tuple(dict(item) for item in update_metadata),
+    )
+
+
+def _close_result(response: JsonObject) -> ACPCloseResult:
+    value = response.get("result")
+    if not isinstance(value, dict):
+        raise TypeError("ACP close result must be an object")
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict):
+        raise TypeError("ACP close metadata must be an object")
+    return ACPCloseResult(metadata=dict(metadata))
 
 
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
@@ -153,7 +219,7 @@ class ACPHarnessSession(HarnessSession):
 
     def __init__(
         self,
-        harness: Harness,
+        harness: ACPHarness,
         ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
@@ -162,8 +228,20 @@ class ACPHarnessSession(HarnessSession):
         mcp_urls: dict[str, str],
         data: TaskData,
         config: ACPConfig,
+        tool_interception_url: str | None = None,
     ) -> None:
-        super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
+        super().__init__(
+            harness,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            tool_interception_url,
+        )
+        self._acp_harness = harness
         self.config = config
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
@@ -233,16 +311,23 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        turn = _turn_result(response)
+        try:
+            self._acp_harness.acp_turn_result(self.trace, turn)
+        except Exception:
+            if response.get("ok"):
+                raise
+            logger.warning(
+                "ACP failed-turn result could not be consumed", exc_info=True
+            )
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        reply = response.get("reply", "")
-        if not isinstance(reply, str):
-            raise TypeError("ACP session reply must be a string")
-        result = ProgramResult(exit_code=0, stdout=reply, stderr="")
+        result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
+        self.trace.primary_reply = turn.reply.strip()
         return result
 
     async def _stop(self, *, graceful: bool) -> None:
@@ -251,11 +336,55 @@ class ACPHarnessSession(HarnessSession):
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
             return
+        finalization_error: HarnessFinalizationError | None = None
+        finalization_cause: BaseException | None = None
+        shutdown_error: BaseException | None = None
+        shutdown_detail: str | None = None
         try:
+            close_result = ACPCloseResult(metadata={})
             if graceful and reader is not None:
-                with contextlib.suppress(BaseException):
+                response: JsonObject | None = None
+                try:
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    if not response.get("ok"):
+                        raise RuntimeError(
+                            response.get("error") or "ACP session shutdown failed"
+                        )
+                    close_result = _close_result(response)
+                except BaseException as error:
+                    logger.warning("ACP session shutdown failed", exc_info=True)
+                    shutdown_error = error
+                    shutdown_detail = f"{type(error).__name__}: {error}"
+                    if stderr := self._stderr():
+                        shutdown_detail = (
+                            f"{shutdown_detail}\n\nACP process stderr:\n{stderr}"
+                        )
+                    if response is not None and response.get("ok"):
+                        finalization_error = HarnessFinalizationError(
+                            f"ACP close result is invalid: {shutdown_detail}"
+                        )
+                        finalization_cause = error
+            if graceful and finalization_error is None:
+                try:
+                    metrics = self._acp_harness.acp_close_metrics(
+                        self.trace, close_result
+                    )
+                    self.trace.record_metrics(metrics)
+                except Exception as error:  # noqa: BLE001 - extension boundary
+                    if shutdown_error is not None:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP session shutdown failed and required finalization "
+                            f"could not complete: {shutdown_detail}; "
+                            f"{type(error).__name__}: {error}"
+                        )
+                        finalization_cause = shutdown_error
+                    else:
+                        finalization_error = HarnessFinalizationError(
+                            "ACP session finalization failed: "
+                            f"{type(error).__name__}: {error}"
+                        )
+                        finalization_cause = error
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
@@ -269,6 +398,8 @@ class ACPHarnessSession(HarnessSession):
                     break
                 except TimeoutError:
                     continue
+            if finalization_error is not None:
+                raise finalization_error from finalization_cause
         finally:
             if stderr_task is not None:
                 if not stderr_task.done():

@@ -13,6 +13,7 @@ from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
+    HarnessFinalizationError,
     RolloutError,
     TaskError,
     ToolsetError,
@@ -456,6 +457,8 @@ class Rollout:
             if self._harness_session is not None:
                 try:
                     await self._harness_session.close()
+                except HarnessFinalizationError:
+                    raise
                 except Exception:
                     # Generation already completed. A transport teardown failure
                     # must not discard its otherwise scoreable trajectory.

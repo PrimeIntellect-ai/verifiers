@@ -11,6 +11,7 @@ import signal
 import sys
 import traceback
 from contextlib import AsyncExitStack, suppress
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from acp import (
@@ -35,16 +36,44 @@ from acp.schema import (
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
+@dataclass(frozen=True)
+class ACPTurnResult:
+    reply: str
+    stop_reason: str | None
+    update_metadata: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ACPCloseResult:
+    metadata: dict[str, Any]
+
+
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
+        self.stop_reason: str | None = None
+        self.update_metadata: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
+        self.stop_reason = None
+        self.update_metadata = []
+
+    def turn_result(self) -> ACPTurnResult:
+        return ACPTurnResult(
+            reply=self.visible_reply,
+            stop_reason=self.stop_reason,
+            update_metadata=self.update_metadata,
+        )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        metadata = dict(kwargs)
+        if isinstance(field_meta := getattr(update, "field_meta", None), dict):
+            metadata.update(field_meta)
+        if metadata:
+            self.update_metadata.append(metadata)
         if isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
@@ -117,7 +146,8 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> ACPTurnResult:
+    client.reset()
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -126,13 +156,13 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
-    client.reset()
     try:
-        await connection.prompt(session_id=session_id, prompt=blocks)
+        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.stop_reason = response.stop_reason
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-    return client.visible_reply
+    return client.turn_result()
 
 
 class ACPSession:
@@ -180,11 +210,11 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> ACPTurnResult:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
-        reply = await prompt(
+        result = await prompt(
             self.client,
             self.connection,
             self.capabilities,
@@ -193,20 +223,27 @@ class ACPSession:
             is_new=self.is_new,
         )
         self.is_new = False
-        return reply
+        return result
 
-    async def close(self) -> None:
+    async def close(self) -> ACPCloseResult:
+        metadata: dict = {}
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )
                 if session_capabilities and session_capabilities.close is not None:
-                    with suppress(Exception):
-                        await self.connection.close_session(session_id=self.session_id)
-            await self.stack.aclose()
+                    response = await self.connection.close_session(
+                        session_id=self.session_id
+                    )
+                    if response is not None:
+                        metadata = dict(response.field_meta or {})
         finally:
-            self._reset()
+            try:
+                await self.stack.aclose()
+            finally:
+                self._reset()
+        return ACPCloseResult(metadata=metadata)
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -249,12 +286,14 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        "result": asdict(await session.run(request["config"])),
                     }
                 elif operation == "shutdown":
-                    await session.close()
                     stop = True
-                    response = {"ok": True}
+                    response = {
+                        "ok": True,
+                        "result": asdict(await session.close()),
+                    }
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures
@@ -263,6 +302,8 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+                if operation == "prompt":
+                    response["result"] = asdict(session.client.turn_result())
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
