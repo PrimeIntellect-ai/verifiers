@@ -257,7 +257,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
-    assert trace.primary_reply == segments[1]["last_reply"]
+    assert trace.root_reply == segments[1]["last_reply"]
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
     if harness.id != "kimi-code":
         assert trace.num_branches == 1

@@ -24,7 +24,7 @@ from verifiers.v1.utils.aio import run_shielded
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
-__all__ = ["ACPConfig", "ACPHarness", "ACPTurnResult"]
+__all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
@@ -33,7 +33,7 @@ JsonValue: TypeAlias = (
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 
-class ACPTurnResult(BaseModel):
+class ACPTurn(BaseModel):
     """One completed ACP prompt and its extension metadata."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -64,7 +64,7 @@ class ACPHarness(Harness[ConfigT]):
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
 
-    def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         """Consume the typed result of one ACP prompt."""
 
     @abstractmethod
@@ -133,9 +133,9 @@ def _packet(value: JsonObject) -> bytes:
     return len(data).to_bytes(8, "big") + data
 
 
-def _turn_result(response: JsonObject) -> ACPTurnResult:
+def _turn_result(response: JsonObject) -> ACPTurn:
     value = response.get("result")
-    return ACPTurnResult.model_validate(value)
+    return ACPTurn.model_validate(value)
 
 
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
@@ -268,7 +268,7 @@ class ACPHarnessSession(HarnessSession):
                 await run_shielded(self._stop(graceful=False))
                 raise
         turn = _turn_result(response)
-        self.trace.primary_reply = turn.reply.strip()
+        self.trace.root_reply = turn.reply.strip()
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
