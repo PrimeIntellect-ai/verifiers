@@ -239,7 +239,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             env=self._env(trace, secret),
             command=[wrapper],
             prompt=prompt,
-            required_agent_meta=(LIFECYCLE_META_NAMESPACE,),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
