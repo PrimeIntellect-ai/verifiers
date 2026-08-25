@@ -448,5 +448,64 @@ class TrainClient(Client):
         response.raw = serialize_completion(response, model)
         return response
 
+    async def generate_tokens(
+        self,
+        model: str,
+        prompt_ids: list[int],
+        sampling: SamplingConfig | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Exact-token continuation: POST a prebuilt token sequence to the
+        `/inference/v1/generate` engine and return the generate result dict
+        (completion_ids, completion_logprobs, finish_reason, prompt_logprobs,
+        ...) plus `stop_token_ids` from the renderer. The public seam for envs
+        that resume or branch from exact token ids — re-rendering an
+        intervention prefix can change BPE identity, this path cannot."""
+        from renderers.client import generate
+
+        sampling_params = (
+            sampling if sampling is not None else SamplingConfig()
+        ).wire_args()
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        pool = ElasticRendererPool(
+            self.config.renderer_model_name or model,
+            self.config.renderer,
+            chat_template_kwargs=chat_template_kwargs,
+            multiplex=self.config.multiplex,
+        )
+        async with pool.acquire() as slot:
+            try:
+                result = await generate(
+                    client=self.client,
+                    renderer=slot.renderer,
+                    messages=[],
+                    model=model,
+                    prompt_ids=list(prompt_ids),
+                    sampling_params=sampling_params,
+                    extra_headers={SESSION_ID_HEADER: session_id}
+                    if session_id
+                    else None,
+                )
+            except RendererOverlongPromptError as e:
+                raise OverlongPromptError(str(e)) from e
+            except OpenAIError as e:
+                raise model_error(e) from e
+            # Decode-side read: safe on the bare renderer without lock or hop.
+            result["stop_token_ids"] = slot.renderer.get_stop_token_ids()
+        return result
+
+    async def parse_completion(self, model: str, completion_ids: list[int]):
+        """Parse raw completion token ids into the renderer's structured response
+        (content / reasoning_content split) — for callers that assembled a
+        completion from more than one generate call."""
+        pool = ElasticRendererPool(
+            self.config.renderer_model_name or model,
+            self.config.renderer,
+            multiplex=self.config.multiplex,
+        )
+        async with pool.acquire() as slot:
+            return slot.renderer.parse_response(list(completion_ids))
+
     async def close(self) -> None:
         await self.client.close()
