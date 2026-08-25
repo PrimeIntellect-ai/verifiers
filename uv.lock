@@ -1,5 +1,5 @@
 version = 1
-revision = 4
+revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -14,17 +14,21 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
+exclude-newer = "2026-08-17T07:00:00Z"
 
 [options.exclude-newer-package]
-prime-tunnel = false
-prime-sandboxes = false
+verifiers = "2100-01-01T08:00:00Z"
+prime-pydantic-config = false
 harbor = "2026-08-11T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
-prime-pydantic-config = false
-renderers = false
+tasksets = "2100-01-01T08:00:00Z"
+prime-rl = "2100-01-01T08:00:00Z"
 ruff = "2026-07-28T00:00:00Z"
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
+harnesses = "2100-01-01T08:00:00Z"
+prime = "2100-01-01T08:00:00Z"
 
 [manifest]
 
@@ -168,6 +172,12 @@ name = "alphabet-sort"
 version = "0.1.0"
 source = { editable = "environments/alphabet_sort" }
 dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "datasets" },
     { name = "verifiers" },
 ]
@@ -344,6 +354,9 @@ source = { editable = "environments/bash_interception" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "bcrypt"
@@ -729,12 +742,21 @@ dependencies = [
     { name = "verifiers" },
 ]
 
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
 [[package]]
 name = "color-codeword"
 version = "0.1.0"
 source = { editable = "environments/color_codeword" }
 dependencies = [
     { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pillow", specifier = ">=11.0.0" },
     { name = "verifiers" },
 ]
 
@@ -754,6 +776,9 @@ source = { editable = "environments/compact" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "connect-python"
@@ -1046,6 +1071,9 @@ source = { editable = "environments/deepwiki" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "defusedxml"
@@ -1450,6 +1478,9 @@ dependencies = [
     { name = "verifiers" },
 ]
 
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
 [[package]]
 name = "googleapis-common-protos"
 version = "1.75.0"
@@ -1536,6 +1567,12 @@ dependencies = [
     { name = "verifiers" },
 ]
 
+[package.metadata]
+requires-dist = [
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "verifiers" },
+]
+
 [[package]]
 name = "griffelib"
 version = "2.1.0"
@@ -1615,6 +1652,9 @@ source = { editable = "environments/gsm8k" }
 dependencies = [
     { name = "datasets" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
 
 [[package]]
 name = "h11"
@@ -1885,6 +1925,9 @@ source = { editable = "environments/interception" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "itsdangerous"
@@ -2205,6 +2248,9 @@ source = { editable = "environments/kuhn_poker" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "latex2sympy2-extended"
@@ -3007,6 +3053,9 @@ dependencies = [
     { name = "verifiers", extra = ["openenv"] },
 ]
 
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["openenv"] }]
+
 [[package]]
 name = "opentelemetry-api"
 version = "1.43.0"
@@ -3448,6 +3497,9 @@ source = { editable = "environments/proposer_solver" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "protobuf"
@@ -4292,6 +4344,9 @@ dependencies = [
     { name = "datasets" },
 ]
 
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
+
 [[package]]
 name = "rich"
 version = "15.0.0"
@@ -4464,6 +4519,9 @@ source = { editable = "environments/scratchpad" }
 dependencies = [
     { name = "verifiers" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "secretstorage"
@@ -5179,6 +5237,84 @@ examples = [
     { name = "wordle" },
 ]
 
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "aiolimiter", specifier = ">=1.2.1" },
+    { name = "anthropic", specifier = ">=0.78.0" },
+    { name = "datasets", specifier = ">=3.3.0,<6.0.0" },
+    { name = "gepa", specifier = ">=0.0.6" },
+    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "loguru", specifier = ">=0.7.0" },
+    { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "mcp", specifier = ">=1.24.0,<2" },
+    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
+    { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "nemo-gym", marker = "python_full_version >= '3.12' and extra == 'nemo-gym'", specifier = "==0.4.0" },
+    { name = "nest-asyncio", marker = "extra == 'notebook'", specifier = ">=1.6.0" },
+    { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
+    { name = "numpy", specifier = ">=2.1.0" },
+    { name = "openai", specifier = ">=2.9.0" },
+    { name = "openai-agents", specifier = ">=0.8.2" },
+    { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
+    { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
+    { name = "prime-sandboxes", specifier = ">=0.2.37" },
+    { name = "prime-tunnel", specifier = ">=0.1.8" },
+    { name = "pydantic", specifier = ">=2.12.3" },
+    { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
+    { name = "pyzmq", specifier = ">=27.1.0" },
+    { name = "reasoning-gym", marker = "extra == 'rg'", specifier = ">=0.1.8" },
+    { name = "renderers", specifier = ">=0.1.9" },
+    { name = "requests" },
+    { name = "rich", specifier = ">=11.0.0" },
+    { name = "setproctitle", specifier = ">=1.3.0" },
+    { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.4.0" },
+    { name = "tenacity", specifier = ">=8.5.0" },
+    { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
+    { name = "typing-extensions", specifier = ">=4.12.2" },
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
+]
+provides-extras = ["browser", "harbor", "modal", "nemo-gym", "notebook", "openenv", "rg", "ta"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "nest-asyncio", specifier = ">=1.6.0" },
+    { name = "nltk", specifier = ">=3.9.2" },
+    { name = "pre-commit", specifier = ">=2.19.0" },
+    { name = "pytest", specifier = ">=7.0.0,<9.1.0" },
+    { name = "pytest-asyncio", specifier = ">=0.21.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "reasoning-gym", specifier = ">=0.1.8" },
+    { name = "ruff", specifier = ">=0.16.0" },
+    { name = "stagehand", specifier = ">=3.4.0" },
+    { name = "textarena", specifier = "==0.7.4" },
+    { name = "ty", specifier = ">=0.0.63" },
+]
+examples = [
+    { name = "alphabet-sort", editable = "environments/alphabet_sort" },
+    { name = "bash-interception", editable = "environments/bash_interception" },
+    { name = "code-golf", editable = "environments/code_golf" },
+    { name = "color-codeword", editable = "environments/color_codeword" },
+    { name = "compact", editable = "environments/compact" },
+    { name = "deepwiki", editable = "environments/deepwiki" },
+    { name = "glossary", editable = "environments/glossary" },
+    { name = "grayscale-interception", editable = "environments/grayscale_interception" },
+    { name = "gsm8k", editable = "environments/gsm8k" },
+    { name = "interception", editable = "environments/interception" },
+    { name = "kuhn-poker", editable = "environments/kuhn_poker" },
+    { name = "openenv-wordle", editable = "environments/openenv_wordle" },
+    { name = "proposer-solver", editable = "environments/proposer_solver" },
+    { name = "reverse-text", editable = "environments/reverse_text" },
+    { name = "scratchpad", editable = "environments/scratchpad" },
+    { name = "web-search-interception", editable = "environments/web_search_interception" },
+    { name = "wiki-search", editable = "environments/wiki_search" },
+    { name = "wordle", editable = "environments/wordle" },
+]
+
 [[package]]
 name = "virtualenv"
 version = "21.6.1"
@@ -5298,6 +5434,9 @@ dependencies = [
     { name = "verifiers" },
 ]
 
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
 [[package]]
 name = "websocket-client"
 version = "1.9.0"
@@ -5359,6 +5498,13 @@ dependencies = [
     { name = "verifiers" },
 ]
 
+[package.metadata]
+requires-dist = [
+    { name = "chromadb", specifier = ">=0.4.13" },
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
 [[package]]
 name = "win32-setctime"
 version = "1.2.0"
@@ -5375,6 +5521,9 @@ source = { editable = "environments/wordle" }
 dependencies = [
     { name = "verifiers", extra = ["ta"] },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["ta"] }]
 
 [[package]]
 name = "xxhash"

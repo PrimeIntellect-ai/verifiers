@@ -204,7 +204,21 @@ class PrimeRuntime(Runtime):
                     self.info.id = sandbox.id
                     return sandbox
 
-                sandbox = await run_shielded(create_and_capture_id())
+                # The platform rate-limits creates with 429s. The SDK create is
+                # idempotent-safe, so retry with the same capped exponential
+                # backoff the SDK uses for status polls; the caller's setup
+                # timeout bounds the loop.
+                attempt = 0
+                while True:
+                    try:
+                        sandbox = await run_shielded(create_and_capture_id())
+                        break
+                    except Exception as e:
+                        if "429" in str(e) or "Too Many Requests" in str(e):
+                            attempt += 1
+                            await asyncio.sleep(min(2**attempt, 60))
+                            continue
+                        raise
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
             # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
