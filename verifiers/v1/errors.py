@@ -56,10 +56,6 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
-class HarnessFinalizationError(HarnessError):
-    """A harness failed to publish required terminal artifacts."""
-
-
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 

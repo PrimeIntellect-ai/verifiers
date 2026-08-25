@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from verifiers.v1.acp import ACPCloseResult, ACPConfig, ACPHarness, JsonObject
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
@@ -36,53 +36,17 @@ RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
 
 
-class _ContractModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class _SessionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
 
-
-class _UsageSnapshot(_ContractModel):
-    prompt_tokens: int = Field(ge=0)
-    completion_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
-
-
-class _ProgrammaticToolCallSnapshot(_ContractModel):
-    python_total: int = Field(ge=0)
-    bash_total: int = Field(ge=0)
-    by_tool_python: dict[str, int]
-    by_tool_bash: dict[str, int]
-
-
-class _SupervisorSnapshot(_ContractModel):
-    subagent_calls: int = Field(ge=0)
-    active_subagent_calls: int = Field(ge=0)
-
-
-class _LimitsSnapshot(_ContractModel):
-    max_depth: int = Field(ge=0)
-    max_concurrent_subagents: int = Field(gt=0)
-    max_subagent_calls: int = Field(gt=0)
-    max_tokens: int | None = Field(default=None, gt=0)
-    summarize_at_tokens: int | None = Field(default=None, gt=0)
-    max_compactions: int | None = Field(default=None, gt=0)
-    max_tool_output_chars: int | None = Field(default=None, gt=0)
-    allow_git: bool
-
-
-class _SessionSnapshot(_ContractModel):
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
-    last_stop_reason: str | None
-    model: str = Field(min_length=1)
-    turns: int = Field(ge=0)
-    usage: _UsageSnapshot
     metrics: dict[str, int | float]
-    programmatic_tool_call_stats: _ProgrammaticToolCallSnapshot
-    supervisor: _SupervisorSnapshot
-    limits: _LimitsSnapshot
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="main", min_length=1)
+    version: str = Field(
+        default="11dcb9c353f1f7c89c8c6f1bc0ddea33b3cffa19", min_length=1
+    )
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: NonNegativeInt = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
@@ -239,18 +203,16 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             session_meta=self._runtime_metadata(
                 ctx, trace, endpoint, secret, data, system_prompt
             ),
-            required_agent_meta={RLM_CONTRACT_METADATA_KEY: True},
+            required_agent_meta=(RLM_CONTRACT_METADATA_KEY,),
         )
 
-    def acp_close_metrics(
-        self, trace: Trace, result: ACPCloseResult
-    ) -> dict[str, float]:
+    def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
         snapshot = _SessionSnapshot.model_validate(
-            result.metadata.get(RLM_SESSION_METADATA_KEY)
+            result.response_metadata.get(RLM_SESSION_METADATA_KEY)
         )
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
-        return {name: float(value) for name, value in snapshot.metrics.items()}
+        trace.record_metrics(snapshot.metrics)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
