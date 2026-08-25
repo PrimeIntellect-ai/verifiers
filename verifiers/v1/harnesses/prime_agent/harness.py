@@ -36,8 +36,17 @@ export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
 installer="$(mktemp "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
 trap 'rm -f "$installer"' EXIT
-curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" -o "$installer"
-sh "$installer"
+attempt=1
+max_attempts=10
+while ! { curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" -o "$installer" && sh "$installer"; }; do
+    [ "$attempt" -ge "$max_attempts" ] && exit 1
+    jitter="$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
+    delay=$((attempt * 5 + jitter % 30))
+    printf 'Prime Agent install failed; retrying in %ss (%s/%s)\n' \
+        "$delay" "$attempt" "$max_attempts" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+done
 """
 
 
