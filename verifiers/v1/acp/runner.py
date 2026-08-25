@@ -37,7 +37,7 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
-class ACPTurnResult:
+class ACPTurn:
     reply: str
     stop_reason: str | None
     response_metadata: dict[str, Any]
@@ -59,8 +59,8 @@ class VerifiersACPClient(Client):
         self.response_metadata = {}
         self.update_metadata = []
 
-    def turn_result(self) -> ACPTurnResult:
-        return ACPTurnResult(
+    def turn_result(self) -> ACPTurn:
+        return ACPTurn(
             reply=self.visible_reply,
             stop_reason=self.stop_reason,
             response_metadata=self.response_metadata,
@@ -145,7 +145,7 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> ACPTurnResult:
+) -> ACPTurn:
     client.reset()
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
@@ -210,7 +210,7 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> ACPTurnResult:
+    async def run(self, config: dict) -> ACPTurn:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None

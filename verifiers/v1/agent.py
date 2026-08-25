@@ -116,8 +116,8 @@ class Segment:
     """One harness segment's agent/tool output, as `Interaction.turn` returns it.
 
     `messages` carries every model-sampled assistant message and intervening tool
-    result produced by the segment, in order. `primary_reply` identifies the
-    harness-owned response when the trace also contains descendant branches.
+    result produced by the segment, in order. `root_reply` identifies the root
+    agent's response when the trace also contains descendant branches.
     `terminated` marks the exchange over — the run ended (a
     limit, a `@stop`, or the harness finishing) instead of producing another
     segment; a terminated `Segment` carries no messages (the last real segment was
@@ -125,14 +125,14 @@ class Segment:
     """
 
     messages: Messages
-    primary_reply: str | None = None
+    root_reply: str | None = None
     terminated: bool = False
 
     @property
     def last_reply(self) -> str:
-        """The primary response, falling back to the final assistant message."""
-        if self.primary_reply is not None:
-            return self.primary_reply.strip()
+        """The root agent's response, falling back to the final assistant message."""
+        if self.root_reply is not None:
+            return self.root_reply.strip()
         for message in reversed(self.messages):
             if isinstance(message, AssistantMessage):
                 return (message.content or "").strip()
@@ -216,7 +216,7 @@ class Interaction:
                     segment_messages.append(node.message)
             return Segment(
                 messages=segment_messages,
-                primary_reply=self.trace.primary_reply,
+                root_reply=self.trace.root_reply,
             )
         self._over = True
         return Segment(messages=[], terminated=True)
