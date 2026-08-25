@@ -40,8 +40,9 @@ class ReplayConfig(BaseConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the re-scored run (config.toml + traces.jsonl). None = a fresh per-run
-    dir under `outputs/<taskset>--replay/<uuid>` (so a replay never overwrites the source run)."""
+    """Where to write the re-scored run (`configs/replay.json` + `traces.jsonl`).
+    None = a fresh per-run dir under `outputs/<taskset>--replay/<uuid>` (so a replay
+    never overwrites the source run)."""
 
     @property
     def name(self) -> str:

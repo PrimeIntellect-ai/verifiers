@@ -29,7 +29,7 @@ Validate the config by using `uv run eval @ config.toml --dry-run`. To run the e
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
-The output from evaluations are written into `outputs/<env>--<model>--<harness>/<uuid>/` by default, where `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the episodes in `traces.jsonl`, as well as logs of the run and workers in `eval.log`.
+The output from evaluations are written into `outputs/<env>--<model>--<harness>/<uuid>/` by default, where `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the episodes in `traces.jsonl`, as well as logs of the run and workers in `logs/attempt_<n>/eval.log` — one directory per launch attempt (a resume starts a new one), with `logs/latest` pointing at the current attempt.
 
 ## Common config values
 
@@ -42,6 +42,12 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
+- `serve` — on by default: rollouts run through an elastic env-server worker pool
+  (`[serve]` sizes it, e.g. `serve.pool.type`); `--no-serve` runs them in-process
+- `rich` — the live dashboard (default); `--no-rich` streams logs to the console and
+  prints each trace as JSON at the end
+- `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the
+  attempt's logs (`logs/latest/eval.log`), the env workers' lines included
 
 ## Resuming evaluations
 
