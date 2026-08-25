@@ -17,7 +17,9 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-INSTALL_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/install.sh"
+GITHUB_RELEASE_URL = (
+    "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
+)
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
@@ -34,19 +36,23 @@ prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_VERSION"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
-installer="$(mktemp "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
-trap 'rm -f "$installer"' EXIT
-attempt=1
-max_attempts=10
-while ! { curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" -o "$installer" && sh "$installer"; }; do
-    [ "$attempt" -ge "$max_attempts" ] && exit 1
-    jitter="$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
-    delay=$((attempt * 5 + jitter % 30))
-    printf 'Prime Agent install failed; retrying in %ss (%s/%s)\n' \
-        "$delay" "$attempt" "$max_attempts" >&2
-    sleep "$delay"
-    attempt=$((attempt + 1))
-done
+case "$PRIME_AGENT_VERSION" in
+    *-beta.*) release_tag=beta ;;
+    *) release_tag="v$PRIME_AGENT_VERSION" ;;
+esac
+release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/$release_tag"
+tarball="prime-agent-$PRIME_AGENT_VERSION.tgz"
+download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+trap 'rm -rf "$download_dir"' EXIT
+curl -fsSL --retry 5 --retry-all-errors \
+    "$release_url/SHA256SUMS" -o "$download_dir/SHA256SUMS"
+curl -fsSL --retry 5 --retry-all-errors \
+    "$release_url/$tarball" -o "$download_dir/$tarball"
+awk -v file="$tarball" '$2 == file { print; found = 1; exit } END { if (!found) exit 1 }' \
+    "$download_dir/SHA256SUMS" > "$download_dir/SHA256SUMS.selected"
+(cd "$download_dir" && sha256sum -c SHA256SUMS.selected)
+PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
+    --no-fund --no-audit --loglevel=error --progress=false "$download_dir/$tarball"
 """
 
 
@@ -136,7 +142,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             {
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
-                "VF_PRIME_AGENT_INSTALL_URL": INSTALL_URL,
+                "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_VERSION": self.config.version,
             },
         )
