@@ -60,7 +60,7 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     run._closed = False
     run._failed = False
     run._failure = None
-    run._owns_runtime = True
+    run._borrowed_runtime = None
     run.runtime = None
     run._agent_time_remaining = None
     run._timeouts = RolloutTimeouts()
