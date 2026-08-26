@@ -79,13 +79,6 @@ class RuntimeProcess(ABC):
         pass
 
 
-class _BorrowState:
-    def __init__(self) -> None:
-        self.condition = asyncio.Condition()
-        self.policy: object = None
-        self.borrowers = 0
-
-
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     """A Modal-style GPU spec -> (type, count) for providers that want them split:
     "A100" -> ("A100", 1), "A100:2" -> ("A100", 2), "2" -> (None, 2) (count only,
@@ -158,7 +151,6 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
-        self._borrow_state = _BorrowState()
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
@@ -210,33 +202,6 @@ class Runtime(ABC):
         runtime = copy.copy(self)
         runtime.env = dict(env)
         return runtime
-
-    async def acquire_borrow(self, config: BaseConfig) -> object:
-        """Join the active network-policy group, or wait for a different one."""
-        policy: object = (
-            (frozenset(config.allow), frozenset(config.block))
-            if isinstance(config, NetworkPolicyConfig)
-            else None
-        )
-        state = self._borrow_state
-        async with state.condition:
-            await state.condition.wait_for(
-                lambda: state.borrowers == 0 or state.policy == policy
-            )
-            if state.borrowers == 0:
-                state.policy = policy
-            state.borrowers += 1
-        return policy
-
-    async def release_borrow(self, policy: object) -> None:
-        """Leave a network-policy group and wake blocked incompatible borrowers."""
-        state = self._borrow_state
-        async with state.condition:
-            assert state.borrowers > 0 and state.policy == policy
-            state.borrowers -= 1
-            if state.borrowers == 0:
-                state.policy = None
-                state.condition.notify_all()
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
