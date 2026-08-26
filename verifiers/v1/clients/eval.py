@@ -1,5 +1,6 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import asyncio
 import re
 from collections.abc import Mapping
 
@@ -65,6 +66,8 @@ class EvalClient(Client):
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
         self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
+        self._models: dict | None = None
+        self._models_lock = asyncio.Lock()
 
     async def get_response(
         self,
@@ -158,6 +161,27 @@ class EvalClient(Client):
         raise model_error(
             f"upstream {response.status_code}: {text}", status_code=response.status_code
         )
+
+    async def models(self, dialect: Dialect) -> dict:
+        # One fetch serves every rollout on this endpoint (the lock stops a launch stampede).
+        async with self._models_lock:
+            if self._models is None:
+                headers = httpx.Headers(self.headers)
+                headers.update(dialect.auth_headers(self.api_key))
+                try:
+                    response = await self.client.get(
+                        join_url(self.base_url, "/v1/models"), headers=headers
+                    )
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise model_error(
+                        f"upstream {e.response.status_code}: {e.response.text}",
+                        status_code=e.response.status_code,
+                    ) from e
+                except httpx.HTTPError as e:
+                    raise model_error(str(e), status_code=503) from e
+                self._models = from_json(response.content)
+        return self._models
 
     async def relay(
         self,

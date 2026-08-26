@@ -66,6 +66,12 @@ class Client(ABC):
         as native JSON and return the provider JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
+    async def models(self, dialect: Dialect) -> dict:
+        """The upstream `GET /v1/models` listing, cached per client. Agent loops read a
+        provider context-window extension (e.g. vLLM's `max_model_len`) from it to set their
+        compaction threshold; the body is relayed as the provider sent it."""
+        raise NotImplementedError(f"{type(self).__name__} does not list models")
+
     async def close(self) -> None:
         pass
 

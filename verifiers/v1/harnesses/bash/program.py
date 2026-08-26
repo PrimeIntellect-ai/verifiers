@@ -11,6 +11,7 @@ import re
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 import httpx
 from openai import APIError, AsyncOpenAI, BadRequestError
@@ -62,7 +63,8 @@ CONTEXT_WINDOW_FIELDS = (
 async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
     """90% of the model context window, when the provider's model card advertises one."""
     try:
-        payload = await client.get("/models", cast_to=dict)
+        # The SDK needs a parameterized mapping type to parse into (bare `dict` fails).
+        payload = await client.get("/models", cast_to=dict[str, Any])
     except APIError:
         return None
     for card in payload.get("data") or []:

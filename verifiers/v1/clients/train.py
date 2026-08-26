@@ -7,7 +7,7 @@ import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
@@ -312,6 +312,8 @@ class TrainClient(Client):
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
         self.client = build_async_openai(config)
+        self._models: dict | None = None
+        self._models_lock = asyncio.Lock()
         # The per-request model is only known at call time; a config that pins the renderer
         # model can warm now, which is every training run (prime-rl always pins it).
         if config.renderer_model_name is not None:
@@ -320,6 +322,18 @@ class TrainClient(Client):
                 config.renderer,
                 multiplex=config.multiplex,
             ).warm()
+
+    async def models(self, dialect: Dialect) -> dict:
+        # One fetch serves every rollout on this engine (the lock stops a launch stampede).
+        async with self._models_lock:
+            if self._models is None:
+                try:
+                    self._models = await self.client.get(
+                        "/models", cast_to=cast(Any, dict[str, Any])
+                    )
+                except OpenAIError as e:
+                    raise model_error(e) from e
+        return self._models
 
     async def get_response(
         self,

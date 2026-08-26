@@ -326,6 +326,9 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        # One models route serves every dialect: OpenAI and Anthropic SDKs both list
+        # models at `GET /v1/models` (the response schema is the upstream's).
+        app.router.add_get("/v1/models", self.handle_models)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
@@ -1052,6 +1055,30 @@ class InterceptionServer(Interception):
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
+
+    async def handle_models(self, request: web.Request) -> web.Response:
+        """`GET /v1/models`: relay the upstream model listing so agent loops can read a
+        provider context-window extension (e.g. vLLM's `max_model_len`). The path is shared
+        by every dialect; only the auth carrier differs, so the bearer is tried per dialect.
+        Never recorded on the trace, and a failure never fails the rollout."""
+        for dialect in DIALECTS:
+            session = self.sessions.get(dialect.secret(request.headers))
+            if session is not None:
+                break
+        else:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        logger.debug("intercept models: id=%s", session.trace.id)
+        try:
+            payload = await session.client.models(dialect)
+        except NotImplementedError as e:
+            return web.json_response(dialect.error_body(str(e)), status=404)
+        except RolloutError as e:
+            logger.warning("models call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(
+                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+            )
+        return web.json_response(payload)
 
     def _session_for(
         self, request: web.Request, *, allow_service: bool = False
