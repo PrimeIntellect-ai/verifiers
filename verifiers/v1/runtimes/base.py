@@ -130,6 +130,8 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
+    __slots__ = ("env",)
+
     is_local: ClassVar[bool] = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
     subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
@@ -200,6 +202,8 @@ class Runtime(ABC):
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
         runtime = copy.copy(self)
+        # `env` is slotted, so every other runtime field stays physical and shared.
+        runtime.__dict__ = self.__dict__
         runtime.env = dict(env)
         return runtime
 
