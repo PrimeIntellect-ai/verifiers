@@ -128,12 +128,7 @@ def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     assert graph.message_hash(left) == graph.message_hash(right)
 
 
-def test_restated_reasoning_dedups_to_the_sampled_node():
-    """Chat clients never echo reasoning back, so a restated assistant message —
-    reasoning absent or even rewritten — hash-dedups to the sampled node and the
-    sampled reasoning tokens stay on the path. A genuinely divergent history is
-    still forked by token-identity prefix reuse (see the renderer-level-break
-    test below), not by the message hash."""
+def test_reasoning_content_participates_in_graph_prefix_matching():
     task = vf.TaskData(idx=0, prompt="use a tool")
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -169,9 +164,7 @@ def test_restated_reasoning_dedups_to_the_sampled_node():
         for node in trace.nodes
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
-    assert len(tool_call_nodes) == 1
-    assert tool_call_nodes[0].sampled
-    assert tool_call_nodes[0].message.reasoning_content == "plan A"
+    assert len(tool_call_nodes) == 2
 
 
 def test_renderer_level_break_forks_by_token_id():
