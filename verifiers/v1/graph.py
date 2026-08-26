@@ -227,7 +227,7 @@ _PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "p
 
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
-    (None and "" equal), assistant reasoning content when present, assistant tool calls,
+    (None and "" equal), assistant tool calls,
     opaque continuation state, tool call id. Two messages hash equal iff they're the same
     conversational message, so a re-stated prefix message dedups to one node. The dedup key
     for sharing a prefix across turns/branches; salt-free so it is identical across processes
@@ -252,9 +252,12 @@ def message_hash(message: Message) -> str:
         add("content_text")
         add(message.content or "")
     if isinstance(message, AssistantMessage):
-        if message.reasoning_content is not None:
-            add("reasoning_content")
-            add(message.reasoning_content)
+        # reasoning_content stays OUT of the hash: chat-completions clients never
+        # echo reasoning back, so a sampled assistant node (reasoning recorded)
+        # must dedup with its re-stated prompt copy (reasoning absent) — otherwise
+        # every thinking-model turn forks a new branch and the sampled reasoning
+        # tokens never reach the next turn's prefix. Responses-style flows that
+        # genuinely round-trip reasoning still distinguish it via provider_state.
         for item in message.provider_state or []:
             kind = item.get("type") or (
                 "message" if item.get("role") == "assistant" else ""
