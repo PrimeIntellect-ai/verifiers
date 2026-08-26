@@ -4,8 +4,7 @@ import hashlib
 import json
 import logging
 import shlex
-
-from pydantic import Field
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult
 from verifiers.v1.clients import ModelContext
@@ -20,6 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
+PRIME_AGENT_COMMIT: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = (
+    "b5ee2f81a59510e7225a0db10d65102e91e98803"
+)
+PRIME_AGENT_VERSION = "0.8.0-beta.549.1.b5ee2f8"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
@@ -32,36 +35,60 @@ ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_VERSION"
+prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
-case "$PRIME_AGENT_VERSION" in
-    *-beta.*) release_tag=beta ;;
-    *) release_tag="v$PRIME_AGENT_VERSION" ;;
-esac
-release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/$release_tag"
-tarball="prime-agent-$PRIME_AGENT_VERSION.tgz"
+release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/beta"
+agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
+ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
+core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
+tui_tarball="prime-agent-tui-$PRIME_AGENT_RELEASE_VERSION.tgz"
 download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
 trap 'rm -rf "$download_dir"' EXIT
-curl -fsSL --retry 5 --retry-all-errors \
-    "$release_url/SHA256SUMS" -o "$download_dir/SHA256SUMS"
-curl -fsSL --retry 5 --retry-all-errors \
-    "$release_url/$tarball" -o "$download_dir/$tarball"
-awk -v file="$tarball" '$2 == file { print; found = 1; exit } END { if (!found) exit 1 }' \
-    "$download_dir/SHA256SUMS" > "$download_dir/SHA256SUMS.selected"
-(cd "$download_dir" && sha256sum -c SHA256SUMS.selected)
+for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
+    curl -fsSL --retry 5 --retry-all-errors \
+        "$release_url/$tarball" -o "$download_dir/$tarball"
+done
+printf '%s  %s\n' \
+    'f3b98bd7bf70dc25077dbd6afcec8d651570bead96919b42b8fde36d3e7d7268' "$agent_tarball" \
+    '0d655397ca9fda765afb5ba7b2b65ab74b928f9c178e548ef3befc0358f39ce2' "$ai_tarball" \
+    '0cb81e79422887a43d850722812c6a4589760eb69441cb4c042e665cbfdff5e1' "$core_tarball" \
+    '307ec5e5a320f9a0355b08ec352230cb406f82fac0ebbd6e33f6306a3e9452a8' "$tui_tarball" \
+    > "$download_dir/SHA256SUMS"
+(cd "$download_dir" && sha256sum -c SHA256SUMS)
+mkdir "$download_dir/package-root"
+tar -xzf "$download_dir/$agent_tarball" -C "$download_dir/package-root"
+node - \
+    "$download_dir/package-root/package/package.json" \
+    "$download_dir" \
+    "$ai_tarball" \
+    "$core_tarball" \
+    "$tui_tarball" <<'NODE'
+const fs = require("node:fs");
+const [manifestPath, downloadDir, ai, core, tui] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+for (const [name, file] of [
+    ["@earendil-works/pi-ai", ai],
+    ["@earendil-works/pi-agent-core", core],
+    ["@earendil-works/pi-tui", tui],
+]) {
+    manifest.dependencies[name] = `file:${downloadDir}/${file}`;
+}
+fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+mkdir "$download_dir/repacked"
+repacked="$(npm pack "$download_dir/package-root/package" \
+    --pack-destination "$download_dir/repacked" --silent)"
 PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
-    --no-fund --no-audit --loglevel=error --progress=false "$download_dir/$tarball"
+    --no-fund --no-audit --loglevel=error --progress=false \
+    "$download_dir/repacked/$repacked"
 """
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = Field(
-        default="0.8.0-beta.548.1.9bc0055",
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
-    )
-    """Prime Agent release to install, pinned for reproducibility."""
+    commit: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = PRIME_AGENT_COMMIT
+    """Prime Agent main commit to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -130,7 +157,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
-        logger.info("prime-agent: ensuring %s is installed", self.config.version)
+        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         lock = f"{PRIME_AGENT_DIR}/install.lock"
         guarded = (
             f"mkdir -p {PRIME_AGENT_DIR} && "
@@ -143,7 +170,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
-                "PRIME_AGENT_VERSION": self.config.version,
+                "PRIME_AGENT_COMMIT": self.config.commit,
+                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
             },
         )
         if result.exit_code != 0:
@@ -265,7 +293,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             )
 
     def _bin(self) -> str:
-        return f"{PRIME_AGENT_DIR}/{self.config.version}/bin/prime-agent"
+        return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
 
     @staticmethod
     def _root(trace: Trace) -> str:
