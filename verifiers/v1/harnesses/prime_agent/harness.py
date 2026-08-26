@@ -6,7 +6,7 @@ import logging
 import shlex
 from typing import Literal
 
-from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
@@ -100,7 +100,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
-    def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         events = [
             event
             for metadata in result.update_metadata
