@@ -1003,10 +1003,6 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
-        except OverlongPromptError as e:
-            error = e
-            logger.debug("prompt too long: id=%s", session.trace.id)
-            return resp
         except RolloutError as e:
             # A streamed terminal provider failure is discovered only after the
             # response body has been relayed. Keep it off the graph and preserve
