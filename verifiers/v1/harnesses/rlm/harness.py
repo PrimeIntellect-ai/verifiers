@@ -3,15 +3,13 @@
 import logging
 import random
 import shlex
-from typing import Any, Literal, cast
+from typing import Literal
 
-from openai import APIError
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -35,15 +33,6 @@ class _SessionSnapshot(BaseModel):
 
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
-
-
-CONTEXT_WINDOW_FIELDS = (
-    "max_model_len",
-    "context_length",
-    "context_window",
-    "max_context_length",
-)
-_context_window_cache: dict[tuple[str, str], int | None] = {}
 
 
 class CompactionConfig(BaseConfig):
@@ -70,33 +59,8 @@ class CompactionConfig(BaseConfig):
         return value
 
 
-async def resolve_compaction_threshold(ctx: ModelContext) -> int | None:
-    """90% of the model context window, when the provider's model card advertises one."""
-    key = (ctx.client.base_url, ctx.model)
-    if key not in _context_window_cache:
-        window = None
-        try:
-            async with build_async_openai(ctx.client) as client:
-                payload = await client.get("/models", cast_to=cast(Any, dict[str, Any]))
-        except APIError:
-            payload = {}
-        for card in payload.get("data") or []:
-            if not isinstance(card, dict) or card.get("id") != ctx.model:
-                continue
-            for field in CONTEXT_WINDOW_FIELDS:
-                value = card.get(field)
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                    window = value
-                    break
-            break
-        _context_window_cache[key] = window
-
-    window = _context_window_cache[key]
-    return max(1, window * 9 // 10) if window is not None else None
-
-
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="1e45450", min_length=1)
+    version: str = Field(default="f452d52", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
@@ -152,8 +116,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
-        compaction: dict[str, int | None] | None,
+        data: TaskData,
     ) -> JsonObject:
+        compaction = self.config.compaction
         payload = {
             "session_id": trace.id,
             "model": ctx.model,
@@ -163,7 +128,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             },
             "policy": {
                 "max_depth": self.config.max_depth,
-                "compaction": compaction,
+                "compaction": compaction is not None,
+                "summarize_at_tokens": (
+                    compaction.summarize_threshold(data.idx) if compaction else None
+                ),
                 "max_concurrent_subagents": max(4, self.config.max_depth),
             },
             "system_prompt_path": None,
@@ -185,24 +153,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        compaction = None
-        if self.config.compaction is not None:
-            summarize_at_tokens = self.config.compaction.summarize_threshold(data.idx)
-            if summarize_at_tokens is None:
-                summarize_at_tokens = await resolve_compaction_threshold(ctx)
-            compaction = {"summarize_at_tokens": summarize_at_tokens}
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx,
-                trace,
-                runtime,
-                endpoint,
-                secret,
-                system_prompt,
-                compaction,
+                ctx, trace, runtime, endpoint, secret, system_prompt, data
             ),
         )
 

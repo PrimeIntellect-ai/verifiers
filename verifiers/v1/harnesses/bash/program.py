@@ -13,7 +13,7 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI, BadRequestError
+from openai import APIError, AsyncOpenAI, BadRequestError
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
@@ -50,6 +50,30 @@ CONTEXT_WINDOW_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+
+CONTEXT_WINDOW_FIELDS = (
+    "max_model_len",
+    "context_length",
+    "context_window",
+    "max_context_length",
+)
+
+
+async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
+    """90% of the model context window, when the provider's model card advertises one."""
+    try:
+        payload = await client.get("/models", cast_to=dict)
+    except APIError:
+        return None
+    for card in payload.get("data") or []:
+        if not isinstance(card, dict) or card.get("id") != model:
+            continue
+        for field in CONTEXT_WINDOW_FIELDS:
+            value = card.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return max(1, value * 9 // 10)
+        break
+    return None
 
 
 BASH_TOOL = {
@@ -521,6 +545,8 @@ async def main() -> None:
         args.compaction,
         args.summarize_at_tokens,
     )
+    if compactor.enabled and compactor.threshold is None:
+        compactor.threshold = await discover_threshold(client, args.model)
     while True:
         completion, messages = await compactor.complete(messages)
         choice = completion.choices[0]

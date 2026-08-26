@@ -2,14 +2,11 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import Any, cast
 
-from openai import APIError
 from pydantic import PositiveInt, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
@@ -34,15 +31,6 @@ SEARCH_PROMPT = (
 )
 
 
-CONTEXT_WINDOW_FIELDS = (
-    "max_model_len",
-    "context_length",
-    "context_window",
-    "max_context_length",
-)
-_context_window_cache: dict[tuple[str, str], int | None] = {}
-
-
 class CompactionConfig(BaseConfig):
     """Context compaction policy for the bash agent loop."""
 
@@ -65,31 +53,6 @@ class CompactionConfig(BaseConfig):
             lo, hi = value
             return random.Random(task_idx or 0).randint(lo, hi)
         return value
-
-
-async def resolve_compaction_threshold(ctx: ModelContext) -> int | None:
-    """90% of the model context window, when the provider's model card advertises one."""
-    key = (ctx.client.base_url, ctx.model)
-    if key not in _context_window_cache:
-        window = None
-        try:
-            async with build_async_openai(ctx.client) as client:
-                payload = await client.get("/models", cast_to=cast(Any, dict[str, Any]))
-        except APIError:
-            payload = {}
-        for card in payload.get("data") or []:
-            if not isinstance(card, dict) or card.get("id") != ctx.model:
-                continue
-            for field in CONTEXT_WINDOW_FIELDS:
-                value = card.get(field)
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                    window = value
-                    break
-            break
-        _context_window_cache[key] = window
-
-    window = _context_window_cache[key]
-    return max(1, window * 9 // 10) if window is not None else None
 
 
 class BashHarnessConfig(HarnessConfig):
@@ -148,8 +111,6 @@ class BashHarness(Harness[BashHarnessConfig]):
         if self.config.compaction is not None:
             args.append("--compaction")
             threshold = self.config.compaction.summarize_threshold(data.idx)
-            if threshold is None:
-                threshold = await resolve_compaction_threshold(ctx)
             if threshold is not None:
                 args.append(f"--summarize-at-tokens={threshold}")
         if self.config.edit:
