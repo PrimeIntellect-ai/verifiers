@@ -34,22 +34,18 @@ def _native_payload(array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def test_response_from_generate_normalizes_native_routed_experts():
+def test_response_from_generate_wraps_native_routed_experts_as_opaque():
     array = np.arange(12, dtype=np.uint16).reshape(3, 2, 2)
+    encoded = _native_payload(array)
 
     response = response_from_generate(
-        _result(_native_payload(array)),
+        _result(encoded),
         "test-model",
         routed_experts_prompt_start=4,
     )
 
     assert response.tokens is not None
-    payload = response.tokens.routed_experts
-    assert payload is not None
-    assert payload["shape"] == [3, 2, 2]
-    assert payload["dtype"] == "uint16"
-    assert payload["start"] == 4
-    assert base64.b64decode(payload["data"]) == array.tobytes()
+    assert response.tokens.routed_experts == {"data": encoded, "start": 4}
 
 
 def test_response_from_generate_preserves_legacy_routed_experts():
@@ -68,38 +64,6 @@ def test_response_from_generate_preserves_legacy_routed_experts():
 
     assert response.tokens is not None
     assert response.tokens.routed_experts is legacy
-
-
-@pytest.mark.parametrize(
-    ("payload", "message"),
-    [
-        ("not-base64", "valid non-pickled NumPy array"),
-        (_native_payload(np.zeros((2, 2), dtype=np.uint8)), "rank 3"),
-        (_native_payload(np.zeros((2, 1, 2), dtype=np.float32)), "uint8 or uint16"),
-    ],
-)
-def test_response_from_generate_rejects_invalid_native_routed_experts(
-    payload: str, message: str
-):
-    with pytest.raises(ValueError, match=message):
-        response_from_generate(
-            _result(payload),
-            "test-model",
-            routed_experts_prompt_start=0,
-        )
-
-
-def test_response_from_generate_rejects_pickled_routed_experts():
-    array = np.array([[[{"expert": 1}]]], dtype=object)
-    buffer = io.BytesIO()
-    np.save(buffer, array, allow_pickle=True)
-
-    with pytest.raises(ValueError, match="non-pickled"):
-        response_from_generate(
-            _result(base64.b64encode(buffer.getvalue()).decode("ascii")),
-            "test-model",
-            routed_experts_prompt_start=0,
-        )
 
 
 @pytest.mark.asyncio

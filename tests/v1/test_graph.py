@@ -3,6 +3,7 @@ import io
 import json
 
 import numpy as np
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -145,6 +146,27 @@ def test_routed_experts_none_when_absent():
         )
     )
     assert trace.branches[-1].routed_experts is None
+
+
+@pytest.mark.parametrize(
+    ("array", "message"),
+    [
+        (np.zeros((2, 2), dtype=np.uint8), "rank-3 integer array"),
+        (np.zeros((2, 1, 2), dtype=np.float32), "rank-3 integer array"),
+    ],
+)
+def test_opaque_native_routed_experts_are_validated_at_attribution(
+    array: np.ndarray, message: str
+):
+    payload = _opaque_routed_payload(
+        array.shape[0], 0, 0, native=True, layers=array.shape[-2], top_k=array.shape[-1]
+    )
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    payload["data"] = base64.b64encode(buffer.getvalue()).decode()
+
+    with pytest.raises(ValueError, match=message):
+        graph._decode_routed_experts(payload)
 
 
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
