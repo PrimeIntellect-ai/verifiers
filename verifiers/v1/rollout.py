@@ -81,7 +81,6 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
-        self._owns_runtime = runtime is None
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -180,7 +179,7 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
-        if self._owns_runtime:
+        if self._borrowed_runtime is None:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
@@ -202,7 +201,7 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
-            if self._owns_runtime:
+            if self._borrowed_runtime is None:
                 runtime.env = runtime_env
             else:
                 runtime = runtime.with_env(runtime_env)
@@ -213,7 +212,7 @@ class Rollout:
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
-            if self._owns_runtime:
+            if self._borrowed_runtime is None:
                 await runtime.start()
             await runtime.prepare_setup()
             now = time.time()
@@ -432,7 +431,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
-        if self._owns_runtime and self.runtime is not None:
+        if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
 
@@ -516,7 +515,7 @@ class Rollout:
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
-            if self._owns_runtime and runtime is not None:
+            if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
                 except Exception:
