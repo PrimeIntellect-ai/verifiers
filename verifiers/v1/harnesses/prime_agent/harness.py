@@ -24,10 +24,7 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-LATEST_RELEASE_URL = (
-    "https://github.com/PrimeIntellect-ai/prime-agent/"
-    "releases/latest/download/latest.json"
-)
+LATEST_RELEASE_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/latest.json"
 MINIMUM_VERSION = (0, 8, 1)
 RELEASE_PACKAGES = (
     "prime-agent",
