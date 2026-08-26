@@ -1,15 +1,18 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import logging
+import random
 import shlex
-from typing import Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from openai import APIError
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.clients.context import resolve_compaction_threshold
-from verifiers.v1.configs.harness import CompactionConfig, HarnessConfig
+from verifiers.v1.clients.base import build_async_openai
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -32,6 +35,64 @@ class _SessionSnapshot(BaseModel):
 
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
+
+
+CONTEXT_WINDOW_FIELDS = (
+    "max_model_len",
+    "context_length",
+    "context_window",
+    "max_context_length",
+)
+_context_window_cache: dict[tuple[str, str], int | None] = {}
+
+
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the RLM agent loop."""
+
+    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
+    """Compact at this token count. A pair draws a task-seeded threshold. When unset, use
+    90% of the model context window when the provider advertises it."""
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "CompactionConfig":
+        value = self.summarize_at_tokens
+        if isinstance(value, tuple) and value[0] > value[1]:
+            raise ValueError(
+                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
+            )
+        return self
+
+    def summarize_threshold(self, task_idx: int | None) -> int | None:
+        value = self.summarize_at_tokens
+        if isinstance(value, tuple):
+            lo, hi = value
+            return random.Random(task_idx or 0).randint(lo, hi)
+        return value
+
+
+async def resolve_compaction_threshold(ctx: ModelContext) -> int | None:
+    """90% of the model context window, when the provider's model card advertises one."""
+    key = (ctx.client.base_url, ctx.model)
+    if key not in _context_window_cache:
+        window = None
+        try:
+            async with build_async_openai(ctx.client) as client:
+                payload = await client.get("/models", cast_to=cast(Any, dict[str, Any]))
+        except APIError:
+            payload = {}
+        for card in payload.get("data") or []:
+            if not isinstance(card, dict) or card.get("id") != ctx.model:
+                continue
+            for field in CONTEXT_WINDOW_FIELDS:
+                value = card.get(field)
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    window = value
+                    break
+            break
+        _context_window_cache[key] = window
+
+    window = _context_window_cache[key]
+    return max(1, window * 9 // 10) if window is not None else None
 
 
 class RLMHarnessConfig(HarnessConfig):

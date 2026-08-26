@@ -3,37 +3,12 @@
 from __future__ import annotations
 
 import os
-import random
 from pathlib import Path
 
-from pydantic import ConfigDict, Field, FiniteFloat, PositiveInt, model_validator
+from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
-
-
-class CompactionConfig(BaseConfig):
-    """Optional context compaction policy for in-house agent loops."""
-
-    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
-    """Compact at this token count. A pair draws a task-seeded threshold. When unset, use
-    90% of the model context window when the provider advertises it."""
-
-    @model_validator(mode="after")
-    def validate_range(self) -> CompactionConfig:
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple) and value[0] > value[1]:
-            raise ValueError(
-                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-            )
-        return self
-
-    def summarize_threshold(self, task_idx: int | None) -> int | None:
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            return random.Random(task_idx or 0).randint(lo, hi)
-        return value
 
 
 class HarnessConfig(BaseConfig):
