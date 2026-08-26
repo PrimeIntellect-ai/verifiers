@@ -1,17 +1,16 @@
-"""Run the public Cline CLI headlessly through interception."""
+"""Run the public Cline CLI through its native ACP server."""
 
 import json
 import logging
 import shlex
-from typing import Literal
 
 from pydantic import Field
 
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -39,14 +38,11 @@ class ClineHarnessConfig(HarnessConfig):
     version: str = Field(default="3.0.57", pattern=r"^[A-Za-z0-9._+-]+$")
     """Public Cline CLI release to install, pinned for reproducibility."""
 
-    compaction: Literal["agentic", "basic", "off"] = "basic"
-    """Cline's context-compaction mode."""
 
-    max_retries: int = Field(default=6, ge=1)
-    """Maximum consecutive Cline mistakes before the CLI exits."""
+class ClineHarness(ACPHarness[ClineHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_MCP = True
 
-
-class ClineHarness(Harness[ClineHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
         directory = CLINE_DIR.format(version=self.config.version)
@@ -71,8 +67,9 @@ class ClineHarness(Harness[ClineHarnessConfig]):
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"Cline CLI install failed: {detail}")
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -81,12 +78,8 @@ class ClineHarness(Harness[ClineHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
-        if mcp_urls:
-            raise ValueError("Cline harness v1 does not support MCP servers")
-        _, prompt = self.resolve_text_prompt(data)
-        if prompt is None:
-            raise ValueError("Cline requires a task prompt")
+    ) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(data)
 
         data_dir = self.data_dir(trace)
         settings_dir = f"{data_dir}/settings"
@@ -95,7 +88,22 @@ class ClineHarness(Harness[ClineHarnessConfig]):
             f"{settings_dir}/global-settings.json",
             json.dumps({"disabledTools": self.config.disabled_tools or []}).encode(),
         )
-        await runtime.write(mcp_settings, b'{"mcpServers":{}}')
+        await runtime.write(
+            mcp_settings,
+            json.dumps(
+                {
+                    "mcpServers": {
+                        name: {
+                            "transport": {
+                                "type": "streamableHttp",
+                                "url": url,
+                            }
+                        }
+                        for name, url in mcp_urls.items()
+                    }
+                }
+            ).encode(),
+        )
 
         env = {
             **self.config.resolved_env,
@@ -105,6 +113,9 @@ class ClineHarness(Harness[ClineHarnessConfig]):
             ),
             "CLINE_DATA_DIR": data_dir,
             "CLINE_MCP_SETTINGS_PATH": mcp_settings,
+            "CLINE_PROVIDER": "openai-compatible",
+            "CLINE_API_KEY": secret,
+            "CLINE_MODEL": ctx.model,
             "CLINE_TELEMETRY_DISABLED": "1",
             "CLINE_NO_AUTO_UPDATE": "1",
             "NO_UPDATE_NOTIFIER": "1",
@@ -134,29 +145,23 @@ class ClineHarness(Harness[ClineHarnessConfig]):
             detail = (auth.stderr or auth.stdout).strip()[-500:]
             raise RuntimeError(f"Cline provider configuration failed: {detail}")
 
-        args = [
-            *cline,
-            "--json",
-            "--auto-approve",
-            "true",
-            "--cwd",
-            ".",
-            "--provider",
-            "openai-compatible",
-            "--key",
-            secret,
-            "--model",
-            ctx.model,
-            "--compaction",
-            self.config.compaction,
-            "--retries",
-            str(self.config.max_retries),
-            "--data-dir",
-            data_dir,
-        ]
-        if effort := ctx.sampling.reasoning_effort:
-            args += ["--thinking", effort]
-        return await runtime.run_program([*args, prompt], env)
+        return ACPConfig(
+            env=env,
+            command=[
+                *cline,
+                "--acp",
+                "--auto-approve",
+                "true",
+                "--cwd",
+                ".",
+                "--data-dir",
+                data_dir,
+            ],
+            prompt=prompt,
+            # Cline reads task-scoped servers from CLINE_MCP_SETTINGS_PATH.
+            mcp_urls={},
+            system_prompt=system_prompt,
+        )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", self.data_dir(trace)], {})
