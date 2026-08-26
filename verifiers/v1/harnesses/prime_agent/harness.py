@@ -1,6 +1,5 @@
 """Prime Agent over its native ACP mode."""
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -9,7 +8,7 @@ import shlex
 from dataclasses import dataclass
 
 import httpx
-from pydantic import PrivateAttr, field_validator, model_validator
+from pydantic import field_validator, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -43,9 +42,7 @@ ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 @dataclass(frozen=True)
 class PrimeAgentRelease:
-    requested: str
     version: str
-    source: str
     sha256: dict[str, str]
 
     @property
@@ -71,145 +68,61 @@ def _version(value: object) -> str:
         raise ValueError(f"invalid Prime Agent stable version: {value!r}")
     if version < MINIMUM_VERSION:
         minimum = ".".join(str(part) for part in MINIMUM_VERSION)
-        raise ValueError(
-            f"Prime Agent {raw} is older than the required {minimum}; "
-            "wait for the stable release or request a supported exact version"
-        )
+        raise ValueError(f"Prime Agent {raw} is older than the required {minimum}")
     return raw
 
 
-def _release_from_entries(
-    requested: str,
-    version: object,
-    source: str,
-    entries: object,
-) -> PrimeAgentRelease:
+def _release(version: object, entries: object) -> PrimeAgentRelease:
     resolved = _version(version)
-    if requested == "stable":
-        expected_source = LATEST_RELEASE_URL
-    else:
-        if _version(requested) != resolved:
-            raise ValueError(
-                f"Prime Agent release {requested!r} resolved to unexpected "
-                f"version {resolved!r}"
-            )
-        expected_source = f"{GITHUB_RELEASE_URL}/v{resolved}/SHA256SUMS"
-    if source != expected_source:
-        raise ValueError(
-            f"Prime Agent release metadata came from unexpected source {source!r}"
-        )
     if not isinstance(entries, list):
-        raise TypeError(f"Prime Agent release metadata from {source} has no tarballs")
-    hashes: dict[str, str] = {}
+        raise TypeError("Prime Agent release metadata has no tarballs")
+    files: dict[str, str] = {}
     for entry in entries:
         if not isinstance(entry, dict):
-            raise TypeError(f"invalid tarball entry in {source}")
-        package = entry.get("package")
-        if not isinstance(package, str) or package not in RELEASE_PACKAGES:
-            raise ValueError(f"unexpected package {package!r} in {source}")
-        expected = f"{package}-{resolved}.tgz"
-        if entry.get("file") != expected:
-            raise ValueError(
-                f"Prime Agent release metadata names {entry.get('file')!r}, "
-                f"expected {expected!r}"
-            )
+            raise TypeError("invalid Prime Agent tarball entry")
+        file = entry.get("file")
         sha256 = entry.get("sha256")
-        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
-            raise ValueError(f"invalid SHA-256 for {expected} in {source}")
-        if package in hashes:
-            raise ValueError(f"duplicate {package} entry in {source}")
-        hashes[package] = sha256.lower()
-    missing = sorted(set(RELEASE_PACKAGES) - hashes.keys())
-    if missing:
-        raise ValueError(
-            f"Prime Agent release metadata is missing {missing} in {source}"
-        )
-    return PrimeAgentRelease(
-        requested=requested,
-        version=resolved,
-        source=source,
-        sha256=hashes,
-    )
+        if isinstance(file, str) and isinstance(sha256, str):
+            if file in files:
+                raise ValueError(f"duplicate Prime Agent tarball {file!r}")
+            files[file] = sha256.lower()
+    hashes: dict[str, str] = {}
+    for package in RELEASE_PACKAGES:
+        file = f"{package}-{resolved}.tgz"
+        sha256 = files.get(file, "")
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ValueError(f"missing or invalid SHA-256 for {file}")
+        hashes[package] = sha256
+    return PrimeAgentRelease(version=resolved, sha256=hashes)
 
 
-def _release_from_sums(
-    requested: str, version: str, source: str, text: str
-) -> PrimeAgentRelease:
-    resolved = _version(version)
-    entries = []
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            continue
-        sha256, file = fields
-        for package in RELEASE_PACKAGES:
-            if file == f"{package}-{resolved}.tgz":
-                entries.append({"package": package, "file": file, "sha256": sha256})
-                break
-    return _release_from_entries(requested, resolved, source, entries)
+def _source(requested: str) -> str:
+    if requested == "stable":
+        return LATEST_RELEASE_URL
+    return f"{GITHUB_RELEASE_URL}/v{requested}/SHA256SUMS"
 
 
 async def _fetch_release(requested: str) -> PrimeAgentRelease:
-    requested = requested.strip().lower()
-    transport = httpx.AsyncHTTPTransport(retries=3)
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=30,
-        transport=transport,
-    ) as client:
+    source = _source(requested)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        response = await client.get(source)
+        response.raise_for_status()
         if requested == "stable":
-            response = await client.get(LATEST_RELEASE_URL)
-            response.raise_for_status()
             try:
                 metadata = response.json()
             except json.JSONDecodeError as e:
                 raise ValueError(
-                    f"invalid Prime Agent release metadata from {LATEST_RELEASE_URL}"
+                    f"invalid Prime Agent release metadata from {source}"
                 ) from e
             if not isinstance(metadata, dict):
-                raise ValueError(
-                    f"invalid Prime Agent release metadata from {LATEST_RELEASE_URL}"
-                )
-            resolved = _version(metadata.get("version"))
-            expected_tarball = f"releases/v{resolved}/prime-agent-{resolved}.tgz"
-            if (
-                metadata.get("package") != "prime-agent"
-                or metadata.get("tarball") != expected_tarball
-            ):
-                raise ValueError(
-                    f"invalid Prime Agent release metadata from {LATEST_RELEASE_URL}"
-                )
-            return _release_from_entries(
-                requested,
-                metadata.get("version"),
-                LATEST_RELEASE_URL,
-                metadata.get("tarballs"),
-            )
-        version = _version(requested)
-        source = f"{GITHUB_RELEASE_URL}/v{version}/SHA256SUMS"
-        response = await client.get(source)
-        response.raise_for_status()
-        return _release_from_sums(requested, version, source, response.text)
-
-
-_RELEASE_TASKS: dict[str, asyncio.Task[PrimeAgentRelease]] = {}
-_RELEASE_TASKS_LOCK = asyncio.Lock()
-
-
-async def _resolve_release(requested: str) -> PrimeAgentRelease:
-    """Share one in-flight fetch without caching stable across evaluations."""
-    async with _RELEASE_TASKS_LOCK:
-        task = _RELEASE_TASKS.get(requested)
-        if task is None:
-            task = asyncio.create_task(_fetch_release(requested))
-            _RELEASE_TASKS[requested] = task
-    try:
-        return await asyncio.shield(task)
-    finally:
-        if task.done():
-            async with _RELEASE_TASKS_LOCK:
-                if _RELEASE_TASKS.get(requested) is task:
-                    del _RELEASE_TASKS[requested]
+                raise ValueError(f"invalid Prime Agent release metadata from {source}")
+            return _release(metadata.get("version"), metadata.get("tarballs"))
+        entries = []
+        for line in response.text.splitlines():
+            fields = line.split()
+            if len(fields) == 2:
+                entries.append({"sha256": fields[0], "file": fields[1]})
+        return _release(requested, entries)
 
 
 INSTALL = r"""
@@ -271,12 +184,10 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     """Prime Agent stable channel, or an exact stable version such as ``0.8.1``."""
 
     resolved_release: PrimeAgentRelease | None = None
-    """Evaluation-frozen release provenance; populated before workers start."""
+    """Release frozen before the evaluation is saved or workers start."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
-
-    _release_lock: asyncio.Lock | None = PrivateAttr(default=None)
 
     @field_validator("release", mode="before")
     @classmethod
@@ -288,25 +199,17 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     @model_validator(mode="after")
     def _validate_resolved_release(self) -> "PrimeAgentHarnessConfig":
-        release = self.resolved_release
-        if release is None:
+        resolved = self.resolved_release
+        if resolved is None:
             return self
         entries = [
-            {
-                "package": package,
-                "file": release.file(package),
-                "sha256": release.sha256.get(package),
-            }
-            for package in RELEASE_PACKAGES
+            {"file": resolved.file(package), "sha256": sha256}
+            for package, sha256 in resolved.sha256.items()
         ]
-        validated = _release_from_entries(
-            self.release,
-            release.version,
-            release.source,
-            entries,
-        )
-        if release != validated:
-            raise ValueError("invalid frozen Prime Agent release metadata")
+        if _release(resolved.version, entries) != resolved:
+            raise ValueError("invalid frozen Prime Agent release")
+        if self.release != "stable" and self.release != resolved.version:
+            raise ValueError("frozen Prime Agent release does not match exact version")
         return self
 
 
@@ -371,22 +274,15 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def _resolve(self) -> PrimeAgentRelease:
-        if self.config.resolved_release is not None:
-            return self.config.resolved_release
-        if self.config._release_lock is None:
-            self.config._release_lock = asyncio.Lock()
-        async with self.config._release_lock:
-            if self.config.resolved_release is None:
-                try:
-                    self.config.resolved_release = await _resolve_release(
-                        self.config.release
-                    )
-                except (httpx.HTTPError, TypeError, ValueError) as e:
-                    raise RuntimeError(
-                        f"failed to resolve Prime Agent release "
-                        f"{self.config.release!r}: {e}"
-                    ) from e
-            return self.config.resolved_release
+        if self.config.resolved_release is None:
+            try:
+                self.config.resolved_release = await _fetch_release(self.config.release)
+            except (httpx.HTTPError, TypeError, ValueError) as e:
+                raise RuntimeError(
+                    f"failed to resolve Prime Agent release "
+                    f"{self.config.release!r}: {e}"
+                ) from e
+        return self.config.resolved_release
 
     def _resolved(self) -> PrimeAgentRelease:
         release = self.config.resolved_release
@@ -403,7 +299,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         await ensure_node(runtime)
         logger.info(
             "prime-agent: release %s resolved to %s (%s)",
-            release.requested,
+            self.config.release,
             release.version,
             release.cache_key,
         )
@@ -451,9 +347,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
         release = self._resolved()
         trace.info["prime_agent_release"] = {
-            "requested": release.requested,
+            "requested": self.config.release,
             "version": release.version,
-            "source": release.source,
+            "source": _source(self.config.release),
             "cache_key": release.cache_key,
             "artifacts": [
                 {
