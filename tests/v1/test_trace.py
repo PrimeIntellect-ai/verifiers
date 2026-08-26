@@ -429,3 +429,17 @@ def test_lineage_headers_are_complete_validated_and_stripped():
                 "X-RLM-Depth": "0",
             }
         )
+
+
+def test_lineage_manifest_requires_compaction_id_on_resumed_request():
+    """A resumed call's header and manifest request must retain the context compaction."""
+    manifest = _lineage_manifest("root-session").model_dump(mode="json")
+    resumed = next(
+        request
+        for request in manifest["requests"]
+        if request["request_id"] == "root-after"
+    )
+    resumed.pop("compaction_id")
+
+    with pytest.raises(ValueError, match="missing its context compaction"):
+        vf.LineageManifest.model_validate(manifest)
