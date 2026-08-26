@@ -138,7 +138,14 @@ async def _server(
 
 
 async def run_eval(config: EvalConfig) -> list[Episode]:
-    from verifiers.v1.utils.loaders import load_environment, load_taskset
+    from verifiers.v1.utils.loaders import load_environment, load_harness, load_taskset
+
+    harnesses = {
+        id(harness): harness for harness in config.env.agent_harnesses().values()
+    }
+    await asyncio.gather(
+        *(load_harness(harness).prepare() for harness in harnesses.values())
+    )
 
     # The env comes up in this process only for an in-process run; a served run's
     # workers each load their own, and this process owns just the taskset.

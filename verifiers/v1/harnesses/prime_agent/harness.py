@@ -3,8 +3,12 @@
 import hashlib
 import json
 import logging
+import re
 import shlex
-from typing import Literal
+from dataclasses import dataclass
+
+import httpx
+from pydantic import field_validator, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -19,10 +23,14 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = (
-    "b5ee2f81a59510e7225a0db10d65102e91e98803"
+LATEST_RELEASE_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/latest.json"
+MINIMUM_VERSION = (0, 8, 1)
+RELEASE_PACKAGES = (
+    "prime-agent",
+    "prime-agent-ai",
+    "prime-agent-core",
+    "prime-agent-tui",
 )
-PRIME_AGENT_VERSION = "0.8.0-beta.549.1.b5ee2f8"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
@@ -32,14 +40,102 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 
+@dataclass(frozen=True)
+class PrimeAgentRelease:
+    version: str
+    sha256: dict[str, str]
+
+    @property
+    def cache_key(self) -> str:
+        manifest = json.dumps(
+            {"version": self.version, "sha256": self.sha256},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(manifest.encode()).hexdigest()[:16]
+        return f"{self.version}-{digest}"
+
+    def file(self, package: str) -> str:
+        return f"{package}-{self.version}.tgz"
+
+
+def _version(value: object) -> str:
+    raw = value.removeprefix("v") if isinstance(value, str) else ""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", raw):
+        raise ValueError(f"invalid Prime Agent stable version: {value!r}")
+    version = tuple(int(part) for part in raw.split("."))
+    if raw != ".".join(str(part) for part in version):
+        raise ValueError(f"invalid Prime Agent stable version: {value!r}")
+    if version < MINIMUM_VERSION:
+        minimum = ".".join(str(part) for part in MINIMUM_VERSION)
+        raise ValueError(f"Prime Agent {raw} is older than the required {minimum}")
+    return raw
+
+
+def _release(version: object, entries: object) -> PrimeAgentRelease:
+    resolved = _version(version)
+    if not isinstance(entries, list):
+        raise TypeError("Prime Agent release metadata has no tarballs")
+    files: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise TypeError("invalid Prime Agent tarball entry")
+        file = entry.get("file")
+        sha256 = entry.get("sha256")
+        if isinstance(file, str) and isinstance(sha256, str):
+            if file in files:
+                raise ValueError(f"duplicate Prime Agent tarball {file!r}")
+            files[file] = sha256.lower()
+    hashes: dict[str, str] = {}
+    for package in RELEASE_PACKAGES:
+        file = f"{package}-{resolved}.tgz"
+        sha256 = files.get(file, "")
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ValueError(f"missing or invalid SHA-256 for {file}")
+        hashes[package] = sha256
+    return PrimeAgentRelease(version=resolved, sha256=hashes)
+
+
+def _source(requested: str) -> str:
+    if requested == "stable":
+        return LATEST_RELEASE_URL
+    return f"{GITHUB_RELEASE_URL}/v{requested}/SHA256SUMS"
+
+
+async def _fetch_release(requested: str) -> PrimeAgentRelease:
+    source = _source(requested)
+    transport = httpx.AsyncHTTPTransport(retries=3)
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=30, transport=transport
+    ) as client:
+        response = await client.get(source)
+        response.raise_for_status()
+        if requested == "stable":
+            try:
+                metadata = response.json()
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"invalid Prime Agent release metadata from {source}"
+                ) from e
+            if not isinstance(metadata, dict):
+                raise ValueError(f"invalid Prime Agent release metadata from {source}")
+            return _release(metadata.get("version"), metadata.get("tarballs"))
+        entries = []
+        for line in response.text.splitlines():
+            fields = line.split()
+            if len(fields) == 2:
+                entries.append({"sha256": fields[0], "file": fields[1]})
+        return _release(requested, entries)
+
+
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_CACHE_KEY"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
-release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/beta"
+release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
 ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
 core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
@@ -51,10 +147,10 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    'f3b98bd7bf70dc25077dbd6afcec8d651570bead96919b42b8fde36d3e7d7268' "$agent_tarball" \
-    '0d655397ca9fda765afb5ba7b2b65ab74b928f9c178e548ef3befc0358f39ce2' "$ai_tarball" \
-    '0cb81e79422887a43d850722812c6a4589760eb69441cb4c042e665cbfdff5e1' "$core_tarball" \
-    '307ec5e5a320f9a0355b08ec352230cb406f82fac0ebbd6e33f6306a3e9452a8' "$tui_tarball" \
+    "$PRIME_AGENT_SHA256" "$agent_tarball" \
+    "$PRIME_AGENT_AI_SHA256" "$ai_tarball" \
+    "$PRIME_AGENT_CORE_SHA256" "$core_tarball" \
+    "$PRIME_AGENT_TUI_SHA256" "$tui_tarball" \
     > "$download_dir/SHA256SUMS"
 (cd "$download_dir" && sha256sum -c SHA256SUMS)
 mkdir "$download_dir/package-root"
@@ -87,11 +183,37 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = PRIME_AGENT_COMMIT
-    """Prime Agent main commit to install."""
+    release: str = "stable"
+    """Prime Agent stable channel, or an exact stable version such as ``0.8.1``."""
+
+    resolved_release: PrimeAgentRelease | None = None
+    """Release frozen before the evaluation is saved or workers start."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+
+    @field_validator("release", mode="before")
+    @classmethod
+    def _validate_release(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Prime Agent release must be 'stable' or an exact version")
+        value = value.strip().lower()
+        return value if value == "stable" else _version(value)
+
+    @model_validator(mode="after")
+    def _validate_resolved_release(self) -> "PrimeAgentHarnessConfig":
+        resolved = self.resolved_release
+        if resolved is None:
+            return self
+        entries = [
+            {"file": resolved.file(package), "sha256": sha256}
+            for package, sha256 in resolved.sha256.items()
+        ]
+        if _release(resolved.version, entries) != resolved:
+            raise ValueError("invalid frozen Prime Agent release")
+        if self.release != "stable" and self.release != resolved.version:
+            raise ValueError("frozen Prime Agent release does not match exact version")
+        return self
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -154,10 +276,36 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
         statuses.append(status)
 
+    async def _resolve(self) -> PrimeAgentRelease:
+        if self.config.resolved_release is None:
+            try:
+                self.config.resolved_release = await _fetch_release(self.config.release)
+            except (httpx.HTTPError, TypeError, ValueError) as e:
+                raise RuntimeError(
+                    f"failed to resolve Prime Agent release "
+                    f"{self.config.release!r}: {e}"
+                ) from e
+        return self.config.resolved_release
+
+    def _resolved(self) -> PrimeAgentRelease:
+        release = self.config.resolved_release
+        if release is None:
+            raise RuntimeError("Prime Agent release was not resolved during setup")
+        return release
+
+    async def prepare(self) -> None:
+        await self._resolve()
+
     async def setup(self, runtime: Runtime) -> None:
+        release = await self._resolve()
         await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
-        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
+        logger.info(
+            "prime-agent: release %s resolved to %s (%s)",
+            self.config.release,
+            release.version,
+            release.cache_key,
+        )
         lock = f"{PRIME_AGENT_DIR}/install.lock"
         guarded = (
             f"mkdir -p {PRIME_AGENT_DIR} && "
@@ -170,8 +318,12 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
-                "PRIME_AGENT_COMMIT": self.config.commit,
-                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_CACHE_KEY": release.cache_key,
+                "PRIME_AGENT_RELEASE_VERSION": release.version,
+                "PRIME_AGENT_SHA256": release.sha256["prime-agent"],
+                "PRIME_AGENT_AI_SHA256": release.sha256["prime-agent-ai"],
+                "PRIME_AGENT_CORE_SHA256": release.sha256["prime-agent-core"],
+                "PRIME_AGENT_TUI_SHA256": release.sha256["prime-agent-tui"],
             },
         )
         if result.exit_code != 0:
@@ -196,6 +348,20 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "surface is ipython"
             )
 
+        release = self._resolved()
+        trace.info["prime_agent_release"] = {
+            "requested": self.config.release,
+            "version": release.version,
+            "source": _source(self.config.release),
+            "cache_key": release.cache_key,
+            "artifacts": [
+                {
+                    "file": release.file(package),
+                    "sha256": release.sha256[package],
+                }
+                for package in RELEASE_PACKAGES
+            ],
+        }
         root = self._root(trace)
         agent_dir = f"{root}/agent"
         created = await runtime.run(
@@ -293,7 +459,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             )
 
     def _bin(self) -> str:
-        return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
+        return f"{PRIME_AGENT_DIR}/{self._resolved().cache_key}/bin/prime-agent"
 
     @staticmethod
     def _root(trace: Trace) -> str:
