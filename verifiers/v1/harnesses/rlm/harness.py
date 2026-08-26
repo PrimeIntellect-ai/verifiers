@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
-from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurnResult, JsonObject
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import Runtime
@@ -157,7 +157,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
         )
 
-    def acp_turn_result(self, trace: Trace, result: ACPTurnResult) -> None:
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         snapshot = _SessionSnapshot.model_validate(
             result.response_metadata.get(RLM_SESSION_METADATA_KEY)
         )
