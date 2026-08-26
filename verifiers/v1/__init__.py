@@ -67,6 +67,14 @@ from verifiers.v1.judges import (
     RubricJudge,
     RubricJudgeConfig,
 )
+from verifiers.v1.lineage import (
+    CallLineage,
+    LineageCompaction,
+    LineageContext,
+    LineageManifest,
+    LineageRequest,
+    LineageSession,
+)
 from verifiers.v1.mcp import (
     SharedToolsetConfig,
     Toolset,
@@ -90,6 +98,7 @@ from verifiers.v1.trace import (
     AgentInfo,
     AgentSpan,
     Branch,
+    Conversation,
     Error,
     InterceptRecord,
     ModelCall,
@@ -226,6 +235,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
+    "CallLineage",
+    "LineageManifest",
+    "LineageSession",
+    "LineageContext",
+    "LineageCompaction",
+    "LineageRequest",
     "PolicyEvent",
     "TrainRunInfo",
     "TrainWorkInfo",
@@ -236,6 +251,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "StateT",
     "MessageNode",
     "Branch",
+    "Conversation",
     "TurnTokens",
     "KeptTokens",
     "Timing",

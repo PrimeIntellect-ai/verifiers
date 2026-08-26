@@ -67,6 +67,9 @@ class ACPHarness(Harness[ConfigT]):
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         """Consume the typed result of one ACP prompt."""
 
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        """Consume extension metadata returned by `session/close`, when supported."""
+
     @abstractmethod
     async def prepare_acp(
         self,
@@ -279,17 +282,23 @@ class ACPHarnessSession(HarnessSession):
         _require_model_turn(self.trace, calls_before, result)
         return result
 
-    async def _stop(self, *, graceful: bool) -> None:
+    async def _stop(self, *, graceful: bool) -> dict[str, Any]:
         process, self._process = self._process, None
         reader, self._reader = self._reader, None
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
-            return
+            return {}
+        response_metadata: dict[str, Any] = {}
         try:
             if graceful and reader is not None:
                 with contextlib.suppress(BaseException):
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    result = response.get("result")
+                    if response.get("ok") and isinstance(result, dict):
+                        metadata = result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            response_metadata = metadata
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
@@ -309,6 +318,7 @@ class ACPHarnessSession(HarnessSession):
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):
                     await stderr_task
+        return response_metadata
 
     async def close(self) -> None:
         if self._closed:
@@ -320,6 +330,10 @@ class ACPHarnessSession(HarnessSession):
 
         async def close_process() -> None:
             async with self._lock:
-                await self._stop(graceful=True)
+                response_metadata = await self._stop(graceful=True)
+                if response_metadata:
+                    cast(ACPHarness, self.harness).acp_close_result(
+                        self.trace, response_metadata
+                    )
 
         await run_shielded(close_process())

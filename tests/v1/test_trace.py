@@ -11,6 +11,12 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harnesses.rlm.harness import (
+    RLM_SESSION_METADATA_KEY,
+    RLMHarness,
+    RLMHarnessConfig,
+)
+from verifiers.v1.lineage import RLM_LINEAGE_HEADERS, extract_call_lineage
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -170,3 +176,256 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def _lineage_manifest(
+    root_session_id: str, root_status: str = "completed"
+) -> vf.LineageManifest:
+    return vf.LineageManifest(
+        sessions=[
+            vf.LineageSession(
+                session_id=root_session_id,
+                depth=0,
+                initial_context_id="ctx-root",
+                status=root_status,
+            ),
+            vf.LineageSession(
+                session_id="child",
+                parent_session_id=root_session_id,
+                depth=1,
+                initial_context_id="ctx-child",
+                spawned_by_request_id="root-turn",
+                status="completed",
+            ),
+        ],
+        contexts=[
+            vf.LineageContext(
+                context_id="ctx-root", session_id=root_session_id, transition="root"
+            ),
+            vf.LineageContext(
+                context_id="ctx-child", session_id="child", transition="spawn"
+            ),
+            vf.LineageContext(
+                context_id="ctx-root-2",
+                session_id=root_session_id,
+                previous_context_id="ctx-root",
+                transition="compact",
+                compaction_id="compact-1",
+            ),
+        ],
+        compactions=[
+            vf.LineageCompaction(
+                compaction_id="compact-1",
+                session_id=root_session_id,
+                source_context_id="ctx-root",
+                target_context_id="ctx-root-2",
+                summary_request_id="root-compact",
+                status="completed",
+            )
+        ],
+        requests=[
+            vf.LineageRequest(
+                request_id="root-turn",
+                session_id=root_session_id,
+                context_id="ctx-root",
+                kind="turn",
+            ),
+            vf.LineageRequest(
+                request_id="child-turn",
+                session_id="child",
+                context_id="ctx-child",
+                kind="turn",
+            ),
+            vf.LineageRequest(
+                request_id="root-compact",
+                session_id=root_session_id,
+                context_id="ctx-root",
+                kind="compaction",
+                compaction_id="compact-1",
+            ),
+            vf.LineageRequest(
+                request_id="root-after",
+                session_id=root_session_id,
+                context_id="ctx-root-2",
+                kind="turn",
+                compaction_id="compact-1",
+            ),
+        ],
+    )
+
+
+def test_exact_lineage_groups_interleaved_calls_and_round_trips():
+    """Recursive sessions are grouped by exact IDs, not call adjacency or graph shape."""
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="root")),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="root turn"), sampled=True
+            ),
+            MessageNode(parent=None, message=UserMessage(content="child")),
+            MessageNode(
+                parent=2, message=AssistantMessage(content="child turn"), sampled=True
+            ),
+            MessageNode(parent=None, message=UserMessage(content="summarize")),
+            MessageNode(
+                parent=4, message=AssistantMessage(content="summary"), sampled=True
+            ),
+            MessageNode(parent=None, message=UserMessage(content="resume")),
+            MessageNode(
+                parent=6, message=AssistantMessage(content="done"), sampled=True
+            ),
+        ],
+    )
+    tr.calls = [
+        vf.ModelCall(
+            node=1,
+            lineage=vf.CallLineage(
+                request_id="root-turn",
+                session_id=tr.id,
+                context_id="ctx-root",
+                transition="root",
+                depth=0,
+            ),
+        ),
+        vf.ModelCall(
+            node=3,
+            lineage=vf.CallLineage(
+                request_id="child-turn",
+                session_id="child",
+                parent_session_id=tr.id,
+                context_id="ctx-child",
+                transition="spawn",
+                depth=1,
+            ),
+        ),
+        vf.ModelCall(
+            node=5,
+            lineage=vf.CallLineage(
+                request_id="root-compact",
+                session_id=tr.id,
+                context_id="ctx-root",
+                transition="root",
+                compaction_id="compact-1",
+                depth=0,
+            ),
+        ),
+        vf.ModelCall(
+            node=7,
+            lineage=vf.CallLineage(
+                request_id="root-after",
+                session_id=tr.id,
+                context_id="ctx-root-2",
+                previous_context_id="ctx-root",
+                transition="compact",
+                compaction_id="compact-1",
+                depth=0,
+            ),
+        ),
+    ]
+
+    tr.reconcile_lineage(_lineage_manifest(tr.id))
+    root, child = tr.conversations
+    assert [call.lineage.request_id for call in root.calls] == [
+        "root-turn",
+        "root-compact",
+        "root-after",
+    ]
+    assert root.context_ids == ("ctx-root", "ctx-root-2")
+    assert root.branch_indexes == (0, 2, 3)
+    assert child.is_subagent and child.parent_session_id == tr.id
+    assert child.branch_indexes == (1,)
+    assert tr.branches[1].session_ids == ("child",)
+    assert tr.branches[3].context_ids == ("ctx-root-2",)
+    assert tr.branches[3].compaction_ids == ("compact-1",)
+
+    restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
+    assert restored.lineage == tr.lineage
+    assert [call.lineage for call in restored.calls] == [
+        call.lineage for call in tr.calls
+    ]
+    assert [conversation.session_id for conversation in restored.conversations] == [
+        tr.id,
+        "child",
+    ]
+
+    # The public ACP hook consumes the same JSON-native manifest and reconciles it.
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness.acp_turn_result(
+        restored,
+        vf.ACPTurn(
+            reply="done",
+            response_metadata={
+                RLM_SESSION_METADATA_KEY: {
+                    "session_id": restored.id,
+                    "metrics": {"turns": 4},
+                    "lineage": _lineage_manifest(
+                        restored.id, root_status="running"
+                    ).model_dump(mode="json"),
+                }
+            },
+        ),
+    )
+    assert restored.metrics["turns"] == 4
+    assert restored.lineage.sessions[0].status == "running"
+
+    # session/close carries the terminal snapshot; cumulative metrics overwrite by key.
+    harness.acp_close_result(
+        restored,
+        {
+            RLM_SESSION_METADATA_KEY: {
+                "session_id": restored.id,
+                "metrics": {"turns": 4},
+                "lineage": _lineage_manifest(restored.id).model_dump(mode="json"),
+            }
+        },
+    )
+    assert restored.metrics["turns"] == 4
+    assert restored.lineage.sessions[0].status == "completed"
+
+    # A failed provider exchange and its SDK retry share one logical request ID.
+    restored.calls.append(
+        vf.ModelCall(
+            lineage=restored.calls[0].lineage, error=vf.Error(type="E", message="x")
+        )
+    )
+    restored.reconcile_lineage(_lineage_manifest(restored.id))
+
+
+def test_lineage_headers_are_complete_validated_and_stripped():
+    headers = {
+        "Authorization": "Bearer local",
+        "Idempotency-Key": "request-1",
+        "X-RLM-Request-ID": "request-1",
+        "X-RLM-Session-ID": "session-1",
+        "X-RLM-Context-ID": "context-1",
+        "X-RLM-Transition": "root",
+        "X-RLM-Depth": "0",
+        "OpenAI-Beta": "feature",
+    }
+    lineage, forwarded = extract_call_lineage(headers)
+    assert lineage == vf.CallLineage(
+        request_id="request-1",
+        session_id="session-1",
+        context_id="context-1",
+        transition="root",
+        depth=0,
+    )
+    assert not RLM_LINEAGE_HEADERS.intersection(map(str.lower, forwarded))
+    assert forwarded["OpenAI-Beta"] == "feature"
+
+    # Old nano-rlm only sent depth. It remains a valid lineage-free request.
+    legacy, legacy_forwarded = extract_call_lineage({"X-RLM-Depth": "1"})
+    assert legacy is None and legacy_forwarded == {}
+
+    with pytest.raises(ValueError, match="missing X-RLM-Context-ID"):
+        extract_call_lineage(
+            {
+                "Idempotency-Key": "request-1",
+                "X-RLM-Request-ID": "request-1",
+                "X-RLM-Session-ID": "session-1",
+                "X-RLM-Transition": "root",
+                "X-RLM-Depth": "0",
+            }
+        )

@@ -4,6 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
@@ -18,6 +19,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.lineage import CallLineage, LineageManifest
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -171,6 +173,8 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
+    lineage: CallLineage | None = None
+    """Exact recursive-session provenance supplied by the harness, when available."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -199,6 +203,39 @@ class Branch(BaseModel):
     @property
     def messages(self) -> Messages:
         return [n.message for n in self.nodes]
+
+    @property
+    def session_ids(self) -> tuple[str, ...]:
+        """Recursive sessions represented on this physical message path, in call order."""
+        return tuple(
+            dict.fromkeys(
+                call.lineage.session_id
+                for call in self.calls
+                if call.lineage is not None
+            )
+        )
+
+    @property
+    def context_ids(self) -> tuple[str, ...]:
+        """Context epochs represented on this physical message path, in call order."""
+        return tuple(
+            dict.fromkeys(
+                call.lineage.context_id
+                for call in self.calls
+                if call.lineage is not None
+            )
+        )
+
+    @property
+    def compaction_ids(self) -> tuple[str, ...]:
+        """Compactions correlated with calls on this physical message path."""
+        return tuple(
+            dict.fromkeys(
+                call.lineage.compaction_id
+                for call in self.calls
+                if call.lineage is not None and call.lineage.compaction_id is not None
+            )
+        )
 
     @property
     def token_ids(self) -> list[int]:
@@ -372,6 +409,22 @@ class Branch(BaseModel):
         return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """Derived recursive-session view; never duplicated in serialized traces."""
+
+    session_id: str
+    parent_session_id: str | None
+    depth: int
+    context_ids: tuple[str, ...]
+    calls: tuple[ModelCall, ...]
+    branch_indexes: tuple[int, ...]
+
+    @property
+    def is_subagent(self) -> bool:
+        return self.parent_session_id is not None
+
+
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
@@ -390,6 +443,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    lineage: LineageManifest | None = None
+    """Exact recursive-session manifest, when the harness publishes one."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
     from the renderer that tokenized this trace, stamped at turn commit. Applied to a
@@ -492,6 +547,148 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 )
             )
         return branches
+
+    @property
+    def conversations(self) -> list[Conversation]:
+        """Calls grouped by exact recursive session, independent of graph compaction forks.
+
+        Before the final manifest arrives, complete per-call headers are sufficient to expose
+        groups already observed.  Once present, manifest creation order also includes sessions
+        and contexts that made no model call.
+        """
+        branches = self.branches
+        calls_by_session: dict[str, list[ModelCall]] = {}
+        observed_order: list[str] = []
+        observed_parent: dict[str, str | None] = {}
+        observed_depth: dict[str, int] = {}
+        observed_contexts: dict[str, list[str]] = {}
+        for call in self.calls:
+            item = call.lineage
+            if item is None:
+                continue
+            if item.session_id not in calls_by_session:
+                calls_by_session[item.session_id] = []
+                observed_order.append(item.session_id)
+                observed_parent[item.session_id] = item.parent_session_id
+                observed_depth[item.session_id] = item.depth
+                observed_contexts[item.session_id] = []
+            elif (
+                observed_parent[item.session_id] != item.parent_session_id
+                or observed_depth[item.session_id] != item.depth
+            ):
+                raise ValueError(
+                    f"inconsistent call lineage for session {item.session_id!r}"
+                )
+            calls_by_session[item.session_id].append(call)
+            if item.context_id not in observed_contexts[item.session_id]:
+                observed_contexts[item.session_id].append(item.context_id)
+
+        if self.lineage is None:
+            session_rows = [
+                (
+                    session_id,
+                    observed_parent[session_id],
+                    observed_depth[session_id],
+                    tuple(observed_contexts[session_id]),
+                )
+                for session_id in observed_order
+            ]
+        else:
+            contexts_by_session: dict[str, list[str]] = {
+                session.session_id: [] for session in self.lineage.sessions
+            }
+            for context in self.lineage.contexts:
+                contexts_by_session[context.session_id].append(context.context_id)
+            session_rows = [
+                (
+                    session.session_id,
+                    session.parent_session_id,
+                    session.depth,
+                    tuple(contexts_by_session[session.session_id]),
+                )
+                for session in self.lineage.sessions
+            ]
+
+        conversations: list[Conversation] = []
+        for session_id, parent_id, depth, context_ids in session_rows:
+            calls = tuple(calls_by_session.get(session_id, []))
+            node_ids = {call.node for call in calls if call.node is not None}
+            branch_indexes = tuple(
+                branch.index
+                for branch in branches
+                if node_ids.intersection(
+                    call.node for call in branch.calls if call.node is not None
+                )
+            )
+            conversations.append(
+                Conversation(
+                    session_id=session_id,
+                    parent_session_id=parent_id,
+                    depth=depth,
+                    context_ids=context_ids,
+                    calls=calls,
+                    branch_indexes=branch_indexes,
+                )
+            )
+        return conversations
+
+    @property
+    def branches_by_session(self) -> dict[str, list[Branch]]:
+        """Physical training branches touched by each exact recursive session."""
+        branches = self.branches
+        return {
+            conversation.session_id: [branches[i] for i in conversation.branch_indexes]
+            for conversation in self.conversations
+        }
+
+    def reconcile_lineage(self, manifest: LineageManifest) -> None:
+        """Validate an ACP lineage snapshot against call headers and attach it.
+
+        Nothing is inferred from the message graph: every recorded call must have a complete
+        lineage envelope and a matching request in the snapshot.
+        """
+        roots = [
+            session
+            for session in manifest.sessions
+            if session.parent_session_id is None
+        ]
+        if len(roots) != 1 or roots[0].session_id != self.id:
+            raise ValueError("RLM lineage root session does not match the rollout")
+
+        sessions = {session.session_id: session for session in manifest.sessions}
+        contexts = {context.context_id: context for context in manifest.contexts}
+        requests = {request.request_id: request for request in manifest.requests}
+        for index, call in enumerate(self.calls):
+            item = call.lineage
+            if item is None:
+                raise ValueError(f"model call {index} has no RLM lineage headers")
+            session = sessions.get(item.session_id)
+            context = contexts.get(item.context_id)
+            request = requests.get(item.request_id)
+            if session is None or (
+                session.parent_session_id != item.parent_session_id
+                or session.depth != item.depth
+            ):
+                raise ValueError(
+                    f"model call {item.request_id!r} does not match its lineage session"
+                )
+            if context is None or (
+                context.session_id != item.session_id
+                or context.previous_context_id != item.previous_context_id
+                or context.transition != item.transition
+            ):
+                raise ValueError(
+                    f"model call {item.request_id!r} does not match its lineage context"
+                )
+            if request is None or (
+                request.session_id != item.session_id
+                or request.context_id != item.context_id
+                or request.compaction_id != item.compaction_id
+            ):
+                raise ValueError(
+                    f"model call {item.request_id!r} does not match its lineage request"
+                )
+        self.lineage = manifest
 
     @property
     def messages(self) -> Messages:
