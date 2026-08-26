@@ -7,7 +7,9 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -22,13 +24,24 @@ from verifiers.v1.utils.aio import run_shielded
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
-__all__ = ["ACPConfig", "ACPHarness"]
+__all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 )
 JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+class ACPTurn(BaseModel):
+    """One completed ACP prompt and its extension metadata."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reply: str
+    stop_reason: str | None = None
+    response_metadata: dict[str, Any] = Field(default_factory=dict)
+    update_metadata: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @dataclass
@@ -50,6 +63,9 @@ class ACPHarness(Harness[ConfigT]):
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        """Consume the typed result of one ACP prompt."""
 
     @abstractmethod
     async def prepare_acp(
@@ -73,6 +89,7 @@ class ACPHarness(Harness[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             raise HarnessError(
@@ -91,6 +108,7 @@ class ACPHarness(Harness[ConfigT]):
             mcp_urls if config.mcp_urls is None else config.mcp_urls,
             data,
             config,
+            tool_interception_url,
         )
 
     async def launch(
@@ -113,6 +131,11 @@ def _packet(value: JsonObject) -> bytes:
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
     return len(data).to_bytes(8, "big") + data
+
+
+def _turn_result(response: JsonObject) -> ACPTurn:
+    value = response.get("result")
+    return ACPTurn.model_validate(value)
 
 
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
@@ -153,7 +176,7 @@ class ACPHarnessSession(HarnessSession):
 
     def __init__(
         self,
-        harness: Harness,
+        harness: ACPHarness,
         ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
@@ -162,8 +185,19 @@ class ACPHarnessSession(HarnessSession):
         mcp_urls: dict[str, str],
         data: TaskData,
         config: ACPConfig,
+        tool_interception_url: str | None = None,
     ) -> None:
-        super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
+        super().__init__(
+            harness,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            tool_interception_url,
+        )
         self.config = config
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
@@ -233,15 +267,15 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        turn = _turn_result(response)
+        self.trace.root_reply = turn.reply.strip()
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        reply = response.get("reply", "")
-        if not isinstance(reply, str):
-            raise TypeError("ACP session reply must be a string")
-        result = ProgramResult(exit_code=0, stdout=reply, stderr="")
+        cast(ACPHarness, self.harness).acp_turn_result(self.trace, turn)
+        result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result
 

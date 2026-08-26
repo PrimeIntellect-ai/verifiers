@@ -365,6 +365,8 @@ class Rollout:
             return False
         trace = self.trace
         turns_before = trace.num_turns
+        root_reply_before = trace.root_reply
+        trace.root_reply = None
         loop = asyncio.get_running_loop()
         segment_start = loop.time()
         self.deadline_at = (
@@ -410,6 +412,8 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            if trace.num_turns == turns_before:
+                trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
                     0.0, self._agent_time_remaining - (loop.time() - segment_start)
