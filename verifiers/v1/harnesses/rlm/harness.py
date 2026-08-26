@@ -3,13 +3,14 @@
 import logging
 import random
 import shlex
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.lineage import LineageManifest
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -32,11 +33,12 @@ class _SessionSnapshot(BaseModel):
 
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
+    lineage: LineageManifest | None = None
 
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="d4ce3e10e63b359f4f3d432d58a77471e9e21fe7", min_length=1
+        default="241115c012797c9cef74dbfb93c2c889e6d71c34", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
@@ -157,13 +159,22 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
         )
 
-    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+    def _consume_snapshot(self, trace: Trace, metadata: dict[str, Any]) -> None:
         snapshot = _SessionSnapshot.model_validate(
-            result.response_metadata.get(RLM_SESSION_METADATA_KEY)
+            metadata.get(RLM_SESSION_METADATA_KEY)
         )
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
+        if snapshot.lineage is not None:
+            trace.reconcile_lineage(snapshot.lineage)
         trace.record_metrics(snapshot.metrics)
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        self._consume_snapshot(trace, result.response_metadata)
+
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        if RLM_SESSION_METADATA_KEY in response_metadata:
+            self._consume_snapshot(trace, response_metadata)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
