@@ -42,16 +42,6 @@ class ProviderError(RolloutError):
         self.status_code = status_code
 
 
-class OverlongPromptError(ProviderError):
-    """The prompt exceeded the model's context window. Relayed to the harness like any other
-    provider error so it can compact and retry. Defaults to a 400 (deterministic, so an SDK
-    never retries it); `model_error` keeps the provider's real status when the failure
-    carried one."""
-
-    def __init__(self, message: str = "", *, status_code: int = 400) -> None:
-        super().__init__(message, status_code=status_code)
-
-
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
@@ -99,20 +89,6 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
 
 
-_CONTEXT_LENGTH_PHRASES = (
-    "this model's maximum context length is",
-    "is longer than the model's context length",
-    "is longer than the maximum model length",
-    "exceeds the model's context length",
-    "exceed the configured limit",
-    "exceeds the configured limit",
-    "exceeded model",
-    "prompt_too_long",
-    "context length",
-    "maximum model length",
-)
-
-
 def _provider_status(e: OpenAIError | str) -> int:
     """The HTTP status to surface for an SDK error: the provider's own for an HTTP status error, a
     retryable 5xx for a transport/timeout fault, else 502."""
@@ -130,23 +106,12 @@ def _provider_status(e: OpenAIError | str) -> int:
 def model_error(
     e: OpenAIError | str, *, status_code: int | None = None
 ) -> ProviderError:
-    """Map a provider failure to our error type: an overlong prompt (which a harness may compact
-    and recover from) is told apart from any other provider call failure, which
-    becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose
-    SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when not given. Accepts
-    an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
-    from openai import APIStatusError
-
+    """Map a provider failure to a `ProviderError`. `status_code` is the HTTP status surfaced to
+    the harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error
+    when not given. Accepts an SDK error (the renderer) or the provider's raw error body (the
+    httpx proxy)."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
-    if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
-        # Keep the provider's real status when the failure carried one; else the class
-        # default (the 400 the interception server surfaces for overlong prompts).
-        if status_code is None and isinstance(e, APIStatusError):
-            status_code = e.status_code
-        return OverlongPromptError(
-            text, **({} if status_code is None else {"status_code": status_code})
-        )
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
