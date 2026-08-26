@@ -1,9 +1,6 @@
 """Train client: renders prompts to token ids and calls a vLLM generate endpoint."""
 
 import asyncio
-import base64
-import binascii
-import io
 import json
 import logging
 import threading
@@ -12,7 +9,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
-import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
@@ -100,41 +96,6 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
-def _normalize_routed_experts(payload: Any, prompt_start: int) -> Any:
-    if payload is None or isinstance(payload, Mapping):
-        return payload
-    if not isinstance(payload, str):
-        raise TypeError(
-            "routed_experts must be a Base64 NumPy string or compact object"
-        )
-    if (
-        isinstance(prompt_start, bool)
-        or not isinstance(prompt_start, int)
-        or prompt_start < 0
-    ):
-        raise ValueError("routed_experts_prompt_start must be a non-negative integer")
-    try:
-        encoded = base64.b64decode(payload, validate=True)
-        array = np.load(io.BytesIO(encoded), allow_pickle=False)
-    except (binascii.Error, ValueError, OSError) as error:
-        raise ValueError(
-            "routed_experts is not a valid non-pickled NumPy array"
-        ) from error
-    if not isinstance(array, np.ndarray):
-        raise TypeError("routed_experts must contain one NumPy array")
-    if array.ndim != 3:
-        raise ValueError(f"routed_experts must have rank 3, got shape {array.shape}")
-    if array.dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
-        raise ValueError(f"routed_experts must use uint8 or uint16, got {array.dtype}")
-    array = np.ascontiguousarray(array)
-    return {
-        "data": base64.b64encode(array.tobytes()).decode("ascii"),
-        "shape": list(array.shape),
-        "start": prompt_start,
-        "dtype": str(array.dtype),
-    }
-
-
 def response_from_generate(
     result: dict,
     model: str,
@@ -197,8 +158,10 @@ def response_from_generate(
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
-            routed_experts=_normalize_routed_experts(
-                result.get("routed_experts"), routed_experts_prompt_start
+            routed_experts=(
+                {"data": routed_experts, "start": routed_experts_prompt_start}
+                if isinstance(routed_experts := result.get("routed_experts"), str)
+                else routed_experts
             ),
             kept_tokens=KeptTokens(**kept)
             if (kept := result.get("kept_tokens"))
@@ -488,8 +451,8 @@ class TrainClient(Client):
             result,
             model,
             bridged_turn,
-            routed_experts_prompt_start=sampling_params.get(
-                "routed_experts_prompt_start", 0
+            routed_experts_prompt_start=int(
+                sampling_params.get("routed_experts_prompt_start", 0) or 0
             ),
         )
         # No provider response to relay (we generated), so serialize one for the program; the

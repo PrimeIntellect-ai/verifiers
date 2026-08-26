@@ -22,6 +22,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -472,6 +473,30 @@ def _attribute_mm(
             )
 
 
+def _decode_routed_experts(payload: Any) -> tuple[np.ndarray, int]:
+    raw = binascii.a2b_base64(payload["data"])
+    start = int(payload.get("start", 0) or 0)
+    if "shape" in payload:
+        array = np.frombuffer(
+            raw, dtype=np.dtype(payload.get("dtype", "uint8"))
+        ).reshape(payload["shape"])
+    elif raw.startswith(b"\x93NUMPY"):
+        array = np.load(BytesIO(raw), allow_pickle=False)
+    else:
+        envelope = json.loads(raw)
+        tensor = binascii.a2b_base64(envelope["data"])
+        array = np.frombuffer(
+            tensor, dtype=np.dtype(envelope.get("dtype", "uint8"))
+        ).reshape(envelope["shape"])
+        start = int(envelope.get("start", start) or 0)
+    if array.ndim != 3 or not np.issubdtype(array.dtype, np.integer):
+        raise ValueError(
+            "routed_experts must be a rank-3 integer array, "
+            f"got shape={array.shape}, dtype={array.dtype}"
+        )
+    return array, start
+
+
 def _attribute_routed_experts(
     trace: Trace,
     new_node_ids: list[int],
@@ -487,11 +512,8 @@ def _attribute_routed_experts(
     branch then reports no routing rather than misaligning."""
     if payload is None:
         return
-    raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
-        payload["shape"]
-    )
-    off = path_len - int(payload.get("start", 0) or 0)
+    arr, start = _decode_routed_experts(payload)
+    off = path_len - start
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)

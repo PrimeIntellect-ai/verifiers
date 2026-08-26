@@ -6,6 +6,7 @@ import numpy as np
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.clients.train import response_from_generate
 from verifiers.v1.types import TurnTokens
 
 
@@ -57,7 +58,14 @@ def _opaque_routed_payload(
         data = buffer.getvalue()
     else:
         data = json.dumps(_routed_payload(num_tokens, start, base)).encode()
-    return {"data": base64.b64encode(data).decode(), "start": start}
+    response = response_from_generate(
+        {"routed_experts": base64.b64encode(data).decode()},
+        "test",
+        routed_experts_prompt_start=start,
+    )
+    assert response.tokens is not None
+    assert response.tokens.routed_experts is not None
+    return response.tokens.routed_experts
 
 
 def test_routed_experts_attributed_and_aligned_across_turns():

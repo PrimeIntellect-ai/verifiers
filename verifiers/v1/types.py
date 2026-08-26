@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NotRequired
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
@@ -174,12 +174,23 @@ class Usage(BaseModel):
         return self.input_tokens + self.completion_tokens
 
 
-class RoutedExperts(TypedDict):
-    """Base64 uint8 `[tokens, layers, top_k]` routing and its prompt offset."""
+class StructuredRoutedExperts(TypedDict):
+    """Structured routed-expert tensor used by existing Prime inference servers."""
 
     data: Any
     shape: list[int]
     start: int
+    dtype: NotRequired[str]
+
+
+class OpaqueRoutedExperts(TypedDict):
+    """Base64 opaque routed-expert payload and its request prompt offset."""
+
+    data: str
+    start: int
+
+
+RoutedExperts = StructuredRoutedExperts | OpaqueRoutedExperts
 
 
 @dataclass
