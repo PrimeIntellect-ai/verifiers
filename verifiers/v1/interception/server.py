@@ -46,7 +46,6 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
-    OverlongPromptError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -714,13 +713,6 @@ class InterceptionServer(Interception):
                             dialect.error_body(f"rollout stopped: {stopped}"),
                             status=400,
                         )
-                except OverlongPromptError as e:
-                    error = e
-                    logger.debug("prompt too long: id=%s", session.trace.id)
-                    return web.json_response(
-                        dialect.error_body("context_length"),
-                        status=400,
-                    )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -798,12 +790,6 @@ class InterceptionServer(Interception):
                     body,
                     headers=request.headers,
                     session_id=session.trace.id,
-                )
-            except OverlongPromptError as e:
-                error = e
-                logger.debug("prompt too long: id=%s", session.trace.id)
-                return web.json_response(
-                    dialect.error_body("context_length"), status=400
                 )
             except RolloutError as e:
                 error = e
