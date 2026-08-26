@@ -104,7 +104,10 @@ def _source(requested: str) -> str:
 
 async def _fetch_release(requested: str) -> PrimeAgentRelease:
     source = _source(requested)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+    transport = httpx.AsyncHTTPTransport(retries=3)
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=30, transport=transport
+    ) as client:
         response = await client.get(source)
         response.raise_for_status()
         if requested == "stable":
