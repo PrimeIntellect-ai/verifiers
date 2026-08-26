@@ -20,10 +20,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
-from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -68,12 +69,43 @@ def _template_resources(cpu: float, memory: float) -> tuple[int, int]:
     return cpu_count, int(memory_mb_value)
 
 
-class E2BConfig(BaseConfig):
+def _validate_egress_rules(rules: list[str]) -> None:
+    """E2B egress selectors accept plain hostnames, IPs, and CIDR blocks — not URL
+    origins, ports, or wildcard patterns — so reject what the platform can't enforce."""
+    for rule in rules:
+        try:
+            port = urlsplit(f"//{rule}").port
+        except ValueError:
+            port = -1
+        if "://" in rule or "*" in rule or port is not None:
+            raise ValueError(
+                "E2B egress rules must be plain hostnames, IPs, or CIDR blocks "
+                f"(no schemes, ports, or wildcards), got {rule!r}"
+            )
+
+
+def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
+    """The complete egress policy for `update_network`, which replaces all rules
+    atomically. None restores unrestricted egress for another trusted setup phase;
+    otherwise `routes` (the interception and MCP endpoints) stay reachable alongside
+    the configured allowlist. E2B resolves an `allow_out` entry over a same-host
+    `deny_out` one, so an allowlist is expressed as allow + deny-everything."""
+    if routes is None:
+        return {"allow_internet_access": True}
+    if config.allow == ["*"]:
+        return {"deny_out": list(config.block)}
+    hosts = (urlsplit(route).hostname for route in routes)
+    entries = list(dict.fromkeys([*(h for h in hosts if h), *config.allow]))
+    if not entries:
+        return {"allow_internet_access": False}
+    return {"allow_out": entries, "deny_out": ["0.0.0.0/0"]}
+
+
+class E2BConfig(NetworkPolicyConfig):
     type: Literal["e2b"] = "e2b"
     image: str = "python:3.11-slim"
     """Public Debian-based Docker image used to build a cached E2B template."""
     workdir: str = "/app"
-    network_access: bool = True
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = Field(default=2.0, ge=1)
     """CPU cores. E2B templates require 1 or an even whole number."""
@@ -94,6 +126,10 @@ class E2BConfig(BaseConfig):
     @model_validator(mode="after")
     def _validate_template_resources(self) -> "E2BConfig":
         _template_resources(self.cpu, self.memory)
+        if self.network_restricted:
+            _validate_egress_rules(
+                [rule for rule in [*self.allow, *self.block] if rule != "*"]
+            )
         return self
 
 
@@ -261,11 +297,12 @@ class E2BRuntime(Runtime):
                     creation_limiter(self.config.creates_per_sec, "e2b-sandbox")
                     or contextlib.nullcontext()
                 ):
+                    # Created unrestricted: setup (uv installs, task staging) needs open
+                    # egress; `prepare_execution` locks the policy down before the agent.
                     self._sandbox = await AsyncSandbox.create(
                         template,
                         timeout=self.config.timeout,
                         metadata={"runtime": "verifiers", "name": self.name},
-                        allow_internet_access=self.config.network_access,
                     )
                     # The atexit backstop kills by id, so record it the moment the sandbox
                     # exists — the cancellation `run_shielded` re-raises can keep the code
@@ -289,6 +326,19 @@ class E2BRuntime(Runtime):
             raise
         except Exception as e:
             raise SandboxError(f"e2b sandbox provisioning failed: {e}") from e
+
+    async def prepare_execution(self, routes: list[str] | None) -> None:
+        """Apply the host policy after setup; the update replaces all rules atomically."""
+        if not self.network_restricted:
+            return
+        network = _egress_update(self.config, routes)
+        try:
+            await self._sandbox.update_network(network)
+        except Exception as e:
+            raise SandboxError(f"e2b egress policy failed: {e}") from e
+        logger.info(
+            "e2b: egress policy applied on sandbox %s (%s)", self.info.id, network
+        )
 
     def _command(
         self, argv: list[str], env: dict[str, str]

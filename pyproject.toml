@@ -103,6 +103,9 @@ harbor = [
 modal = [
     "modal>=1.5.4",
 ]
+e2b = [
+    "e2b>=2.35.0",
+]
 openenv = [
     "openenv>=0.4.1",
 ]
