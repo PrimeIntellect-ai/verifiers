@@ -37,6 +37,17 @@ RunSlotFn = Callable[[RunSlot], Awaitable[Episode]]
 OnComplete = Callable[[Episode], Awaitable[None]]
 
 
+async def _prepare_harnesses(config: EvalConfig) -> None:
+    """Freeze mutable harness inputs once, before saving or spawning workers."""
+    from verifiers.v1.utils.loaders import load_harness
+
+    harnesses = {
+        id(harness): load_harness(harness)
+        for harness in config.env.agent_harnesses().values()
+    }
+    await asyncio.gather(*(harness.prepare() for harness in harnesses.values()))
+
+
 @contextlib.asynccontextmanager
 async def _in_process(
     env: Env,
@@ -139,6 +150,8 @@ async def _server(
 
 async def run_eval(config: EvalConfig) -> list[Episode]:
     from verifiers.v1.utils.loaders import load_environment, load_taskset
+
+    await _prepare_harnesses(config)
 
     # The env comes up in this process only for an in-process run; a served run's
     # workers each load their own, and this process owns just the taskset.

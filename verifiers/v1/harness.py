@@ -92,6 +92,9 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return system, prompt
 
+    async def prepare(self) -> None:
+        """Freeze evaluation-scoped inputs before config persistence and workers."""
+
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
