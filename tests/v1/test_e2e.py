@@ -85,6 +85,12 @@ ACP_RESUME_PLACEMENTS = [
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pytest.param(
+        "prime-agent",
+        "prime",
+        marks=[mark.prime],
+        id="prime-agent-acp-in-prime-vm",
+    ),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
@@ -267,6 +273,15 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
+    if harness.id == "prime-agent":
+        lifecycle = trace.info["acp_lifecycle"]["ai.primeintellect.prime-agent"]
+        assert len(lifecycle) == 2
+        for status in lifecycle:
+            assert status["infrastructure_status"] == "ok"
+            assert status["terminal_quiescence_observed"] is True
+            assert (
+                status["terminal_quiescence"]["quiescence"]["outstandingSubagents"] == 0
+            )
 
 
 @pytest.mark.e2e
