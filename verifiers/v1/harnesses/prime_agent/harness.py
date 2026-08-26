@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = (
-    "b5ee2f81a59510e7225a0db10d65102e91e98803"
+PRIME_AGENT_COMMIT: Literal["514633727bf26d74f39f3119c2b0e31a5ceb2a9d"] = (
+    "514633727bf26d74f39f3119c2b0e31a5ceb2a9d"
 )
-PRIME_AGENT_VERSION = "0.8.0-beta.549.1.b5ee2f8"
+PRIME_AGENT_VERSION = "0.8.1"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
@@ -39,7 +39,7 @@ prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
-release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/beta"
+release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
 ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
 core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
@@ -51,10 +51,10 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    'f3b98bd7bf70dc25077dbd6afcec8d651570bead96919b42b8fde36d3e7d7268' "$agent_tarball" \
-    '0d655397ca9fda765afb5ba7b2b65ab74b928f9c178e548ef3befc0358f39ce2' "$ai_tarball" \
-    '0cb81e79422887a43d850722812c6a4589760eb69441cb4c042e665cbfdff5e1' "$core_tarball" \
-    '307ec5e5a320f9a0355b08ec352230cb406f82fac0ebbd6e33f6306a3e9452a8' "$tui_tarball" \
+    '46c24db1782dd31adc35d5c6cbcc75564faba6ced3bf2ccf03d836ee77134475' "$agent_tarball" \
+    'f6c3bdb6093bc24a327546fe865ef9a4a172c734fcd4c4093e30c19476f0134d' "$ai_tarball" \
+    '0cc3660953545f8ac9a7e704fcb9875f954d58c3085304080ef615c280aa5748' "$core_tarball" \
+    'bd07bccee0ca495565b1d62e9411f3fdebe49e3dfa52870564f08af5e61fde15' "$tui_tarball" \
     > "$download_dir/SHA256SUMS"
 (cd "$download_dir" && sha256sum -c SHA256SUMS)
 mkdir "$download_dir/package-root"
@@ -87,7 +87,7 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["b5ee2f81a59510e7225a0db10d65102e91e98803"] = PRIME_AGENT_COMMIT
+    commit: Literal["514633727bf26d74f39f3119c2b0e31a5ceb2a9d"] = PRIME_AGENT_COMMIT
     """Prime Agent main commit to install."""
 
     autonomous: bool = False
