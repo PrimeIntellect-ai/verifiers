@@ -12,13 +12,40 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+CONTEXT_COMPACTION_HEADER = "X-Verifiers-Context-Compaction"
+
+CHECKPOINT_COMPACTION_PROMPT = (
+    "You are performing a CONTEXT CHECKPOINT COMPACTION. "
+    "Create a handoff summary for another LLM that will resume the task.\n"
+    "\n"
+    "Include:\n"
+    "- Current progress and key decisions made\n"
+    "- Important context, constraints, or user preferences\n"
+    "- What remains to be done (clear next steps)\n"
+    "- Any critical data, examples, or references needed to continue\n"
+    "\n"
+    "Be concise, structured, and focused on helping the next LLM "
+    "seamlessly continue the work."
+)
+
+POST_COMPACTION_FRAMING = (
+    "Another language model started to solve this problem and produced "
+    "a summary of its thinking process. Use this to build on the work "
+    "that has already been done and avoid duplicating work. Here is "
+    "the summary produced by the other language model, use the "
+    "information in this summary to assist with your own analysis:"
+)
+
+COMPACTED_TOOL_RESULT = (
+    "[tool output dropped because it exceeded the model context limit]"
+)
 
 
 BASH_TOOL = {
@@ -178,12 +205,82 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 
 
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    allow_compaction: bool = False,
+    tool_choice: str | None = None,
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
-    )
+    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    if allow_compaction:
+        kwargs["extra_headers"] = {CONTEXT_COMPACTION_HEADER: "1"}
+    if tools and tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    completion = await client.chat.completions.create(**kwargs)
     return completion.choices[0].message
+
+
+def is_context_length_error(error: BadRequestError) -> bool:
+    details = f"{error} {error.body or ''}".casefold()
+    return "context_length" in details or "context length" in details
+
+
+def drop_latest_tool_result(messages: list[dict]) -> bool:
+    """Replace one tool result so the checkpoint request can fit in context."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "tool":
+            continue
+        if message.get("content") == COMPACTED_TOOL_RESULT:
+            continue
+        messages[index] = {**message, "content": COMPACTED_TOOL_RESULT}
+        return True
+    return False
+
+
+def can_compact(messages: list[dict]) -> bool:
+    return any(
+        message.get("role") == "tool"
+        and message.get("content") != COMPACTED_TOOL_RESULT
+        for message in messages
+    )
+
+
+async def compact(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+) -> list[dict]:
+    """Create a handoff summary after removing only the tool output needed to fit it."""
+    system_messages = [
+        message for message in messages if message.get("role") == "system"
+    ]
+    while drop_latest_tool_result(messages):
+        checkpoint_messages = [
+            *messages,
+            {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
+        ]
+        try:
+            summary = await chat(
+                client,
+                model,
+                checkpoint_messages,
+                tools,
+                allow_compaction=can_compact(messages),
+                tool_choice="none",
+            )
+        except BadRequestError as error:
+            if not is_context_length_error(error):
+                raise
+            if not can_compact(messages):
+                raise
+            continue
+        framed = POST_COMPACTION_FRAMING + "\n\n" + (summary.content or "")
+        return [*system_messages, {"role": "user", "content": framed}]
+    raise RuntimeError("context compaction could not make the checkpoint prompt fit")
 
 
 @asynccontextmanager
@@ -328,6 +425,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -373,7 +471,23 @@ async def main() -> None:
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
     while True:
-        message = await chat(client, args.model, messages, tools)
+        try:
+            message = await chat(
+                client,
+                args.model,
+                messages,
+                tools,
+                allow_compaction=args.compaction and can_compact(messages),
+            )
+        except BadRequestError as error:
+            if (
+                not args.compaction
+                or not can_compact(messages)
+                or not is_context_length_error(error)
+            ):
+                raise
+            messages = await compact(client, args.model, messages, tools)
+            continue
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break

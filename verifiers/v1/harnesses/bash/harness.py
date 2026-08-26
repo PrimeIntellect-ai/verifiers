@@ -28,6 +28,10 @@ SEARCH_PROMPT = (
 
 
 class BashHarnessConfig(HarnessConfig):
+    compaction: bool = True
+    """Compact the conversation at the model context limit. The harness asks the model for a
+    handoff summary, then continues from a fresh context that contains the summary."""
+
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
@@ -77,6 +81,8 @@ class BashHarness(Harness[BashHarnessConfig]):
         ]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+        if self.config.compaction:
+            args.append("--compaction")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

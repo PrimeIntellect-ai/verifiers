@@ -81,6 +81,8 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+CONTEXT_COMPACTION_HEADER = "X-Verifiers-Context-Compaction"
+"""Internal opt-in for a harness that can recover from an overlong prompt."""
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -493,6 +495,12 @@ class InterceptionServer(Interception):
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
         upstream_headers = dict(request.headers)
+        context_compaction = request.headers.get(CONTEXT_COMPACTION_HEADER) == "1"
+        upstream_headers = {
+            name: value
+            for name, value in upstream_headers.items()
+            if name.lower() != CONTEXT_COMPACTION_HEADER.lower()
+        }
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -715,14 +723,17 @@ class InterceptionServer(Interception):
                             status=400,
                         )
                 except OverlongPromptError as e:
-                    # An overlong prompt is a budget limit, not a crash: end the rollout
-                    # cleanly as a truncation — refuse the call to halt the harness (same
-                    # shape as `refused` above).
                     error = e
-                    session.trace.stop("context_length")
+                    if not context_compaction:
+                        session.trace.stop("context_length")
                     logger.debug("prompt too long: id=%s", session.trace.id)
+                    message = (
+                        "context_length"
+                        if context_compaction
+                        else "rollout stopped: context_length"
+                    )
                     return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
+                        dialect.error_body(message),
                         status=400,
                     )
                 except RolloutError as e:
