@@ -290,6 +290,7 @@ markers = [
     "bash: v1 e2e cases on the bash harness",
     "browser_use: v1 e2e cases on the browser_use harness",
     "rlm: v1 e2e cases on the rlm harness",
+    "compaction: v1 context-compaction E2E cases",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "pi: v1 e2e cases on the pi harness",
     "pool: v1 e2e cases on the pool harness",

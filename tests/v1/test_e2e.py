@@ -5,7 +5,11 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import os
+
 import pytest
+
+from verifiers.v1.utils.loaders import harness_config_type
 
 mark = pytest.mark
 
@@ -154,6 +158,66 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     for call in trace.calls:
         assert call.model and call.sampling is not None
         assert call.time.duration > 0
+
+
+@pytest.mark.e2e
+@pytest.mark.compaction
+@pytest.mark.docker
+@pytest.mark.parametrize("scenario", ["decode", "tool_result"])
+@pytest.mark.parametrize("harness_id", ["bash", "rlm"])
+async def test_context_compaction_matrix(run_v1, scenario, harness_id, tmp_path):
+    """Both in-house loops recover when decoding or tool output fills context."""
+    base_url = os.environ.get("VF_COMPACTION_E2E_BASE_URL")
+    model = os.environ.get("VF_COMPACTION_E2E_MODEL")
+    context_window = int(os.environ.get("VF_COMPACTION_E2E_CONTEXT_WINDOW", "4096"))
+    if not base_url or not model:
+        pytest.skip("needs a local compaction E2E model")
+
+    harness = {
+        "id": harness_id,
+        "summarize_at_tokens": context_window,
+        **({"compaction": True} if harness_id == "bash" else {}),
+    }
+    sampling = (
+        {"extra_body": {"ignore_eos": True}}
+        if scenario == "decode"
+        else {"temperature": 0.0}
+    )
+    (trace,) = await run_v1(
+        "context-compaction-v1",
+        harness=harness_config_type(harness_id).model_validate(harness),
+        runtime={"type": "docker"},
+        env={"agent": {"sampling": sampling, "max_output_tokens": None}},
+        client={
+            "type": "eval",
+            "base_url": base_url,
+            "api_key_var": "VF_COMPACTION_E2E_API_KEY",
+        },
+        model=model,
+        max_tokens=None if scenario == "decode" else 512,
+        max_turns=8,
+        rollout_timeout=600,
+        taskset_overrides={
+            "task": {
+                "scenario": scenario,
+                "payload_chars": context_window * 12,
+            }
+        },
+        output_dir=tmp_path / f"{scenario}-{harness_id}",
+    )
+
+    assert trace.ok, trace.errors
+    assert trace.num_branches > 1
+    assert trace.rewards["compacted"].score == 1.0
+    if scenario == "decode":
+        assert any(call.finish_reason == "length" for call in trace.calls)
+    else:
+        assert any(
+            call.error is not None and call.error.type == "OverlongPromptError"
+            for call in trace.calls
+        )
+    if harness_id == "rlm":
+        assert trace.metrics["num_compactions"] >= 1
 
 
 @pytest.mark.e2e

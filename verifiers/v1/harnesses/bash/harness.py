@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+from pydantic import PositiveInt
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
@@ -29,8 +31,11 @@ SEARCH_PROMPT = (
 
 class BashHarnessConfig(HarnessConfig):
     compaction: bool = True
-    """Compact the conversation at the model context limit. The harness asks the model for a
-    handoff summary, then continues from a fresh context that contains the summary."""
+    """Recover from context exhaustion with a handoff summary and a fresh branch."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact proactively when the estimated active context reaches this threshold. When unset,
+    compaction still recovers from provider context errors."""
 
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
@@ -83,6 +88,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction:
             args.append("--compaction")
+            if self.config.summarize_at_tokens is not None:
+                args.append(f"--summarize-at-tokens={self.config.summarize_at_tokens}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

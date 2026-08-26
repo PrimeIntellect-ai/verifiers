@@ -19,7 +19,6 @@ SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
-CONTEXT_COMPACTION_HEADER = "X-Verifiers-Context-Compaction"
 
 CHECKPOINT_COMPACTION_PROMPT = (
     "You are performing a CONTEXT CHECKPOINT COMPACTION. "
@@ -210,21 +209,28 @@ async def chat(
     messages: list[dict],
     tools: list[dict],
     *,
-    allow_compaction: bool = False,
     tool_choice: str | None = None,
 ):
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
-    if allow_compaction:
-        kwargs["extra_headers"] = {CONTEXT_COMPACTION_HEADER: "1"}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    completion = await client.chat.completions.create(**kwargs)
-    return completion.choices[0].message
+    return await client.chat.completions.create(**kwargs)
 
 
 def is_context_length_error(error: BadRequestError) -> bool:
     details = f"{error} {error.body or ''}".casefold()
-    return "context_length" in details or "context length" in details
+    return any(
+        marker in details
+        for marker in (
+            "request entity too large",
+            "context_length",
+            "context length",
+            "context window",
+            "prompt is too long",
+            "too many tokens",
+            "token limit exceeded",
+        )
+    )
 
 
 def drop_latest_tool_result(messages: list[dict]) -> bool:
@@ -240,12 +246,15 @@ def drop_latest_tool_result(messages: list[dict]) -> bool:
     return False
 
 
-def can_compact(messages: list[dict]) -> bool:
-    return any(
-        message.get("role") == "tool"
-        and message.get("content") != COMPACTED_TOOL_RESULT
-        for message in messages
-    )
+def estimated_tokens(value: str) -> int:
+    return (len(value) + 3) // 4
+
+
+def context_tokens(completion) -> int:
+    usage = completion.usage
+    if usage is None:
+        return 0
+    return (usage.prompt_tokens or 0) + (usage.completion_tokens or 0)
 
 
 async def compact(
@@ -254,33 +263,32 @@ async def compact(
     messages: list[dict],
     tools: list[dict],
 ) -> list[dict]:
-    """Create a handoff summary after removing only the tool output needed to fit it."""
+    """Create a handoff summary, removing tool output only when the checkpoint overflows."""
     system_messages = [
         message for message in messages if message.get("role") == "system"
     ]
-    while drop_latest_tool_result(messages):
+    while True:
         checkpoint_messages = [
             *messages,
             {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
         ]
         try:
-            summary = await chat(
+            completion = await chat(
                 client,
                 model,
                 checkpoint_messages,
                 tools,
-                allow_compaction=can_compact(messages),
                 tool_choice="none",
             )
         except BadRequestError as error:
             if not is_context_length_error(error):
                 raise
-            if not can_compact(messages):
+            if not drop_latest_tool_result(messages):
                 raise
             continue
+        summary = completion.choices[0].message
         framed = POST_COMPACTION_FRAMING + "\n\n" + (summary.content or "")
         return [*system_messages, {"role": "user", "content": framed}]
-    raise RuntimeError("context compaction could not make the checkpoint prompt fit")
 
 
 @asynccontextmanager
@@ -426,6 +434,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--compaction", action="store_true")
+    parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -471,26 +480,37 @@ async def main() -> None:
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
     while True:
-        try:
-            message = await chat(
-                client,
-                args.model,
-                messages,
-                tools,
-                allow_compaction=args.compaction and can_compact(messages),
-            )
-        except BadRequestError as error:
+        recovered_overflow = False
+        while True:
+            try:
+                completion = await chat(client, args.model, messages, tools)
+            except BadRequestError as error:
+                if (
+                    not args.compaction
+                    or recovered_overflow
+                    or not is_context_length_error(error)
+                ):
+                    raise
+                messages = await compact(client, args.model, messages, tools)
+                recovered_overflow = True
+                continue
+            choice = completion.choices[0]
             if (
-                not args.compaction
-                or not can_compact(messages)
-                or not is_context_length_error(error)
+                args.compaction
+                and args.summarize_at_tokens is not None
+                and choice.finish_reason == "length"
+                and context_tokens(completion) >= args.summarize_at_tokens
+                and not recovered_overflow
             ):
-                raise
-            messages = await compact(client, args.model, messages, tools)
-            continue
+                messages = await compact(client, args.model, messages, tools)
+                recovered_overflow = True
+                continue
+            break
+        message = choice.message
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break
+        tool_result_tokens = 0
         for call in message.tool_calls:
             name = call.function.name
             tool_message = {
@@ -509,7 +529,11 @@ async def main() -> None:
                     tool_message,
                 )
                 if decision["action"] == "rewrite":
-                    messages.append(decision["message"])
+                    rewritten = decision["message"]
+                    messages.append(rewritten)
+                    tool_result_tokens += estimated_tokens(
+                        str(rewritten.get("content", ""))
+                    )
                     continue
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
@@ -554,6 +578,14 @@ async def main() -> None:
                 if decision["action"] == "rewrite":
                     tool_message = decision["message"]
             messages.append(tool_message)
+            tool_result_tokens += estimated_tokens(str(tool_message["content"]))
+        if (
+            args.compaction
+            and args.summarize_at_tokens is not None
+            and context_tokens(completion) + tool_result_tokens
+            >= args.summarize_at_tokens
+        ):
+            messages = await compact(client, args.model, messages, tools)
     if tool_client is not None:
         await tool_client.aclose()
 

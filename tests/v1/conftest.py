@@ -96,7 +96,7 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
-    if os.environ.get("PRIME_API_KEY"):
+    if os.environ.get("PRIME_API_KEY") or os.environ.get("VF_COMPACTION_E2E_BASE_URL"):
         return
     skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
     for item in items:
@@ -124,7 +124,7 @@ def _eval_config(
     harness: str | HarnessConfig | None = "null",
     n: int = 1,
     num_tasks: int = 1,
-    max_tokens: int = 2048,
+    max_tokens: int | None = 2048,
     max_turns: int | None = 4,
     rollout_timeout: float = 180,
     taskset_overrides: dict | None = None,
@@ -132,6 +132,8 @@ def _eval_config(
     env: dict | None = None,
     pool: dict | None = None,
     reasoning_effort: str | None = None,
+    model: str = CI_MODEL,
+    client: dict | None = None,
     server: bool = False,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
@@ -187,7 +189,8 @@ def _eval_config(
         serve=({"pool": pool} if pool else {}) if server else None,
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
-        model=CI_MODEL,
+        model=model,
+        client=client or {"type": "eval"},
     )
 
 
