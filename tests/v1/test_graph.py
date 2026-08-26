@@ -1,4 +1,6 @@
 import base64
+import io
+import json
 
 import numpy as np
 
@@ -34,6 +36,30 @@ def _routed_payload(
     }
 
 
+def _opaque_routed_payload(
+    num_tokens: int,
+    start: int,
+    base: int,
+    *,
+    native: bool,
+    layers: int = 2,
+    top_k: int = 1,
+):
+    arr = (
+        np.arange(num_tokens * layers * top_k)
+        .reshape(num_tokens, layers, top_k)
+        .astype(np.uint8)
+        + base
+    )
+    if native:
+        buffer = io.BytesIO()
+        np.save(buffer, arr, allow_pickle=False)
+        data = buffer.getvalue()
+    else:
+        data = json.dumps(_routed_payload(num_tokens, start, base)).encode()
+    return {"data": base64.b64encode(data).decode(), "start": start}
+
+
 def test_routed_experts_attributed_and_aligned_across_turns():
     """Each turn's full routing (start=0) is attributed to the nodes it created; the new turn's
     nodes get this turn's slice and reused nodes keep theirs, so `Branch.routed_experts`
@@ -55,7 +81,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 prompt_ids=[10, 11, 12],
                 completion_ids=[20, 21],
                 message_spans=[(0, 2)],
-                routed_experts=_routed_payload(5, 0, 0),
+                routed_experts=_opaque_routed_payload(5, 0, 0, native=False),
             ),
         )
     )
@@ -73,7 +99,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 prompt_ids=[10, 11, 12, 20, 21, 30, 31],
                 completion_ids=[40, 41],
                 message_spans=[(0, 2), None, (5, 7)],
-                routed_experts=_routed_payload(9, 0, 100),
+                routed_experts=_opaque_routed_payload(9, 0, 100, native=True),
             ),
         )
     )
