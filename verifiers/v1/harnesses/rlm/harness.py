@@ -1,15 +1,15 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import logging
-import random
 import shlex
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.clients.context import resolve_compaction_threshold
+from verifiers.v1.configs.harness import CompactionConfig, HarnessConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -35,27 +35,15 @@ class _SessionSnapshot(BaseModel):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="9f64353", min_length=1)
+    version: str = Field(default="1e45450", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
-    """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
-    past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
-    threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
-    `None` disables auto-compaction; ints must be positive."""
-
-    @model_validator(mode="after")
-    def validate_range(self) -> "RLMHarnessConfig":
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple) and value[0] > value[1]:
-            raise ValueError(
-                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-            )
-        return self
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -95,16 +83,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
-    def summarize_threshold(self, task_idx: int | None) -> int | None:
-        """Resolve a fixed or per-task compaction threshold."""
-        value = self.config.summarize_at_tokens
-        if value is None:
-            return None
-        if isinstance(value, tuple):
-            lo, hi = value
-            return random.Random(task_idx or 0).randint(lo, hi)
-        return value
-
     def _runtime_metadata(
         self,
         ctx: ModelContext,
@@ -112,8 +90,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        data: TaskData,
         system_prompt: str | None,
+        compaction: dict[str, int | None] | None,
     ) -> JsonObject:
         payload = {
             "session_id": trace.id,
@@ -124,7 +102,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             },
             "policy": {
                 "max_depth": self.config.max_depth,
-                "summarize_at_tokens": self.summarize_threshold(data.idx),
+                "compaction": compaction,
                 "max_concurrent_subagents": max(4, self.config.max_depth),
             },
             "system_prompt_path": None,
@@ -146,12 +124,24 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        compaction = None
+        if self.config.compaction is not None:
+            summarize_at_tokens = self.config.compaction.summarize_threshold(data.idx)
+            if summarize_at_tokens is None:
+                summarize_at_tokens = await resolve_compaction_threshold(ctx)
+            compaction = {"summarize_at_tokens": summarize_at_tokens}
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, data, system_prompt
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                system_prompt,
+                compaction,
             ),
         )
 

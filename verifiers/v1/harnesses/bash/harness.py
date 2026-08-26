@@ -2,10 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import PositiveInt
-
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.clients.context import resolve_compaction_threshold
+from verifiers.v1.configs.harness import CompactionConfig, HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -30,12 +29,8 @@ SEARCH_PROMPT = (
 
 
 class BashHarnessConfig(HarnessConfig):
-    compaction: bool = True
-    """Recover from context exhaustion with a handoff summary and a fresh branch."""
-
-    summarize_at_tokens: PositiveInt | None = None
-    """Compact proactively when the estimated active context reaches this threshold. When unset,
-    compaction still recovers from provider context errors."""
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
@@ -86,10 +81,13 @@ class BashHarness(Harness[BashHarnessConfig]):
         ]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
-        if self.config.compaction:
+        if self.config.compaction is not None:
             args.append("--compaction")
-            if self.config.summarize_at_tokens is not None:
-                args.append(f"--summarize-at-tokens={self.config.summarize_at_tokens}")
+            threshold = self.config.compaction.summarize_threshold(data.idx)
+            if threshold is None:
+                threshold = await resolve_compaction_threshold(ctx)
+            if threshold is not None:
+                args.append(f"--summarize-at-tokens={threshold}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

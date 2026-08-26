@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -20,30 +21,34 @@ SERPER_URL = "https://google.serper.dev/search"
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
 
-CHECKPOINT_COMPACTION_PROMPT = (
-    "You are performing a CONTEXT CHECKPOINT COMPACTION. "
-    "Create a handoff summary for another LLM that will resume the task.\n"
-    "\n"
-    "Include:\n"
-    "- Current progress and key decisions made\n"
-    "- Important context, constraints, or user preferences\n"
-    "- What remains to be done (clear next steps)\n"
-    "- Any critical data, examples, or references needed to continue\n"
-    "\n"
-    "Be concise, structured, and focused on helping the next LLM "
-    "seamlessly continue the work."
-)
+CHECKPOINT_COMPACTION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-POST_COMPACTION_FRAMING = (
-    "Another language model started to solve this problem and produced "
-    "a summary of its thinking process. Use this to build on the work "
-    "that has already been done and avoid duplicating work. Here is "
-    "the summary produced by the other language model, use the "
-    "information in this summary to assist with your own analysis:"
-)
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-COMPACTED_TOOL_RESULT = (
-    "[tool output dropped because it exceeded the model context limit]"
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
+
+POST_COMPACTION_FRAMING = """Another language model started to solve this problem and produced \
+a summary of its thinking process. Use this to build on the work \
+that has already been done and avoid duplicating work. Here is \
+the summary produced by the other language model, use the \
+information in this summary to assist with your own analysis:"""
+
+COMPACTED_TOOL_RESULT = "[tool output dropped because it exceeded the context limit]"
+
+CONTEXT_WINDOW_PATTERNS = (
+    re.compile(
+        r"(?:maximum|max(?:imum)?)[^.\n]{0,40}(?:context length|context window)"
+        r"[^\d]{0,20}([\d,]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"[\"']?(?:max_model_len|context_length)[\"']?\s*[:=]\s*([\d,]+)",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -217,10 +222,10 @@ async def chat(
     return await client.chat.completions.create(**kwargs)
 
 
-def is_context_length_error(error: BadRequestError) -> bool:
-    details = f"{error} {error.body or ''}".casefold()
-    return any(
-        marker in details
+def context_error(error: BadRequestError) -> tuple[bool, int | None]:
+    details = f"{error} {error.body or ''}"
+    overflow = any(
+        marker in details.casefold()
         for marker in (
             "request entity too large",
             "context_length",
@@ -231,6 +236,12 @@ def is_context_length_error(error: BadRequestError) -> bool:
             "token limit exceeded",
         )
     )
+    for pattern in CONTEXT_WINDOW_PATTERNS:
+        match = pattern.search(details)
+        if match:
+            context_window = int(match.group(1).replace(",", ""))
+            return overflow, max(1, context_window * 9 // 10)
+    return overflow, None
 
 
 def drop_latest_tool_result(messages: list[dict]) -> bool:
@@ -257,38 +268,62 @@ def context_tokens(completion) -> int:
     return (usage.prompt_tokens or 0) + (usage.completion_tokens or 0)
 
 
-async def compact(
-    client: AsyncOpenAI,
-    model: str,
-    messages: list[dict],
-    tools: list[dict],
-) -> list[dict]:
-    """Create a handoff summary, removing tool output only when the checkpoint overflows."""
-    system_messages = [
-        message for message in messages if message.get("role") == "system"
-    ]
-    while True:
-        checkpoint_messages = [
-            *messages,
-            {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
-        ]
+class Compactor:
+    """Compact once and retry once when a model turn exhausts its context."""
+
+    def __init__(self, client, model, tools, enabled, threshold):
+        self.client = client
+        self.model = model
+        self.tools = tools
+        self.enabled = enabled
+        self.threshold = threshold
+
+    def reached(self, completion, extra_tokens: int = 0) -> bool:
+        return (
+            self.enabled
+            and self.threshold is not None
+            and context_tokens(completion) + extra_tokens >= self.threshold
+        )
+
+    async def complete(self, messages: list[dict]):
         try:
-            completion = await chat(
-                client,
-                model,
-                checkpoint_messages,
-                tools,
-                tool_choice="none",
-            )
+            completion = await chat(self.client, self.model, messages, self.tools)
         except BadRequestError as error:
-            if not is_context_length_error(error):
+            overflow, threshold = context_error(error)
+            if not self.enabled or not overflow:
                 raise
-            if not drop_latest_tool_result(messages):
-                raise
-            continue
-        summary = completion.choices[0].message
-        framed = POST_COMPACTION_FRAMING + "\n\n" + (summary.content or "")
-        return [*system_messages, {"role": "user", "content": framed}]
+            if self.threshold is None:
+                self.threshold = threshold
+        else:
+            choice = completion.choices[0]
+            if choice.finish_reason != "length" or not self.reached(completion):
+                return completion, messages
+
+        messages = await self.compact(messages)
+        completion = await chat(self.client, self.model, messages, self.tools)
+        return completion, messages
+
+    async def compact(self, messages: list[dict]) -> list[dict]:
+        system = [message for message in messages if message.get("role") == "system"]
+        while True:
+            checkpoint = [
+                *messages,
+                {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
+            ]
+            try:
+                completion = await chat(
+                    self.client,
+                    self.model,
+                    checkpoint,
+                    self.tools,
+                    tool_choice="none",
+                )
+                summary = completion.choices[0].message.content or ""
+                framed = POST_COMPACTION_FRAMING + "\n\n" + summary
+                return [*system, {"role": "user", "content": framed}]
+            except BadRequestError as error:
+                if not context_error(error)[0] or not drop_latest_tool_result(messages):
+                    raise
 
 
 @asynccontextmanager
@@ -479,33 +514,16 @@ async def main() -> None:
         messages.extend(initial)
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
+    compactor = Compactor(
+        client,
+        args.model,
+        tools,
+        args.compaction,
+        args.summarize_at_tokens,
+    )
     while True:
-        recovered_overflow = False
-        while True:
-            try:
-                completion = await chat(client, args.model, messages, tools)
-            except BadRequestError as error:
-                if (
-                    not args.compaction
-                    or recovered_overflow
-                    or not is_context_length_error(error)
-                ):
-                    raise
-                messages = await compact(client, args.model, messages, tools)
-                recovered_overflow = True
-                continue
-            choice = completion.choices[0]
-            if (
-                args.compaction
-                and args.summarize_at_tokens is not None
-                and choice.finish_reason == "length"
-                and context_tokens(completion) >= args.summarize_at_tokens
-                and not recovered_overflow
-            ):
-                messages = await compact(client, args.model, messages, tools)
-                recovered_overflow = True
-                continue
-            break
+        completion, messages = await compactor.complete(messages)
+        choice = completion.choices[0]
         message = choice.message
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
@@ -579,13 +597,8 @@ async def main() -> None:
                     tool_message = decision["message"]
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
-        if (
-            args.compaction
-            and args.summarize_at_tokens is not None
-            and context_tokens(completion) + tool_result_tokens
-            >= args.summarize_at_tokens
-        ):
-            messages = await compact(client, args.model, messages, tools)
+        if compactor.reached(completion, tool_result_tokens):
+            messages = await compactor.compact(messages)
     if tool_client is not None:
         await tool_client.aclose()
 
