@@ -13,6 +13,7 @@ import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.runtimes import E2BConfig, E2BRuntime
+from verifiers.v1.runtimes.e2b import _egress_update
 
 CONFIGS = sorted(
     p
@@ -51,3 +52,39 @@ def test_e2b_runtime_revalidates_task_resource_updates() -> None:
 
     with pytest.raises(ValueError, match="1 or an even number"):
         E2BRuntime(config)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["https://api.example.com", "example.com:8443", "*.example.com"],
+)
+def test_e2b_config_rejects_unenforceable_egress_rules(rule: str) -> None:
+    with pytest.raises(ValueError, match="hostnames, IPs, or CIDR blocks"):
+        E2BConfig(allow=[rule])
+    with pytest.raises(ValueError, match="hostnames, IPs, or CIDR blocks"):
+        E2BConfig(block=[rule])
+
+
+def test_e2b_egress_update_states_the_complete_policy() -> None:
+    routes = ["https://tunnel.example.com/intercept"]
+
+    unrestricted = _egress_update(E2BConfig(), None)
+    assert unrestricted == {"allow_internet_access": True}
+
+    blocklist = _egress_update(E2BConfig(block=["evil.example.com"]), routes)
+    assert blocklist == {"deny_out": ["evil.example.com"]}
+
+    allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
+    assert allowlist == {
+        "allow_out": ["tunnel.example.com", "api.example.com"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+
+    framework_only = _egress_update(E2BConfig(allow=[]), routes)
+    assert framework_only == {
+        "allow_out": ["tunnel.example.com"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+
+    no_routes = _egress_update(E2BConfig(allow=[]), [])
+    assert no_routes == {"allow_internet_access": False}

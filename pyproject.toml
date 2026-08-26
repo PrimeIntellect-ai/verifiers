@@ -114,6 +114,9 @@ harbor = [
 modal = [
     "modal>=1.4.0",
 ]
+e2b = [
+    "e2b>=2.35.0",
+]
 notebook = [
     "nest-asyncio>=1.6.0",
 ]
