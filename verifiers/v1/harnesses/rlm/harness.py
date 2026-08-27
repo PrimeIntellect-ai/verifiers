@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.lineage import LineageManifest
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -33,12 +32,11 @@ class _SessionSnapshot(BaseModel):
 
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
-    lineage: LineageManifest | None = None
 
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="6612976a079fbba77b99e3a28f95b746165fedf0", min_length=1
+        default="3b3e3e282507da88e66c696875b327b097dd23e2", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
@@ -165,8 +163,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         )
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
-        if snapshot.lineage is not None:
-            trace.reconcile_lineage(snapshot.lineage)
         trace.record_metrics(snapshot.metrics)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:

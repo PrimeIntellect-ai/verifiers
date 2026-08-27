@@ -652,8 +652,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             for session in manifest.sessions
             if session.parent_session_id is None
         ]
-        if len(roots) != 1 or roots[0].session_id != self.id:
-            raise ValueError("RLM lineage root session does not match the rollout")
+        if len(roots) != 1:
+            raise ValueError("ACP lineage must contain exactly one root session")
 
         sessions = {session.session_id: session for session in manifest.sessions}
         contexts = {context.context_id: context for context in manifest.contexts}
@@ -661,7 +661,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for index, call in enumerate(self.calls):
             item = call.lineage
             if item is None:
-                raise ValueError(f"model call {index} has no RLM lineage headers")
+                raise ValueError(f"model call {index} has no ACP lineage headers")
             session = sessions.get(item.session_id)
             context = contexts.get(item.context_id)
             request = requests.get(item.request_id)

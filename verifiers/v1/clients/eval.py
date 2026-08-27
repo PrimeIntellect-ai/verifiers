@@ -13,7 +13,7 @@ from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
-from verifiers.v1.lineage import RLM_LINEAGE_HEADERS
+from verifiers.v1.lineage import ACP_LINEAGE_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
 
 # These fields describe the localhost request, its original bytes, or its connection. HTTPX
@@ -51,7 +51,7 @@ _BLOCKED_REQUEST_HEADERS = (
             "signature-input",
         }
     )
-    | RLM_LINEAGE_HEADERS
+    | ACP_LINEAGE_HEADERS
 )
 
 

@@ -1,9 +1,9 @@
-"""Exact recursive-agent lineage carried beside the training message graph.
+"""Optional ACP lineage carried beside the training message graph.
 
-The message DAG remains the source of training branches.  This module describes the
+The message DAG remains the source of training branches. This module describes the
 runtime provenance that explains which recursive session and context epoch produced each
-model call.  nano-rlm sends the call-local part in private HTTP headers and publishes the
-full manifest in its ACP session snapshot.
+model call. ACP agents send the call-local part in private HTTP headers and publish the
+full manifest through response ``_meta``.
 """
 
 from __future__ import annotations
@@ -15,29 +15,30 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 LINEAGE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 
-RLM_REQUEST_ID_HEADER = "X-RLM-Request-ID"
-RLM_SESSION_ID_HEADER = "X-RLM-Session-ID"
-RLM_PARENT_SESSION_ID_HEADER = "X-RLM-Parent-Session-ID"
-RLM_CONTEXT_ID_HEADER = "X-RLM-Context-ID"
-RLM_PREVIOUS_CONTEXT_ID_HEADER = "X-RLM-Previous-Context-ID"
-RLM_TRANSITION_HEADER = "X-RLM-Transition"
-RLM_COMPACTION_ID_HEADER = "X-RLM-Compaction-ID"
-RLM_DEPTH_HEADER = "X-RLM-Depth"
+ACP_LINEAGE_METADATA_KEY = "ai.prime.acp/lineage-v1"
+ACP_REQUEST_ID_HEADER = "X-ACP-Lineage-Request-ID"
+ACP_SESSION_ID_HEADER = "X-ACP-Lineage-Session-ID"
+ACP_PARENT_SESSION_ID_HEADER = "X-ACP-Lineage-Parent-Session-ID"
+ACP_CONTEXT_ID_HEADER = "X-ACP-Lineage-Context-ID"
+ACP_PREVIOUS_CONTEXT_ID_HEADER = "X-ACP-Lineage-Previous-Context-ID"
+ACP_TRANSITION_HEADER = "X-ACP-Lineage-Transition"
+ACP_COMPACTION_ID_HEADER = "X-ACP-Lineage-Compaction-ID"
+ACP_DEPTH_HEADER = "X-ACP-Lineage-Depth"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-RLM_LINEAGE_HEADERS = frozenset(
+ACP_LINEAGE_HEADERS = frozenset(
     {
-        RLM_REQUEST_ID_HEADER.lower(),
-        RLM_SESSION_ID_HEADER.lower(),
-        RLM_PARENT_SESSION_ID_HEADER.lower(),
-        RLM_CONTEXT_ID_HEADER.lower(),
-        RLM_PREVIOUS_CONTEXT_ID_HEADER.lower(),
-        RLM_TRANSITION_HEADER.lower(),
-        RLM_COMPACTION_ID_HEADER.lower(),
-        RLM_DEPTH_HEADER.lower(),
+        ACP_REQUEST_ID_HEADER.lower(),
+        ACP_SESSION_ID_HEADER.lower(),
+        ACP_PARENT_SESSION_ID_HEADER.lower(),
+        ACP_CONTEXT_ID_HEADER.lower(),
+        ACP_PREVIOUS_CONTEXT_ID_HEADER.lower(),
+        ACP_TRANSITION_HEADER.lower(),
+        ACP_COMPACTION_ID_HEADER.lower(),
+        ACP_DEPTH_HEADER.lower(),
     }
 )
-"""Private nano-rlm headers consumed at interception and never sent upstream."""
+"""Private ACP extension headers consumed at interception and never sent upstream."""
 
 LineageTransition = Literal["root", "spawn", "compact"]
 LineageRequestKind = Literal["turn", "compaction"]
@@ -322,7 +323,7 @@ class LineageManifest(_StrictLineageModel):
 def extract_call_lineage(
     headers: Mapping[str, str],
 ) -> tuple[CallLineage | None, dict[str, str]]:
-    """Parse and remove private nano-rlm headers from one provider-bound request.
+    """Parse and remove private ACP lineage headers from a provider-bound request.
 
     A partial lineage envelope is rejected: silently accepting it would turn an exact
     provenance channel into a heuristic one.  Ordinary requests with none of the private
@@ -332,13 +333,13 @@ def extract_call_lineage(
     forwarded = {
         name: value
         for name, value in headers.items()
-        if name.lower() not in RLM_LINEAGE_HEADERS
+        if name.lower() not in ACP_LINEAGE_HEADERS
     }
     normalized = {name.lower(): value for name, value in headers.items()}
     values = {
-        name: value for name, value in normalized.items() if name in RLM_LINEAGE_HEADERS
+        name: value for name, value in normalized.items() if name in ACP_LINEAGE_HEADERS
     }
-    if not values or set(values) == {RLM_DEPTH_HEADER.lower()}:
+    if not values:
         return None, forwarded
 
     def get(name: str) -> str | None:
@@ -346,36 +347,38 @@ def extract_call_lineage(
         return value if value not in (None, "") else None
 
     required = (
-        RLM_REQUEST_ID_HEADER,
-        RLM_SESSION_ID_HEADER,
-        RLM_CONTEXT_ID_HEADER,
-        RLM_TRANSITION_HEADER,
-        RLM_DEPTH_HEADER,
+        ACP_REQUEST_ID_HEADER,
+        ACP_SESSION_ID_HEADER,
+        ACP_CONTEXT_ID_HEADER,
+        ACP_TRANSITION_HEADER,
+        ACP_DEPTH_HEADER,
     )
     missing = [name for name in required if get(name) is None]
     if missing:
         raise ValueError(
-            "incomplete RLM lineage headers: missing " + ", ".join(missing)
+            "incomplete ACP lineage headers: missing " + ", ".join(missing)
         )
-    request_id = get(RLM_REQUEST_ID_HEADER)
+    request_id = get(ACP_REQUEST_ID_HEADER)
     idempotency_key = normalized.get(IDEMPOTENCY_KEY_HEADER.lower())
     if idempotency_key is None:
-        raise ValueError("RLM lineage requires Idempotency-Key")
+        raise ValueError("ACP lineage requires Idempotency-Key")
     if idempotency_key != request_id:
-        raise ValueError("RLM request id must match Idempotency-Key")
+        raise ValueError("ACP lineage request id must match Idempotency-Key")
     try:
-        depth = int(get(RLM_DEPTH_HEADER) or "")
+        depth = int(get(ACP_DEPTH_HEADER) or "")
     except ValueError as error:
-        raise ValueError("X-RLM-Depth must be a non-negative integer") from error
+        raise ValueError(
+            f"{ACP_DEPTH_HEADER} must be a non-negative integer"
+        ) from error
     return (
         CallLineage(
             request_id=request_id,
-            session_id=get(RLM_SESSION_ID_HEADER),
-            parent_session_id=get(RLM_PARENT_SESSION_ID_HEADER),
-            context_id=get(RLM_CONTEXT_ID_HEADER),
-            previous_context_id=get(RLM_PREVIOUS_CONTEXT_ID_HEADER),
-            transition=get(RLM_TRANSITION_HEADER),
-            compaction_id=get(RLM_COMPACTION_ID_HEADER),
+            session_id=get(ACP_SESSION_ID_HEADER),
+            parent_session_id=get(ACP_PARENT_SESSION_ID_HEADER),
+            context_id=get(ACP_CONTEXT_ID_HEADER),
+            previous_context_id=get(ACP_PREVIOUS_CONTEXT_ID_HEADER),
+            transition=get(ACP_TRANSITION_HEADER),
+            compaction_id=get(ACP_COMPACTION_ID_HEADER),
             depth=depth,
         ),
         forwarded,

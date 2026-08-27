@@ -15,6 +15,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.lineage import ACP_LINEAGE_METADATA_KEY, LineageManifest
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -69,6 +70,17 @@ class ACPHarness(Harness[ConfigT]):
 
     def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
         """Consume extension metadata returned by `session/close`, when supported."""
+
+    def _consume_protocol_metadata(
+        self, trace: Trace, response_metadata: dict[str, Any]
+    ) -> None:
+        """Attach optional protocol extensions understood by every ACP harness."""
+        if ACP_LINEAGE_METADATA_KEY not in response_metadata:
+            return
+        manifest = LineageManifest.model_validate(
+            response_metadata[ACP_LINEAGE_METADATA_KEY]
+        )
+        trace.reconcile_lineage(manifest)
 
     @abstractmethod
     async def prepare_acp(
@@ -277,7 +289,9 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        cast(ACPHarness, self.harness).acp_turn_result(self.trace, turn)
+        harness = cast(ACPHarness, self.harness)
+        harness._consume_protocol_metadata(self.trace, turn.response_metadata)
+        harness.acp_turn_result(self.trace, turn)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result
@@ -332,8 +346,8 @@ class ACPHarnessSession(HarnessSession):
             async with self._lock:
                 response_metadata = await self._stop(graceful=True)
                 if response_metadata:
-                    cast(ACPHarness, self.harness).acp_close_result(
-                        self.trace, response_metadata
-                    )
+                    harness = cast(ACPHarness, self.harness)
+                    harness._consume_protocol_metadata(self.trace, response_metadata)
+                    harness.acp_close_result(self.trace, response_metadata)
 
         await run_shielded(close_process())
