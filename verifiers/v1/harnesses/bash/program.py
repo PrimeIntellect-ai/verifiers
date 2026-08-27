@@ -31,7 +31,9 @@ Include:
 - What remains to be done (clear next steps)
 - Any critical data, examples, or references needed to continue
 
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+
+Reply with the summary as plain text. Do not call any tools - summarize from the conversation as it stands."""
 
 POST_COMPACTION_FRAMING = """Another language model started to solve this problem and produced \
 a summary of its thinking process. Use this to build on the work \

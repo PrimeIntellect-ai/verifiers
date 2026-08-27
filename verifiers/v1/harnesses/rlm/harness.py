@@ -43,7 +43,7 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="ac8fdb0", min_length=1)
+    version: str = Field(default="b1b4140", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
