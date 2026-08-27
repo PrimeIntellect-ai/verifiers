@@ -38,12 +38,12 @@ class CompactionConfig(BaseConfig):
     """Context compaction policy for the RLM agent loop."""
 
     summarize_at_tokens: PositiveInt | None = None
-    """Compact at this token count. When unset, use 90% of the model context window when
-    the provider advertises it."""
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="f1c51fb", min_length=1)
+    version: str = Field(default="4fd3fa2", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""

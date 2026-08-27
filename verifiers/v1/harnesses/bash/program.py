@@ -22,6 +22,12 @@ SERPER_URL = "https://google.serper.dev/search"
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
 
+RESERVE_TOKENS = 16_384
+"""Compact when this many tokens remain below the model context window."""
+
+TOOL_OUTPUT_MAX_BYTES = 10_000
+"""Middle-out truncation budget for one tool result before it enters the conversation."""
+
 CHECKPOINT_COMPACTION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
 Include:
@@ -62,8 +68,13 @@ CONTEXT_WINDOW_FIELDS = (
 )
 
 
+def default_threshold(context_window: int) -> int:
+    """Leave a fixed reserve below the window; small windows keep at least half."""
+    return max(context_window - RESERVE_TOKENS, context_window // 2)
+
+
 async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
-    """90% of the model context window, when the provider's model card advertises one."""
+    """The compaction threshold, when the provider's model card advertises a context window."""
     try:
         # The SDK needs a parameterized mapping type to parse into (bare `dict` fails).
         payload = await client.get("/models", cast_to=dict[str, Any])
@@ -75,7 +86,7 @@ async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
         for field in CONTEXT_WINDOW_FIELDS:
             value = card.get(field)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                return max(1, value * 9 // 10)
+                return default_threshold(value)
         break
     return None
 
@@ -268,7 +279,7 @@ def context_error(error: BadRequestError) -> tuple[bool, int | None]:
         match = pattern.search(details)
         if match:
             context_window = int(match.group(1).replace(",", ""))
-            return overflow, max(1, context_window * 9 // 10)
+            return overflow, default_threshold(context_window)
     return overflow, None
 
 
@@ -283,6 +294,21 @@ def drop_latest_tool_result(messages: list[dict]) -> bool:
         messages[index] = {**message, "content": COMPACTED_TOOL_RESULT}
         return True
     return False
+
+
+def truncate_tool_output(text: str) -> str:
+    """Keep the head and tail of an oversized tool result and say what was cut."""
+    data = text.encode("utf-8")
+    if len(data) <= TOOL_OUTPUT_MAX_BYTES:
+        return text
+    keep = TOOL_OUTPUT_MAX_BYTES // 2
+    head = data[:keep].decode("utf-8", errors="ignore")
+    tail = data[-keep:].decode("utf-8", errors="ignore")
+    return (
+        f"Warning: truncated output (original token count: {estimated_tokens(text)})\n"
+        f"Total output lines: {text.count(chr(10)) + 1}\n\n"
+        f"{head}\n[... {len(data) - 2 * keep} bytes truncated ...]\n{tail}"
+    )
 
 
 def estimated_tokens(chars: str) -> int:
@@ -614,7 +640,7 @@ async def main() -> None:
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
-            tool_message["content"] = content
+            tool_message["content"] = truncate_tool_output(content)
             if args.tool_interception_url:
                 assert tool_client is not None
                 decision = await run_tool_hook(
