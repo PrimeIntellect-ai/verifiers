@@ -46,7 +46,6 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
-    OverlongPromptError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -714,17 +713,6 @@ class InterceptionServer(Interception):
                             dialect.error_body(f"rollout stopped: {stopped}"),
                             status=400,
                         )
-                except OverlongPromptError as e:
-                    # An overlong prompt is a budget limit, not a crash: end the rollout
-                    # cleanly as a truncation — refuse the call to halt the harness (same
-                    # shape as `refused` above).
-                    error = e
-                    session.trace.stop("context_length")
-                    logger.debug("prompt too long: id=%s", session.trace.id)
-                    return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
-                        status=400,
-                    )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -802,13 +790,6 @@ class InterceptionServer(Interception):
                     body,
                     headers=request.headers,
                     session_id=session.trace.id,
-                )
-            except OverlongPromptError as e:
-                error = e
-                session.trace.stop("context_length")
-                logger.debug("prompt too long: id=%s", session.trace.id)
-                return web.json_response(
-                    dialect.error_body("rollout stopped: context_length"), status=400
                 )
             except RolloutError as e:
                 error = e
@@ -1007,13 +988,6 @@ class InterceptionServer(Interception):
                     for event in deferred:
                         await resp.write(event)
                     await resp.write_eof()
-            return resp
-        except OverlongPromptError as e:
-            # A streamed terminal provider failure is discovered only after its response body
-            # was relayed. Context exhaustion remains a clean truncation like earlier failures.
-            error = e
-            session.trace.stop("context_length")
-            logger.debug("prompt too long: id=%s", session.trace.id)
             return resp
         except RolloutError as e:
             # A streamed terminal provider failure is discovered only after the

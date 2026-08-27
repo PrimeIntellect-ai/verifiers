@@ -522,7 +522,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
-            "context_length",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)
