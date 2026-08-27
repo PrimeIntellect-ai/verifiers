@@ -131,10 +131,10 @@ class RolloutSession:
     `register` (one server-owned client per distinct endpoint config), so every rollout it
     multiplexes shares one keepalive connection pool instead of opening its own."""
     error: "RolloutError | None" = None
-    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
-    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
-    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Reset before each model turn, so a successful retry clears it."""
+    """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
+    when its program dies on it the rollout records this original error instead of a secondary
+    `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
+    each model turn, so a successful retry clears it."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
