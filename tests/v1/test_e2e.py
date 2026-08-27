@@ -277,7 +277,6 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
         assert lineage is not None
         request_ids = {request.request_id for request in lineage.requests}
         assert all(call.lineage_request_id in request_ids for call in trace.calls)
-        assert sum(map(len, trace.calls_by_session.values())) == len(trace.calls)
     if harness.id == "prime-agent":
         lifecycle = trace.info["acp_lifecycle"]["ai.primeintellect.prime-agent"]
         assert len(lifecycle) == 2

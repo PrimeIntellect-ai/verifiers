@@ -258,8 +258,8 @@ def _lineage_manifest(
     )
 
 
-def test_exact_lineage_groups_interleaved_calls_and_round_trips():
-    """Recursive sessions are grouped by exact IDs, not call adjacency or graph shape."""
+def test_exact_lineage_joins_interleaved_calls_and_round_trips():
+    """Recursive sessions join by exact IDs, not call adjacency or graph shape."""
     tr = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
@@ -320,30 +320,21 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
         )
     )
     tr.reconcile_lineage(vf.LineageManifest.model_validate(manifest.model_dump()))
-    calls_by_session = tr.calls_by_session
-    assert list(calls_by_session) == [tr.id, "child", "idle-child"]
-    assert [call.lineage_request_id for call in calls_by_session[tr.id]] == [
-        "root-turn",
-        "root-compact",
-        "root-after",
+    assert tr.lineage is not None
+    requests = {request.request_id: request for request in tr.lineage.requests}
+    assert [requests[call.lineage_request_id].session_id for call in tr.calls] == [
+        tr.id,
+        "child",
+        tr.id,
+        tr.id,
     ]
-    assert [call.lineage_request_id for call in calls_by_session["child"]] == [
-        "child-turn"
-    ]
-    assert calls_by_session["idle-child"] == []
-    assert [branch.index for branch in tr.branches_by_session[tr.id]] == [0, 2, 3]
-    assert [branch.index for branch in tr.branches_by_session["child"]] == [1]
-    assert tr.branches_by_session["idle-child"] == []
-    assert tr.branches[1].session_ids == ("child",)
-    assert tr.branches[3].context_ids == ("ctx-root-2",)
-    assert tr.branches[3].compaction_ids == ("compact-1",)
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
     assert restored.lineage == tr.lineage
     assert [call.lineage_request_id for call in restored.calls] == [
         call.lineage_request_id for call in tr.calls
     ]
-    assert list(restored.calls_by_session) == [tr.id, "child", "idle-child"]
+    assert restored.lineage.sessions[-1].session_id == "idle-child"
 
     # The base ACP layer consumes the generic manifest before the harness's own metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))

@@ -18,7 +18,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.lineage import LINEAGE_ID_PATTERN, LineageManifest, LineageRequest
+from verifiers.v1.lineage import LINEAGE_ID_PATTERN, LineageManifest
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -191,7 +191,13 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
 
 
 class Branch(BaseModel):
-    """A root-to-leaf graph path; each branch becomes one training sample."""
+    """A root-to-leaf message-graph path; each branch becomes one training sample.
+
+    A branch often matches one harness context window, but the concepts are not
+    identical: non-prefix prompt changes can split one context across physical branches,
+    while exact prefix reuse can carry ancestral calls into a descendant branch. Runtime
+    provenance therefore stays on ``Trace.lineage`` rather than being inferred here.
+    """
 
     index: int
     nodes: list[MessageNode]
@@ -199,48 +205,9 @@ class Branch(BaseModel):
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
-    _lineage_requests: dict[str, LineageRequest] = PrivateAttr(default_factory=dict)
-
-    def _requests_in_call_order(self) -> Iterator[LineageRequest]:
-        for call in self.calls:
-            if call.lineage_request_id is None:
-                continue
-            request = self._lineage_requests.get(call.lineage_request_id)
-            if request is not None:
-                yield request
-
     @property
     def messages(self) -> Messages:
         return [n.message for n in self.nodes]
-
-    @property
-    def session_ids(self) -> tuple[str, ...]:
-        """Recursive sessions represented on this physical message path, in call order."""
-        return tuple(
-            dict.fromkeys(
-                request.session_id for request in self._requests_in_call_order()
-            )
-        )
-
-    @property
-    def context_ids(self) -> tuple[str, ...]:
-        """Context epochs represented on this physical message path, in call order."""
-        return tuple(
-            dict.fromkeys(
-                request.context_id for request in self._requests_in_call_order()
-            )
-        )
-
-    @property
-    def compaction_ids(self) -> tuple[str, ...]:
-        """Compactions correlated with calls on this physical message path."""
-        return tuple(
-            dict.fromkeys(
-                request.compaction_id
-                for request in self._requests_in_call_order()
-                if request.compaction_id is not None
-            )
-        )
 
     @property
     def token_ids(self) -> list[int]:
@@ -433,7 +400,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
     lineage: LineageManifest | None = None
-    """Exact recursive-session manifest, when the harness publishes one."""
+    """Harness-published runtime provenance, when available.
+
+    Lineage is joined to ``calls`` by ``ModelCall.lineage_request_id`` and deliberately
+    remains separate from the physical message graph in ``nodes``.
+    """
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
     from the renderer that tokenized this trace, stamped at turn commit. Applied to a
@@ -519,11 +490,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def branches(self) -> list[Branch]:
         """One root-to-leaf path per graph leaf, its calls attached in path order."""
         by_node = {c.node: c for c in self.calls if c.node is not None}
-        lineage_requests = (
-            {request.request_id: request for request in self.lineage.requests}
-            if self.lineage is not None
-            else {}
-        )
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -532,43 +498,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
-            branch = Branch(
-                index=i,
-                nodes=[self.nodes[n] for n in path],
-                calls=[by_node[n] for n in path if n in by_node],
-                mm_token_type_id_map=self.mm_token_type_id_map,
+            branches.append(
+                Branch(
+                    index=i,
+                    nodes=[self.nodes[n] for n in path],
+                    calls=[by_node[n] for n in path if n in by_node],
+                    mm_token_type_id_map=self.mm_token_type_id_map,
+                )
             )
-            branch._lineage_requests = lineage_requests
-            branches.append(branch)
         return branches
-
-    @property
-    def calls_by_session(self) -> dict[str, list[ModelCall]]:
-        """Model calls grouped by recursive lineage session, in creation order."""
-        grouped: dict[str, list[ModelCall]] = {}
-        if self.lineage is not None:
-            grouped = {session.session_id: [] for session in self.lineage.sessions}
-            requests = {
-                request.request_id: request for request in self.lineage.requests
-            }
-        else:
-            requests = {}
-        for call in self.calls:
-            request = requests.get(call.lineage_request_id or "")
-            if request is not None:
-                grouped.setdefault(request.session_id, []).append(call)
-        return grouped
-
-    @property
-    def branches_by_session(self) -> dict[str, list[Branch]]:
-        """Physical training branches touched by each exact recursive session."""
-        branches = self.branches
-        return {
-            session_id: [
-                branch for branch in branches if session_id in branch.session_ids
-            ]
-            for session_id in self.calls_by_session
-        }
 
     def reconcile_lineage(self, manifest: LineageManifest) -> None:
         """Join recorded model calls to an ACP lineage snapshot by request ID.

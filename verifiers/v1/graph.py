@@ -1,11 +1,14 @@
 """Message-graph trajectory: store each message once, recover branches by walking.
 
 A rollout is a graph of `MessageNode`s — one per distinct message, each linked to its
-predecessor. The conversation is a path from a root to a leaf; branches (compaction,
-subagents) are simply multiple leaves, so branching falls out of the walk. Each node stores
-only the tokens it *adds* to the cumulative sequence, keeping size linear in turns and
-making a branch's training sample a cheap concat of node `token_ids`/`mask`/`logprobs` along
-its path.
+predecessor. A conversation is a path from a root to a leaf; prompt divergence from
+compaction, subagents, or other history rewrites produces multiple leaves, so branching
+falls out of the walk. A branch often corresponds to one harness context window, but it is
+a physical, exact-prefix training view rather than a semantic context identity: a prefix
+break can split one context and prefix reuse can preserve an ancestral path. Each node
+stores only the tokens it *adds* to the cumulative sequence, keeping size linear in turns
+and making a branch's training sample a cheap concat of node
+`token_ids`/`mask`/`logprobs` along its path.
 
 Token attribution (renderer client): the renderer reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new

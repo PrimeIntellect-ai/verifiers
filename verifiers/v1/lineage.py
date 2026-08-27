@@ -4,6 +4,10 @@ The message DAG remains the source of training branches. This module describes t
 runtime provenance that explains which recursive session and context epoch produced each
 model call. ACP agents send the call-local part in private HTTP headers and publish the
 full manifest through response ``_meta``.
+
+These are deliberately separate graphs. Message nodes encode exact prompt ancestry and
+may be shared by content-prefix reuse; lineage edges encode runtime causality and also
+cover retries, failures, and cancelled work that never commits a message node.
 """
 
 from __future__ import annotations
@@ -33,6 +37,12 @@ class _StrictLineageModel(BaseModel):
 
 
 class LineageSession(_StrictLineageModel):
+    """One recursively invoked agent session.
+
+    Sessions form an ancestry tree through ``parent_session_id``. A child names the
+    parent request that spawned it; the root has neither field.
+    """
+
     session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     parent_session_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
     depth: int = Field(ge=0)
@@ -42,6 +52,13 @@ class LineageSession(_StrictLineageModel):
 
 
 class LineageContext(_StrictLineageModel):
+    """One stable context-window epoch within a session.
+
+    A root or spawned session begins with one context. Successful compaction closes that
+    epoch and creates a replacement linked through ``previous_context_id``. Contexts are
+    semantic runtime identities; they are not VF message-graph branches.
+    """
+
     context_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     previous_context_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
@@ -50,7 +67,11 @@ class LineageContext(_StrictLineageModel):
 
 
 class LineageCompaction(_StrictLineageModel):
-    """One compaction attempt; only completion materializes its target context."""
+    """One attempted transition from a source context to a compacted target context.
+
+    The summary model call is identified by ``summary_request_id``. Only a completed
+    attempt materializes and names a target context.
+    """
 
     compaction_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
@@ -61,6 +82,13 @@ class LineageCompaction(_StrictLineageModel):
 
 
 class LineageRequest(_StrictLineageModel):
+    """One logical model request made within a session and context.
+
+    Provider retries reuse ``request_id``. A compaction request produces the summary for
+    its named compaction; a turn in a compacted context names the compaction that created
+    that context.
+    """
+
     request_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     context_id: str = Field(pattern=LINEAGE_ID_PATTERN)
@@ -93,7 +121,12 @@ def _assert_acyclic(
 
 
 class LineageManifest(_StrictLineageModel):
-    """The complete recursive-session snapshot published by the harness."""
+    """A harness-published snapshot of runtime execution provenance.
+
+    The manifest describes session ancestry, context epochs, compaction transitions, and
+    logical model requests. VF joins requests to intercepted ``ModelCall`` records by
+    request ID; it does not infer these semantics from the training message graph.
+    """
 
     sessions: list[LineageSession]
     contexts: list[LineageContext]
