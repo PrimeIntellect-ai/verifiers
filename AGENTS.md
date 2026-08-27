@@ -20,7 +20,7 @@
 
 ## Skills
 
-- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
+- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), `release` (publish stable versions), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
 
 ## Testing
 

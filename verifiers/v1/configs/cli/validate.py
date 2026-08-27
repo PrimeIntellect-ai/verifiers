@@ -50,13 +50,14 @@ class ValidateConfig(BaseConfig):
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Directory that groups related runs. The run (config.toml, results.jsonl,
-    summary.json, validate.log) writes to `output_dir / run.dir`."""
+    """Directory that groups related runs. The run (`configs/validate.json`,
+    `results.jsonl`, `summary.json`, `logs/validate.log`) writes to
+    `output_dir / run.dir`."""
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing, errored, and timed-out tasks in place. The run dir comes
     from the resolved config (`output_dir / run.dir`), so resume with the run's own
-    config — e.g. `uv run validate @ <run-dir>/config.toml --resume`. Excluded from the
-    saved config."""
+    config — e.g. `uv run validate @ <run-dir>/configs/validate.json --resume`.
+    Excluded from the saved config."""
     clean: bool = Field(False, exclude=True)
     """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
     previous run's results. Excluded from the saved config."""

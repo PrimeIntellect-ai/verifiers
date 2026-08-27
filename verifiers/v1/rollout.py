@@ -80,8 +80,7 @@ class Rollout:
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
-        self._owns_runtime = runtime is None
-        self._previous_runtime_env: dict[str, str] | None = None
+        self._borrowed_runtime = runtime
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -158,12 +157,12 @@ class Rollout:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
         itself couldn't see, e.g. its user raising between segments."""
-        if not self._owns_runtime and self.runtime is not None and self.runtime.stopped:
+        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
             # misattributed error onto the trace.
             raise ValueError(
-                f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
+                f"borrowed runtime {self._borrowed_runtime.name!r} was torn down by its owner "
                 "mid-run; keep the provisioning context open until every run "
                 "placed into the box has completed"
             ) from error
@@ -173,12 +172,6 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
-    def _release_borrowed_runtime(self) -> None:
-        if self._previous_runtime_env is not None and self.runtime is not None:
-            self.runtime.env = self._previous_runtime_env
-            self._previous_runtime_env = None
-            self.runtime.borrow_lock.release()
-
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
         (or borrow) the runtime, run task + harness setup, bring up the
@@ -186,9 +179,9 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
-        if self._owns_runtime:
+        if self._borrowed_runtime is None:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
-        elif self.runtime.stopped:
+        elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
             raise ValueError(
@@ -208,21 +201,18 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
-            if self._owns_runtime:
+            if self._borrowed_runtime is None:
                 runtime.env = runtime_env
             else:
-                await runtime.borrow_lock.acquire()
-                self._previous_runtime_env = runtime.env
-                # The owner's defaults return after the borrow; they do not belong to
-                # this task and must not flow into its processes.
-                runtime.env = runtime_env
+                runtime = runtime.with_env(runtime_env)
+                self.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
-            if self._owns_runtime:
+            if self._borrowed_runtime is None:
                 await runtime.start()
             await runtime.prepare_setup()
             now = time.time()
@@ -365,6 +355,8 @@ class Rollout:
             return False
         trace = self.trace
         turns_before = trace.num_turns
+        root_reply_before = trace.root_reply
+        trace.root_reply = None
         loop = asyncio.get_running_loop()
         segment_start = loop.time()
         self.deadline_at = (
@@ -410,6 +402,8 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            if trace.num_turns == turns_before:
+                trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
                     0.0, self._agent_time_remaining - (loop.time() - segment_start)
@@ -437,8 +431,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
-        self._release_borrowed_runtime()
-        if self._owns_runtime and self.runtime is not None:
+        if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
 
@@ -519,11 +512,10 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
-            self._release_borrowed_runtime()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
-            if self._owns_runtime and runtime is not None:
+            if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
                 except Exception:

@@ -261,7 +261,9 @@ class DockerRuntime(Runtime):
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
             self._proxy = EgressProxy(
-                NetworkPolicy(["*"], [], [HOST_ALIAS], allow_non_global=True)
+                NetworkPolicy(
+                    NetworkPolicyConfig(), [HOST_ALIAS], allow_non_global=True
+                )
             )
             if sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
@@ -346,18 +348,14 @@ class DockerRuntime(Runtime):
         assert self._proxy is not None
         if routes is None:
             self._proxy.policy = NetworkPolicy(
-                ["*"], [], [HOST_ALIAS], allow_non_global=True
+                NetworkPolicyConfig(), [HOST_ALIAS], allow_non_global=True
             )
             return
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
         ]
-        self._proxy.policy = NetworkPolicy(
-            self.config.allow,
-            self.config.block,
-            framework,
-        )
+        self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
         script = (

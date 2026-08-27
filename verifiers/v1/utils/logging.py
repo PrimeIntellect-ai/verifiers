@@ -46,6 +46,10 @@ def setup_logging(
     logger.remove()
     if console:
         logger.add(sys.stderr, level=lvl, format=FORMAT)
+    else:
+        # The terminal is off-limits: stray stdlib records that bypass the intercept
+        # below must not fall through to stderr either (they'd print over the UI).
+        logging.lastResort = None
     if log_file is not None:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         logger.add(log_file, level=lvl, format=FORMAT)

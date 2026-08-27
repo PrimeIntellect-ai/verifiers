@@ -8,11 +8,10 @@ import sys
 
 from pydantic_config import cli
 
-import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import (
     TRACES_FILE,
-    config_digest,
+    create_attempt_log_dir,
     output_path,
     saved_config_path,
     write_config,
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval @ <run-dir>/configs/eval.json --resume   (re-run the run's missing/errored rollouts)"
+    "       uv run eval @ <run-dir>/configs/resolved/eval.json --resume   (re-run the run's missing/errored rollouts)"
 )
 
 
@@ -72,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
     # The `@ eval.toml` this run was launched from.
     config.run.record_source(config_file_ref(argv))
     # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
-    # other write into it — the dry-run config.toml included, which would clobber the
+    # other write into it — the dry-run config included, which would clobber the
     # config a resume typically re-runs — would overwrite the previous run.
     run_path = output_path(config)
     if config.clean and not config.resume and run_path.exists():
@@ -100,10 +99,12 @@ def main(argv: list[str] | None = None) -> None:
                 f"--resume: no saved config under {run_path} - not a run dir"
             )
         with plugin_errors():
-            saved = config_type.model_validate(json.loads(saved_path.read_text()))
-        if config_digest(saved) != config_digest(config):
-            saved_dump = saved.model_dump(mode="json")
-            current_dump = config.model_dump(mode="json")
+            saved = config_type.model_validate_json(saved_path.read_text())
+        saved_dump = saved.model_dump(mode="json")
+        current_dump = config.model_dump(mode="json")
+        saved_json = json.dumps(saved_dump, sort_keys=True, separators=(",", ":"))
+        current_json = json.dumps(current_dump, sort_keys=True, separators=(",", ":"))
+        if saved_json != current_json:
             changed = sorted(
                 key
                 for key in set(saved_dump) | set(current_dump)
@@ -117,20 +118,14 @@ def main(argv: list[str] | None = None) -> None:
             )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")
-        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        logger.info("wrote config to %s", write_config(config, run_path))
         return
-    # Execution path: in-process by default; `--server` opts into the env-server worker pool
-    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
-    # slots, so it's in-process only (`server + rich` is rejected at config validation).
-    # Always tee the run's logs to a file under the output dir (in-process and server mode).
-    log_file = str(output_path(config) / "logs" / "eval.log")
+    # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
+    # points there) — in server mode (the default) the workers write there too, and
+    # `--rich.show-logs` tails it live.
+    log_file = str(create_attempt_log_dir(run_path) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if config.rich:
-        setup_logging(level, log_file=log_file, console=False)
-        # drop stray stdlib records that bypass loguru (else they print over the UI)
-        logging.lastResort = None
-    else:
-        setup_logging(level, log_file=log_file, console=True)
+    setup_logging(level, log_file=log_file, console=config.rich is None)
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
@@ -138,18 +133,15 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     try:
-        if config.server:  # opt-in: drive rollouts through the env-server worker pool
-            from verifiers.v1.cli.eval.runner import run_eval_server
-
-            episodes = asyncio.run(run_eval_server(config))
-        else:  # in-process (default), with or without the live dashboard
-            env = vf.load_environment(config.env)
-            episodes = asyncio.run(run_eval(env, config))
+        # Through the env-server worker pool by default; in-process with --no-serve.
+        episodes = asyncio.run(run_eval(config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if (
+        config.rich is None
+    ):  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
                 print(trace.model_dump_json(indent=2, exclude_none=True))

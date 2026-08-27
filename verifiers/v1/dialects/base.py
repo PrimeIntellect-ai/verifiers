@@ -1,6 +1,6 @@
 """The `Dialect` abstraction: one native wire format, translated to vf for the trace.
 
-A `Dialect[ReqT, RespT]` is the per-format translator the interception server uses to build the
+A `Dialect[RespT]` is the per-format translator the interception server uses to build the
 trace from the program's native request + the provider's native response. The server serves
 every registered dialect's `routes` (see `dialects.DIALECTS`), so a request's format is resolved
 from the endpoint the program's SDK posts to — the harness declares nothing.
@@ -14,21 +14,20 @@ exception is `apply_overrides` (impose the eval's model + sampling in this forma
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Mapping
-from typing import ClassVar, Generic, TypeVar
+from collections.abc import Callable, Mapping
+from typing import Any, ClassVar, Generic, TypeVar
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, BaseModel, TypeAdapter, ValidationError
+from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
-ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
+RawRequest = dict[str, Any]
 
 logger = logging.getLogger(__name__)
-HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
 CAPABILITY_NOTICE = (
@@ -43,15 +42,11 @@ def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
     if value.lower().startswith("data:"):
         return False
     try:
-        url = HTTP_URL_ADAPTER.validate_python(value)
+        url = AnyHttpUrl(value)
     except ValidationError:
         return True
     host = url.host.lower().rstrip(".").strip("[]")
-    return any(
-        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.block
-    ) or not any(
-        network_rule_matches(rule, url.scheme, host, url.port) for rule in policy.allow
-    )
+    return not policy.permits(url.scheme, host, url.port)
 
 
 def provider_allowed_domains(
@@ -175,26 +170,6 @@ def parse_sse_event(raw: bytes) -> dict | None:
         return json.loads(data.decode("utf-8", errors="replace"))
 
 
-def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
-    """Yield JSON SSE payloads from the end without decoding earlier events."""
-    decoded = raw.decode("utf-8", errors="replace")
-    first_newline = decoded.find("\n")
-    separator = (
-        "\r\n\r\n"
-        if first_newline > 0 and decoded[first_newline - 1] == "\r"
-        else "\n\n"
-    )
-    for block in reversed(decoded.split(separator)):
-        data = "\n".join(
-            line.removeprefix("data:").strip()
-            for line in block.splitlines()
-            if line.startswith("data:")
-        )
-        if not data or data == "[DONE]":
-            continue
-        yield json.loads(data)
-
-
 class StreamParser(ABC):
     """Incrementally assemble one native SSE stream into a vf response."""
 
@@ -209,11 +184,11 @@ class StreamParser(ABC):
         """Finalize and return the assembled response after the stream ends."""
 
 
-class Dialect(ABC, Generic[ReqT, RespT]):
-    """One native API's wire format, fully typed over its request (`ReqT`) and response
-    (`RespT`). The single place a protocol lives: implement a `Dialect` + register it in
-    `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
-    interception server are generic over this interface)."""
+class Dialect(ABC, Generic[RespT]):
+    """One native API's wire format, typed over its validated response (`RespT`). Requests stay
+    as mutable native JSON because the gateway preserves provider extensions while mediating and
+    rewriting them. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
+    speaking that format works end-to-end."""
 
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
     """Request keys that are call settings — what shapes generation given the same
@@ -247,7 +222,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         (default: an `Authorization: Bearer` token; Anthropic uses `x-api-key`)."""
         return headers.get("Authorization", "").removeprefix("Bearer ")
 
-    def streaming(self, body: ReqT) -> bool:
+    def streaming(self, body: RawRequest) -> bool:
         """Whether the request asks for a streamed (SSE) response."""
         return bool(body.get("stream"))
 
@@ -265,17 +240,17 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
     @abstractmethod
     def mediate_external_capabilities(
-        self, body: ReqT, policy: NetworkPolicyConfig
-    ) -> tuple[ReqT, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         """Remove provider-side capabilities during restricted execution. Implementations add
         the same policy context on every call because the agent does not retain injected request
         content. Returned paths never contain request values."""
 
     @abstractmethod
-    def parse_request(self, body: ReqT) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         """The native request -> the typed model request."""
 
-    def parse_sampling(self, body: ReqT) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         """The native request's call settings -> the canonical `Sampling` (for the
         trace's per-call records): the `sampling_fields` whitelist, with this format's
         aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
@@ -292,7 +267,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return self.response_type.model_validate(raw)
 
     @abstractmethod
-    def rewrite_request(self, body: ReqT, before: Request, after: Request) -> None:
+    def rewrite_request(
+        self, body: RawRequest, before: Request, after: Request
+    ) -> None:
         """Patch rewritten user/tool messages into the native conversation."""
 
     @abstractmethod
@@ -308,7 +285,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Create the per-request incremental parser for a native SSE response."""
 
     @abstractmethod
-    def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
+    def apply_overrides(
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
         model overlays; sampling is authoritative (the program's sampling keys are dropped, the
         eval's applied). Capability mediation may subsequently remove restricted fields."""
