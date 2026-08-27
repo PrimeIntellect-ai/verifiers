@@ -2,6 +2,8 @@
 
 import { readFileSync, unlinkSync } from "node:fs";
 
+// {tool_content}
+
 async function intercept(
   phase,
   toolCallId,
@@ -31,14 +33,7 @@ async function intercept(
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
   if (!response.ok) throw new Error(`tool interception returned ${response.status}`);
-  const decision = await response.json();
-  if (!["allow", "rewrite", "stop"].includes(decision.action)) {
-    throw new Error("tool interception returned an invalid action");
-  }
-  if (decision.action === "rewrite" && !decision.message) {
-    throw new Error("tool interception omitted the rewritten result");
-  }
-  return decision;
+  return validateToolDecision(await response.json(), "tool interception");
 }
 
 export default function toolInterceptionExtension(pi) {
@@ -104,22 +99,7 @@ export default function toolInterceptionExtension(pi) {
 
   pi.on("tool_result", async (event, ctx) => {
     const toolCallId = event.toolCallId.split("|", 1)[0];
-    const textOnly = event.content.every((part) => part.type === "text");
-    const content =
-      (textOnly
-        ? event.content.map((part) => part.text).join("\n")
-        : JSON.stringify(
-            event.content.map((part) =>
-              part.type === "text"
-                ? { type: "text", text: part.text }
-                : {
-                    type: "image_url",
-                    image_url: {
-                      url: `data:${part.mimeType};base64,${part.data}`,
-                    },
-                  },
-            ),
-          )) || "(no tool output)";
+    const content = vfToolContent(event.content, "Pi");
     let decision;
     try {
       decision = await intercept(
@@ -136,13 +116,7 @@ export default function toolInterceptionExtension(pi) {
       ctx.abort();
       process.exit(1);
     }
-    if (decision.action === "allow") {
-      if (textOnly && content !== "(no tool output)") return undefined;
-      return {
-        content: [{ type: "text", text: content }],
-        isError: event.isError,
-      };
-    }
+    if (decision.action === "allow") return undefined;
     if (decision.action === "stop") {
       ctx.abort();
       return {

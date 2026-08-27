@@ -1,14 +1,32 @@
 /** Route Claude SDK tool hooks through standard ACP permission requests. */
 
 const maxTextUnits = 50_000;
+// {tool_content}
+
 const { ClaudeAcpAgent } = await import(process.argv[1]);
 const originalNewSession = ClaudeAcpAgent.prototype.newSession;
 
-function resultText(hook) {
-  let content;
+function mcpParts(response) {
+  if (Array.isArray(response)) return [response, (parts) => parts];
+  if (
+    response &&
+    typeof response === "object" &&
+    Array.isArray(response.content)
+  ) {
+    return [response.content, (parts) => ({ ...response, content: parts })];
+  }
+  throw new TypeError("Claude returned unsupported structured MCP output");
+}
+
+function resultCodec(hook) {
   if (typeof hook.tool_response === "string") {
-    content = hook.tool_response;
-  } else if (
+    return {
+      content: hook.tool_response,
+      output: (content) => content,
+      replacement: "nonempty_text",
+    };
+  }
+  if (
     hook.tool_name === "Bash" &&
     hook.tool_response &&
     typeof hook.tool_response === "object" &&
@@ -17,40 +35,48 @@ function resultText(hook) {
     hook.tool_response.isImage === false &&
     hook.tool_response.persistedOutputPath === undefined
   ) {
-    content = hook.tool_response.stdout;
-  } else {
-    content = JSON.stringify(hook.tool_response);
+    return {
+      content: hook.tool_response.stdout,
+      output: (content) => ({
+        ...hook.tool_response,
+        stdout: content,
+        stderr: "",
+      }),
+      replacement: "nonempty_text",
+    };
   }
-  if (typeof content !== "string" || content.length > maxTextUnits) {
-    throw new Error(`Claude returned unsupported output for ${hook.tool_name}`);
+  if (hook.tool_name.startsWith("mcp__")) {
+    const [parts, restore] = mcpParts(hook.tool_response);
+    return {
+      content: vfToolContent(parts, "Claude"),
+      output: (content) => restore(hostToolContent(content, "Claude")),
+      replacement: "any",
+    };
   }
-  return content.trim() ? content : `(${hook.tool_name} completed with no output)`;
-}
-
-function resultOutput(hook, content) {
-  // Preserve Bash's native envelope while forcing the approved text to become
-  // the exact tool result Claude sends to its next model request.
-  if (
-    hook.tool_name === "Bash" &&
-    hook.tool_response &&
-    typeof hook.tool_response === "object" &&
-    !Array.isArray(hook.tool_response)
-  ) {
-    return { ...hook.tool_response, stdout: content, stderr: "" };
-  }
-  return content;
+  throw new TypeError(
+    `Claude returned unsupported structured output for ${hook.tool_name}`,
+  );
 }
 
 async function requestDecision(agent, hook, hookOptions) {
   const before = hook.hook_event_name === "PreToolUse";
   const failed = hook.hook_event_name === "PostToolUseFailure";
   let content;
+  let output;
+  let replacement;
   let toolInterception;
   try {
-    content = before ? "" : failed ? hook.error || "Tool execution failed." : resultText(hook);
+    if (before || failed) {
+      content = before ? "" : hook.error || "Tool execution failed.";
+    } else {
+      ({ content, output, replacement } = resultCodec(hook));
+      if (typeof content === "string" && content.length > maxTextUnits) {
+        throw new Error(`Claude returned oversized output for ${hook.tool_name}`);
+      }
+    }
     toolInterception = {
       phase: before ? "before" : "after",
-      content: failed ? "none" : "nonempty_text",
+      content: failed ? "none" : before ? "nonempty_text" : replacement,
       message: {
         role: "tool",
         tool_call_id: hook.tool_use_id,
@@ -74,12 +100,12 @@ async function requestDecision(agent, hook, hookOptions) {
     },
     hookOptions?.signal,
   );
-  const decision = response?._meta?.toolInterception;
   if (toolInterception.error) throw new Error(toolInterception.error);
-  if (!decision || !["allow", "rewrite", "stop"].includes(decision.action)) {
-    throw new Error("LiveACPClient returned an invalid interception decision");
-  }
-  return { decision, content, before, failed };
+  const decision = validateToolDecision(
+    response?._meta?.toolInterception,
+    "LiveACPClient",
+  );
+  return { decision, output, before, failed };
 }
 
 function createHook(agent, blockedCalls) {
@@ -91,7 +117,7 @@ function createHook(agent, blockedCalls) {
       return {};
     }
     try {
-      const { decision, content, before, failed } = await requestDecision(
+      const { decision, output, before, failed } = await requestDecision(
         agent,
         hook,
         hookOptions,
@@ -113,16 +139,11 @@ function createHook(agent, blockedCalls) {
           },
         };
       }
-      if (failed || decision.action === "allow" && content === hook.tool_response) {
-        return {};
-      }
+      if (failed || decision.action === "allow") return {};
       return {
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
-          updatedToolOutput: resultOutput(
-            hook,
-            decision.action === "rewrite" ? decision.message.content : content,
-          ),
+          updatedToolOutput: output(decision.message.content),
         },
       };
     } catch (error) {

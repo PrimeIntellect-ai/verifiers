@@ -8,8 +8,8 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -28,7 +28,12 @@ ACP_INDEX = (
 )
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
-WRAPPER_SOURCE = Path(__file__).with_name("wrapper.mjs").read_text()
+WRAPPER_SOURCE = (
+    Path(__file__)
+    .with_name("wrapper.mjs")
+    .read_text()
+    .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+)
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -50,8 +55,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = CLAUDE_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -131,11 +136,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != CLAUDE_VERSION:
-            raise HarnessError(
-                "Claude Code tool interception is verified only for version "
-                f"{CLAUDE_VERSION}"
-            )
+        config.tool_interception = (url, secret)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         config.command = [
             f"{NODE_BIN_DIR}/node",

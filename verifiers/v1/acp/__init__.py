@@ -15,6 +15,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.interception import DIRECT_TOOL_SOURCE
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -25,7 +26,11 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
-ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
+ACP_SOURCE = (
+    (Path(__file__).resolve().parent / "runner.py")
+    .read_text()
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
+)
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 __all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
@@ -59,11 +64,12 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     tool_interception: tuple[str, str] | None = None
-    tool_interception_proxy: list[str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    TOOL_INTERCEPTION_VERSION: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -128,7 +134,15 @@ class ACPHarness(Harness[ConfigT]):
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
         if tool_interception is not None:
-            config.tool_interception = tool_interception
+            if (
+                self.TOOL_INTERCEPTION_VERSION is not None
+                and getattr(self.config, "version", None)
+                != self.TOOL_INTERCEPTION_VERSION
+            ):
+                raise HarnessError(
+                    f"{self.config.id} tool interception is verified only for version "
+                    f"{self.TOOL_INTERCEPTION_VERSION}"
+                )
             await self.configure_tool_interception(config, runtime, *tool_interception)
         return ACPHarnessSession(
             self,
@@ -140,7 +154,7 @@ class ACPHarness(Harness[ConfigT]):
             mcp_urls if config.mcp_urls is None else config.mcp_urls,
             data,
             config,
-            tool_interception_url,
+            tool_interception,
         )
 
     async def launch(
@@ -217,7 +231,7 @@ class ACPHarnessSession(HarnessSession):
         mcp_urls: dict[str, str],
         data: TaskData,
         config: ACPConfig,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(
             harness,
@@ -228,7 +242,7 @@ class ACPHarnessSession(HarnessSession):
             secret,
             mcp_urls,
             data,
-            tool_interception_url,
+            tool_interception,
         )
         self.config = config
         self._process: RuntimeProcess | None = None
@@ -288,7 +302,6 @@ class ACPHarnessSession(HarnessSession):
                 if self.config.tool_interception is not None
                 else None
             ),
-            "toolInterceptionProxy": self.config.tool_interception_proxy,
         }
         async with self._lock:
             if self._closed:

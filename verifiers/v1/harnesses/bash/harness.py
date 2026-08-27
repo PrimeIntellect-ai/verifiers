@@ -5,12 +5,12 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
+from verifiers.v1.interception import prepare_tool_interception
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -56,8 +56,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
@@ -85,19 +84,9 @@ class BashHarness(Harness[BashHarnessConfig]):
         )
         env = {**self.config.resolved_env}
         args = ["--bash"]
-        tool_interception_secret_bytes = None
-        if tool_interception is not None:
-            tool_interception_url, tool_interception_secret = tool_interception
-            args.append(f"--tool-interception-url={tool_interception_url}")
-            if not runtime.supports_live_processes:
-                raise HarnessError(
-                    "Bash tool interception requires a runtime with live process support"
-                )
-            tool_interception_secret_bytes = tool_interception_secret.encode()
-            args.append(
-                "--tool-interception-secret-bytes="
-                f"{len(tool_interception_secret_bytes)}"
-            )
+        tool_interception_secret = prepare_tool_interception(
+            args, runtime, tool_interception, "Bash"
+        )
         if self.config.compaction is not None:
             args.append("--compaction")
             threshold = self.config.compaction.summarize_at_tokens
@@ -136,6 +125,6 @@ class BashHarness(Harness[BashHarnessConfig]):
             prompt,
             extra_args=args,
             env=env,
-            activate=False,
-            stdin=tool_interception_secret_bytes,
+            activate=tool_interception_secret is None,
+            stdin=tool_interception_secret,
         )

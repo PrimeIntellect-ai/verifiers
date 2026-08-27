@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -10,11 +10,9 @@ import os
 import signal
 import sys
 import traceback
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.request import Request as UrlRequest
-from urllib.request import urlopen
 
 from acp import (
     PROTOCOL_VERSION,
@@ -33,7 +31,11 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCall,
+    ToolCallUpdate,
 )
+
+# {tool_interception}
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
@@ -46,40 +48,6 @@ class ACPTurn:
     update_metadata: list[dict[str, Any]]
 
 
-@asynccontextmanager
-async def running_tool_proxy(command: list[str], interception: dict[str, str]):
-    """Bootstrap a trusted local policy proxy without exposing its bearer to the agent."""
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=None,
-        env=os.environ.copy(),
-    )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    try:
-        process.stdin.write(json.dumps(interception).encode())
-        await process.stdin.drain()
-        process.stdin.close()
-        await process.stdin.wait_closed()
-        line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
-        url = line.decode().strip()
-        if not url.startswith("ws://127.0.0.1:"):
-            raise RuntimeError(
-                f"Tool interception proxy returned an invalid endpoint: {url!r}"
-            )
-        yield url
-    finally:
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-
-
 class LiveACPClient(Client):
     """ACP client with an awaited metadata channel for native tool policy."""
 
@@ -90,7 +58,7 @@ class LiveACPClient(Client):
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
         self.tool_calls: dict[str, str] = {}
-        self.tool_interception: dict[str, str] | None = None
+        self.tool_interceptor: ToolInterceptionClient | None = None  # noqa: F821
         self.prompt_error: Exception | None = None
 
     def reset(self) -> None:
@@ -145,30 +113,15 @@ class LiveACPClient(Client):
         response_meta = None
         if interception is not None:
             try:
-                if self.tool_interception is None:
+                if self.tool_interceptor is None:
                     raise RuntimeError("Tool interception is not configured")
                 if not isinstance(interception, dict):
                     raise TypeError("Tool interception metadata must be an object")
                 if error := interception.get("error"):
                     raise RuntimeError(str(error))
-                request = UrlRequest(
-                    self.tool_interception["url"],
-                    data=json.dumps(interception).encode(),
-                    headers={
-                        "Authorization": f"Bearer {self.tool_interception['secret']}",
-                        "Content-Type": "application/json",
-                    },
-                    method="POST",
+                decision = await asyncio.to_thread(
+                    self.tool_interceptor.request, interception
                 )
-                response = await asyncio.to_thread(urlopen, request, timeout=35)
-                with response:
-                    decision = json.loads(await asyncio.to_thread(response.read))
-                if not isinstance(decision, dict) or decision.get("action") not in (
-                    "allow",
-                    "rewrite",
-                    "stop",
-                ):
-                    raise ValueError("Tool interception returned an invalid decision")
                 response_meta = {"toolInterception": decision}
             except Exception as error:  # noqa: BLE001 - fail closed across ACP
                 self.prompt_error = RuntimeError(
@@ -286,16 +239,14 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
-        self.client.tool_interception = config.get("toolInterception")
+        interception = config.get("toolInterception")
+        self.client.tool_interceptor = None
         try:
             agent_env = os.environ.copy()
-            if proxy_command := config.get("toolInterceptionProxy"):
-                if self.client.tool_interception is None:
-                    raise RuntimeError("Tool interception is not configured")
-                proxy_url = await self.stack.enter_async_context(
-                    running_tool_proxy(proxy_command, self.client.tool_interception)
+            if interception is not None:
+                self.client.tool_interceptor = ToolInterceptionClient(  # noqa: F821
+                    interception["url"], interception["secret"]
                 )
-                agent_env["VF_CODE_MODE_HOST_URL"] = proxy_url
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
@@ -309,7 +260,7 @@ class ACPSession:
             client_capabilities = ClientCapabilities(
                 field_meta=(
                     {"toolInterception": True}
-                    if self.client.tool_interception is not None
+                    if self.client.tool_interceptor is not None
                     else None
                 )
             )
@@ -326,6 +277,9 @@ class ACPSession:
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
+            if self.client.tool_interceptor is not None:
+                self.client.tool_interceptor.close()
+                self.client.tool_interceptor = None
             self._reset()
             raise
         self.session_id = session.session_id
@@ -363,6 +317,9 @@ class ACPSession:
             try:
                 await self.stack.aclose()
             finally:
+                if self.client.tool_interceptor is not None:
+                    self.client.tool_interceptor.close()
+                    self.client.tool_interceptor = None
                 self._reset()
         return response_metadata
 

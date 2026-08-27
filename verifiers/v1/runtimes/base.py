@@ -217,12 +217,16 @@ class Runtime(ABC):
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run_program(
+        self, argv: list[str], env: dict[str, str], stdin: bytes | None = None
+    ) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
         provisioning) that go through `run`. No framework layer may replay this argv: doing so
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
+        if stdin is not None:
+            return await self.run_with_input(argv, env, stdin)
         return await self.run(argv, env)
 
     async def run_with_input(

@@ -3,7 +3,6 @@
 import json
 import logging
 import shlex
-import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -12,8 +11,11 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception import (
+    TOOL_CONTENT_SOURCE,
+    stage_tool_interception_config,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -32,6 +34,13 @@ PI_VERSION = "0.84.1"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+TOOL_HOOK_SOURCE = (
+    Path(__file__)
+    .with_name("tool_hook.mjs")
+    .read_text()
+    .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+    .encode()
+)
 
 INSTALL = r"""
 set -e
@@ -64,8 +73,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = PI_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -215,36 +224,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != PI_VERSION:
-            raise HarnessError(
-                f"Pi tool interception is verified only for version {PI_VERSION}"
-            )
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
         hook_path = f"{agent_dir}/extensions/tool-hook.js"
-        await runtime.write(
-            hook_path,
-            Path(__file__).with_name("tool_hook.mjs").read_bytes(),
+        await runtime.write(hook_path, TOOL_HOOK_SOURCE)
+        credentials_path = await stage_tool_interception_config(
+            runtime, f"{agent_dir}/extensions", url, secret
         )
-        # The random name plus shell noclobber makes credential creation exclusive.
-        credentials_path = f"{hook_path}.{uuid.uuid4().hex}.credentials"
-        payload = json.dumps({"url": url, "secret": secret}).encode()
-        result = await runtime.run_with_input(
-            [
-                "sh",
-                "-c",
-                'umask 077; set -C; head -c "$1" > "$2"',
-                "write-tool-credentials",
-                str(len(payload)),
-                credentials_path,
-            ],
-            {},
-            payload,
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                "failed to write Pi interception credentials privately: "
-                f"{result.stderr.strip()[-500:]}"
-            )
         config.env["NODE_USE_ENV_PROXY"] = "1"
         config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 

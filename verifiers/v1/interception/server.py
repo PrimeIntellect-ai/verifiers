@@ -92,12 +92,9 @@ class ToolHookRequest(BaseModel):
     phase: Literal["before", "after"]
     message: ToolMessage
     content: Literal["any", "none", "nonempty_text"] = "any"
-    result_prefix: str = Field(default="", alias="resultPrefix")
-    result_suffix: str = Field(default="", alias="resultSuffix")
-    result_framing: Literal["exact", "codex_code_mode", "text_part"] = Field(
-        default="exact", alias="resultFraming"
-    )
-    tool_arguments: dict | None = Field(default=None, alias="toolArguments")
+    detached_parent: str | None = Field(default=None, alias="detachedParent")
+    rewrite_prefix: str = ""
+    rewrite_suffix: str = ""
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -426,13 +423,12 @@ class InterceptionServer(Interception):
                     )
                 hook = ToolHookRequest.model_validate_json(await request.read())
                 decision = await session.handle_tool(
-                    hook.phase,
-                    hook.message,
-                    hook.content,
-                    hook.result_prefix,
-                    hook.result_suffix,
-                    hook.result_framing,
-                    hook.tool_arguments,
+                    phase=hook.phase,
+                    message=hook.message,
+                    content=hook.content,
+                    detached_parent=hook.detached_parent,
+                    rewrite_prefix=hook.rewrite_prefix,
+                    rewrite_suffix=hook.rewrite_suffix,
                 )
                 decision["toolCallId"] = hook.message.tool_call_id
             return web.json_response(decision)
@@ -642,9 +638,12 @@ class InterceptionServer(Interception):
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
                 )
             original_request = model_request
-            model_request, request_rewrites, stopped = await session.rewrite_request(
-                model_request
-            )
+            (
+                model_request,
+                request_rewrites,
+                stopped,
+                request_assistant_node,
+            ) = await session.rewrite_request(model_request)
             if request_rewrites:
                 session.trace.request_rewrites.extend(request_rewrites)
                 if stopped is None:
@@ -684,8 +683,7 @@ class InterceptionServer(Interception):
         inspect_response = bool(
             session.response_interceptors
             or session.response_stops
-            or session.pre_tool_interception
-            or session.post_tool_interception
+            or session.tool_interception
         )
         if streaming:
             return await self._stream(
@@ -695,6 +693,7 @@ class InterceptionServer(Interception):
                 body,
                 model_request,
                 turn=turn,
+                assistant_node=request_assistant_node,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
                 acp=acp,
@@ -761,7 +760,7 @@ class InterceptionServer(Interception):
                             status=400,
                         )
                     node = turn.commit(call_response, model_request.tools)
-                    session.consume_prepared(turn.tail)
+                    session.consume_prepared(turn, request_assistant_node)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
                         session.trace.stop(stopped)
@@ -828,6 +827,7 @@ class InterceptionServer(Interception):
         model_request: Request,
         *,
         turn: graph.PendingTurn,
+        assistant_node: int | None,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
@@ -927,7 +927,7 @@ class InterceptionServer(Interception):
                         status=409 if session.released else 400,
                     )
                 node = turn.commit(response, model_request.tools)
-                session.consume_prepared(turn.tail)
+                session.consume_prepared(turn, assistant_node)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if stopped is not None:
                     buffered.close()
@@ -1037,7 +1037,7 @@ class InterceptionServer(Interception):
                 response = parser.finish()
                 if not session.released and not session.stopped:
                     node = turn.commit(response, model_request.tools)
-                    session.consume_prepared(turn.tail)
+                    session.consume_prepared(turn, assistant_node)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
                 elif session.stopped:
                     with contextlib.suppress(ConnectionResetError):

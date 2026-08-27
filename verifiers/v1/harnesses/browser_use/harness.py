@@ -57,8 +57,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 

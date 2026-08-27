@@ -5,7 +5,6 @@ import json
 import logging
 import secrets
 import shlex
-import uuid
 from pathlib import Path
 
 from pydantic import Field
@@ -13,7 +12,10 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.interception import (
+    TOOL_CONTENT_SOURCE,
+    stage_tool_interception_config,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -22,8 +24,13 @@ logger = logging.getLogger(__name__)
 
 TOOL_INTERCEPTION_PLUGIN_ID = "verifiers-tool-interception"
 TOOL_INTERCEPTION_PLUGIN_SOURCE = (
-    Path(__file__).with_name("tool_interception.mjs").read_bytes()
+    Path(__file__)
+    .with_name("tool_interception.mjs")
+    .read_text()
+    .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+    .encode()
 )
+OPENCLAW_VERSION = "2026.7.1-2"
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -94,7 +101,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: str = Field(default="2026.7.1-2", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=OPENCLAW_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """OpenClaw release to install, pinned for reproducibility."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
@@ -104,8 +111,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = OPENCLAW_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         if not hasattr(self, "_staged_skills_dir"):
@@ -252,11 +259,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != "2026.7.1-2":
-            raise HarnessError(
-                "OpenClaw tool interception is verified only for version 2026.7.1-2"
-            )
-
         state_dir = config.env["OPENCLAW_STATE_DIR"]
         plugin_dir = f"{state_dir}/tool-interception"
         await runtime.write(f"{plugin_dir}/index.mjs", TOOL_INTERCEPTION_PLUGIN_SOURCE)
@@ -289,28 +291,9 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             ).encode(),
         )
 
-        credentials_path = f"{plugin_dir}/{uuid.uuid4().hex}.credentials"
-        payload = json.dumps({"url": url, "secret": secret}).encode()
-        result = await runtime.run_with_input(
-            [
-                "sh",
-                "-c",
-                'umask 077; set -C; head -c "$1" > "$2"',
-                "write-tool-credentials",
-                str(len(payload)),
-                credentials_path,
-            ],
-            {},
-            payload,
+        credentials_path = await stage_tool_interception_config(
+            runtime, plugin_dir, url, secret
         )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                "failed to write OpenClaw interception credentials privately: "
-                f"{result.stderr.strip()[-500:]}"
-            )
-        # OpenClaw cannot originate our ACP metadata request, so its plugin owns
-        # this capability directly instead of advertising an unusable client route.
-        config.tool_interception = None
         config.env["NODE_USE_ENV_PROXY"] = "1"
         config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 

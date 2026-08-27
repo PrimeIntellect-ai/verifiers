@@ -1,3 +1,5 @@
+import json
+import uuid
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +35,12 @@ InterceptionConfig = Annotated[
 ]
 
 DIRECT_TOOL_SOURCE = (Path(__file__).resolve().parent / "direct.py").read_text()
+TOOL_CONTENT_SOURCE = (Path(__file__).resolve().parent / "content.mjs").read_text()
+DIRECT_CHAT_SOURCE = (
+    (Path(__file__).resolve().parent / "chat.py")
+    .read_text()
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
+)
 
 
 def prepare_tool_interception(
@@ -55,6 +63,35 @@ def prepare_tool_interception(
         f"--tool-interception-secret-bytes={len(payload)}",
     ]
     return payload
+
+
+async def stage_tool_interception_config(
+    runtime: Runtime,
+    directory: str,
+    url: str,
+    secret: str,
+) -> str:
+    """Stage one private, single-use native-hook configuration."""
+    path = f"{directory}/tool-interception-{uuid.uuid4().hex}.credentials"
+    payload = json.dumps({"url": url, "secret": secret}).encode()
+    result = await runtime.run_with_input(
+        [
+            "sh",
+            "-c",
+            'umask 077; set -C; head -c "$1" > "$2"',
+            "write-tool-credentials",
+            str(len(payload)),
+            path,
+        ],
+        {},
+        payload,
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            "failed to stage tool interception credentials: "
+            f"{result.stderr.strip()[-500:]}"
+        )
+    return path
 
 
 def requires_tunnel(
@@ -128,7 +165,9 @@ async def serve_interception(
 
 
 __all__ = [
+    "DIRECT_CHAT_SOURCE",
     "DIRECT_TOOL_SOURCE",
+    "TOOL_CONTENT_SOURCE",
     "BaseInterceptionConfig",
     "ElasticInterceptionPool",
     "ElasticInterceptionPoolConfig",
@@ -143,4 +182,5 @@ __all__ = [
     "prepare_tool_interception",
     "requires_tunnel",
     "serve_interception",
+    "stage_tool_interception_config",
 ]

@@ -13,8 +13,11 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception import (
+    DIRECT_TOOL_SOURCE,
+    stage_tool_interception_config,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -23,12 +26,17 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "1.2.0"
-CODEX_VERSION = "0.147.0"
+ACP_VERSION = "1.4.0"
+CODEX_VERSION = "0.149.1"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
-PROXY_SOURCE = Path(__file__).with_name("proxy.py").read_text()
+TOOL_HOOK_SOURCE = (
+    Path(__file__)
+    .with_name("tool_hook.py")
+    .read_text()
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
+)
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -52,8 +60,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec"})
+    TOOL_INTERCEPTION_VERSION = CODEX_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -112,7 +121,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
-            # Codex reads MCP servers from the config written by build_env().
+            # Codex reads MCP servers from CODEX_CONFIG.
             mcp_urls={},
             system_prompt=system_prompt,
         )
@@ -143,20 +152,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(
                 f"failed to create Codex home: {created.stderr.strip()[-500:]}"
             )
-
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
-                for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
 
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
@@ -193,6 +188,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         config = {
             "model": ctx.model,
             "features": features,
+            "mcp_servers": {
+                name: {
+                    "url": url,
+                    "required": True,
+                    "startup_timeout_sec": 60,
+                    "tool_timeout_sec": self.config.tool_timeout,
+                }
+                for name, url in mcp_urls.items()
+            },
         }
         return {
             **self.config.resolved_env,
@@ -221,32 +225,45 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         url: str,
         secret: str,
     ) -> None:
-        if self.config.version != CODEX_VERSION:
-            raise HarnessError(
-                f"Codex tool interception is verified only for version {CODEX_VERSION}"
-            )
-        if not url or not secret:
-            raise HarnessError("Codex tool interception requires policy credentials")
+        hook_command = await runtime.prepare_uv_script(
+            TOOL_HOOK_SOURCE,
+            {**config.env, "UV_FROZEN": "false"},
+            activate=False,
+        )
+        home = config.env["CODEX_HOME"]
+        credentials_path = await stage_tool_interception_config(
+            runtime, home, url, secret
+        )
 
         codex_config = json.loads(config.env["CODEX_CONFIG"])
         features = codex_config.setdefault("features", {})
-        features["code_mode"] = True
-        features["code_mode_only"] = True
+        features["hooks"] = True
+        features.setdefault("code_mode", True)
         codex_config.setdefault("tools", {})["experimental_request_user_input"] = {
             "enabled": False
+        }
+        codex_config["bypass_hook_trust"] = True
+        codex_config.setdefault("mcp_servers", {})["vf_interceptor"] = {
+            "command": hook_command[0],
+            "args": hook_command[1:],
+            "env": {"VF_TOOL_INTERCEPTION_CONFIG": credentials_path},
+            "required": True,
+            "enabled_tools": ["before", "after"],
+            "omit_tools_from": ["direct", "deferred", "code_mode"],
+            "startup_timeout_sec": 60,
+            "tool_timeout_sec": 35,
         }
         config.env["CODEX_CONFIG"] = json.dumps(codex_config)
         real_codex = CODEX_BIN.format(
             version=self.config.version, acp_version=ACP_VERSION
         )
-        home = config.env["CODEX_HOME"]
         launcher = f"{home}/codex"
         await runtime.write(
             launcher,
             (
                 "#!/bin/sh\n"
-                f'exec {shlex.quote(real_codex)} "$@" '
-                '--code-mode-host "$VF_CODE_MODE_HOST_URL"\n'
+                f"exec {shlex.quote(NODE_BIN_DIR + '/node')} "
+                f'{shlex.quote(real_codex)} "$@"\n'
             ).encode(),
         )
         executable = await runtime.run(["chmod", "+x", launcher], {})
@@ -255,11 +272,47 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
             )
         config.env["CODEX_PATH"] = launcher
-        config.tool_interception_proxy = [
-            *await runtime.prepare_uv_script(
-                PROXY_SOURCE,
-                {**config.env, "UV_FROZEN": "false"},
-                activate=False,
-            ),
-            real_codex,
-        ]
+        await runtime.write(
+            f"{home}/hooks.json",
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "mcp_tool",
+                                        "server": "vf_interceptor",
+                                        "tool": "before",
+                                        "input": {
+                                            "tool_name": "${tool_name}",
+                                            "tool_use_id": "${tool_use_id}",
+                                            "tool_input": "${tool_input}",
+                                        },
+                                        "timeout": 35,
+                                    }
+                                ]
+                            }
+                        ],
+                        "PostToolUse": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "mcp_tool",
+                                        "server": "vf_interceptor",
+                                        "tool": "after",
+                                        "input": {
+                                            "tool_name": "${tool_name}",
+                                            "tool_use_id": "${tool_use_id}",
+                                            "tool_input": "${tool_input}",
+                                            "tool_response": "${tool_response}",
+                                        },
+                                        "timeout": 35,
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                }
+            ).encode(),
+        )

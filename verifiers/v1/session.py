@@ -9,14 +9,12 @@ budget (turns / tokens), checked between turns.
 
 import asyncio
 import inspect
-import json
 import logging
-import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Literal, get_origin, get_type_hints
+from typing import get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -29,70 +27,12 @@ from verifiers.v1.types import (
     AssistantMessage,
     Request,
     Response,
-    TextContentPart,
     ToolMessage,
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
-
-
-def matches_code_mode_result(expected: ToolMessage, actual: ToolMessage) -> bool:
-    """Match the deterministic content below Codex's dynamic Code Mode status header."""
-    if expected.tool_call_id != actual.tool_call_id or actual.name not in (
-        None,
-        expected.name,
-    ):
-        return False
-    expected_parts = (
-        []
-        if expected.content == ""
-        else [TextContentPart(text=expected.content)]
-        if isinstance(expected.content, str)
-        else expected.content
-    )
-    actual_parts = (
-        [TextContentPart(text=actual.content)]
-        if isinstance(actual.content, str)
-        else actual.content
-    )
-    if not actual_parts or not isinstance(actual_parts[0], TextContentPart):
-        return False
-    lines = actual_parts[0].text.splitlines()
-    if len(lines) != 3 or lines[2] != "Output:":
-        return False
-    status = lines[0]
-    if status not in {
-        "Script completed",
-        "Script failed",
-        "Script terminated",
-    } and not status.startswith("Script running with cell ID "):
-        return False
-    if not lines[1].startswith("Wall time ") or not lines[1].endswith(" seconds"):
-        return False
-    if actual_parts[1:] == expected_parts:
-        return True
-    if not all(isinstance(part, TextContentPart) for part in expected_parts):
-        return False
-    if len(actual_parts) != 2 or not isinstance(actual_parts[1], TextContentPart):
-        return False
-    truncated = re.fullmatch(
-        r"Warning: truncated output \(original token count: \d+\)\n"
-        r"Total output lines: \d+\n\n"
-        r"(.*)…\d+ tokens truncated…(.*)",
-        actual_parts[1].text,
-        re.DOTALL,
-    )
-    if truncated is None:
-        return False
-    expected_text = "\n".join(part.text for part in expected_parts)
-    prefix, suffix = truncated.groups()
-    return (
-        bool(prefix or suffix)
-        and expected_text.startswith(prefix)
-        and expected_text.endswith(suffix)
-    )
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -185,10 +125,10 @@ class RolloutSession:
     response_interceptors: list[Callable] = field(default_factory=list)
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
-    pre_tool_interception: bool = False
-    """Whether native policy runs before tool execution."""
-    post_tool_interception: bool = False
-    """Whether native policy runs after execution and before the next model turn."""
+    tool_interception: bool = False
+    """Whether native policy runs before execution and after it, before the next turn."""
+    tool_interception_exemptions: frozenset[str] = frozenset()
+    """Model-visible control calls whose nested operations cross the native hooks."""
     client: Client | None = None
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
@@ -211,15 +151,13 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
-    prepared_tool_results: dict[tuple[int, str], ToolMessage | None] = field(
+    prepared_tools: dict[tuple[int, str], ToolMessage | None] = field(
         default_factory=dict
     )
-    """Native call state keyed by issuing assistant node and call ID: None after an
-    allowed pre hook, then the exact result approved by a pre rewrite or post hook."""
-    prepared_tool_framings: dict[tuple[int, str], Literal["codex_code_mode"]] = field(
-        default_factory=dict
-    )
-    """Known harness framing applied after policy and before the next model request."""
+    """Native call state keyed by issuing assistant node and call ID: no result after
+    an allowed pre hook, then the result approved or observed by the post hook."""
+    detached_tools: set[str] = field(default_factory=set)
+    """Nested native calls that have crossed their pre hook but are absent from the trace."""
     tool_interception_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, repr=False
     )
@@ -230,123 +168,21 @@ class RolloutSession:
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
-    async def rewrite_request(
+    async def apply_request_policy(
         self,
         request: Request,
+        rewritable: set[int],
         *,
         run_stops: bool = True,
-        require_native_results: bool = True,
     ) -> tuple[Request, list[InterceptRecord], str | None]:
-        """Run typed request interceptors and stops over one canonical request."""
-        if not self.request_interceptors and (not run_stops or not self.request_stops):
-            return request, [], None
-        current = request
-        turn = graph.prepare_turn(self.trace, request.messages)
-        tail_start = turn.tail_start
-        assistant_node = (
-            turn.prefix_node_ids[-1]
-            if turn.prefix_node_ids
-            and isinstance(
-                self.trace.nodes[turn.prefix_node_ids[-1]].message, AssistantMessage
-            )
-            else None
-        )
-        # Provider-only mediation can change an earlier user message without changing
-        # the harness's transcript. Its canonical current assistant still anchors the tail.
-        if assistant_node is None and self.network_policy.network_restricted:
-            leaves = graph.leaves(self.trace)
-            for position in range(len(current.messages) - 1, -1, -1):
-                message = current.messages[position]
-                if not isinstance(message, AssistantMessage):
-                    continue
-                matches = [
-                    leaf
-                    for leaf in leaves
-                    if graph.message_hash(self.trace.nodes[leaf].message)
-                    == graph.message_hash(message)
-                ]
-                if len(matches) == 1:
-                    assistant_node = matches[0]
-                    tail_start = position + 1
-                    break
-        prepared_messages = self.prepared_messages.copy()
-        prepared: set[int] = set()
-        native_prepared: set[int] = set()
-        candidates: set[int] = set()
-        for position in range(tail_start, len(current.messages)):
-            message = current.messages[position]
-            if isinstance(message, (UserMessage, ToolMessage)):
-                candidates.add(position)
-                key = graph.message_hash(message)
-                if prepared_messages[key]:
-                    prepared_messages[key] -= 1
-                    prepared.add(position)
-                    continue
-            if isinstance(message, ToolMessage):
-                prepared_result = (
-                    self.prepared_tool_results.get(
-                        (assistant_node, message.tool_call_id)
-                    )
-                    if assistant_node is not None
-                    else None
-                )
-                is_prepared = (
-                    prepared_result == message
-                    # Native hooks include the tool name, but Anthropic and Responses
-                    # omit it when they parse the result into the next model request.
-                    or prepared_result is not None
-                    and message.name is None
-                    and prepared_result.model_copy(update={"name": None}) == message
-                    or prepared_result is not None
-                    and self.prepared_tool_framings.get(
-                        (assistant_node, message.tool_call_id)
-                    )
-                    == "codex_code_mode"
-                    and matches_code_mode_result(prepared_result, message)
-                )
-                candidates.add(position)
-                if is_prepared:
-                    prepared.add(position)
-                    native_prepared.add(position)
-                elif prepared_result is not None:
-                    raise HarnessError(
-                        "native tool interception did not preserve the approved result "
-                        f"for call {message.tool_call_id!r}"
-                    )
-                elif require_native_results and assistant_node is not None:
-                    tool_call = (assistant_node, message.tool_call_id)
-                    if self.post_tool_interception:
-                        raise HarnessError(
-                            "native tool result reached the model request before its "
-                            f"post-execution hook for call {message.tool_call_id!r}"
-                        )
-                    if (
-                        self.pre_tool_interception
-                        and tool_call not in self.prepared_tool_results
-                    ):
-                        raise HarnessError(
-                            "native tool result reached the model request without its "
-                            f"pre-execution hook for call {message.tool_call_id!r}"
-                        )
-        if not candidates and (not run_stops or not self.request_stops):
-            return request, [], None
-        already_intercepted = candidates == prepared
-        if (
-            candidates
-            and candidates == native_prepared
-            and all(
-                isinstance(current.messages[position], ToolMessage)
-                for position in candidates
-            )
-        ):
-            # The native hook already ran both interceptors and stops. This request only
-            # commits the result that the harness admitted to its next model turn.
+        """Apply request hooks while allowing changes only at ``rewritable`` positions."""
+        if not rewritable and (not run_stops or not self.request_stops):
             return request, [], None
 
+        current = request
         records: list[InterceptRecord] = []
         try:
-            interceptors = [] if already_intercepted else self.request_interceptors
-            for handler in interceptors:
+            for handler in self.request_interceptors if rewritable else []:
                 candidate = current.model_copy(deep=True)
                 result = await call_hook(
                     handler, {Request: candidate, Trace: self.trace}
@@ -366,7 +202,7 @@ class RolloutSession:
                 ):
                     if before == after:
                         continue
-                    if position not in candidates - prepared:
+                    if position not in rewritable:
                         raise ValueError(
                             "request interceptors can only rewrite new user or tool messages"
                         )
@@ -385,8 +221,7 @@ class RolloutSession:
                     current = result
                     records.append(InterceptRecord(handler=handler.__name__))
 
-            stops = self.request_stops if run_stops else []
-            for stop in stops:
+            for stop in self.request_stops if run_stops else []:
                 candidate = current.model_copy(deep=True)
                 result = await call_hook(stop, {Request: candidate, Trace: self.trace})
                 if not isinstance(result, bool):
@@ -403,8 +238,14 @@ class RolloutSession:
             ) from error
         return current, records, None
 
-    def consume_prepared(self, turn: graph.PendingTurn) -> None:
-        """Forget pre-harness rewrites only after their model request commits."""
+    async def rewrite_request(
+        self, request: Request
+    ) -> tuple[Request, list[InterceptRecord], str | None, int | None]:
+        """Apply request policy to the uncommitted model-request tail."""
+        if not self.request_interceptors and not self.request_stops:
+            return request, [], None, None
+        turn = graph.prepare_turn(self.trace, request.messages)
+        tail_start = turn.tail_start
         assistant_node = (
             turn.prefix_node_ids[-1]
             if turn.prefix_node_ids
@@ -413,9 +254,12 @@ class RolloutSession:
             )
             else None
         )
+        # Provider-only mediation can change an earlier user message without changing
+        # the harness's transcript. Its canonical current assistant still anchors the tail.
         if assistant_node is None and self.network_policy.network_restricted:
             leaves = graph.leaves(self.trace)
-            for message in reversed(turn.tail):
+            for position in range(len(request.messages) - 1, -1, -1):
+                message = request.messages[position]
                 if not isinstance(message, AssistantMessage):
                     continue
                 matches = [
@@ -426,7 +270,89 @@ class RolloutSession:
                 ]
                 if len(matches) == 1:
                     assistant_node = matches[0]
+                    tail_start = position + 1
                     break
+        prepared_messages = self.prepared_messages.copy()
+        prepared: set[int] = set()
+        native_prepared: set[int] = set()
+        candidates: set[int] = set()
+        for position in range(tail_start, len(request.messages)):
+            message = request.messages[position]
+            if isinstance(message, (UserMessage, ToolMessage)):
+                candidates.add(position)
+                key = graph.message_hash(message)
+                if prepared_messages[key]:
+                    prepared_messages[key] -= 1
+                    prepared.add(position)
+                    continue
+            if isinstance(message, ToolMessage):
+                assistant = (
+                    self.trace.nodes[assistant_node].message
+                    if assistant_node is not None
+                    else None
+                )
+                issuing_name = (
+                    next(
+                        (
+                            call.name
+                            for call in assistant.tool_calls or []
+                            if call.id == message.tool_call_id
+                        ),
+                        None,
+                    )
+                    if isinstance(assistant, AssistantMessage)
+                    else None
+                )
+                if issuing_name in self.tool_interception_exemptions:
+                    if self.detached_tools:
+                        raise HarnessError(
+                            "native tool result reached the model request before its "
+                            "nested post-execution hooks completed"
+                        )
+                    prepared.add(position)
+                    native_prepared.add(position)
+                    continue
+                prepared_result = (
+                    self.prepared_tools.get((assistant_node, message.tool_call_id))
+                    if assistant_node is not None
+                    else None
+                )
+                is_prepared = prepared_result is not None and graph.message_hash(
+                    prepared_result
+                ) == graph.message_hash(message)
+                if is_prepared:
+                    prepared.add(position)
+                    native_prepared.add(position)
+                elif prepared_result is not None:
+                    raise HarnessError(
+                        "native tool interception did not preserve the approved result "
+                        f"for call {message.tool_call_id!r}"
+                    )
+                elif assistant_node is not None:
+                    raise HarnessError(
+                        "native tool result reached the model request before its "
+                        f"post-execution hook for call {message.tool_call_id!r}"
+                    )
+        if (
+            candidates
+            and candidates == native_prepared
+            and all(
+                isinstance(request.messages[position], ToolMessage)
+                for position in candidates
+            )
+        ):
+            # The native hook already ran both interceptors and stops. This request only
+            # commits the result that the harness admitted to its next model turn.
+            return request, [], None, assistant_node
+        rewritten, records, stopped = await self.apply_request_policy(
+            request, candidates - prepared
+        )
+        return rewritten, records, stopped, assistant_node
+
+    def consume_prepared(
+        self, turn: graph.PendingTurn, assistant_node: int | None
+    ) -> None:
+        """Forget pre-harness rewrites only after their model request commits."""
         for message in turn.tail:
             if isinstance(message, (UserMessage, ToolMessage)):
                 key = graph.message_hash(message)
@@ -434,18 +360,23 @@ class RolloutSession:
                     self.prepared_messages[key] -= 1
             if isinstance(message, ToolMessage) and assistant_node is not None:
                 tool_call = (assistant_node, message.tool_call_id)
-                self.prepared_tool_results.pop(tool_call, None)
-                self.prepared_tool_framings.pop(tool_call, None)
+                self.prepared_tools.pop(tool_call, None)
 
     async def prepare_users(
         self, request: Request
     ) -> tuple[Request, list[InterceptRecord]]:
         """Intercept caller-owned user turns before the harness stores them."""
         branch = self.trace.messages
-        rewritten, records, _ = await self.rewrite_request(
-            Request(messages=[*branch, *request.messages]),
+        combined = Request(messages=[*branch, *request.messages], tools=request.tools)
+        rewritable = {
+            position
+            for position in range(len(branch), len(combined.messages))
+            if isinstance(combined.messages[position], (UserMessage, ToolMessage))
+        }
+        rewritten, records, _ = await self.apply_request_policy(
+            combined,
+            rewritable,
             run_stops=False,
-            require_native_results=False,
         )
         tail = rewritten.messages[len(branch) :]
         self.prepared_messages.update(
@@ -515,79 +446,75 @@ class RolloutSession:
         phase: str,
         message: ToolMessage,
         content: str = "any",
-        result_prefix: str = "",
-        result_suffix: str = "",
-        result_framing: Literal["exact", "codex_code_mode", "text_part"] = "exact",
-        tool_arguments: dict | None = None,
+        detached_parent: str | None = None,
+        rewrite_prefix: str = "",
+        rewrite_suffix: str = "",
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
-        if phase == "before" and not self.pre_tool_interception:
-            raise HarnessError("this harness does not support pre-tool interception")
-        if phase == "after" and not self.post_tool_interception:
-            raise HarnessError("this harness does not support post-tool interception")
+        if not self.tool_interception:
+            raise HarnessError("this harness does not support tool interception")
         leaves = graph.leaves(self.trace)
         if not message.tool_call_id:
-            if phase != "before" or message.name is None or tool_arguments is None:
-                raise HarnessError("native hook omitted the tool call ID")
-            unresolved = [
-                (leaf, call)
-                for leaf in leaves
-                if isinstance(self.trace.nodes[leaf].message, AssistantMessage)
-                for call in self.trace.nodes[leaf].message.tool_calls or []
-                if call.name == message.name
-                and (leaf, call.id) not in self.prepared_tool_results
-                and all(
-                    json.loads(call.arguments).get(key) == value
-                    for key, value in tool_arguments.items()
-                )
-            ]
-            if len(unresolved) != 1:
-                raise HarnessError(
-                    f"before tool {message.name!r} matched {len(unresolved)} calls"
-                )
-            message.tool_call_id = unresolved[0][1].id
+            raise HarnessError("native hook omitted the tool call ID")
         matches = [
-            leaf
+            (leaf, call)
             for leaf in leaves
             if isinstance(self.trace.nodes[leaf].message, AssistantMessage)
-            and any(
-                call.id == message.tool_call_id
-                for call in self.trace.nodes[leaf].message.tool_calls or []
-            )
-        ]
-        if len(matches) != 1:
-            raise HarnessError(
-                f"{phase} tool call {message.tool_call_id!r} matched "
-                f"{len(matches)} branches"
-            )
-        assistant_node = matches[0]
-        tool_call = (assistant_node, message.tool_call_id)
-        if phase != "before":
-            if (
-                self.pre_tool_interception
-                and tool_call not in self.prepared_tool_results
-            ):
-                raise HarnessError(
-                    f"tool call {message.tool_call_id!r} reached a post-execution hook "
-                    "without crossing its pre-execution hook"
-                )
-            if self.prepared_tool_results.pop(tool_call, None) is not None:
-                raise HarnessError(
-                    f"harness reported tool call {message.tool_call_id!r} after its "
-                    "result was already replaced"
-                )
-            self.prepared_tool_framings.pop(tool_call, None)
-        assistant = self.trace.nodes[assistant_node].message
-        assert isinstance(assistant, AssistantMessage)
-        tool_name = next(
-            call.name
-            for call in assistant.tool_calls or []
+            for call in self.trace.nodes[leaf].message.tool_calls or []
             if call.id == message.tool_call_id
-        )
-        if message.name != tool_name:
-            raise HarnessError(
-                f"native hook reported tool {message.name!r}, expected {tool_name!r}"
-            )
+        ]
+        detached = False
+        if len(matches) == 1:
+            assistant_node, call = matches[0]
+            assistant = self.trace.nodes[assistant_node].message
+            assert isinstance(assistant, AssistantMessage)
+            message.name = call.name
+            tool_key = (assistant_node, call.id)
+            if phase != "before":
+                if tool_key not in self.prepared_tools:
+                    raise HarnessError(
+                        f"tool call {message.tool_call_id!r} reached a post-execution "
+                        "hook without crossing its pre-execution hook"
+                    )
+                prepared_result = self.prepared_tools.pop(tool_key)
+                if prepared_result is not None:
+                    raise HarnessError(
+                        f"harness reported tool call {message.tool_call_id!r} after "
+                        "its result was already replaced"
+                    )
+        else:
+            parents = [
+                (leaf, assistant)
+                for leaf in leaves
+                if isinstance(
+                    assistant := self.trace.nodes[leaf].message, AssistantMessage
+                )
+                if any(
+                    call.name == detached_parent
+                    and call.name in self.tool_interception_exemptions
+                    for call in assistant.tool_calls or []
+                )
+            ]
+            if len(matches) or len(parents) != 1:
+                raise HarnessError(
+                    f"{phase} tool call {message.tool_call_id!r} matched "
+                    f"{len(matches)} branches"
+                )
+            assistant_node, assistant = parents[0]
+            detached = True
+            if phase == "before":
+                if message.tool_call_id in self.detached_tools:
+                    raise HarnessError(
+                        f"nested tool call {message.tool_call_id!r} crossed its pre hook twice"
+                    )
+            elif message.tool_call_id not in self.detached_tools:
+                raise HarnessError(
+                    f"nested tool call {message.tool_call_id!r} reached a post-execution "
+                    "hook without crossing its pre-execution hook"
+                )
+            else:
+                self.detached_tools.discard(message.tool_call_id)
+
         branch = []
         node: int | None = assistant_node
         while node is not None:
@@ -600,30 +527,28 @@ class RolloutSession:
         for call in assistant.tool_calls or []:
             if call.id == message.tool_call_id:
                 continue
-            result = self.prepared_tool_results.get((assistant_node, call.id))
-            if result is not None:
-                previous.append(result)
-        request, records, stopped = await self.rewrite_request(
-            Request(
-                messages=[*branch, *previous, message],
-                tools=self.trace.tools or None,
-            ),
-            require_native_results=False,
+            prepared_result = self.prepared_tools.get((assistant_node, call.id))
+            if prepared_result is not None:
+                previous.append(prepared_result)
+        policy_request = Request(
+            messages=[*branch, *previous, message],
+            tools=self.trace.tools or None,
+        )
+        request, records, stopped = await self.apply_request_policy(
+            policy_request, {len(policy_request.messages) - 1}
         )
         if self.released:
             raise HarnessError("rollout concluded during tool interception")
         candidate = request.messages[-1]
         assert isinstance(candidate, ToolMessage)
-        # A native hook may approve only replacements its harness can preserve exactly.
+        # A native hook may approve only replacements its harness can represent.
         if stopped is None:
             if content == "none" and candidate != message:
                 raise HarnessError("this native hook cannot replace tool results")
-            # Pi normalizes image results to text because its provider transports
-            # serialize their parts differently. Native replacements use that same
-            # stable shape so the next model request can be verified exactly.
+            # Pi can pass structured results through, but its replacement surface is text.
             if (
                 content == "nonempty_text"
-                and (phase != "before" or candidate != message)
+                and candidate != message
                 and (not isinstance(candidate.content, str) or not candidate.content)
             ):
                 raise HarnessError(
@@ -631,6 +556,9 @@ class RolloutSession:
                 )
         self.trace.request_rewrites.extend(records)
         if stopped is not None:
+            if detached:
+                self.trace.stop(stopped)
+                return {"action": "stop", "reason": stopped}
             results = {
                 result.tool_call_id: result
                 for result in request.messages[len(branch) :]
@@ -648,36 +576,31 @@ class RolloutSession:
             ]
             turn = graph.prepare_turn(self.trace, committed)
             turn.commit_prompt()
-            self.consume_prepared(turn)
+            self.consume_prepared(turn, assistant_node)
             self.trace.stop(stopped)
             return {"action": "stop", "reason": stopped}
         if phase == "before" and candidate == message:
-            self.prepared_tool_results.setdefault(tool_call, None)
+            if detached:
+                self.detached_tools.add(message.tool_call_id)
+                return {"action": "allow"}
+            self.prepared_tools.setdefault(tool_key, None)
             return {"action": "allow"}
-        delivered = candidate
-        if candidate != message and (result_prefix or result_suffix):
-            if not isinstance(candidate.content, str):
-                raise HarnessError("native tool result framing requires text")
-            delivered = candidate.model_copy(
-                update={
-                    "content": f"{result_prefix}{candidate.content.strip()}{result_suffix}"
-                }
-            )
-        if result_framing == "text_part":
-            if not isinstance(delivered.content, str):
-                raise HarnessError("native tool result framing requires text")
-            delivered = delivered.model_copy(
-                update={"content": [TextContentPart(text=delivered.content)]}
-            )
-        self.prepared_tool_results[tool_call] = delivered
-        if result_framing == "codex_code_mode":
-            self.prepared_tool_framings[tool_call] = result_framing
-        if candidate != message:
-            return {
-                "action": "rewrite",
-                "message": candidate.model_dump(exclude_none=True),
-            }
-        return {"action": "allow"}
+        if not detached:
+            prepared = candidate
+            if phase == "before" and candidate != message:
+                assert isinstance(candidate.content, str)
+                prepared = candidate.model_copy(
+                    update={
+                        "content": rewrite_prefix + candidate.content + rewrite_suffix
+                    }
+                )
+            self.prepared_tools[tool_key] = prepared
+        if candidate == message:
+            return {"action": "allow"}
+        return {
+            "action": "rewrite",
+            "message": candidate.model_dump(exclude_none=True),
+        }
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:

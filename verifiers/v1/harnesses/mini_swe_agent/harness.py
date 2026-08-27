@@ -28,8 +28,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
-    SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
@@ -92,8 +91,6 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             self.config.resolved_env,
             activate=tool_interception_secret is None,
         )
-        if tool_interception_secret is not None:
-            return await runtime.run_with_input(
-                [*program, *args], env, tool_interception_secret
-            )
-        return await runtime.run_program([*program, *args], env)
+        return await runtime.run_program(
+            [*program, *args], env, stdin=tool_interception_secret
+        )
