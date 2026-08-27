@@ -11,11 +11,26 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+
+CONTEXT_OVERFLOW_MARKERS = (
+    "request entity too large",
+    "context_length",
+    "context length",
+    "context window",
+    "prompt is too long",
+    "too many tokens",
+    "token limit exceeded",
+)
+
+
+def is_context_overflow(error: BadRequestError) -> bool:
+    details = f"{error} {error.body or ''}".casefold()
+    return any(marker in details for marker in CONTEXT_OVERFLOW_MARKERS)
 
 
 async def chat(
@@ -181,7 +196,14 @@ async def main() -> None:
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
     while True:
-        message = await chat(client, args.model, messages, tools)
+        try:
+            message = await chat(client, args.model, messages, tools)
+        except BadRequestError as error:
+            # Context exhaustion is a budget limit, not a crash: this harness has no
+            # compaction, so end the run cleanly with what the conversation holds.
+            if not is_context_overflow(error):
+                raise
+            return
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break
