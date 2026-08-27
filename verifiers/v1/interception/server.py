@@ -514,14 +514,18 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming:
+            if streaming and lineage is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
                     ),
                     status=400,
                 )
-            replay_key = f"explicit:{idempotency_key}"
+            if not streaming:
+                replay_key = f"explicit:{idempotency_key}"
+            # Streaming lineage uses the key only to bind its logical request id;
+            # streaming replay/coalescing remains unsupported. Never forward this
+            # local transport identity (or the private lineage envelope) upstream.
             upstream_headers = {
                 name: value
                 for name, value in upstream_headers.items()
