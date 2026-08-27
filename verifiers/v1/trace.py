@@ -18,7 +18,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.lineage import CallLineage, LineageManifest
+from verifiers.v1.lineage import LINEAGE_ID_PATTERN, LineageManifest, LineageRequest
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -172,8 +172,8 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
-    lineage: CallLineage | None = None
-    """Exact recursive-session provenance supplied by the harness, when available."""
+    lineage_request_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
+    """Opaque request ID joined to the optional ACP lineage manifest."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -199,6 +199,16 @@ class Branch(BaseModel):
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
+    _lineage_requests: dict[str, LineageRequest] = PrivateAttr(default_factory=dict)
+
+    def _requests_in_call_order(self) -> Iterator[LineageRequest]:
+        for call in self.calls:
+            if call.lineage_request_id is None:
+                continue
+            request = self._lineage_requests.get(call.lineage_request_id)
+            if request is not None:
+                yield request
+
     @property
     def messages(self) -> Messages:
         return [n.message for n in self.nodes]
@@ -208,9 +218,7 @@ class Branch(BaseModel):
         """Recursive sessions represented on this physical message path, in call order."""
         return tuple(
             dict.fromkeys(
-                call.lineage.session_id
-                for call in self.calls
-                if call.lineage is not None
+                request.session_id for request in self._requests_in_call_order()
             )
         )
 
@@ -219,9 +227,7 @@ class Branch(BaseModel):
         """Context epochs represented on this physical message path, in call order."""
         return tuple(
             dict.fromkeys(
-                call.lineage.context_id
-                for call in self.calls
-                if call.lineage is not None
+                request.context_id for request in self._requests_in_call_order()
             )
         )
 
@@ -230,9 +236,9 @@ class Branch(BaseModel):
         """Compactions correlated with calls on this physical message path."""
         return tuple(
             dict.fromkeys(
-                call.lineage.compaction_id
-                for call in self.calls
-                if call.lineage is not None and call.lineage.compaction_id is not None
+                request.compaction_id
+                for request in self._requests_in_call_order()
+                if request.compaction_id is not None
             )
         )
 
@@ -513,6 +519,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def branches(self) -> list[Branch]:
         """One root-to-leaf path per graph leaf, its calls attached in path order."""
         by_node = {c.node: c for c in self.calls if c.node is not None}
+        lineage_requests = (
+            {request.request_id: request for request in self.lineage.requests}
+            if self.lineage is not None
+            else {}
+        )
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -521,14 +532,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
-            branches.append(
-                Branch(
-                    index=i,
-                    nodes=[self.nodes[n] for n in path],
-                    calls=[by_node[n] for n in path if n in by_node],
-                    mm_token_type_id_map=self.mm_token_type_id_map,
-                )
+            branch = Branch(
+                index=i,
+                nodes=[self.nodes[n] for n in path],
+                calls=[by_node[n] for n in path if n in by_node],
+                mm_token_type_id_map=self.mm_token_type_id_map,
             )
+            branch._lineage_requests = lineage_requests
+            branches.append(branch)
         return branches
 
     @property
@@ -537,9 +548,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         grouped: dict[str, list[ModelCall]] = {}
         if self.lineage is not None:
             grouped = {session.session_id: [] for session in self.lineage.sessions}
+            requests = {
+                request.request_id: request for request in self.lineage.requests
+            }
+        else:
+            requests = {}
         for call in self.calls:
-            if call.lineage is not None:
-                grouped.setdefault(call.lineage.session_id, []).append(call)
+            request = requests.get(call.lineage_request_id or "")
+            if request is not None:
+                grouped.setdefault(request.session_id, []).append(call)
         return grouped
 
     @property
@@ -554,43 +571,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         }
 
     def reconcile_lineage(self, manifest: LineageManifest) -> None:
-        """Validate an ACP lineage snapshot against call headers and attach it.
+        """Join recorded model calls to an ACP lineage snapshot by request ID.
 
-        Nothing is inferred from the message graph: every recorded call must have a complete
-        lineage envelope and a matching request in the snapshot.
+        Nothing is inferred from the message graph: every recorded call must carry an
+        opaque correlation ID naming a request in the self-validating manifest.
         """
-        sessions = {session.session_id: session for session in manifest.sessions}
-        contexts = {context.context_id: context for context in manifest.contexts}
         requests = {request.request_id: request for request in manifest.requests}
         for index, call in enumerate(self.calls):
-            item = call.lineage
-            if item is None:
-                raise ValueError(f"model call {index} has no ACP lineage headers")
-            session = sessions.get(item.session_id)
-            context = contexts.get(item.context_id)
-            request = requests.get(item.request_id)
-            if session is None or (
-                session.parent_session_id != item.parent_session_id
-                or session.depth != item.depth
-            ):
+            request_id = call.lineage_request_id
+            if request_id is None:
+                raise ValueError(f"model call {index} has no ACP lineage request ID")
+            if request_id not in requests:
                 raise ValueError(
-                    f"model call {item.request_id!r} does not match its lineage session"
-                )
-            if context is None or (
-                context.session_id != item.session_id
-                or context.previous_context_id != item.previous_context_id
-                or context.transition != item.transition
-            ):
-                raise ValueError(
-                    f"model call {item.request_id!r} does not match its lineage context"
-                )
-            if request is None or (
-                request.session_id != item.session_id
-                or request.context_id != item.context_id
-                or request.compaction_id != item.compaction_id
-            ):
-                raise ValueError(
-                    f"model call {item.request_id!r} does not match its lineage request"
+                    f"model call {request_id!r} has no matching lineage request"
                 )
         self.lineage = manifest
 
