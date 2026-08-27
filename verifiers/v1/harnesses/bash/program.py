@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from openai import APIError, AsyncOpenAI, BadRequestError
+from openai import APIError, APIStatusError, AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
@@ -48,9 +48,6 @@ information in this summary to assist with your own analysis:"""
 
 COMPACTED_TOOL_RESULT = "[tool output dropped because it exceeded the context limit]"
 
-# Overflow wording by provider, matched case-insensitively against the full error body.
-# Each marker is attributed to the API that produces it; unattributable generics stay out
-# (e.g. "too many tokens" also matches Bedrock throttling).
 CONTEXT_OVERFLOW_MARKERS = (
     # OpenAI error code "context_length_exceeded"; OpenRouter relays the raw body.
     "context_length_exceeded",
@@ -287,9 +284,12 @@ async def chat(
     return await client.chat.completions.create(**kwargs)
 
 
-def context_error(error: BadRequestError) -> tuple[bool, int | None]:
+def context_error(error: APIStatusError) -> tuple[bool, int | None]:
     details = f"{error} {error.body or ''}"
-    overflow = any(marker in details.casefold() for marker in CONTEXT_OVERFLOW_MARKERS)
+    # An overflow is deterministic: a 400, or a 413 for a byte-size cap.
+    overflow = error.status_code in (400, 413) and any(
+        marker in details.casefold() for marker in CONTEXT_OVERFLOW_MARKERS
+    )
     for pattern in CONTEXT_WINDOW_PATTERNS:
         match = pattern.search(details)
         if match:
@@ -358,7 +358,7 @@ class Compactor:
     async def complete(self, messages: list[dict]):
         try:
             completion = await chat(self.client, self.model, messages, self.tools)
-        except BadRequestError as error:
+        except APIStatusError as error:
             overflow, threshold = context_error(error)
             if not self.enabled or not overflow:
                 raise
@@ -391,7 +391,7 @@ class Compactor:
                 summary = completion.choices[0].message.content or ""
                 framed = POST_COMPACTION_FRAMING + "\n\n" + summary
                 return [*system, {"role": "user", "content": framed}]
-            except BadRequestError as error:
+            except APIStatusError as error:
                 if not context_error(error)[0] or not drop_latest_tool_result(messages):
                     raise
 
