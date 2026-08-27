@@ -17,14 +17,30 @@ from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
 
+# Overflow wording by provider, matched case-insensitively against the full error body.
+# Each marker is attributed to the API that produces it; unattributable generics stay out
+# (e.g. "too many tokens" also matches Bedrock throttling).
 CONTEXT_OVERFLOW_MARKERS = (
-    "request entity too large",
-    "context_length",
-    "context length",
-    "context window",
+    # OpenAI error code "context_length_exceeded"; OpenRouter relays the raw body.
+    "context_length_exceeded",
+    # OpenAI Responses/Completions: "Your input exceeds the context window of this model".
+    "exceeds the context window",
+    # OpenAI chat: "Input tokens exceed the configured limit of N tokens. Please reduce
+    # the length of the messages."; Groq words it the same way.
+    "reduce the length of the messages",
+    # vLLM: "This model's maximum context length is N tokens"; the renderers pre-flight:
+    # "Prompt length (N) exceeds maximum context length (M)"; Mistral uses the same words.
+    "maximum context length",
+    # Anthropic: "prompt is too long: N tokens > M maximum".
     "prompt is too long",
-    "too many tokens",
-    "token limit exceeded",
+    # Anthropic byte-size overflow: HTTP 413 {"type": "request_too_large"}.
+    "request_too_large",
+    # HTTP proxies reject an oversized body with 413 "Request Entity Too Large".
+    "request entity too large",
+    # Google: "The input token count (N) exceeds the maximum number of tokens allowed (M)".
+    "exceeds the maximum number of tokens",
+    # xAI: "This model's maximum prompt length is N but the request contains M tokens".
+    "maximum prompt length is",
 )
 
 
