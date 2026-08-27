@@ -4,7 +4,6 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
@@ -409,22 +408,6 @@ class Branch(BaseModel):
         return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
-@dataclass(frozen=True)
-class Conversation:
-    """Derived recursive-session view; never duplicated in serialized traces."""
-
-    session_id: str
-    parent_session_id: str | None
-    depth: int
-    context_ids: tuple[str, ...]
-    calls: tuple[ModelCall, ...]
-    branch_indexes: tuple[int, ...]
-
-    @property
-    def is_subagent(self) -> bool:
-        return self.parent_session_id is not None
-
-
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
@@ -549,96 +532,25 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return branches
 
     @property
-    def conversations(self) -> list[Conversation]:
-        """Calls grouped by exact recursive session, independent of graph compaction forks.
-
-        Before the final manifest arrives, complete per-call headers are sufficient to expose
-        groups already observed.  Once present, manifest creation order also includes sessions
-        and contexts that made no model call.
-        """
-        branches = self.branches
-        calls_by_session: dict[str, list[ModelCall]] = {}
-        observed_order: list[str] = []
-        observed_parent: dict[str, str | None] = {}
-        observed_depth: dict[str, int] = {}
-        observed_contexts: dict[str, list[str]] = {}
+    def calls_by_session(self) -> dict[str, list[ModelCall]]:
+        """Model calls grouped by recursive lineage session, in creation order."""
+        grouped: dict[str, list[ModelCall]] = {}
+        if self.lineage is not None:
+            grouped = {session.session_id: [] for session in self.lineage.sessions}
         for call in self.calls:
-            item = call.lineage
-            if item is None:
-                continue
-            if item.session_id not in calls_by_session:
-                calls_by_session[item.session_id] = []
-                observed_order.append(item.session_id)
-                observed_parent[item.session_id] = item.parent_session_id
-                observed_depth[item.session_id] = item.depth
-                observed_contexts[item.session_id] = []
-            elif (
-                observed_parent[item.session_id] != item.parent_session_id
-                or observed_depth[item.session_id] != item.depth
-            ):
-                raise ValueError(
-                    f"inconsistent call lineage for session {item.session_id!r}"
-                )
-            calls_by_session[item.session_id].append(call)
-            if item.context_id not in observed_contexts[item.session_id]:
-                observed_contexts[item.session_id].append(item.context_id)
-
-        if self.lineage is None:
-            session_rows = [
-                (
-                    session_id,
-                    observed_parent[session_id],
-                    observed_depth[session_id],
-                    tuple(observed_contexts[session_id]),
-                )
-                for session_id in observed_order
-            ]
-        else:
-            contexts_by_session: dict[str, list[str]] = {
-                session.session_id: [] for session in self.lineage.sessions
-            }
-            for context in self.lineage.contexts:
-                contexts_by_session[context.session_id].append(context.context_id)
-            session_rows = [
-                (
-                    session.session_id,
-                    session.parent_session_id,
-                    session.depth,
-                    tuple(contexts_by_session[session.session_id]),
-                )
-                for session in self.lineage.sessions
-            ]
-
-        conversations: list[Conversation] = []
-        for session_id, parent_id, depth, context_ids in session_rows:
-            calls = tuple(calls_by_session.get(session_id, []))
-            node_ids = {call.node for call in calls if call.node is not None}
-            branch_indexes = tuple(
-                branch.index
-                for branch in branches
-                if node_ids.intersection(
-                    call.node for call in branch.calls if call.node is not None
-                )
-            )
-            conversations.append(
-                Conversation(
-                    session_id=session_id,
-                    parent_session_id=parent_id,
-                    depth=depth,
-                    context_ids=context_ids,
-                    calls=calls,
-                    branch_indexes=branch_indexes,
-                )
-            )
-        return conversations
+            if call.lineage is not None:
+                grouped.setdefault(call.lineage.session_id, []).append(call)
+        return grouped
 
     @property
     def branches_by_session(self) -> dict[str, list[Branch]]:
         """Physical training branches touched by each exact recursive session."""
         branches = self.branches
         return {
-            conversation.session_id: [branches[i] for i in conversation.branch_indexes]
-            for conversation in self.conversations
+            session_id: [
+                branch for branch in branches if session_id in branch.session_ids
+            ]
+            for session_id in self.calls_by_session
         }
 
     def reconcile_lineage(self, manifest: LineageManifest) -> None:
