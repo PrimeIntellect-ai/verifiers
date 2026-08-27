@@ -1,7 +1,6 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import logging
-import random
 import shlex
 from typing import Literal
 
@@ -38,25 +37,9 @@ class _SessionSnapshot(BaseModel):
 class CompactionConfig(BaseConfig):
     """Context compaction policy for the RLM agent loop."""
 
-    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
-    """Compact at this token count. A pair draws a task-seeded threshold. When unset, use
-    90% of the model context window when the provider advertises it."""
-
-    @model_validator(mode="after")
-    def validate_range(self) -> "CompactionConfig":
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple) and value[0] > value[1]:
-            raise ValueError(
-                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-            )
-        return self
-
-    def summarize_threshold(self, task_idx: int | None) -> int | None:
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            return random.Random(task_idx or 0).randint(lo, hi)
-        return value
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, use 90% of the model context window when
+    the provider advertises it."""
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -116,7 +99,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
-        data: TaskData,
     ) -> JsonObject:
         compaction = self.config.compaction
         payload = {
@@ -130,7 +112,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 "max_depth": self.config.max_depth,
                 "compaction": compaction is not None,
                 "summarize_at_tokens": (
-                    compaction.summarize_threshold(data.idx) if compaction else None
+                    compaction.summarize_at_tokens if compaction else None
                 ),
                 "max_concurrent_subagents": max(4, self.config.max_depth),
             },
@@ -158,7 +140,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt, data
+                ctx, trace, runtime, endpoint, secret, system_prompt
             ),
         )
 

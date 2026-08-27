@@ -1,9 +1,8 @@
 import json
 import os
-import random
 from pathlib import Path
 
-from pydantic import PositiveInt, model_validator
+from pydantic import PositiveInt
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
@@ -34,25 +33,9 @@ SEARCH_PROMPT = (
 class CompactionConfig(BaseConfig):
     """Context compaction policy for the bash agent loop."""
 
-    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
-    """Compact at this token count. A pair draws a task-seeded threshold. When unset, use
-    90% of the model context window when the provider advertises it."""
-
-    @model_validator(mode="after")
-    def validate_range(self) -> "CompactionConfig":
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple) and value[0] > value[1]:
-            raise ValueError(
-                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-            )
-        return self
-
-    def summarize_threshold(self, task_idx: int | None) -> int | None:
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            return random.Random(task_idx or 0).randint(lo, hi)
-        return value
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, use 90% of the model context window when
+    the provider advertises it."""
 
 
 class BashHarnessConfig(HarnessConfig):
@@ -110,7 +93,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction is not None:
             args.append("--compaction")
-            threshold = self.config.compaction.summarize_threshold(data.idx)
+            threshold = self.config.compaction.summarize_at_tokens
             if threshold is not None:
                 args.append(f"--summarize-at-tokens={threshold}")
         if self.config.edit:
