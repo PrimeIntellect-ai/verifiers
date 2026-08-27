@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 from openai import OpenAIError
-from renderers.base import ToolCallParseStatus, is_multimodal
-
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
+from renderers.base import ToolCallParseStatus, is_multimodal
+
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
@@ -271,9 +271,8 @@ class ElasticRendererPool:
             for slot in self.renderers:
                 if slot.load < self.multiplex:
                     return slot
-            from renderers.base import load_tokenizer
-
             from renderers import create_renderer
+            from renderers.base import load_tokenizer
 
             def build():
                 return create_renderer(
