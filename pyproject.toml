@@ -163,6 +163,10 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# prime-sandboxes pinned to our branch = 0.2.39 + #837 RPC-surface hardening (process-stream
+# reconnect + _reliability + bg-launch retry). Durable fix for the "process stream RPC failed
+# (unavailable)" HarnessError; replaces the fragile .venv patch.
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-sandboxes", rev = "411e9fd" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }

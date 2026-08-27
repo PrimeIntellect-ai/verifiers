@@ -1,5 +1,7 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import hashlib
+import os
 import re
 from collections.abc import Mapping
 
@@ -53,6 +55,20 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
+
+# Pin every model call in one rollout to the same sglang data-parallel rank so its multi-turn
+# context is served from prefix cache instead of re-prefilled each turn. sglang's
+# data_parallel_controller routes to this header's rank over its own load balancer. DP_SIZE is the
+# serving instance's dp_size (SGLANG_DP_SIZE, default 8); <= 0 disables the pinning.
+DP_RANK_HEADER = "X-Data-Parallel-Rank"
+DP_SIZE = int(os.getenv("SGLANG_DP_SIZE", "8"))
+
+
+def _dp_rank(session_id: str) -> int:
+    """Stable rank in [0, DP_SIZE) for a rollout's session id — hashlib, not Python's salted
+    hash(), so every eval worker process agrees on the same rank."""
+    digest = hashlib.blake2b(session_id.encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % DP_SIZE
 
 
 class EvalClient(Client):
@@ -114,6 +130,8 @@ class EvalClient(Client):
         headers.update(self.headers)
         if session_id:
             headers[SESSION_ID_HEADER] = session_id
+            if DP_SIZE > 0:
+                headers[DP_RANK_HEADER] = str(_dp_rank(session_id))
         headers.update(dialect.auth_headers(self.api_key))
         return headers
 
