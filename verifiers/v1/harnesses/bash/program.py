@@ -21,7 +21,6 @@ SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
-CHECKPOINT_ATTEMPTS = 3
 
 CHECKPOINT_COMPACTION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
@@ -286,8 +285,9 @@ def drop_latest_tool_result(messages: list[dict]) -> bool:
     return False
 
 
-def estimated_tokens(value: str) -> int:
-    return (len(value) + 3) // 4
+def estimated_tokens(chars: str) -> int:
+    """Rough token count at four characters per token."""
+    return (len(chars) + 3) // 4
 
 
 def context_tokens(completion) -> int:
@@ -340,21 +340,14 @@ class Compactor:
                 {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
             ]
             try:
-                # The model can ignore `tool_choice="none"` and reply with a tool call
-                # and no text; resample so the next branch never starts context-free.
-                summary = ""
-                for _ in range(CHECKPOINT_ATTEMPTS):
-                    completion = await chat(
-                        self.client,
-                        self.model,
-                        checkpoint,
-                        self.tools,
-                        tool_choice="none",
-                    )
-                    message = completion.choices[0].message
-                    if not message.tool_calls and (message.content or "").strip():
-                        summary = message.content
-                        break
+                completion = await chat(
+                    self.client,
+                    self.model,
+                    checkpoint,
+                    self.tools,
+                    tool_choice="none",
+                )
+                summary = completion.choices[0].message.content or ""
                 framed = POST_COMPACTION_FRAMING + "\n\n" + summary
                 return [*system, {"role": "user", "content": framed}]
             except BadRequestError as error:
