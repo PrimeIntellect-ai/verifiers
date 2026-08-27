@@ -67,14 +67,6 @@ from verifiers.v1.judges import (
     RubricJudge,
     RubricJudgeConfig,
 )
-from verifiers.v1.lineage import (
-    ACP_LINEAGE_METADATA_KEY,
-    LineageCompaction,
-    LineageContext,
-    LineageManifest,
-    LineageRequest,
-    LineageSession,
-)
 from verifiers.v1.mcp import (
     SharedToolsetConfig,
     Toolset,
@@ -89,6 +81,12 @@ from verifiers.v1.runtimes import (
     RuntimeInfo,
     RuntimeProcess,
     SubprocessConfig,
+)
+from verifiers.v1.semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    RequestSemanticEdge,
+    SemanticEdge,
+    SemanticEdgeManifest,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -234,12 +232,10 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
-    "ACP_LINEAGE_METADATA_KEY",
-    "LineageManifest",
-    "LineageSession",
-    "LineageContext",
-    "LineageCompaction",
-    "LineageRequest",
+    "ACP_SEMANTIC_EDGES_METADATA_KEY",
+    "RequestSemanticEdge",
+    "SemanticEdge",
+    "SemanticEdgeManifest",
     "PolicyEvent",
     "TrainRunInfo",
     "TrainWorkInfo",

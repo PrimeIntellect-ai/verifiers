@@ -273,10 +273,11 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
-        lineage = trace.lineage
-        assert lineage is not None
-        request_ids = {request.request_id for request in lineage.requests}
-        assert all(call.lineage_request_id in request_ids for call in trace.calls)
+        assert all(call.acp_request_id is not None for call in trace.calls)
+        assert all(
+            trace.nodes[edge.source].sampled and trace.nodes[edge.target].sampled
+            for edge in trace.semantic_edges
+        )
     if harness.id == "prime-agent":
         lifecycle = trace.info["acp_lifecycle"]["ai.primeintellect.prime-agent"]
         assert len(lifecycle) == 2

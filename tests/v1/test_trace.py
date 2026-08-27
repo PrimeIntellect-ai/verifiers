@@ -16,12 +16,12 @@ from verifiers.v1.harnesses.rlm.harness import (
     RLMHarness,
     RLMHarnessConfig,
 )
-from verifiers.v1.lineage import (
-    ACP_LINEAGE_HEADERS,
-    ACP_LINEAGE_METADATA_KEY,
-    extract_lineage_request_id,
-)
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.semantic import (
+    ACP_EXTENSION_HEADERS,
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    extract_acp_model_request_id,
+)
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
@@ -182,84 +182,30 @@ def test_wire_trace_round_trip():
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
 
 
-def _lineage_manifest(
-    root_session_id: str, root_status: str = "completed"
-) -> vf.LineageManifest:
-    return vf.LineageManifest(
-        sessions=[
-            vf.LineageSession(
-                session_id=root_session_id,
-                depth=0,
-                initial_context_id="ctx-root",
-                status=root_status,
+def _semantic_edge_manifest() -> vf.SemanticEdgeManifest:
+    return vf.SemanticEdgeManifest(
+        edges=[
+            vf.RequestSemanticEdge(
+                source_request_id="root-turn",
+                target_request_id="child-turn",
+                type="subagent_call",
             ),
-            vf.LineageSession(
-                session_id="child",
-                parent_session_id=root_session_id,
-                depth=1,
-                initial_context_id="ctx-child",
-                spawned_by_request_id="root-turn",
-                status="completed",
+            vf.RequestSemanticEdge(
+                source_request_id="child-turn",
+                target_request_id="root-after",
+                type="subagent_return",
             ),
-        ],
-        contexts=[
-            vf.LineageContext(
-                context_id="ctx-root", session_id=root_session_id, transition="root"
-            ),
-            vf.LineageContext(
-                context_id="ctx-child", session_id="child", transition="spawn"
-            ),
-            vf.LineageContext(
-                context_id="ctx-root-2",
-                session_id=root_session_id,
-                previous_context_id="ctx-root",
-                transition="compact",
-                compaction_id="compact-1",
-            ),
-        ],
-        compactions=[
-            vf.LineageCompaction(
-                compaction_id="compact-1",
-                session_id=root_session_id,
-                source_context_id="ctx-root",
-                target_context_id="ctx-root-2",
-                summary_request_id="root-compact",
-                status="completed",
-            )
-        ],
-        requests=[
-            vf.LineageRequest(
-                request_id="root-turn",
-                session_id=root_session_id,
-                context_id="ctx-root",
-                kind="turn",
-            ),
-            vf.LineageRequest(
-                request_id="child-turn",
-                session_id="child",
-                context_id="ctx-child",
-                kind="turn",
-            ),
-            vf.LineageRequest(
-                request_id="root-compact",
-                session_id=root_session_id,
-                context_id="ctx-root",
-                kind="compaction",
-                compaction_id="compact-1",
-            ),
-            vf.LineageRequest(
-                request_id="root-after",
-                session_id=root_session_id,
-                context_id="ctx-root-2",
-                kind="turn",
-                compaction_id="compact-1",
+            vf.RequestSemanticEdge(
+                source_request_id="root-compact",
+                target_request_id="root-after",
+                type="compaction",
             ),
         ],
     )
 
 
-def test_exact_lineage_joins_interleaved_calls_and_round_trips():
-    """Recursive sessions join by exact IDs, not call adjacency or graph shape."""
+def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
+    """Request edges resolve by exact IDs, not call adjacency or graph shape."""
     tr = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
@@ -285,63 +231,44 @@ def test_exact_lineage_joins_interleaved_calls_and_round_trips():
     tr.calls = [
         vf.ModelCall(
             node=1,
-            lineage_request_id="root-turn",
+            acp_request_id="root-turn",
         ),
         vf.ModelCall(
             node=3,
-            lineage_request_id="child-turn",
+            acp_request_id="child-turn",
         ),
         vf.ModelCall(
             node=5,
-            lineage_request_id="root-compact",
+            acp_request_id="root-compact",
         ),
         vf.ModelCall(
             node=7,
-            lineage_request_id="root-after",
+            acp_request_id="root-after",
         ),
     ]
 
-    manifest = _lineage_manifest(tr.id)
-    manifest.sessions.append(
-        vf.LineageSession(
-            session_id="idle-child",
-            parent_session_id=tr.id,
-            depth=1,
-            initial_context_id="ctx-idle-child",
-            spawned_by_request_id="root-turn",
-            status="cancelled",
-        )
+    manifest = _semantic_edge_manifest()
+    tr.reconcile_semantic_edges(
+        vf.SemanticEdgeManifest.model_validate(manifest.model_dump())
     )
-    manifest.contexts.append(
-        vf.LineageContext(
-            context_id="ctx-idle-child",
-            session_id="idle-child",
-            transition="spawn",
-        )
-    )
-    tr.reconcile_lineage(vf.LineageManifest.model_validate(manifest.model_dump()))
-    assert tr.lineage is not None
-    requests = {request.request_id: request for request in tr.lineage.requests}
-    assert [requests[call.lineage_request_id].session_id for call in tr.calls] == [
-        tr.id,
-        "child",
-        tr.id,
-        tr.id,
+    assert tr.semantic_edges == [
+        vf.SemanticEdge(source=1, target=3, type="subagent_call"),
+        vf.SemanticEdge(source=3, target=7, type="subagent_return"),
+        vf.SemanticEdge(source=5, target=7, type="compaction"),
     ]
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
-    assert restored.lineage == tr.lineage
-    assert [call.lineage_request_id for call in restored.calls] == [
-        call.lineage_request_id for call in tr.calls
+    assert restored.semantic_edges == tr.semantic_edges
+    assert [call.acp_request_id for call in restored.calls] == [
+        call.acp_request_id for call in tr.calls
     ]
-    assert restored.lineage.sessions[-1].session_id == "idle-child"
 
-    # The base ACP layer consumes the generic manifest before the harness's own metadata.
+    # The base ACP layer resolves the generic edge set before harness-owned metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
     turn_metadata = {
-        ACP_LINEAGE_METADATA_KEY: _lineage_manifest(
-            restored.id, root_status="running"
-        ).model_dump(mode="json"),
+        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_manifest().model_dump(
+            mode="json"
+        ),
         RLM_SESSION_METADATA_KEY: {
             "session_id": restored.id,
             "metrics": {"turns": 4},
@@ -352,11 +279,11 @@ def test_exact_lineage_joins_interleaved_calls_and_round_trips():
         restored, vf.ACPTurn(reply="done", response_metadata=turn_metadata)
     )
     assert restored.metrics["turns"] == 4
-    assert restored.lineage.sessions[0].status == "running"
+    assert restored.semantic_edges == tr.semantic_edges
 
-    # session/close carries the terminal snapshot; cumulative metrics overwrite by key.
+    # session/close may publish the same cumulative edge set again.
     close_metadata = {
-        ACP_LINEAGE_METADATA_KEY: _lineage_manifest(restored.id).model_dump(
+        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_manifest().model_dump(
             mode="json"
         ),
         RLM_SESSION_METADATA_KEY: {
@@ -367,39 +294,40 @@ def test_exact_lineage_joins_interleaved_calls_and_round_trips():
     harness._consume_protocol_metadata(restored, close_metadata)
     harness.acp_close_result(restored, close_metadata)
     assert restored.metrics["turns"] == 4
-    assert restored.lineage.sessions[0].status == "completed"
+    assert restored.semantic_edges == tr.semantic_edges
 
     # A failed provider exchange and its SDK retry share one logical request ID.
     restored.calls.append(
         vf.ModelCall(
-            lineage_request_id=restored.calls[0].lineage_request_id,
+            acp_request_id=restored.calls[0].acp_request_id,
             error=vf.Error(type="E", message="x"),
         )
     )
-    restored.reconcile_lineage(_lineage_manifest(restored.id))
+    restored.reconcile_semantic_edges(_semantic_edge_manifest())
+    assert restored.semantic_edges == tr.semantic_edges
 
 
-def test_lineage_request_id_is_validated_and_stripped():
+def test_acp_request_id_is_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
         "Idempotency-Key": "provider-key",
-        "X-ACP-Lineage-Request-ID": "request-1",
+        "X-ACP-Model-Request-ID": "request-1",
         "OpenAI-Beta": "feature",
     }
-    request_id, forwarded = extract_lineage_request_id(headers)
+    request_id, forwarded = extract_acp_model_request_id(headers)
     assert request_id == "request-1"
-    assert not ACP_LINEAGE_HEADERS.intersection(map(str.lower, forwarded))
+    assert not ACP_EXTENSION_HEADERS.intersection(map(str.lower, forwarded))
     assert forwarded["Idempotency-Key"] == "provider-key"
     assert forwarded["OpenAI-Beta"] == "feature"
 
-    absent, unchanged = extract_lineage_request_id({"OpenAI-Beta": "feature"})
+    absent, unchanged = extract_acp_model_request_id({"OpenAI-Beta": "feature"})
     assert absent is None and unchanged == {"OpenAI-Beta": "feature"}
 
-    with pytest.raises(ValueError, match="not a valid lineage ID"):
-        extract_lineage_request_id({"X-ACP-Lineage-Request-ID": "not/a/valid/id"})
+    with pytest.raises(ValueError, match="not a valid ACP request ID"):
+        extract_acp_model_request_id({"X-ACP-Model-Request-ID": "not/a/valid/id"})
 
 
-def test_acp_lineage_metadata_is_optional_and_agent_session_ids_are_opaque():
+def test_acp_semantic_edge_metadata_is_optional():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
@@ -408,68 +336,41 @@ def test_acp_lineage_metadata_is_optional_and_agent_session_ids_are_opaque():
 
     harness._consume_protocol_metadata(trace, {})
 
-    assert trace.lineage is None
+    assert trace.semantic_edges == []
 
     harness._consume_protocol_metadata(
-        trace,
-        {
-            ACP_LINEAGE_METADATA_KEY: _lineage_manifest("agent-owned-root").model_dump(
-                mode="json"
-            )
-        },
+        trace, {ACP_SEMANTIC_EDGES_METADATA_KEY: {"edges": []}}
     )
 
-    assert trace.lineage is not None
-    assert trace.lineage.sessions[0].session_id == "agent-owned-root"
+    assert trace.semantic_edges == []
 
 
-def test_lineage_manifest_enforces_root_and_compaction_consistency():
-    manifest = _lineage_manifest("root-session").model_dump(mode="json")
-    resumed = next(
-        request
-        for request in manifest["requests"]
-        if request["request_id"] == "root-after"
-    )
-    resumed.pop("compaction_id")
+def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():
+    manifest = _semantic_edge_manifest().model_dump(mode="json")
+    manifest["edges"].append(manifest["edges"][0])
+    with pytest.raises(ValueError, match="duplicate semantic edge"):
+        vf.SemanticEdgeManifest.model_validate(manifest)
 
-    with pytest.raises(ValueError, match="missing its context compaction"):
-        vf.LineageManifest.model_validate(manifest)
+    with pytest.raises(ValueError, match="cannot link a request to itself"):
+        vf.SemanticEdgeManifest.model_validate(
+            {
+                "edges": [
+                    {
+                        "source_request_id": "request-1",
+                        "target_request_id": "request-1",
+                        "type": "custom",
+                    }
+                ]
+            }
+        )
 
-    manifest = _lineage_manifest("root-session").model_dump(mode="json")
-    manifest["sessions"].append(
+    manifest = _semantic_edge_manifest().model_dump(mode="json")
+    manifest["edges"].append(
         {
-            "session_id": "second-root",
-            "depth": 0,
-            "initial_context_id": "second-root-context",
-            "status": "completed",
+            "source_request_id": "root-after",
+            "target_request_id": "root-turn",
+            "type": "custom",
         }
     )
-    manifest["contexts"].append(
-        {
-            "context_id": "second-root-context",
-            "session_id": "second-root",
-            "transition": "root",
-        }
-    )
-
-    with pytest.raises(ValueError, match="exactly one root session"):
-        vf.LineageManifest.model_validate(manifest)
-
-    manifest = _lineage_manifest("root-session").model_dump(mode="json")
-    manifest["compactions"][0]["status"] = "failed"
-    manifest["contexts"] = [
-        context
-        for context in manifest["contexts"]
-        if context["context_id"] != "ctx-root-2"
-    ]
-    manifest["requests"] = [
-        request
-        for request in manifest["requests"]
-        if request["request_id"] != "root-after"
-    ]
-    with pytest.raises(ValueError, match="cannot have a target context"):
-        vf.LineageManifest.model_validate(manifest)
-
-    manifest["compactions"][0].pop("target_context_id")
-    failed = vf.LineageManifest.model_validate(manifest)
-    assert failed.compactions[0].target_context_id is None
+    with pytest.raises(ValueError, match="semantic edge cycle"):
+        vf.SemanticEdgeManifest.model_validate(manifest)

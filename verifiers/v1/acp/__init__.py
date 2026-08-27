@@ -15,8 +15,11 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.lineage import ACP_LINEAGE_METADATA_KEY, LineageManifest
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1.semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    SemanticEdgeManifest,
+)
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -75,12 +78,12 @@ class ACPHarness(Harness[ConfigT]):
         self, trace: Trace, response_metadata: dict[str, Any]
     ) -> None:
         """Attach optional protocol extensions understood by every ACP harness."""
-        if ACP_LINEAGE_METADATA_KEY not in response_metadata:
+        if ACP_SEMANTIC_EDGES_METADATA_KEY not in response_metadata:
             return
-        manifest = LineageManifest.model_validate(
-            response_metadata[ACP_LINEAGE_METADATA_KEY]
+        manifest = SemanticEdgeManifest.model_validate(
+            response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
         )
-        trace.reconcile_lineage(manifest)
+        trace.reconcile_semantic_edges(manifest)
 
     @abstractmethod
     async def prepare_acp(

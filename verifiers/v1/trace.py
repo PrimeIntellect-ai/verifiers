@@ -18,8 +18,12 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.lineage import LINEAGE_ID_PATTERN, LineageManifest
 from verifiers.v1.runtimes import RuntimeInfo
+from verifiers.v1.semantic import (
+    ACP_REQUEST_ID_PATTERN,
+    SemanticEdge,
+    SemanticEdgeManifest,
+)
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
@@ -172,8 +176,8 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
-    lineage_request_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
-    """Opaque request ID joined to the optional ACP lineage manifest."""
+    acp_request_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
+    """Opaque model-request ID used to resolve optional ACP semantic edges."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -196,7 +200,8 @@ class Branch(BaseModel):
     A branch often matches one harness context window, but the concepts are not
     identical: non-prefix prompt changes can split one context across physical branches,
     while exact prefix reuse can carry ancestral calls into a descendant branch. Runtime
-    provenance therefore stays on ``Trace.lineage`` rather than being inferred here.
+    provenance therefore stays in ``Trace.semantic_edges`` rather than being inferred
+    here.
     """
 
     index: int
@@ -399,11 +404,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
-    lineage: LineageManifest | None = None
-    """Harness-published runtime provenance, when available.
+    semantic_edges: list[SemanticEdge] = Field(default_factory=list)
+    """Harness-declared relationships between message nodes.
 
-    Lineage is joined to ``calls`` by ``ModelCall.lineage_request_id`` and deliberately
-    remains separate from the physical message graph in ``nodes``.
+    ACP transports these edges over opaque request IDs because harnesses cannot know
+    Verifiers-local node indexes. ``reconcile_semantic_edges`` resolves them after calls
+    commit. Ordinary parent links remain the exact-prefix training graph.
     """
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
@@ -508,22 +514,64 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         return branches
 
-    def reconcile_lineage(self, manifest: LineageManifest) -> None:
-        """Join recorded model calls to an ACP lineage snapshot by request ID.
+    def reconcile_semantic_edges(self, manifest: SemanticEdgeManifest) -> None:
+        """Resolve harness request edges onto committed assistant message nodes."""
+        nodes_by_request: dict[str, set[int]] = {}
+        for call in self.calls:
+            if call.acp_request_id is None or call.node is None:
+                continue
+            if not 0 <= call.node < len(self.nodes):
+                raise ValueError(f"model call has invalid message node {call.node}")
+            if not self.nodes[call.node].sampled:
+                raise ValueError(f"model call node {call.node} is not sampled")
+            nodes_by_request.setdefault(call.acp_request_id, set()).add(call.node)
 
-        Nothing is inferred from the message graph: every recorded call must carry an
-        opaque correlation ID naming a request in the self-validating manifest.
-        """
-        requests = {request.request_id: request for request in manifest.requests}
-        for index, call in enumerate(self.calls):
-            request_id = call.lineage_request_id
-            if request_id is None:
-                raise ValueError(f"model call {index} has no ACP lineage request ID")
-            if request_id not in requests:
-                raise ValueError(
-                    f"model call {request_id!r} has no matching lineage request"
+        resolved: list[SemanticEdge] = []
+        for edge in manifest.edges:
+            endpoints: list[int] = []
+            for request_id in (
+                edge.source_request_id,
+                edge.target_request_id,
+            ):
+                nodes = nodes_by_request.get(request_id, set())
+                if len(nodes) != 1:
+                    raise ValueError(
+                        f"semantic edge request {request_id!r} resolves to "
+                        f"{len(nodes)} committed message nodes"
+                    )
+                endpoints.append(next(iter(nodes)))
+            resolved.append(
+                SemanticEdge(
+                    source=endpoints[0],
+                    target=endpoints[1],
+                    type=edge.type,
                 )
-        self.lineage = manifest
+            )
+
+        # The physical parent links and semantic relationships together remain a DAG.
+        children: list[list[int]] = [[] for _ in self.nodes]
+        indegree = [0] * len(self.nodes)
+        for child, node in enumerate(self.nodes):
+            if node.parent is not None:
+                children[node.parent].append(child)
+                indegree[child] += 1
+        for edge in resolved:
+            children[edge.source].append(edge.target)
+            indegree[edge.target] += 1
+
+        stack = [node for node, degree in enumerate(indegree) if degree == 0]
+        visited = 0
+        while stack:
+            node = stack.pop()
+            visited += 1
+            for child in children[node]:
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    stack.append(child)
+        if visited != len(self.nodes):
+            raise ValueError("semantic edges create a cycle in the message graph")
+
+        self.semantic_edges = resolved
 
     @property
     def messages(self) -> Messages:
