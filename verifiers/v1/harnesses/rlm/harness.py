@@ -1,5 +1,6 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
+import hashlib
 import logging
 import random
 import shlex
@@ -19,8 +20,7 @@ logger = logging.getLogger(__name__)
 BuiltinSkill = Literal["edit", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
-RLM_DIR = "/tmp/vf-rlm"
-RLM_BIN = f"{RLM_DIR}/bin/rlm"
+RLM_CACHE_DIR = "/tmp/vf-rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
@@ -77,18 +77,26 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         # Before the installer: install.sh packages the skills it finds.
         await self.install_skills(runtime, SKILLS_DIR)
+        directory = self._install_dir()
+        binary = f"{directory}/bin/rlm"
+        checkout = f"{directory}/checkout"
+        ready = f"{directory}/.ready"
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            "command -v git >/dev/null 2>&1 || "
+            f"rm -f {ready} && "
+            "(command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
-            f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
-            f"git -C /tmp/rlm checkout {shlex.quote(self.config.version)} && "
-            f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
-            f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
+            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
+            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
+            f"touch {ready})"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
-        ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
-        guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
+        ensure = shlex.quote(f"[ -f {ready} ] && [ -x {binary} ] || ({install})")
+        guarded = (
+            f"mkdir -p {directory} && flock {directory}/install.lock sh -c {ensure}"
+        )
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
@@ -150,7 +158,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
-            command=[RLM_BIN, "--acp"],
+            command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
                 ctx, trace, runtime, endpoint, secret, data, system_prompt
@@ -178,3 +186,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     @staticmethod
     def _home(trace: Trace) -> str:
         return f"{RLM_STATE_DIR}/{trace.id}/home"
+
+    def _install_dir(self) -> str:
+        cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
+        return f"{RLM_CACHE_DIR}-{cache_key}"
