@@ -516,7 +516,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     def reconcile_semantic_edges(self, manifest: SemanticEdgeManifest) -> None:
         """Resolve harness request edges onto committed assistant message nodes."""
-        nodes_by_request: dict[str, set[int]] = {}
+        node_by_request: dict[str, int] = {}
         for call in self.calls:
             if call.acp_request_id is None or call.node is None:
                 continue
@@ -524,7 +524,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 raise ValueError(f"model call has invalid message node {call.node}")
             if not self.nodes[call.node].sampled:
                 raise ValueError(f"model call node {call.node} is not sampled")
-            nodes_by_request.setdefault(call.acp_request_id, set()).add(call.node)
+            # SDK retries are sequential. If more than one attempt commits, the last
+            # sampled response is the logical request result consumed by the harness.
+            node_by_request[call.acp_request_id] = call.node
 
         resolved: list[SemanticEdge] = []
         for edge in manifest.edges:
@@ -533,13 +535,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 edge.source_request_id,
                 edge.target_request_id,
             ):
-                nodes = nodes_by_request.get(request_id, set())
-                if len(nodes) != 1:
+                node = node_by_request.get(request_id)
+                if node is None:
                     raise ValueError(
-                        f"semantic edge request {request_id!r} resolves to "
-                        f"{len(nodes)} committed message nodes"
+                        f"semantic edge request {request_id!r} has no committed message node"
                     )
-                endpoints.append(next(iter(nodes)))
+                endpoints.append(node)
             resolved.append(
                 SemanticEdge(
                     source=endpoints[0],

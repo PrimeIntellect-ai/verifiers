@@ -88,22 +88,22 @@ class SemanticEdgeManifest(_StrictSemanticModel):
             )
             nodes.update((edge.source_request_id, edge.target_request_id))
 
-        visiting: set[str] = set()
-        visited: set[str] = set()
+        indegree = dict.fromkeys(nodes, 0)
+        for targets in children.values():
+            for target in targets:
+                indegree[target] += 1
 
-        def visit(node: str) -> None:
-            if node in visiting:
-                raise ValueError(f"semantic edge cycle at request {node!r}")
-            if node in visited:
-                return
-            visiting.add(node)
+        stack = [node for node, degree in indegree.items() if degree == 0]
+        visited = 0
+        while stack:
+            node = stack.pop()
+            visited += 1
             for child in children.get(node, ()):
-                visit(child)
-            visiting.remove(node)
-            visited.add(node)
-
-        for node in nodes:
-            visit(node)
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    stack.append(child)
+        if visited != len(nodes):
+            raise ValueError("semantic edge cycle detected")
         return self
 
 

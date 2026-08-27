@@ -313,6 +313,46 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     assert restored.semantic_edges == tr.semantic_edges
 
 
+def test_semantic_edge_uses_last_committed_retry_node():
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="root")),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="attempt 1"), sampled=True
+            ),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="attempt 2"), sampled=True
+            ),
+            MessageNode(
+                parent=None, message=AssistantMessage(content="next"), sampled=True
+            ),
+        ],
+        calls=[
+            vf.ModelCall(node=1, acp_request_id="retried"),
+            vf.ModelCall(node=2, acp_request_id="retried"),
+            vf.ModelCall(node=3, acp_request_id="next"),
+        ],
+    )
+
+    tr.reconcile_semantic_edges(
+        vf.SemanticEdgeManifest(
+            edges=[
+                vf.RequestSemanticEdge(
+                    source_request_id="retried",
+                    target_request_id="next",
+                    type="continuation",
+                )
+            ]
+        )
+    )
+
+    assert tr.semantic_edges == [
+        vf.SemanticEdge(source=2, target=3, type="continuation")
+    ]
+
+
 def test_acp_request_id_is_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
@@ -380,3 +420,18 @@ def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():
     )
     with pytest.raises(ValueError, match="semantic edge cycle"):
         vf.SemanticEdgeManifest.model_validate(manifest)
+
+
+def test_semantic_edge_manifest_accepts_deep_acyclic_chain():
+    manifest = vf.SemanticEdgeManifest(
+        edges=[
+            vf.RequestSemanticEdge(
+                source_request_id=f"request-{index}",
+                target_request_id=f"request-{index + 1}",
+                type="continuation",
+            )
+            for index in range(2_000)
+        ]
+    )
+
+    assert len(manifest.edges) == 2_000
