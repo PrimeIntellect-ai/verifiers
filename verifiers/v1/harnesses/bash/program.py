@@ -48,6 +48,32 @@ information in this summary to assist with your own analysis:"""
 
 COMPACTED_TOOL_RESULT = "[tool output dropped because it exceeded the context limit]"
 
+# Overflow wording by provider, matched case-insensitively against the full error body.
+# Each marker is attributed to the API that produces it; unattributable generics stay out
+# (e.g. "too many tokens" also matches Bedrock throttling).
+CONTEXT_OVERFLOW_MARKERS = (
+    # OpenAI error code "context_length_exceeded"; OpenRouter relays the raw body.
+    "context_length_exceeded",
+    # OpenAI Responses/Completions: "Your input exceeds the context window of this model".
+    "exceeds the context window",
+    # OpenAI chat: "Input tokens exceed the configured limit of N tokens. Please reduce
+    # the length of the messages."; Groq words it the same way.
+    "reduce the length of the messages",
+    # vLLM: "This model's maximum context length is N tokens"; the renderers pre-flight:
+    # "Prompt length (N) exceeds maximum context length (M)"; Mistral uses the same words.
+    "maximum context length",
+    # Anthropic: "prompt is too long: N tokens > M maximum".
+    "prompt is too long",
+    # Anthropic byte-size overflow: HTTP 413 {"type": "request_too_large"}.
+    "request_too_large",
+    # HTTP proxies reject an oversized body with 413 "Request Entity Too Large".
+    "request entity too large",
+    # Google: "The input token count (N) exceeds the maximum number of tokens allowed (M)".
+    "exceeds the maximum number of tokens",
+    # xAI: "This model's maximum prompt length is N but the request contains M tokens".
+    "maximum prompt length is",
+)
+
 CONTEXT_WINDOW_PATTERNS = (
     re.compile(
         r"(?:maximum|max(?:imum)?)[^.\n]{0,40}(?:context length|context window)"
@@ -263,18 +289,7 @@ async def chat(
 
 def context_error(error: BadRequestError) -> tuple[bool, int | None]:
     details = f"{error} {error.body or ''}"
-    overflow = any(
-        marker in details.casefold()
-        for marker in (
-            "request entity too large",
-            "context_length",
-            "context length",
-            "context window",
-            "prompt is too long",
-            "too many tokens",
-            "token limit exceeded",
-        )
-    )
+    overflow = any(marker in details.casefold() for marker in CONTEXT_OVERFLOW_MARKERS)
     for pattern in CONTEXT_WINDOW_PATTERNS:
         match = pattern.search(details)
         if match:
