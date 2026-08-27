@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import os
-import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,36 +25,28 @@ __all__ = [
     "PushState",
     "abort_run",
     "build_samples",
-    "credential_paths",
+    "credential_tables",
     "finish_run",
     "open_run",
     "run_config",
     "scrub_secrets",
 ]
 
-# A key that holds a credential. `token` alone is too common a word in model
-# configs (`eos_token`, `tokenizer`, `max_tokens`) — it counts only as the whole
-# key or with a credential prefix. Header names go through the same test, so
-# `Authorization` and `X-API-Key` are credentials and `X-Prime-Team-ID` is not.
-_CREDENTIAL_KEY = re.compile(
-    r"authorization|api[-_]?key|secret|password|passwd|credential"
-    r"|(?:^|[_.-])(?:access|auth|api|bearer|refresh|session|oauth|hf|github|gh|wandb|openai|anthropic)[_-]?token$"
-    r"|^token$",
-    re.IGNORECASE,
-)
-# A key that only *names* or *locates* a credential (`api_key_var`, `secrets_file`).
-_CREDENTIAL_REFERENCE_KEY = re.compile(
-    r"(?:_var|_env|_name|_file|_path|_budget|_limit|_count|_len|_length|_id)$",
-    re.IGNORECASE,
-)
+# The two places a config can carry a credential. Neither is found by key
+# name: both are free-form string tables, so everything under them is masked,
+# whatever a value is called. The API key itself never enters the config
+# (`api_key_var` names an environment variable), and the harness table has
+# `forward_env` for exactly this reason.
+#
+# - `headers`: a client's extra request headers (`Authorization`, `x-api-key`
+#   for a proxy or a non-Prime endpoint) — the top-level client and any seat's.
+# - `harness.env`: a seat's program variables (`SERPER_API_KEY`).
 
 
-def _is_credential_key(key: Any) -> bool:
-    return (
-        isinstance(key, str)
-        and _CREDENTIAL_KEY.search(key) is not None
-        and _CREDENTIAL_REFERENCE_KEY.search(key) is None
-    )
+def _is_credential_table(key: Any, parent: Any, value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return key == "headers" or (key == "env" and parent == "harness")
 
 
 @dataclass
@@ -158,11 +150,11 @@ def run_config(
 ) -> dict[str, Any]:
     """What the run was configured with, as the dashboard stores it.
 
-    The fields somebody actually set, with credentials masked; the handful of
-    v0 keys the dashboard reads for its lists (`model`, `num_examples`,
-    `rollouts_per_example`); and, when the run was launched from one, the config
-    file itself byte for byte — but only if it holds no credentials, since a
-    file cannot be masked without rewriting it."""
+    The fields somebody actually set, with the credential tables masked; the
+    handful of v0 keys the dashboard reads for its lists (`model`,
+    `num_examples`, `rollouts_per_example`); and, when the run was launched
+    from one, the config file itself byte for byte — but only if it sets no
+    credential table, since a file cannot be masked without rewriting it."""
     values: dict[str, Any] = scrub_secrets(
         config.model_dump(mode="json", exclude_unset=True)
     )
@@ -179,15 +171,16 @@ def run_config(
     source = config.run.source
     if source is not None:
         try:
-            leaks = credential_paths(source)
+            tables = credential_tables(source)
         except pr.ConfigurationError as e:
             logger.warning("--push: not recording the run's config file (%s)", e)
         else:
-            if leaks:
+            if tables:
                 logger.warning(
-                    "--push: not recording the run's config file: it holds credentials "
-                    "under %s. Keep them in the environment (`api_key_var`) instead.",
-                    ", ".join(leaks),
+                    "--push: not recording the run's config file: it sets %s. Keep "
+                    "credentials in the environment (`api_key_var`, `forward_env`) "
+                    "instead.",
+                    ", ".join(tables),
                 )
             else:
                 try:
@@ -201,30 +194,22 @@ def run_config(
     return values
 
 
-def scrub_secrets(value: Any) -> Any:
-    """A copy of a config dump with credentials masked.
-
-    Every value under a `headers` table is masked — headers are where
-    credentials travel, whatever they are named — and so is any value whose key
-    names a credential (`api_key`, `Authorization`, `hf_token`); keys that only
-    reference one (`api_key_var`) are kept."""
+def scrub_secrets(value: Any, _parent: Any = None) -> Any:
+    """A copy of a config dump with every value in a credential table masked."""
     if isinstance(value, dict):
-        scrubbed: dict[Any, Any] = {}
-        for key, item in value.items():
-            if key == "headers" and isinstance(item, dict):
-                scrubbed[key] = {name: REDACTED for name in item}
-            elif _is_credential_key(key):
-                scrubbed[key] = REDACTED
-            else:
-                scrubbed[key] = scrub_secrets(item)
-        return scrubbed
+        return {
+            key: {name: REDACTED for name in item}
+            if _is_credential_table(key, _parent, item)
+            else scrub_secrets(item, key)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [scrub_secrets(item) for item in value]
+        return [scrub_secrets(item, _parent) for item in value]
     return value
 
 
-def credential_paths(path: "str | os.PathLike[str]") -> list[str]:
-    """Dotted paths of the credential-holding keys in a config file.
+def credential_tables(path: "str | os.PathLike[str]") -> list[str]:
+    """Dotted paths of the non-empty credential tables in a config file.
 
     The file is parsed (TOML or JSON, by suffix) rather than scanned: a value's
     shape is then irrelevant. Raises `ConfigurationError` for a file that cannot
@@ -247,21 +232,24 @@ def credential_paths(path: "str | os.PathLike[str]") -> list[str]:
     except (ValueError, UnicodeDecodeError) as e:
         raise pr.ConfigurationError(f"{path}: could not parse it: {e}") from e
     found: list[str] = []
-    _collect_credential_paths(document, "", found)
+    _collect_credential_tables(document, "", None, found)
     return found
 
 
-def _collect_credential_paths(value: Any, prefix: str, found: list[str]) -> None:
+def _collect_credential_tables(
+    value: Any, prefix: str, parent: Any, found: list[str]
+) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             here = f"{prefix}.{key}" if prefix else str(key)
-            if _is_credential_key(key):
-                found.append(here)
+            if _is_credential_table(key, parent, item):
+                if item:
+                    found.append(here)
             else:
-                _collect_credential_paths(item, here, found)
+                _collect_credential_tables(item, here, key, found)
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            _collect_credential_paths(item, f"{prefix}[{index}]", found)
+            _collect_credential_tables(item, f"{prefix}[{index}]", parent, found)
 
 
 def finish_run(
@@ -299,7 +287,7 @@ def abort_run(
 def _close(
     run: "pr.Run",
     state: PushState | None,
-    summary: dict[str, Any] | None = None,
+    summary: Mapping[str, Any] | None = None,
     status: "pr.RunStatus" = pr.RunStatus.COMPLETED,
     error: str | None = None,
 ) -> None:
