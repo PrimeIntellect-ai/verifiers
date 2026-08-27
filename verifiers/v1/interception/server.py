@@ -524,14 +524,15 @@ class InterceptionServer(Interception):
                 )
             if not streaming:
                 replay_key = f"explicit:{idempotency_key}"
-            # Streaming lineage uses the key only to bind its logical request id;
-            # streaming replay/coalescing remains unsupported. Never forward this
-            # local transport identity (or the private lineage envelope) upstream.
-            upstream_headers = {
-                name: value
-                for name, value in upstream_headers.items()
-                if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
-            }
+            if lineage is not None:
+                # Lineage uses the key only to bind its logical request id; streaming
+                # replay/coalescing remains unsupported. Ordinary requests keep their
+                # provider-facing key, but this private lineage identity stays local.
+                upstream_headers = {
+                    name: value
+                    for name, value in upstream_headers.items()
+                    if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
+                }
         elif not streaming:
             replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
