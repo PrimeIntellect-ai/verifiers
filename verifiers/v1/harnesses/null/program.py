@@ -11,15 +11,12 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI, BadRequestError
+from openai import APIStatusError, AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
 
-# Overflow wording by provider, matched case-insensitively against the full error body.
-# Each marker is attributed to the API that produces it; unattributable generics stay out
-# (e.g. "too many tokens" also matches Bedrock throttling).
 CONTEXT_OVERFLOW_MARKERS = (
     # OpenAI error code "context_length_exceeded"; OpenRouter relays the raw body.
     "context_length_exceeded",
@@ -44,9 +41,12 @@ CONTEXT_OVERFLOW_MARKERS = (
 )
 
 
-def is_context_overflow(error: BadRequestError) -> bool:
+def is_context_overflow(error: APIStatusError) -> bool:
     details = f"{error} {error.body or ''}".casefold()
-    return any(marker in details for marker in CONTEXT_OVERFLOW_MARKERS)
+    # An overflow is deterministic: a 400, or a 413 for a byte-size cap.
+    return error.status_code in (400, 413) and any(
+        marker in details for marker in CONTEXT_OVERFLOW_MARKERS
+    )
 
 
 async def chat(
@@ -214,7 +214,7 @@ async def main() -> None:
     while True:
         try:
             message = await chat(client, args.model, messages, tools)
-        except BadRequestError as error:
+        except APIStatusError as error:
             # Context exhaustion is a budget limit, not a crash: this harness has no
             # compaction, so end the run cleanly with what the conversation holds.
             if not is_context_overflow(error):
