@@ -329,17 +329,39 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
         ),
     ]
 
-    tr.reconcile_lineage(_lineage_manifest(tr.id))
-    root, child = tr.conversations
-    assert [call.lineage.request_id for call in root.calls] == [
+    manifest = _lineage_manifest(tr.id)
+    manifest.sessions.append(
+        vf.LineageSession(
+            session_id="idle-child",
+            parent_session_id=tr.id,
+            depth=1,
+            initial_context_id="ctx-idle-child",
+            spawned_by_request_id="root-turn",
+            status="cancelled",
+        )
+    )
+    manifest.contexts.append(
+        vf.LineageContext(
+            context_id="ctx-idle-child",
+            session_id="idle-child",
+            transition="spawn",
+        )
+    )
+    tr.reconcile_lineage(vf.LineageManifest.model_validate(manifest.model_dump()))
+    calls_by_session = tr.calls_by_session
+    assert list(calls_by_session) == [tr.id, "child", "idle-child"]
+    assert [call.lineage.request_id for call in calls_by_session[tr.id]] == [
         "root-turn",
         "root-compact",
         "root-after",
     ]
-    assert root.context_ids == ("ctx-root", "ctx-root-2")
-    assert root.branch_indexes == (0, 2, 3)
-    assert child.is_subagent and child.parent_session_id == tr.id
-    assert child.branch_indexes == (1,)
+    assert [call.lineage.request_id for call in calls_by_session["child"]] == [
+        "child-turn"
+    ]
+    assert calls_by_session["idle-child"] == []
+    assert [branch.index for branch in tr.branches_by_session[tr.id]] == [0, 2, 3]
+    assert [branch.index for branch in tr.branches_by_session["child"]] == [1]
+    assert tr.branches_by_session["idle-child"] == []
     assert tr.branches[1].session_ids == ("child",)
     assert tr.branches[3].context_ids == ("ctx-root-2",)
     assert tr.branches[3].compaction_ids == ("compact-1",)
@@ -349,10 +371,7 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
     assert [call.lineage for call in restored.calls] == [
         call.lineage for call in tr.calls
     ]
-    assert [conversation.session_id for conversation in restored.conversations] == [
-        tr.id,
-        "child",
-    ]
+    assert list(restored.calls_by_session) == [tr.id, "child", "idle-child"]
 
     # The base ACP layer consumes the generic manifest before the harness's own metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
@@ -488,3 +507,22 @@ def test_lineage_manifest_enforces_root_and_compaction_consistency():
 
     with pytest.raises(ValueError, match="exactly one root session"):
         vf.LineageManifest.model_validate(manifest)
+
+    manifest = _lineage_manifest("root-session").model_dump(mode="json")
+    manifest["compactions"][0]["status"] = "failed"
+    manifest["contexts"] = [
+        context
+        for context in manifest["contexts"]
+        if context["context_id"] != "ctx-root-2"
+    ]
+    manifest["requests"] = [
+        request
+        for request in manifest["requests"]
+        if request["request_id"] != "root-after"
+    ]
+    with pytest.raises(ValueError, match="cannot have a target context"):
+        vf.LineageManifest.model_validate(manifest)
+
+    manifest["compactions"][0].pop("target_context_id")
+    failed = vf.LineageManifest.model_validate(manifest)
+    assert failed.compactions[0].target_context_id is None

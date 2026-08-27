@@ -99,10 +99,12 @@ class LineageContext(_StrictLineageModel):
 
 
 class LineageCompaction(_StrictLineageModel):
+    """One compaction attempt; only completion materializes its target context."""
+
     compaction_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     source_context_id: str = Field(pattern=LINEAGE_ID_PATTERN)
-    target_context_id: str = Field(pattern=LINEAGE_ID_PATTERN)
+    target_context_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
     summary_request_id: str = Field(pattern=LINEAGE_ID_PATTERN)
     status: CompactionStatus
 
@@ -226,6 +228,7 @@ class LineageManifest(_StrictLineageModel):
                 compaction = compactions.get(context.compaction_id)
                 if (
                     compaction is None
+                    or compaction.status != "completed"  # type: ignore[attr-defined]
                     or compaction.target_context_id != context.context_id  # type: ignore[attr-defined]
                 ):
                     raise ValueError(
@@ -293,25 +296,36 @@ class LineageManifest(_StrictLineageModel):
 
         for compaction in self.compactions:
             source = contexts.get(compaction.source_context_id)
-            target = contexts.get(compaction.target_context_id)
             request = requests.get(compaction.summary_request_id)
             if (
                 compaction.session_id not in sessions
                 or source is None
                 or source.session_id != compaction.session_id  # type: ignore[attr-defined]
-                or target is None
-                or target.session_id != compaction.session_id  # type: ignore[attr-defined]
             ):
                 raise ValueError(
-                    f"lineage compaction {compaction.compaction_id!r} has invalid contexts"
+                    f"lineage compaction {compaction.compaction_id!r} has an invalid source context"
                 )
-            if (
-                target.previous_context_id != compaction.source_context_id  # type: ignore[attr-defined]
-                or target.transition != "compact"  # type: ignore[attr-defined]
-                or target.compaction_id != compaction.compaction_id  # type: ignore[attr-defined]
+            target = (
+                contexts.get(compaction.target_context_id)
+                if compaction.target_context_id is not None
+                else None
+            )
+            if compaction.status == "completed" and (
+                target is None
+                or target.session_id != compaction.session_id
+                or target.previous_context_id != compaction.source_context_id
+                or target.transition != "compact"
+                or target.compaction_id != compaction.compaction_id
             ):
                 raise ValueError(
                     f"lineage compaction {compaction.compaction_id!r} does not describe its target context"
+                )
+            if (
+                compaction.status != "completed"
+                and compaction.target_context_id is not None
+            ):
+                raise ValueError(
+                    f"non-completed lineage compaction {compaction.compaction_id!r} cannot have a target context"
                 )
             if (
                 request is None
