@@ -36,7 +36,7 @@ class _SessionSnapshot(BaseModel):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="e26b37a0e8f06d64bff8d7a627ed261be41726a3", min_length=1
+        default="cc1f855bc6956bc67926c1c37dc52724b96321d1", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
