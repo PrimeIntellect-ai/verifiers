@@ -39,9 +39,6 @@ class CompactionConfig(BaseConfig):
 
 
 class BashHarnessConfig(HarnessConfig):
-    compaction: CompactionConfig | None = None
-    """Context compaction policy. Set an empty config to use automatic thresholds."""
-
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
@@ -50,6 +47,9 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
+
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
