@@ -68,6 +68,7 @@ from verifiers.v1.judges import (
     RubricJudgeConfig,
 )
 from verifiers.v1.lineage import (
+    ACP_LINEAGE_METADATA_KEY,
     CallLineage,
     LineageCompaction,
     LineageContext,
@@ -235,6 +236,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
+    "ACP_LINEAGE_METADATA_KEY",
     "CallLineage",
     "LineageManifest",
     "LineageSession",

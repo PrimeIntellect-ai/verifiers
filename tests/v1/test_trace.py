@@ -16,7 +16,11 @@ from verifiers.v1.harnesses.rlm.harness import (
     RLMHarness,
     RLMHarnessConfig,
 )
-from verifiers.v1.lineage import RLM_LINEAGE_HEADERS, extract_call_lineage
+from verifiers.v1.lineage import (
+    ACP_LINEAGE_HEADERS,
+    ACP_LINEAGE_METADATA_KEY,
+    extract_call_lineage,
+)
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -350,37 +354,36 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
         "child",
     ]
 
-    # The public ACP hook consumes the same JSON-native manifest and reconciles it.
+    # The base ACP layer consumes the generic manifest before the harness's own metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    turn_metadata = {
+        ACP_LINEAGE_METADATA_KEY: _lineage_manifest(
+            restored.id, root_status="running"
+        ).model_dump(mode="json"),
+        RLM_SESSION_METADATA_KEY: {
+            "session_id": restored.id,
+            "metrics": {"turns": 4},
+        },
+    }
+    harness._consume_protocol_metadata(restored, turn_metadata)
     harness.acp_turn_result(
-        restored,
-        vf.ACPTurn(
-            reply="done",
-            response_metadata={
-                RLM_SESSION_METADATA_KEY: {
-                    "session_id": restored.id,
-                    "metrics": {"turns": 4},
-                    "lineage": _lineage_manifest(
-                        restored.id, root_status="running"
-                    ).model_dump(mode="json"),
-                }
-            },
-        ),
+        restored, vf.ACPTurn(reply="done", response_metadata=turn_metadata)
     )
     assert restored.metrics["turns"] == 4
     assert restored.lineage.sessions[0].status == "running"
 
     # session/close carries the terminal snapshot; cumulative metrics overwrite by key.
-    harness.acp_close_result(
-        restored,
-        {
-            RLM_SESSION_METADATA_KEY: {
-                "session_id": restored.id,
-                "metrics": {"turns": 4},
-                "lineage": _lineage_manifest(restored.id).model_dump(mode="json"),
-            }
+    close_metadata = {
+        ACP_LINEAGE_METADATA_KEY: _lineage_manifest(restored.id).model_dump(
+            mode="json"
+        ),
+        RLM_SESSION_METADATA_KEY: {
+            "session_id": restored.id,
+            "metrics": {"turns": 4},
         },
-    )
+    }
+    harness._consume_protocol_metadata(restored, close_metadata)
+    harness.acp_close_result(restored, close_metadata)
     assert restored.metrics["turns"] == 4
     assert restored.lineage.sessions[0].status == "completed"
 
@@ -397,11 +400,11 @@ def test_lineage_headers_are_complete_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
         "Idempotency-Key": "request-1",
-        "X-RLM-Request-ID": "request-1",
-        "X-RLM-Session-ID": "session-1",
-        "X-RLM-Context-ID": "context-1",
-        "X-RLM-Transition": "root",
-        "X-RLM-Depth": "0",
+        "X-ACP-Lineage-Request-ID": "request-1",
+        "X-ACP-Lineage-Session-ID": "session-1",
+        "X-ACP-Lineage-Context-ID": "context-1",
+        "X-ACP-Lineage-Transition": "root",
+        "X-ACP-Lineage-Depth": "0",
         "OpenAI-Beta": "feature",
     }
     lineage, forwarded = extract_call_lineage(headers)
@@ -412,23 +415,46 @@ def test_lineage_headers_are_complete_validated_and_stripped():
         transition="root",
         depth=0,
     )
-    assert not RLM_LINEAGE_HEADERS.intersection(map(str.lower, forwarded))
+    assert not ACP_LINEAGE_HEADERS.intersection(map(str.lower, forwarded))
     assert forwarded["OpenAI-Beta"] == "feature"
 
-    # Old nano-rlm only sent depth. It remains a valid lineage-free request.
-    legacy, legacy_forwarded = extract_call_lineage({"X-RLM-Depth": "1"})
-    assert legacy is None and legacy_forwarded == {}
+    absent, unchanged = extract_call_lineage({"OpenAI-Beta": "feature"})
+    assert absent is None and unchanged == {"OpenAI-Beta": "feature"}
 
-    with pytest.raises(ValueError, match="missing X-RLM-Context-ID"):
+    with pytest.raises(ValueError, match="missing X-ACP-Lineage-Context-ID"):
         extract_call_lineage(
             {
                 "Idempotency-Key": "request-1",
-                "X-RLM-Request-ID": "request-1",
-                "X-RLM-Session-ID": "session-1",
-                "X-RLM-Transition": "root",
-                "X-RLM-Depth": "0",
+                "X-ACP-Lineage-Request-ID": "request-1",
+                "X-ACP-Lineage-Session-ID": "session-1",
+                "X-ACP-Lineage-Transition": "root",
+                "X-ACP-Lineage-Depth": "0",
             }
         )
+
+
+def test_acp_lineage_metadata_is_optional_and_agent_session_ids_are_opaque():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+
+    harness._consume_protocol_metadata(trace, {})
+
+    assert trace.lineage is None
+
+    harness._consume_protocol_metadata(
+        trace,
+        {
+            ACP_LINEAGE_METADATA_KEY: _lineage_manifest("agent-owned-root").model_dump(
+                mode="json"
+            )
+        },
+    )
+
+    assert trace.lineage is not None
+    assert trace.lineage.sessions[0].session_id == "agent-owned-root"
 
 
 def test_lineage_manifest_requires_compaction_id_on_resumed_request():
