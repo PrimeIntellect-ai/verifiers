@@ -457,8 +457,7 @@ def test_acp_lineage_metadata_is_optional_and_agent_session_ids_are_opaque():
     assert trace.lineage.sessions[0].session_id == "agent-owned-root"
 
 
-def test_lineage_manifest_requires_compaction_id_on_resumed_request():
-    """A resumed call's header and manifest request must retain the context compaction."""
+def test_lineage_manifest_enforces_root_and_compaction_consistency():
     manifest = _lineage_manifest("root-session").model_dump(mode="json")
     resumed = next(
         request
@@ -468,4 +467,24 @@ def test_lineage_manifest_requires_compaction_id_on_resumed_request():
     resumed.pop("compaction_id")
 
     with pytest.raises(ValueError, match="missing its context compaction"):
+        vf.LineageManifest.model_validate(manifest)
+
+    manifest = _lineage_manifest("root-session").model_dump(mode="json")
+    manifest["sessions"].append(
+        {
+            "session_id": "second-root",
+            "depth": 0,
+            "initial_context_id": "second-root-context",
+            "status": "completed",
+        }
+    )
+    manifest["contexts"].append(
+        {
+            "context_id": "second-root-context",
+            "session_id": "second-root",
+            "transition": "root",
+        }
+    )
+
+    with pytest.raises(ValueError, match="exactly one root session"):
         vf.LineageManifest.model_validate(manifest)
