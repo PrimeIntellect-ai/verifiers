@@ -188,6 +188,9 @@ def _eval_config(
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
+        # `run_eval` opens a platform run before the first rollout when `push` is
+        # on and an API key is present (it is, in CI); the E2Es must stay local.
+        push=False,
     )
 
 

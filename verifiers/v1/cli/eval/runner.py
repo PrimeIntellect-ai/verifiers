@@ -233,9 +233,11 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
     push_state = PushState() if config.push and config.rich is not None else None
 
-    # Opened before the first rollout so the platform's id is the run's id
-    run = open_run(config, push_state)
-    config.run.adopt_id(run.id)
+    # Opened before the first rollout so the platform's id is the run's id. A
+    # run that stays local keeps its own uuid rather than the SDK's placeholder.
+    run = open_run(config, push_state, num_examples=len(tasks))
+    if run.mode == "online":
+        config.run.adopt_id(run.id)
     # A resume's kept rollouts are part of this run too, so they carry its id and
     # go up with the rest
     for episode in finished:
