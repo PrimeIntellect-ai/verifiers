@@ -647,14 +647,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         Nothing is inferred from the message graph: every recorded call must have a complete
         lineage envelope and a matching request in the snapshot.
         """
-        roots = [
-            session
-            for session in manifest.sessions
-            if session.parent_session_id is None
-        ]
-        if len(roots) != 1:
-            raise ValueError("ACP lineage must contain exactly one root session")
-
         sessions = {session.session_id: session for session in manifest.sessions}
         contexts = {context.context_id: context for context in manifest.contexts}
         requests = {request.request_id: request for request in manifest.requests}

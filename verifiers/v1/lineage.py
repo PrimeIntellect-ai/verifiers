@@ -154,6 +154,12 @@ class LineageManifest(_StrictLineageModel):
         compactions = _unique(self.compactions, "compaction_id", "compaction")
         requests = _unique(self.requests, "request_id", "request")
 
+        roots = [
+            session for session in self.sessions if session.parent_session_id is None
+        ]
+        if len(roots) != 1:
+            raise ValueError("ACP lineage must contain exactly one root session")
+
         for session in self.sessions:
             parent = session.parent_session_id
             if parent is None:
