@@ -21,7 +21,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import (
     ACP_REQUEST_ID_PATTERN,
-    SemanticEdge,
+    ParentLink,
     SemanticEdgeManifest,
 )
 from verifiers.v1.state import State, StateT
@@ -200,8 +200,8 @@ class Branch(BaseModel):
     A branch often matches one harness context window, but the concepts are not
     identical: non-prefix prompt changes can split one context across physical branches,
     while exact prefix reuse can carry ancestral calls into a descendant branch. Runtime
-    provenance therefore stays in ``Trace.semantic_edges`` rather than being inferred
-    here.
+    provenance therefore stays in ``MessageNode.semantic_parents`` rather than being
+    inferred here.
     """
 
     index: int
@@ -401,16 +401,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The tools advertised to the agent, automatically recorded from last intercepted turn."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
-    """The message graph; branches are derived views and storage stays linear in turns."""
+    """The message graph, including physical and semantic parent links.
+
+    Branches are derived solely from exact-prefix ``MessageNode.parent`` links; semantic
+    parents describe execution provenance without changing training sequences.
+    """
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
-    semantic_edges: list[SemanticEdge] = Field(default_factory=list)
-    """Harness-declared relationships between message nodes.
-
-    ACP transports these edges over opaque request IDs because harnesses cannot know
-    Verifiers-local node indexes. ``reconcile_semantic_edges`` resolves them after calls
-    commit. Ordinary parent links remain the exact-prefix training graph.
-    """
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
     from the renderer that tokenized this trace, stamped at turn commit. Applied to a
@@ -515,7 +512,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return branches
 
     def reconcile_semantic_edges(self, manifest: SemanticEdgeManifest) -> None:
-        """Resolve harness request edges onto committed assistant message nodes."""
+        """Resolve request edges into semantic parents on committed message nodes."""
         node_by_request: dict[str, int] = {}
         for call in self.calls:
             if call.acp_request_id is None or call.node is None:
@@ -528,7 +525,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             # sampled response is the logical request result consumed by the harness.
             node_by_request[call.acp_request_id] = call.node
 
-        resolved: list[SemanticEdge] = []
+        semantic_parents: list[list[ParentLink]] = [[] for _ in self.nodes]
+        resolved_identities: set[tuple[int, int, str]] = set()
         for edge in manifest.edges:
             endpoints: list[int] = []
             for request_id in (
@@ -541,13 +539,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                         f"semantic edge request {request_id!r} has no committed message node"
                     )
                 endpoints.append(node)
-            resolved.append(
-                SemanticEdge(
-                    source=endpoints[0],
-                    target=endpoints[1],
-                    type=edge.type,
-                )
-            )
+            source, target = endpoints
+            if source == target:
+                raise ValueError("semantic edge resolves to the same message node")
+            identity = (source, target, edge.type)
+            if identity in resolved_identities:
+                raise ValueError(f"duplicate resolved semantic edge: {identity!r}")
+            resolved_identities.add(identity)
+            semantic_parents[target].append(ParentLink(node=source, type=edge.type))
 
         # The physical parent links and semantic relationships together remain a DAG.
         children: list[list[int]] = [[] for _ in self.nodes]
@@ -556,9 +555,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if node.parent is not None:
                 children[node.parent].append(child)
                 indegree[child] += 1
-        for edge in resolved:
-            children[edge.source].append(edge.target)
-            indegree[edge.target] += 1
+        for target, parents in enumerate(semantic_parents):
+            for parent in parents:
+                children[parent.node].append(target)
+                indegree[target] += 1
 
         stack = [node for node, degree in enumerate(indegree) if degree == 0]
         visited = 0
@@ -572,7 +572,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if visited != len(self.nodes):
             raise ValueError("semantic edges create a cycle in the message graph")
 
-        self.semantic_edges = resolved
+        for node, parents in zip(self.nodes, semantic_parents, strict=True):
+            node.semantic_parents = parents
 
     @property
     def messages(self) -> Messages:

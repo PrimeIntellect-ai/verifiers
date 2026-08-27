@@ -205,6 +205,11 @@ def _semantic_edge_manifest() -> vf.SemanticEdgeManifest:
                 target_request_id="root-after",
                 type="compaction",
             ),
+            vf.RequestSemanticEdge(
+                source_request_id="root-turn",
+                target_request_id="root-after",
+                type="critic_review",
+            ),
         ],
     )
 
@@ -256,15 +261,24 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     tr.reconcile_semantic_edges(
         vf.SemanticEdgeManifest.model_validate(manifest.model_dump())
     )
-    assert tr.semantic_edges == [
-        vf.SemanticEdge(source=1, target=5, type="continuation"),
-        vf.SemanticEdge(source=1, target=3, type="subagent_call"),
-        vf.SemanticEdge(source=3, target=7, type="subagent_return"),
-        vf.SemanticEdge(source=5, target=7, type="compaction"),
+    expected_parents = [
+        [],
+        [],
+        [],
+        [vf.ParentLink(node=1, type="subagent_call")],
+        [],
+        [vf.ParentLink(node=1, type="continuation")],
+        [],
+        [
+            vf.ParentLink(node=3, type="subagent_return"),
+            vf.ParentLink(node=5, type="compaction"),
+            vf.ParentLink(node=1, type="critic_review"),
+        ],
     ]
+    assert [node.semantic_parents for node in tr.nodes] == expected_parents
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
-    assert restored.semantic_edges == tr.semantic_edges
+    assert [node.semantic_parents for node in restored.nodes] == expected_parents
     assert [call.acp_request_id for call in restored.calls] == [
         call.acp_request_id for call in tr.calls
     ]
@@ -285,7 +299,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
         restored, vf.ACPTurn(reply="done", response_metadata=turn_metadata)
     )
     assert restored.metrics["turns"] == 4
-    assert restored.semantic_edges == tr.semantic_edges
+    assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
     # session/close may publish the same cumulative edge set again.
     close_metadata = {
@@ -300,7 +314,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     harness._consume_protocol_metadata(restored, close_metadata)
     harness.acp_close_result(restored, close_metadata)
     assert restored.metrics["turns"] == 4
-    assert restored.semantic_edges == tr.semantic_edges
+    assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
     # A failed provider exchange and its SDK retry share one logical request ID.
     restored.calls.append(
@@ -310,7 +324,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
         )
     )
     restored.reconcile_semantic_edges(_semantic_edge_manifest())
-    assert restored.semantic_edges == tr.semantic_edges
+    assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
 
 def test_semantic_edge_uses_last_committed_retry_node():
@@ -348,9 +362,7 @@ def test_semantic_edge_uses_last_committed_retry_node():
         )
     )
 
-    assert tr.semantic_edges == [
-        vf.SemanticEdge(source=2, target=3, type="continuation")
-    ]
+    assert tr.nodes[3].semantic_parents == [vf.ParentLink(node=2, type="continuation")]
 
 
 def test_acp_request_id_is_validated_and_stripped():
@@ -382,13 +394,13 @@ def test_acp_semantic_edge_metadata_is_optional():
 
     harness._consume_protocol_metadata(trace, {})
 
-    assert trace.semantic_edges == []
+    assert all(not node.semantic_parents for node in trace.nodes)
 
     harness._consume_protocol_metadata(
         trace, {ACP_SEMANTIC_EDGES_METADATA_KEY: {"edges": []}}
     )
 
-    assert trace.semantic_edges == []
+    assert all(not node.semantic_parents for node in trace.nodes)
 
 
 def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():

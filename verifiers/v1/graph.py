@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
+from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
@@ -71,6 +72,12 @@ class MessageNode(BaseModel):
 
     parent: int | None = None
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
+    semantic_parents: list[ParentLink] = Field(default_factory=list)
+    """Additional harness-declared parents in the semantic execution graph.
+
+    Unlike ``parent``, these links do not imply an exact token prefix and therefore do
+    not affect physical branch construction.
+    """
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
     sampled: bool = False

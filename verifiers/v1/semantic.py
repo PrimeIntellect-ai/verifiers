@@ -2,8 +2,8 @@
 
 ACP harnesses identify model requests before inference, while Verifiers message-node IDs
 only exist after a response commits. The harness therefore publishes semantic edges over
-opaque request IDs. Verifiers resolves those IDs to sampled assistant nodes and stores the
-resulting edges directly on the trace.
+opaque request IDs. Verifiers resolves those IDs to sampled assistant nodes and stores each
+source as a semantic parent of the target node.
 """
 
 from __future__ import annotations
@@ -45,18 +45,15 @@ class RequestSemanticEdge(_StrictSemanticModel):
         return self
 
 
-class SemanticEdge(_StrictSemanticModel):
-    """A semantic relationship resolved onto two ``Trace.nodes`` indexes."""
+class ParentLink(_StrictSemanticModel):
+    """One semantic parent of a ``MessageNode``.
 
-    source: int = Field(ge=0)
-    target: int = Field(ge=0)
+    ``node`` is an index into the containing ``Trace.nodes``. The child is the
+    ``MessageNode`` carrying this link.
+    """
+
+    node: int = Field(ge=0)
     type: str = Field(pattern=EDGE_TYPE_PATTERN)
-
-    @model_validator(mode="after")
-    def reject_self_edge(self) -> SemanticEdge:
-        if self.source == self.target:
-            raise ValueError("semantic edge cannot link a message node to itself")
-        return self
 
 
 class SemanticEdgeManifest(_StrictSemanticModel):
