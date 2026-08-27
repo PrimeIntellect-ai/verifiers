@@ -7,18 +7,77 @@
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 import httpx
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI, BadRequestError
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+
+CHECKPOINT_COMPACTION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+
+Reply with the summary as plain text. Do not call any tools - summarize from the conversation as it stands."""
+
+POST_COMPACTION_FRAMING = """Another language model started to solve this problem and produced \
+a summary of its thinking process. Use this to build on the work \
+that has already been done and avoid duplicating work. Here is \
+the summary produced by the other language model, use the \
+information in this summary to assist with your own analysis:"""
+
+COMPACTED_TOOL_RESULT = "[tool output dropped because it exceeded the context limit]"
+
+CONTEXT_WINDOW_PATTERNS = (
+    re.compile(
+        r"(?:maximum|max(?:imum)?)[^.\n]{0,40}(?:context length|context window)"
+        r"[^\d]{0,20}([\d,]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"[\"']?(?:max_model_len|context_length)[\"']?\s*[:=]\s*([\d,]+)",
+        re.IGNORECASE,
+    ),
+)
+
+CONTEXT_WINDOW_FIELDS = (
+    "max_model_len",
+    "context_length",
+    "context_window",
+    "max_context_length",
+)
+
+
+async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
+    """90% of the model context window, when the provider's model card advertises one."""
+    try:
+        # The SDK needs a parameterized mapping type to parse into (bare `dict` fails).
+        payload = await client.get("/models", cast_to=dict[str, Any])
+    except APIError:
+        return None
+    for card in payload.get("data") or []:
+        if not isinstance(card, dict) or card.get("id") != model:
+            continue
+        for field in CONTEXT_WINDOW_FIELDS:
+            value = card.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return max(1, value * 9 // 10)
+        break
+    return None
 
 
 BASH_TOOL = {
@@ -178,12 +237,122 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 
 
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None = None,
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    if tools and tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    return await client.chat.completions.create(**kwargs)
+
+
+def context_error(error: BadRequestError) -> tuple[bool, int | None]:
+    details = f"{error} {error.body or ''}"
+    overflow = any(
+        marker in details.casefold()
+        for marker in (
+            "request entity too large",
+            "context_length",
+            "context length",
+            "context window",
+            "prompt is too long",
+            "too many tokens",
+            "token limit exceeded",
+        )
     )
-    return completion.choices[0].message
+    for pattern in CONTEXT_WINDOW_PATTERNS:
+        match = pattern.search(details)
+        if match:
+            context_window = int(match.group(1).replace(",", ""))
+            return overflow, max(1, context_window * 9 // 10)
+    return overflow, None
+
+
+def drop_latest_tool_result(messages: list[dict]) -> bool:
+    """Replace one tool result so the checkpoint request can fit in context."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "tool":
+            continue
+        if message.get("content") == COMPACTED_TOOL_RESULT:
+            continue
+        messages[index] = {**message, "content": COMPACTED_TOOL_RESULT}
+        return True
+    return False
+
+
+def estimated_tokens(chars: str) -> int:
+    """Rough token count at four characters per token."""
+    return (len(chars) + 3) // 4
+
+
+def context_tokens(completion) -> int:
+    usage = completion.usage
+    if usage is None:
+        return 0
+    return (usage.prompt_tokens or 0) + (usage.completion_tokens or 0)
+
+
+class Compactor:
+    """Compact once and retry once when a model turn exhausts its context."""
+
+    def __init__(self, client, model, tools, enabled, threshold):
+        self.client = client
+        self.model = model
+        self.tools = tools
+        self.enabled = enabled
+        self.threshold = threshold
+
+    def reached(self, completion, extra_tokens: int = 0) -> bool:
+        return (
+            self.enabled
+            and self.threshold is not None
+            and context_tokens(completion) + extra_tokens >= self.threshold
+        )
+
+    async def complete(self, messages: list[dict]):
+        try:
+            completion = await chat(self.client, self.model, messages, self.tools)
+        except BadRequestError as error:
+            overflow, threshold = context_error(error)
+            if not self.enabled or not overflow:
+                raise
+            if self.threshold is None:
+                self.threshold = threshold
+        else:
+            choice = completion.choices[0]
+            if choice.finish_reason != "length" or not self.reached(completion):
+                return completion, messages
+
+        messages = await self.compact(messages)
+        completion = await chat(self.client, self.model, messages, self.tools)
+        return completion, messages
+
+    async def compact(self, messages: list[dict]) -> list[dict]:
+        system = [message for message in messages if message.get("role") == "system"]
+        while True:
+            checkpoint = [
+                *messages,
+                {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
+            ]
+            try:
+                completion = await chat(
+                    self.client,
+                    self.model,
+                    checkpoint,
+                    self.tools,
+                    tool_choice="none",
+                )
+                summary = completion.choices[0].message.content or ""
+                framed = POST_COMPACTION_FRAMING + "\n\n" + summary
+                return [*system, {"role": "user", "content": framed}]
+            except BadRequestError as error:
+                if not context_error(error)[0] or not drop_latest_tool_result(messages):
+                    raise
 
 
 @asynccontextmanager
@@ -328,6 +497,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--compaction", action="store_true")
+    parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -372,11 +543,23 @@ async def main() -> None:
         messages.extend(initial)
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
+    compactor = Compactor(
+        client,
+        args.model,
+        tools,
+        args.compaction,
+        args.summarize_at_tokens,
+    )
+    if compactor.enabled and compactor.threshold is None:
+        compactor.threshold = await discover_threshold(client, args.model)
     while True:
-        message = await chat(client, args.model, messages, tools)
+        completion, messages = await compactor.complete(messages)
+        choice = completion.choices[0]
+        message = choice.message
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break
+        tool_result_tokens = 0
         for call in message.tool_calls:
             name = call.function.name
             tool_message = {
@@ -395,7 +578,11 @@ async def main() -> None:
                     tool_message,
                 )
                 if decision["action"] == "rewrite":
-                    messages.append(decision["message"])
+                    rewritten = decision["message"]
+                    messages.append(rewritten)
+                    tool_result_tokens += estimated_tokens(
+                        str(rewritten.get("content", ""))
+                    )
                     continue
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
@@ -440,6 +627,9 @@ async def main() -> None:
                 if decision["action"] == "rewrite":
                     tool_message = decision["message"]
             messages.append(tool_message)
+            tool_result_tokens += estimated_tokens(str(tool_message["content"]))
+        if compactor.reached(completion, tool_result_tokens):
+            messages = await compactor.compact(messages)
     if tool_client is not None:
         await tool_client.aclose()
 

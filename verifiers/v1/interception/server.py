@@ -33,13 +33,15 @@ from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
 from typing import Literal
 
+import httpx
 from aiohttp import web
 from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
-from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1.clients.base import DEFAULT_TIMEOUT, join_url
+from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -326,6 +328,9 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        # One models route serves every dialect: OpenAI and Anthropic SDKs both list
+        # models at `GET /v1/models` (the response schema is the upstream's).
+        app.router.add_get("/v1/models", self.handle_models)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
@@ -1052,6 +1057,37 @@ class InterceptionServer(Interception):
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
+
+    async def handle_models(self, request: web.Request) -> web.Response:
+        """`GET /v1/models`: relay the upstream model listing so agent loops can read a
+        provider context-window extension (e.g. vLLM's `max_model_len`). The path is shared
+        by every dialect; only the auth carrier differs, so the bearer is tried per dialect.
+        A pure relay from the session's endpoint config — never recorded on the trace, and a
+        failure never fails the rollout."""
+        for dialect in DIALECTS:
+            session = self.sessions.get(dialect.secret(request.headers))
+            if session is not None:
+                break
+        else:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        logger.debug("intercept models: id=%s", session.trace.id)
+        config = session.ctx.client
+        headers = dict(config.headers or {})
+        headers.update(dialect.auth_headers(resolve_api_key(config)))
+        try:
+            async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+                upstream = await client.get(
+                    join_url(config.base_url, "/v1/models"), headers=headers
+                )
+        except httpx.HTTPError as e:
+            logger.warning("models call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        return web.Response(
+            body=upstream.content,
+            status=upstream.status_code,
+            content_type="application/json",
+        )
 
     def _session_for(
         self, request: web.Request, *, allow_service: bool = False
