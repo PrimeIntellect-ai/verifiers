@@ -19,7 +19,7 @@ from verifiers.v1.harnesses.rlm.harness import (
 from verifiers.v1.lineage import (
     ACP_LINEAGE_HEADERS,
     ACP_LINEAGE_METADATA_KEY,
-    extract_call_lineage,
+    extract_lineage_request_id,
 )
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -285,47 +285,19 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
     tr.calls = [
         vf.ModelCall(
             node=1,
-            lineage=vf.CallLineage(
-                request_id="root-turn",
-                session_id=tr.id,
-                context_id="ctx-root",
-                transition="root",
-                depth=0,
-            ),
+            lineage_request_id="root-turn",
         ),
         vf.ModelCall(
             node=3,
-            lineage=vf.CallLineage(
-                request_id="child-turn",
-                session_id="child",
-                parent_session_id=tr.id,
-                context_id="ctx-child",
-                transition="spawn",
-                depth=1,
-            ),
+            lineage_request_id="child-turn",
         ),
         vf.ModelCall(
             node=5,
-            lineage=vf.CallLineage(
-                request_id="root-compact",
-                session_id=tr.id,
-                context_id="ctx-root",
-                transition="root",
-                compaction_id="compact-1",
-                depth=0,
-            ),
+            lineage_request_id="root-compact",
         ),
         vf.ModelCall(
             node=7,
-            lineage=vf.CallLineage(
-                request_id="root-after",
-                session_id=tr.id,
-                context_id="ctx-root-2",
-                previous_context_id="ctx-root",
-                transition="compact",
-                compaction_id="compact-1",
-                depth=0,
-            ),
+            lineage_request_id="root-after",
         ),
     ]
 
@@ -350,12 +322,12 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
     tr.reconcile_lineage(vf.LineageManifest.model_validate(manifest.model_dump()))
     calls_by_session = tr.calls_by_session
     assert list(calls_by_session) == [tr.id, "child", "idle-child"]
-    assert [call.lineage.request_id for call in calls_by_session[tr.id]] == [
+    assert [call.lineage_request_id for call in calls_by_session[tr.id]] == [
         "root-turn",
         "root-compact",
         "root-after",
     ]
-    assert [call.lineage.request_id for call in calls_by_session["child"]] == [
+    assert [call.lineage_request_id for call in calls_by_session["child"]] == [
         "child-turn"
     ]
     assert calls_by_session["idle-child"] == []
@@ -368,8 +340,8 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
     assert restored.lineage == tr.lineage
-    assert [call.lineage for call in restored.calls] == [
-        call.lineage for call in tr.calls
+    assert [call.lineage_request_id for call in restored.calls] == [
+        call.lineage_request_id for call in tr.calls
     ]
     assert list(restored.calls_by_session) == [tr.id, "child", "idle-child"]
 
@@ -409,47 +381,31 @@ def test_exact_lineage_groups_interleaved_calls_and_round_trips():
     # A failed provider exchange and its SDK retry share one logical request ID.
     restored.calls.append(
         vf.ModelCall(
-            lineage=restored.calls[0].lineage, error=vf.Error(type="E", message="x")
+            lineage_request_id=restored.calls[0].lineage_request_id,
+            error=vf.Error(type="E", message="x"),
         )
     )
     restored.reconcile_lineage(_lineage_manifest(restored.id))
 
 
-def test_lineage_headers_are_complete_validated_and_stripped():
+def test_lineage_request_id_is_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
-        "Idempotency-Key": "request-1",
+        "Idempotency-Key": "provider-key",
         "X-ACP-Lineage-Request-ID": "request-1",
-        "X-ACP-Lineage-Session-ID": "session-1",
-        "X-ACP-Lineage-Context-ID": "context-1",
-        "X-ACP-Lineage-Transition": "root",
-        "X-ACP-Lineage-Depth": "0",
         "OpenAI-Beta": "feature",
     }
-    lineage, forwarded = extract_call_lineage(headers)
-    assert lineage == vf.CallLineage(
-        request_id="request-1",
-        session_id="session-1",
-        context_id="context-1",
-        transition="root",
-        depth=0,
-    )
+    request_id, forwarded = extract_lineage_request_id(headers)
+    assert request_id == "request-1"
     assert not ACP_LINEAGE_HEADERS.intersection(map(str.lower, forwarded))
+    assert forwarded["Idempotency-Key"] == "provider-key"
     assert forwarded["OpenAI-Beta"] == "feature"
 
-    absent, unchanged = extract_call_lineage({"OpenAI-Beta": "feature"})
+    absent, unchanged = extract_lineage_request_id({"OpenAI-Beta": "feature"})
     assert absent is None and unchanged == {"OpenAI-Beta": "feature"}
 
-    with pytest.raises(ValueError, match="missing X-ACP-Lineage-Context-ID"):
-        extract_call_lineage(
-            {
-                "Idempotency-Key": "request-1",
-                "X-ACP-Lineage-Request-ID": "request-1",
-                "X-ACP-Lineage-Session-ID": "session-1",
-                "X-ACP-Lineage-Transition": "root",
-                "X-ACP-Lineage-Depth": "0",
-            }
-        )
+    with pytest.raises(ValueError, match="not a valid lineage ID"):
+        extract_lineage_request_id({"X-ACP-Lineage-Request-ID": "not/a/valid/id"})
 
 
 def test_acp_lineage_metadata_is_optional_and_agent_session_ids_are_opaque():

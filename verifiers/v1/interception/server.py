@@ -58,7 +58,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.lineage import CallLineage, extract_call_lineage
+from verifiers.v1.lineage import extract_lineage_request_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
@@ -422,7 +422,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
-        lineage: CallLineage | None = None,
+        lineage_request_id: str | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -470,7 +470,7 @@ class InterceptionServer(Interception):
                 )
                 if policy_paths
                 else None,
-                lineage=lineage,
+                lineage_request_id=lineage_request_id,
             )
         )
 
@@ -495,7 +495,9 @@ class InterceptionServer(Interception):
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
         try:
-            lineage, upstream_headers = extract_call_lineage(request.headers)
+            lineage_request_id, upstream_headers = extract_lineage_request_id(
+                request.headers
+            )
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         logger.debug(
@@ -514,7 +516,7 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming and lineage is None:
+            if streaming and lineage_request_id is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
@@ -523,15 +525,6 @@ class InterceptionServer(Interception):
                 )
             if not streaming:
                 replay_key = f"explicit:{idempotency_key}"
-            if lineage is not None:
-                # Lineage uses the key only to bind its logical request id; streaming
-                # replay/coalescing remains unsupported. Ordinary requests keep their
-                # provider-facing key, but this private lineage identity stays local.
-                upstream_headers = {
-                    name: value
-                    for name, value in upstream_headers.items()
-                    if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
-                }
         elif not streaming:
             replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
@@ -654,7 +647,7 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
-                lineage=lineage,
+                lineage_request_id=lineage_request_id,
                 upstream_headers=upstream_headers,
             )
 
@@ -770,7 +763,7 @@ class InterceptionServer(Interception):
                     usage=call_response.usage if call_response else None,
                     error=error,
                     policy_paths=policy_paths,
-                    lineage=lineage,
+                    lineage_request_id=lineage_request_id,
                 )
             return serve(call_response)
 
@@ -787,7 +780,7 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
-        lineage: CallLineage | None = None,
+        lineage_request_id: str | None = None,
         upstream_headers: Mapping[str, str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
@@ -1033,7 +1026,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
                 policy_paths=policy_paths,
-                lineage=lineage,
+                lineage_request_id=lineage_request_id,
             )
 
     async def handle_aux(

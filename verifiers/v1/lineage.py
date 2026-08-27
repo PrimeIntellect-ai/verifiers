@@ -8,6 +8,7 @@ full manifest through response ``_meta``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Literal
 
@@ -17,27 +18,8 @@ LINEAGE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 
 ACP_LINEAGE_METADATA_KEY = "ai.prime.acp/lineage-v1"
 ACP_REQUEST_ID_HEADER = "X-ACP-Lineage-Request-ID"
-ACP_SESSION_ID_HEADER = "X-ACP-Lineage-Session-ID"
-ACP_PARENT_SESSION_ID_HEADER = "X-ACP-Lineage-Parent-Session-ID"
-ACP_CONTEXT_ID_HEADER = "X-ACP-Lineage-Context-ID"
-ACP_PREVIOUS_CONTEXT_ID_HEADER = "X-ACP-Lineage-Previous-Context-ID"
-ACP_TRANSITION_HEADER = "X-ACP-Lineage-Transition"
-ACP_COMPACTION_ID_HEADER = "X-ACP-Lineage-Compaction-ID"
-ACP_DEPTH_HEADER = "X-ACP-Lineage-Depth"
-IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-ACP_LINEAGE_HEADERS = frozenset(
-    {
-        ACP_REQUEST_ID_HEADER.lower(),
-        ACP_SESSION_ID_HEADER.lower(),
-        ACP_PARENT_SESSION_ID_HEADER.lower(),
-        ACP_CONTEXT_ID_HEADER.lower(),
-        ACP_PREVIOUS_CONTEXT_ID_HEADER.lower(),
-        ACP_TRANSITION_HEADER.lower(),
-        ACP_COMPACTION_ID_HEADER.lower(),
-        ACP_DEPTH_HEADER.lower(),
-    }
-)
+ACP_LINEAGE_HEADERS = frozenset({ACP_REQUEST_ID_HEADER.lower()})
 """Private ACP extension headers consumed at interception and never sent upstream."""
 
 LineageTransition = Literal["root", "spawn", "compact"]
@@ -48,37 +30,6 @@ CompactionStatus = Literal["in_progress", "completed", "failed", "cancelled"]
 
 class _StrictLineageModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class CallLineage(_StrictLineageModel):
-    """Provenance copied from one intercepted model request."""
-
-    request_id: str = Field(pattern=LINEAGE_ID_PATTERN)
-    session_id: str = Field(pattern=LINEAGE_ID_PATTERN)
-    parent_session_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
-    context_id: str = Field(pattern=LINEAGE_ID_PATTERN)
-    previous_context_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
-    transition: LineageTransition
-    compaction_id: str | None = Field(default=None, pattern=LINEAGE_ID_PATTERN)
-    depth: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def validate_transition(self) -> CallLineage:
-        if self.transition == "root":
-            if self.parent_session_id is not None:
-                raise ValueError("a root context cannot have a parent session")
-            if self.previous_context_id is not None:
-                raise ValueError("a root context cannot have a previous context")
-        elif self.transition == "spawn":
-            if self.parent_session_id is None:
-                raise ValueError("a spawned context requires a parent session")
-            if self.previous_context_id is not None:
-                raise ValueError("a spawned context cannot have a previous context")
-        elif self.previous_context_id is None:
-            raise ValueError("a compacted context requires a previous context")
-        if self.transition == "compact" and self.compaction_id is None:
-            raise ValueError("a compacted context requires a compaction id")
-        return self
 
 
 class LineageSession(_StrictLineageModel):
@@ -340,14 +291,13 @@ class LineageManifest(_StrictLineageModel):
         return self
 
 
-def extract_call_lineage(
+def extract_lineage_request_id(
     headers: Mapping[str, str],
-) -> tuple[CallLineage | None, dict[str, str]]:
-    """Parse and remove private ACP lineage headers from a provider-bound request.
+) -> tuple[str | None, dict[str, str]]:
+    """Parse and remove the ACP lineage correlation ID from a provider request.
 
-    A partial lineage envelope is rejected: silently accepting it would turn an exact
-    provenance channel into a heuristic one.  Ordinary requests with none of the private
-    headers remain backward-compatible and carry no lineage.
+    The full execution graph arrives independently in ACP metadata. Ordinary requests
+    without the private correlation header remain unchanged.
     """
 
     forwarded = {
@@ -356,50 +306,9 @@ def extract_call_lineage(
         if name.lower() not in ACP_LINEAGE_HEADERS
     }
     normalized = {name.lower(): value for name, value in headers.items()}
-    values = {
-        name: value for name, value in normalized.items() if name in ACP_LINEAGE_HEADERS
-    }
-    if not values:
+    request_id = normalized.get(ACP_REQUEST_ID_HEADER.lower())
+    if request_id is None:
         return None, forwarded
-
-    def get(name: str) -> str | None:
-        value = values.get(name.lower())
-        return value if value not in (None, "") else None
-
-    required = (
-        ACP_REQUEST_ID_HEADER,
-        ACP_SESSION_ID_HEADER,
-        ACP_CONTEXT_ID_HEADER,
-        ACP_TRANSITION_HEADER,
-        ACP_DEPTH_HEADER,
-    )
-    missing = [name for name in required if get(name) is None]
-    if missing:
-        raise ValueError(
-            "incomplete ACP lineage headers: missing " + ", ".join(missing)
-        )
-    request_id = get(ACP_REQUEST_ID_HEADER)
-    idempotency_key = normalized.get(IDEMPOTENCY_KEY_HEADER.lower())
-    if idempotency_key is None:
-        raise ValueError("ACP lineage requires Idempotency-Key")
-    if idempotency_key != request_id:
-        raise ValueError("ACP lineage request id must match Idempotency-Key")
-    try:
-        depth = int(get(ACP_DEPTH_HEADER) or "")
-    except ValueError as error:
-        raise ValueError(
-            f"{ACP_DEPTH_HEADER} must be a non-negative integer"
-        ) from error
-    return (
-        CallLineage(
-            request_id=request_id,
-            session_id=get(ACP_SESSION_ID_HEADER),
-            parent_session_id=get(ACP_PARENT_SESSION_ID_HEADER),
-            context_id=get(ACP_CONTEXT_ID_HEADER),
-            previous_context_id=get(ACP_PREVIOUS_CONTEXT_ID_HEADER),
-            transition=get(ACP_TRANSITION_HEADER),
-            compaction_id=get(ACP_COMPACTION_ID_HEADER),
-            depth=depth,
-        ),
-        forwarded,
-    )
+    if re.fullmatch(LINEAGE_ID_PATTERN, request_id) is None:
+        raise ValueError(f"{ACP_REQUEST_ID_HEADER} is not a valid lineage ID")
+    return request_id, forwarded
