@@ -62,8 +62,9 @@ class SemanticEdge(_StrictSemanticModel):
 class SemanticEdgeManifest(_StrictSemanticModel):
     """A harness-published set of semantic edges over logical request IDs.
 
-    Edge labels are intentionally extensible. Initial harnesses use ``compaction``,
-    ``subagent_call``, and ``subagent_return``; consumers must preserve unknown labels.
+    Edge labels are intentionally extensible. Initial harnesses use ``continuation``,
+    ``compaction``, ``subagent_call``, and ``subagent_return``; consumers must preserve
+    unknown labels.
     """
 
     edges: list[RequestSemanticEdge]

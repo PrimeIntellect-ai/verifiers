@@ -187,6 +187,11 @@ def _semantic_edge_manifest() -> vf.SemanticEdgeManifest:
         edges=[
             vf.RequestSemanticEdge(
                 source_request_id="root-turn",
+                target_request_id="root-compact",
+                type="continuation",
+            ),
+            vf.RequestSemanticEdge(
+                source_request_id="root-turn",
                 target_request_id="child-turn",
                 type="subagent_call",
             ),
@@ -252,6 +257,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
         vf.SemanticEdgeManifest.model_validate(manifest.model_dump())
     )
     assert tr.semantic_edges == [
+        vf.SemanticEdge(source=1, target=5, type="continuation"),
         vf.SemanticEdge(source=1, target=3, type="subagent_call"),
         vf.SemanticEdge(source=3, target=7, type="subagent_return"),
         vf.SemanticEdge(source=5, target=7, type="compaction"),
