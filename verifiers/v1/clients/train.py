@@ -385,7 +385,7 @@ class TrainClient(Client):
             render_kwargs = {} if process_multimodal else {"process_multimodal": False}
             # Only build the O(context) previous token stream for a bridgeable tail.
             can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
-            previous_ids = turn.previous_token_ids() if can_bridge else None
+            previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
 

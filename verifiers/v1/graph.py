@@ -85,8 +85,10 @@ class MessageNode(BaseModel):
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
     `prompt_ids + completion_ids` the model saw."""
-    renderer_token_ids: list[int] = Field(default_factory=list, exclude=True)
-    """Logical renderer tokens retained only while extending a live rollout."""
+    renderer_token_ids: list[int] | None = Field(default=None, exclude=True)
+    """Logical renderer tokens retained only while extending a live rollout.
+    None means they are identical to `token_ids`; an empty list is a real empty slice."""
+
     mask: list[bool] = Field(default_factory=list)
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
@@ -127,6 +129,14 @@ class MessageNode(BaseModel):
     by the dump-site `exclude` in prime-rl."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def logical_ids(self) -> list[int]:
+        return (
+            self.token_ids
+            if self.renderer_token_ids is None
+            else self.renderer_token_ids
+        )
 
     @field_serializer("routed_experts")
     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
@@ -286,8 +296,8 @@ class PendingTurn:
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
 
-    def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
-        """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
+    def previous_renderer_token_ids(self) -> tuple[list[int], list[int]] | None:
+        """Return the logical renderer prompt and completion for a bridge anchor.
 
         The anchor must end at a sampled assistant node. That node stores generation-prompt
         scaffold followed by sampled completion tokens, so split off the sampled suffix.
@@ -301,16 +311,16 @@ class PendingTurn:
         if not num_sampled:
             return None
 
-        prompt_ids: list[int] = []
+        renderer_prompt_ids: list[int] = []
         for nid in self.prefix_node_ids[:-1]:
             node = self.trace.nodes[nid]
-            prompt_ids.extend(node.renderer_token_ids or node.token_ids)
-        last_ids = last.renderer_token_ids or last.token_ids
-        prompt_ids.extend(last_ids[:-num_sampled])
+            renderer_prompt_ids.extend(node.logical_ids)
+        last_ids = last.logical_ids
+        renderer_prompt_ids.extend(last_ids[:-num_sampled])
         completion_ids = last_ids[-num_sampled:]
-        if not prompt_ids or not completion_ids:
+        if not renderer_prompt_ids or not completion_ids:
             return None
-        return prompt_ids, completion_ids
+        return renderer_prompt_ids, completion_ids
 
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
@@ -332,11 +342,7 @@ class PendingTurn:
     @property
     def renderer_path_len(self) -> int:
         return sum(
-            len(
-                self.trace.nodes[nid].renderer_token_ids
-                or self.trace.nodes[nid].token_ids
-            )
-            for nid in self.prefix_node_ids
+            len(self.trace.nodes[nid].logical_ids) for nid in self.prefix_node_ids
         )
 
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
@@ -481,7 +487,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         renderer_off = 0
         for nid in prefix:
             node = trace.nodes[nid]
-            node_renderer_ids = node.renderer_token_ids or node.token_ids
+            node_renderer_ids = node.logical_ids
             if (
                 prompt_ids[off : off + len(node.token_ids)] != node.token_ids
                 or renderer_prompt_ids[

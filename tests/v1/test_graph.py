@@ -240,6 +240,13 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
+    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids == [9]
+    assert (
+        graph.MessageNode(
+            message=user, token_ids=[9], renderer_token_ids=[]
+        ).logical_ids
+        == []
+    )
     graph.prepare_turn(trace, [user]).commit(
         vf.Response(
             id="a",
@@ -260,7 +267,7 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
     assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
     assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
-    assert turn.previous_token_ids() == ([1, 2, 3], [4])
+    assert turn.previous_renderer_token_ids() == ([1, 2, 3], [4])
 
     with pytest.raises(ValueError, match="exactly extend"):
         turn.commit(
