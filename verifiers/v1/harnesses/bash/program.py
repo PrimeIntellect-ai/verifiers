@@ -396,15 +396,10 @@ class Compactor:
                 base = messages[: self.last_good]
                 continue
             message = completion.choices[0].message
-            # A reasoning-parsed model can put the whole reply in the reasoning
-            # channel ("reasoning_content" or vLLM's "reasoning"); the checkpoint
-            # asked for a summary, so accept it from there when content is empty.
-            extra = getattr(message, "model_extra", None) or {}
-            text = (
-                (message.content or "").strip()
-                or str(extra.get("reasoning_content") or "").strip()
-                or str(extra.get("reasoning") or "").strip()
-            )
+            # Reasoning never enters the summary: only the reply's final text
+            # counts, so a reply that lives entirely in the reasoning channel
+            # is resampled like an empty one.
+            text = (message.content or "").strip()
             if not message.tool_calls and text:
                 framed = POST_COMPACTION_FRAMING + "\n\n" + text
                 rebuilt = [*system, {"role": "user", "content": framed}]
