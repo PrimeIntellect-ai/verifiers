@@ -10,7 +10,6 @@ import json
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
 
 import httpx
 from openai import APIError, APIStatusError, AsyncOpenAI
@@ -87,17 +86,20 @@ def default_threshold(context_window: int) -> int:
 
 
 async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
-    """The compaction threshold, when the provider's model card advertises a context window."""
+    """The compaction threshold, when the provider's model card advertises a context window.
+
+    `models.list()` keeps provider extensions in each card's `model_extra`; a raw
+    `cast_to` parse breaks on one Python version or another."""
     try:
-        # The SDK needs a parameterized mapping type to parse into (bare `dict` fails).
-        payload = await client.get("/models", cast_to=dict[str, Any])
+        page = await client.models.list()
     except APIError:
         return None
-    for card in payload.get("data") or []:
-        if not isinstance(card, dict) or card.get("id") != model:
+    for card in page.data:
+        if card.id != model:
             continue
+        extra = card.model_extra or {}
         for field in CONTEXT_WINDOW_FIELDS:
-            value = card.get(field)
+            value = extra.get(field)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return default_threshold(value)
         break
