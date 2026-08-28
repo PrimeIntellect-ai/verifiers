@@ -607,6 +607,9 @@ async def main() -> None:
     )
     if compactor.enabled and compactor.threshold is None:
         compactor.threshold = await discover_threshold(client, args.model)
+    # The initial conversation is the floor for checkpoint fallbacks: a first-turn
+    # checkpoint must never retry from an empty base.
+    compactor.note_good(messages)
     while True:
         try:
             completion, messages = await compactor.complete(messages)
@@ -674,7 +677,11 @@ async def main() -> None:
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
-            tool_message["content"] = truncate_tool_output(content)
+            # Multimodal MCP results come back as content-part lists; only plain
+            # text is truncated.
+            tool_message["content"] = (
+                truncate_tool_output(content) if isinstance(content, str) else content
+            )
             if args.tool_interception_url:
                 assert tool_client is not None
                 decision = await run_tool_hook(
