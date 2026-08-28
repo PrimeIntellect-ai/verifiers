@@ -10,8 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 from openai import OpenAIError
-from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RenderedTokens, Renderer, RendererConfig
+from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
 from verifiers.v1.clients.base import build_async_openai
@@ -19,7 +18,7 @@ from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.errors import OverlongPromptError, model_error
+from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
@@ -436,8 +435,10 @@ class TrainClient(Client):
                     if session_id
                     else None,
                 )
-            except RendererOverlongPromptError as e:
-                raise OverlongPromptError(str(e)) from e
+            except OverlongPromptError as e:
+                # The renderer's pre-flight overflow never reached the provider: a
+                # deterministic 400, so the harness SDK never retries it.
+                raise ProviderError(str(e), status_code=400) from e
             except OpenAIError as e:
                 raise model_error(e) from e
         response = response_from_generate(

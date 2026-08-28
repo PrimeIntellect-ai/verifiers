@@ -11,11 +11,42 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+
+CONTEXT_OVERFLOW_MARKERS = (
+    # OpenAI error code "context_length_exceeded"; OpenRouter relays the raw body.
+    "context_length_exceeded",
+    # OpenAI Responses/Completions: "Your input exceeds the context window of this model".
+    "exceeds the context window",
+    # OpenAI chat: "Input tokens exceed the configured limit of N tokens. Please reduce
+    # the length of the messages."; Groq words it the same way.
+    "reduce the length of the messages",
+    # vLLM: "This model's maximum context length is N tokens"; the renderers pre-flight:
+    # "Prompt length (N) exceeds maximum context length (M)"; Mistral uses the same words.
+    "maximum context length",
+    # Anthropic: "prompt is too long: N tokens > M maximum".
+    "prompt is too long",
+    # Anthropic byte-size overflow: HTTP 413 {"type": "request_too_large"}.
+    "request_too_large",
+    # HTTP proxies reject an oversized body with 413 "Request Entity Too Large".
+    "request entity too large",
+    # Google: "The input token count (N) exceeds the maximum number of tokens allowed (M)".
+    "exceeds the maximum number of tokens",
+    # xAI: "This model's maximum prompt length is N but the request contains M tokens".
+    "maximum prompt length is",
+)
+
+
+def is_context_overflow(error: APIStatusError) -> bool:
+    details = f"{error} {error.body or ''}".casefold()
+    # An overflow is deterministic: a 400, or a 413 for a byte-size cap.
+    return error.status_code in (400, 413) and any(
+        marker in details for marker in CONTEXT_OVERFLOW_MARKERS
+    )
 
 
 async def chat(
@@ -181,7 +212,14 @@ async def main() -> None:
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
     while True:
-        message = await chat(client, args.model, messages, tools)
+        try:
+            message = await chat(client, args.model, messages, tools)
+        except APIStatusError as error:
+            # Context exhaustion is a budget limit, not a crash: this harness has no
+            # compaction, so end the run cleanly with what the conversation holds.
+            if not is_context_overflow(error):
+                raise
+            return
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break
