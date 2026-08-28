@@ -370,10 +370,12 @@ class Compactor:
                 raise
         else:
             choice = completion.choices[0]
-            if choice.finish_reason != "length" or not self.reached(completion):
+            if not self.reached(completion):
+                # Usage-verified: this exact prompt was accepted with a full
+                # reserve of room, so it is a safe checkpoint fallback.
                 self.note_good(messages)
                 return completion, messages
-            if not compactable(messages):
+            if choice.finish_reason != "length" or not compactable(messages):
                 return completion, messages
 
         messages = await self.compact(messages)
@@ -714,8 +716,6 @@ async def main() -> None:
                 messages = await compactor.compact(messages)
             except CompactionFailed:
                 break
-        else:
-            compactor.note_good(messages)
     if tool_client is not None:
         await tool_client.aclose()
 
