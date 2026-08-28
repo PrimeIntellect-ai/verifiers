@@ -308,13 +308,14 @@ class RolloutSession:
                     else None
                 )
                 if issuing_name in self.tool_interception_exemptions:
-                    if self.post_tool_interception and self.detached_tools:
-                        raise HarnessError(
-                            "native tool result reached the model request before its "
-                            "nested post-execution hooks completed"
-                        )
-                    prepared.add(position)
-                    native_prepared.add(position)
+                    if self.post_tool_interception:
+                        if self.detached_tools:
+                            raise HarnessError(
+                                "native tool result reached the model request before its "
+                                "nested post-execution hooks completed"
+                            )
+                        prepared.add(position)
+                        native_prepared.add(position)
                     continue
                 if assistant_node is not None:
                     tool_key = (assistant_node, message.tool_call_id)
