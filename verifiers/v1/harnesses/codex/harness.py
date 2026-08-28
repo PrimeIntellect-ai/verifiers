@@ -267,6 +267,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             launcher,
             (
                 "#!/bin/sh\n"
+                f"export PATH={shlex.quote(NODE_BIN_DIR)}:$PATH\n"
                 f"exec {shlex.quote(NODE_BIN_DIR + '/node')} "
                 f'{shlex.quote(real_codex)} "$@"\n'
             ).encode(),

@@ -6,13 +6,24 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 # {tool_interception}
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "exceeds the context window",
+    "reduce the length of the messages",
+    "maximum context length",
+    "prompt is too long",
+    "request_too_large",
+    "request entity too large",
+    "exceeds the maximum number of tokens",
+    "maximum prompt length is",
+)
 
 
 def add_chat_arguments(parser) -> None:
@@ -179,11 +190,21 @@ async def run_chat(
 
     try:
         while True:
-            completion = await client.chat.completions.create(
-                model=args.model,
-                messages=messages,
-                tools=tools or None,
-            )
+            try:
+                completion = await client.chat.completions.create(
+                    model=args.model,
+                    messages=messages,
+                    tools=tools or None,
+                )
+            except APIStatusError as error:
+                details = f"{error} {error.body or ''}".casefold()
+                if (
+                    harness != "Null"
+                    or error.status_code not in (400, 413)
+                    or not any(marker in details for marker in CONTEXT_OVERFLOW_MARKERS)
+                ):
+                    raise
+                return
             message = completion.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
