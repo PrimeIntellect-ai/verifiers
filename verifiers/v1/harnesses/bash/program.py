@@ -377,7 +377,15 @@ class Compactor:
                 return completion, messages
 
         messages = await self.compact(messages)
-        completion = await chat(self.client, self.model, messages, self.tools)
+        try:
+            completion = await chat(self.client, self.model, messages, self.tools)
+        except APIStatusError as error:
+            # The rebuilt conversation is sized to fit, so this is out of moves.
+            if is_context_overflow(error):
+                raise CompactionFailed(
+                    "the rebuilt conversation still overflows"
+                ) from error
+            raise
         return completion, messages
 
     async def compact(self, messages: list[dict]) -> list[dict]:
