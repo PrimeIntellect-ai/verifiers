@@ -374,13 +374,14 @@ class TrainClient(Client):
             mm_token_type_id_map = (
                 renderer.mm_token_type_id_map if is_multimodal(renderer) else None
             )
-            raw_multimodal = _has_multimodal_content(prompt)
-            if raw_multimodal and not getattr(
-                renderer, "supports_raw_multimodal", False
+            process_multimodal = not _has_multimodal_content(prompt)
+            if not process_multimodal and not getattr(
+                renderer, "supports_deferred_multimodal_processing", False
             ):
                 raise NotImplementedError(
-                    f"{type(renderer).__name__} does not support raw multimodal inference"
+                    f"{type(renderer).__name__} does not support deferred multimodal processing"
                 )
+            render_kwargs = {} if process_multimodal else {"process_multimodal": False}
             # Only build the O(context) previous token stream for a bridgeable tail.
             can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
             previous_ids = turn.previous_token_ids() if can_bridge else None
@@ -393,7 +394,7 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
-                        **({"process_multimodal": False} if raw_multimodal else {}),
+                        **render_kwargs,
                     )
 
                 bridged = await slot.run(bridge)
@@ -414,7 +415,7 @@ class TrainClient(Client):
                         wire_messages,
                         tools=wire_tools,
                         add_generation_prompt=True,
-                        **({"process_multimodal": False} if raw_multimodal else {}),
+                        **render_kwargs,
                     )
                 )
                 prompt_ids = rendered.token_ids
@@ -430,7 +431,7 @@ class TrainClient(Client):
                     prompt_attribution=prompt_attribution,
                     tools=wire_tools,
                     sampling_params=sampling_params,
-                    raw_multimodal=raw_multimodal,
+                    process_multimodal=process_multimodal,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,
