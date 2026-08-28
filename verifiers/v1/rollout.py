@@ -412,6 +412,7 @@ class Rollout:
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
+        self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
