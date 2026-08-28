@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 class Terminus2HarnessConfig(HarnessConfig):
     version: str = Field(default="0.21.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Harbor release to install, pinned for reproducibility."""
+    enable_summarize: bool = False
+    """Let Terminus compact its history after context exhaustion."""
+    interleaved_thinking: bool = True
+    """Keep reasoning from prior turns in the next model request."""
 
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
@@ -56,10 +60,21 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             f"--system-prompt={system_prompt or ''}",
             f"--task={prompt}",
         ]
+        if self.config.enable_summarize:
+            args.append("--enable-summarize")
+        if not self.config.interleaved_thinking:
+            args.append("--no-interleaved-thinking")
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-            return await runtime.run_program([*program, *args], env)
+            result = await runtime.run_program([*program, *args], env)
+            error = trace.calls[-1].error if trace.calls else None
+            if (
+                error is not None
+                and "context length" in error.message.casefold().replace("_", " ")
+            ):
+                trace.stop("context_length")
+            return result
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.
