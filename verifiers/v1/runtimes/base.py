@@ -237,7 +237,17 @@ class Runtime(ABC):
             raise SandboxError(
                 f"runtime {self.type!r} cannot securely bootstrap a live program"
             )
-        process = await self.open_process(argv, env)
+        process = await self.open_process(
+            [
+                "sh",
+                "-c",
+                'size=$1; shift; head -c "$size" | "$@"',
+                "stdin-pipe",
+                str(len(data)),
+                *argv,
+            ],
+            env,
+        )
 
         async def read(stream: AsyncIterator[bytes]) -> bytes:
             chunks = bytearray()

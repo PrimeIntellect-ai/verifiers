@@ -60,7 +60,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = False
     TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec"})
     TOOL_INTERCEPTION_VERSION = CODEX_VERSION
 
@@ -243,12 +244,16 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             "enabled": False
         }
         codex_config["bypass_hook_trust"] = True
-        codex_config.setdefault("mcp_servers", {})["vf_interceptor"] = {
+        mcp_servers = codex_config.setdefault("mcp_servers", {})
+        server_name = "vf_interceptor"
+        while server_name in mcp_servers:
+            server_name += "_"
+        mcp_servers[server_name] = {
             "command": hook_command[0],
             "args": hook_command[1:],
             "env": {"VF_TOOL_INTERCEPTION_CONFIG": credentials_path},
             "required": True,
-            "enabled_tools": ["before", "after"],
+            "enabled_tools": ["before"],
             "omit_tools_from": ["direct", "deferred", "code_mode"],
             "startup_timeout_sec": 60,
             "tool_timeout_sec": 35,
@@ -282,30 +287,12 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                                 "hooks": [
                                     {
                                         "type": "mcp_tool",
-                                        "server": "vf_interceptor",
+                                        "server": server_name,
                                         "tool": "before",
                                         "input": {
                                             "tool_name": "${tool_name}",
                                             "tool_use_id": "${tool_use_id}",
                                             "tool_input": "${tool_input}",
-                                        },
-                                        "timeout": 35,
-                                    }
-                                ]
-                            }
-                        ],
-                        "PostToolUse": [
-                            {
-                                "hooks": [
-                                    {
-                                        "type": "mcp_tool",
-                                        "server": "vf_interceptor",
-                                        "tool": "after",
-                                        "input": {
-                                            "tool_name": "${tool_name}",
-                                            "tool_use_id": "${tool_use_id}",
-                                            "tool_input": "${tool_input}",
-                                            "tool_response": "${tool_response}",
                                         },
                                         "timeout": 35,
                                     }

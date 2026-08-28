@@ -62,18 +62,32 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
 root=${VF_OPENCLAW_BIN%/bin/openclaw}
+tool_interception_config=
+if [ -n "${VF_TOOL_INTERCEPTION_CONFIG:-}" ]; then
+    tool_interception_config=$(cat -- "$VF_TOOL_INTERCEPTION_CONFIG")
+    rm -f -- "$VF_TOOL_INTERCEPTION_CONFIG"
+    unset VF_TOOL_INTERCEPTION_CONFIG
+fi
 gateway_attempt=0
 while [ "$gateway_attempt" -lt 5 ]; do
     port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
     export OPENCLAW_GATEWAY_PORT="$port"
+    credentials_path=
+    if [ -n "$tool_interception_config" ]; then
+        credentials_path="$OPENCLAW_STATE_DIR/tool-interception-$gateway_attempt.credentials"
+        (umask 077; set -C; printf %s "$tool_interception_config" > "$credentials_path")
+        export VF_TOOL_INTERCEPTION_CONFIG="$credentials_path"
+    fi
     # OpenClaw respawns Node; separate groups let the trap reap both process trees.
     setsid "$VF_OPENCLAW_BIN" gateway run </dev/null >"$OPENCLAW_STATE_DIR/gateway.log" &
     gateway_pid=$!
+    unset VF_TOOL_INTERCEPTION_CONFIG
     attempt=0
     while ! curl -fsS "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
         if ! kill -0 "$gateway_pid" 2>/dev/null; then
             wait "$gateway_pid" 2>/dev/null || true
             gateway_pid=
+            [ -z "$credentials_path" ] || rm -f -- "$credentials_path"
             break
         fi
         attempt=$((attempt + 1))
@@ -89,10 +103,7 @@ if [ -z "$gateway_pid" ]; then
     tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
     exit 1
 fi
-if [ -n "${VF_TOOL_INTERCEPTION_CONFIG:-}" ]; then
-    rm -f -- "$VF_TOOL_INTERCEPTION_CONFIG"
-    unset VF_TOOL_INTERCEPTION_CONFIG
-fi
+[ -z "$credentials_path" ] || rm -f -- "$credentials_path"
 setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
 acp_pid=$!
 wait "$acp_pid"
@@ -111,7 +122,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
     TOOL_INTERCEPTION_VERSION = OPENCLAW_VERSION
 
     async def setup(self, runtime: Runtime) -> None:

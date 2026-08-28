@@ -125,8 +125,10 @@ class RolloutSession:
     response_interceptors: list[Callable] = field(default_factory=list)
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
-    tool_interception: bool = False
-    """Whether native policy runs before execution and after it, before the next turn."""
+    pre_tool_interception: bool = False
+    """Whether native policy runs before tool execution."""
+    post_tool_interception: bool = False
+    """Whether native policy can replace a result before the next model turn."""
     tool_interception_exemptions: frozenset[str] = frozenset()
     """Model-visible control calls whose nested operations cross the native hooks."""
     client: Client | None = None
@@ -156,6 +158,8 @@ class RolloutSession:
     )
     """Native call state keyed by issuing assistant node and call ID: no result after
     an allowed pre hook, then the result approved or observed by the post hook."""
+    rewritten_tools: set[tuple[int, str]] = field(default_factory=set)
+    """Calls whose approved replacement must round-trip exactly."""
     detached_tools: set[str] = field(default_factory=set)
     """Nested native calls that have crossed their pre hook but are absent from the trace."""
     tool_interception_lock: asyncio.Lock = field(
@@ -304,7 +308,7 @@ class RolloutSession:
                     else None
                 )
                 if issuing_name in self.tool_interception_exemptions:
-                    if self.detached_tools:
+                    if self.post_tool_interception and self.detached_tools:
                         raise HarnessError(
                             "native tool result reached the model request before its "
                             "nested post-execution hooks completed"
@@ -312,27 +316,35 @@ class RolloutSession:
                     prepared.add(position)
                     native_prepared.add(position)
                     continue
-                prepared_result = (
-                    self.prepared_tools.get((assistant_node, message.tool_call_id))
-                    if assistant_node is not None
-                    else None
-                )
-                is_prepared = prepared_result is not None and graph.message_hash(
-                    prepared_result
-                ) == graph.message_hash(message)
-                if is_prepared:
-                    prepared.add(position)
-                    native_prepared.add(position)
-                elif prepared_result is not None:
-                    raise HarnessError(
-                        "native tool interception did not preserve the approved result "
-                        f"for call {message.tool_call_id!r}"
+                if assistant_node is not None:
+                    tool_key = (assistant_node, message.tool_call_id)
+                    expected = self.prepared_tools.get(tool_key)
+                    observed = expected is not None
+                    matches = tool_key not in self.rewritten_tools or (
+                        expected is not None
+                        and graph.message_hash(expected) == graph.message_hash(message)
                     )
-                elif assistant_node is not None:
-                    raise HarnessError(
-                        "native tool result reached the model request before its "
-                        f"post-execution hook for call {message.tool_call_id!r}"
-                    )
+                    if observed and matches:
+                        prepared.add(position)
+                        native_prepared.add(position)
+                    elif observed:
+                        raise HarnessError(
+                            "native tool interception did not preserve the approved "
+                            f"result for call {message.tool_call_id!r}"
+                        )
+                    elif self.post_tool_interception:
+                        raise HarnessError(
+                            "native tool result reached the model request before its "
+                            f"post-execution hook for call {message.tool_call_id!r}"
+                        )
+                    elif (
+                        self.pre_tool_interception
+                        and tool_key not in self.prepared_tools
+                    ):
+                        raise HarnessError(
+                            "native tool result reached the model request without its "
+                            f"pre-execution hook for call {message.tool_call_id!r}"
+                        )
         if (
             candidates
             and candidates == native_prepared
@@ -361,6 +373,7 @@ class RolloutSession:
             if isinstance(message, ToolMessage) and assistant_node is not None:
                 tool_call = (assistant_node, message.tool_call_id)
                 self.prepared_tools.pop(tool_call, None)
+                self.rewritten_tools.discard(tool_call)
 
     async def prepare_users(
         self, request: Request
@@ -451,8 +464,10 @@ class RolloutSession:
         rewrite_suffix: str = "",
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
-        if not self.tool_interception:
-            raise HarnessError("this harness does not support tool interception")
+        if phase == "before" and not self.pre_tool_interception:
+            raise HarnessError("this harness does not support pre-tool interception")
+        if phase == "after" and not self.post_tool_interception:
+            raise HarnessError("this harness does not support post-tool interception")
         leaves = graph.leaves(self.trace)
         if not message.tool_call_id:
             raise HarnessError("native hook omitted the tool call ID")
@@ -581,20 +596,28 @@ class RolloutSession:
             return {"action": "stop", "reason": stopped}
         if phase == "before" and candidate == message:
             if detached:
-                self.detached_tools.add(message.tool_call_id)
+                if self.post_tool_interception:
+                    self.detached_tools.add(message.tool_call_id)
                 return {"action": "allow"}
             self.prepared_tools.setdefault(tool_key, None)
             return {"action": "allow"}
         if not detached:
-            prepared = candidate
-            if phase == "before" and candidate != message:
-                assert isinstance(candidate.content, str)
-                prepared = candidate.model_copy(
-                    update={
-                        "content": rewrite_prefix + candidate.content + rewrite_suffix
-                    }
-                )
-            self.prepared_tools[tool_key] = prepared
+            if phase == "after":
+                self.prepared_tools[tool_key] = candidate
+                if candidate != message:
+                    self.rewritten_tools.add(tool_key)
+            else:
+                prepared = candidate
+                if candidate != message and isinstance(candidate.content, str):
+                    prepared = candidate.model_copy(
+                        update={
+                            "content": rewrite_prefix
+                            + candidate.content
+                            + rewrite_suffix
+                        }
+                    )
+                self.prepared_tools[tool_key] = prepared
+                self.rewritten_tools.add(tool_key)
         if candidate == message:
             return {"action": "allow"}
         return {

@@ -34,9 +34,10 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
-    SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
-    """Whether native hooks synchronously run policy before execution and after it,
-    before the harness advances to its next model turn."""
+    SUPPORTS_PRE_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether native hooks synchronously run policy before tool execution."""
+    SUPPORTS_POST_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether native hooks can replace a result before the harness advances."""
     TOOL_INTERCEPTION_EXEMPTIONS: ClassVar[frozenset[str]] = frozenset()
     """Model-visible control tools that do not represent the nested work hooks inspect."""
     SUPPORTS_RESUME: ClassVar[bool] = False
@@ -245,7 +246,8 @@ class Harness(ABC, Generic[ConfigT]):
         ]
         kwargs = (
             {"tool_interception": tool_interception}
-            if self.SUPPORTS_TOOL_INTERCEPTION
+            if self.SUPPORTS_PRE_TOOL_INTERCEPTION
+            or self.SUPPORTS_POST_TOOL_INTERCEPTION
             else {}
         )
         return await self.launch(
@@ -332,7 +334,8 @@ class HarnessSession:
     async def _run(self, messages: Messages | None) -> ProgramResult:
         kwargs = (
             {"tool_interception": self.tool_interception}
-            if self.harness.SUPPORTS_TOOL_INTERCEPTION
+            if self.harness.SUPPORTS_PRE_TOOL_INTERCEPTION
+            or self.harness.SUPPORTS_POST_TOOL_INTERCEPTION
             else {}
         )
         if messages is None:

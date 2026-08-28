@@ -99,6 +99,7 @@ export default function toolInterceptionExtension(pi) {
 
   pi.on("tool_result", async (event, ctx) => {
     const toolCallId = event.toolCallId.split("|", 1)[0];
+    if (preReplacements.has(toolCallId)) return undefined;
     const content = vfToolContent(event.content, "Pi");
     let decision;
     try {

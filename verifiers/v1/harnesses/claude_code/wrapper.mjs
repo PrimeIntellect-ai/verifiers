@@ -1,6 +1,5 @@
 /** Route Claude SDK tool hooks through standard ACP permission requests. */
 
-const maxTextUnits = 50_000;
 // {tool_content}
 
 const { ClaudeAcpAgent } = await import(process.argv[1]);
@@ -53,9 +52,15 @@ function resultCodec(hook) {
       replacement: "any",
     };
   }
-  throw new TypeError(
-    `Claude returned unsupported structured output for ${hook.tool_name}`,
-  );
+  const content = JSON.stringify(hook.tool_response);
+  if (typeof content !== "string") {
+    throw new TypeError(`Claude returned invalid output for ${hook.tool_name}`);
+  }
+  return {
+    content,
+    output: (replacement) => replacement,
+    replacement: "nonempty_text",
+  };
 }
 
 async function requestDecision(agent, hook, hookOptions) {
@@ -70,9 +75,6 @@ async function requestDecision(agent, hook, hookOptions) {
       content = before ? "" : hook.error || "Tool execution failed.";
     } else {
       ({ content, output, replacement } = resultCodec(hook));
-      if (typeof content === "string" && content.length > maxTextUnits) {
-        throw new Error(`Claude returned oversized output for ${hook.tool_name}`);
-      }
     }
     toolInterception = {
       phase: before ? "before" : "after",
