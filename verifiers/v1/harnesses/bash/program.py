@@ -396,8 +396,14 @@ class Compactor:
                 base = messages[: self.last_good]
                 continue
             message = completion.choices[0].message
-            if not message.tool_calls and (message.content or "").strip():
-                framed = POST_COMPACTION_FRAMING + "\n\n" + message.content
+            # A reasoning-parsed model can put the whole reply in the reasoning
+            # channel; the checkpoint asked for a summary, so accept it from
+            # there when content is empty.
+            text = (message.content or "").strip() or (
+                getattr(message, "reasoning_content", None) or ""
+            ).strip()
+            if not message.tool_calls and text:
+                framed = POST_COMPACTION_FRAMING + "\n\n" + text
                 rebuilt = [*system, {"role": "user", "content": framed}]
                 self.note_good(rebuilt)
                 return rebuilt
