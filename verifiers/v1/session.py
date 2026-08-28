@@ -260,7 +260,7 @@ class RolloutSession:
         )
         # Provider-only mediation can change an earlier user message without changing
         # the harness's transcript. Its canonical current assistant still anchors the tail.
-        if assistant_node is None and self.network_policy.network_restricted:
+        if assistant_node is None:
             leaves = graph.leaves(self.trace)
             for position in range(len(request.messages) - 1, -1, -1):
                 message = request.messages[position]
