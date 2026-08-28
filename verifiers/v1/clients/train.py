@@ -374,12 +374,13 @@ class TrainClient(Client):
             mm_token_type_id_map = (
                 renderer.mm_token_type_id_map if is_multimodal(renderer) else None
             )
-            process_multimodal = not _has_multimodal_content(prompt)
-            if not process_multimodal and not getattr(
-                renderer, "supports_deferred_multimodal_processing", False
+            has_images = _has_multimodal_content(prompt)
+            process_multimodal = not has_images
+            if has_images and not getattr(
+                renderer, "supports_process_multimodal", False
             ):
                 raise NotImplementedError(
-                    f"{type(renderer).__name__} does not support deferred multimodal processing"
+                    f"{type(renderer).__name__} does not support process_multimodal=False"
                 )
             render_kwargs = {} if process_multimodal else {"process_multimodal": False}
             # Only build the O(context) previous token stream for a bridgeable tail.
