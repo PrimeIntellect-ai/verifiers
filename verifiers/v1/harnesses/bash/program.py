@@ -298,6 +298,15 @@ def compactable(messages: list[dict]) -> bool:
     )
 
 
+def bound_tool_message(message: dict) -> dict:
+    """Bound a tool message before it enters the conversation - rewrites included."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return {**message, "content": truncate_tool_output(content)}
+    # Multimodal results come back as content-part lists; only plain text is truncated.
+    return message
+
+
 def truncate_tool_output(text: str) -> str:
     """Keep the head and tail of an oversized tool result and say what was cut."""
     data = text.encode("utf-8")
@@ -641,7 +650,7 @@ async def main() -> None:
                     tool_message,
                 )
                 if decision["action"] == "rewrite":
-                    rewritten = decision["message"]
+                    rewritten = bound_tool_message(decision["message"])
                     messages.append(rewritten)
                     tool_result_tokens += estimated_tokens(
                         str(rewritten.get("content", ""))
@@ -677,11 +686,8 @@ async def main() -> None:
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
-            # Multimodal MCP results come back as content-part lists; only plain
-            # text is truncated.
-            tool_message["content"] = (
-                truncate_tool_output(content) if isinstance(content, str) else content
-            )
+            tool_message["content"] = content
+            tool_message = bound_tool_message(tool_message)
             if args.tool_interception_url:
                 assert tool_client is not None
                 decision = await run_tool_hook(
@@ -692,7 +698,7 @@ async def main() -> None:
                     tool_message,
                 )
                 if decision["action"] == "rewrite":
-                    tool_message = decision["message"]
+                    tool_message = bound_tool_message(decision["message"])
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):
