@@ -18,7 +18,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
-    SemanticEdgeManifest,
+    SemanticEdgeSet,
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -80,10 +80,10 @@ class ACPHarness(Harness[ConfigT]):
         """Attach optional protocol extensions understood by every ACP harness."""
         if ACP_SEMANTIC_EDGES_METADATA_KEY not in response_metadata:
             return
-        manifest = SemanticEdgeManifest.model_validate(
+        edge_set = SemanticEdgeSet.model_validate(
             response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
         )
-        trace.reconcile_semantic_edges(manifest)
+        trace.reconcile_semantic_edges(edge_set)
 
     @abstractmethod
     async def prepare_acp(

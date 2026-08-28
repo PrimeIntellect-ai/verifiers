@@ -85,8 +85,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     ParentLink,
-    RequestSemanticEdge,
-    SemanticEdgeManifest,
+    SemanticEdge,
+    SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -234,8 +234,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ModelCall",
     "ACP_SEMANTIC_EDGES_METADATA_KEY",
     "ParentLink",
-    "RequestSemanticEdge",
-    "SemanticEdgeManifest",
+    "SemanticEdge",
+    "SemanticEdgeSet",
     "PolicyEvent",
     "TrainRunInfo",
     "TrainWorkInfo",

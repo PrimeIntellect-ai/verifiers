@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ACP_REQUEST_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
+MODEL_REQUEST_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 EDGE_TYPE_PATTERN = r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 
 ACP_SEMANTIC_EDGES_METADATA_KEY = "ai.prime.acp/semantic-edges-v1"
@@ -27,19 +27,19 @@ class _StrictSemanticModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class RequestSemanticEdge(_StrictSemanticModel):
+class SemanticEdge(_StrictSemanticModel):
     """A harness-declared relationship between two logical model requests.
 
     Request IDs are wire-level correlation handles. They let a harness describe the
     relationship before it can know Verifiers-local message-node indexes.
     """
 
-    source_request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
-    target_request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
+    source_request_id: str = Field(pattern=MODEL_REQUEST_ID_PATTERN)
+    target_request_id: str = Field(pattern=MODEL_REQUEST_ID_PATTERN)
     type: str = Field(pattern=EDGE_TYPE_PATTERN)
 
     @model_validator(mode="after")
-    def reject_self_edge(self) -> RequestSemanticEdge:
+    def reject_self_edge(self) -> SemanticEdge:
         if self.source_request_id == self.target_request_id:
             raise ValueError("semantic edge cannot link a request to itself")
         return self
@@ -56,7 +56,7 @@ class ParentLink(_StrictSemanticModel):
     type: str = Field(pattern=EDGE_TYPE_PATTERN)
 
 
-class SemanticEdgeManifest(_StrictSemanticModel):
+class SemanticEdgeSet(_StrictSemanticModel):
     """A harness-published set of semantic edges over logical request IDs.
 
     Edge labels are intentionally extensible. Initial harnesses use ``continuation``,
@@ -64,10 +64,10 @@ class SemanticEdgeManifest(_StrictSemanticModel):
     unknown labels.
     """
 
-    edges: list[RequestSemanticEdge]
+    edges: list[SemanticEdge]
 
     @model_validator(mode="after")
-    def validate_edges(self) -> SemanticEdgeManifest:
+    def validate_edges(self) -> SemanticEdgeSet:
         identities: set[tuple[str, str, str]] = set()
         children: dict[str, list[str]] = {}
         nodes: set[str] = set()
@@ -122,6 +122,8 @@ def extract_acp_model_request_id(
     request_id = normalized.get(ACP_MODEL_REQUEST_ID_HEADER.lower())
     if request_id is None:
         return None, forwarded
-    if re.fullmatch(ACP_REQUEST_ID_PATTERN, request_id) is None:
-        raise ValueError(f"{ACP_MODEL_REQUEST_ID_HEADER} is not a valid ACP request ID")
+    if re.fullmatch(MODEL_REQUEST_ID_PATTERN, request_id) is None:
+        raise ValueError(
+            f"{ACP_MODEL_REQUEST_ID_HEADER} is not a valid model request ID"
+        )
     return request_id, forwarded

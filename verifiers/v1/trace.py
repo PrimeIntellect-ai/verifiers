@@ -20,9 +20,9 @@ from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import (
-    ACP_REQUEST_ID_PATTERN,
+    MODEL_REQUEST_ID_PATTERN,
     ParentLink,
-    SemanticEdgeManifest,
+    SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -176,7 +176,7 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
-    acp_request_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
+    model_request_id: str | None = Field(default=None, pattern=MODEL_REQUEST_ID_PATTERN)
     """Opaque model-request ID used to resolve optional ACP semantic edges."""
 
 
@@ -511,11 +511,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         return branches
 
-    def reconcile_semantic_edges(self, manifest: SemanticEdgeManifest) -> None:
+    def reconcile_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
         """Resolve request edges into semantic parents on committed message nodes."""
         node_by_request: dict[str, int] = {}
         for call in self.calls:
-            if call.acp_request_id is None or call.node is None:
+            if call.model_request_id is None or call.node is None:
                 continue
             if not 0 <= call.node < len(self.nodes):
                 raise ValueError(f"model call has invalid message node {call.node}")
@@ -523,11 +523,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 raise ValueError(f"model call node {call.node} is not sampled")
             # SDK retries are sequential. If more than one attempt commits, the last
             # sampled response is the logical request result consumed by the harness.
-            node_by_request[call.acp_request_id] = call.node
+            node_by_request[call.model_request_id] = call.node
 
         semantic_parents: list[list[ParentLink]] = [[] for _ in self.nodes]
         resolved_identities: set[tuple[int, int, str]] = set()
-        for edge in manifest.edges:
+        for edge in edge_set.edges:
             endpoints: list[int] = []
             for request_id in (
                 edge.source_request_id,

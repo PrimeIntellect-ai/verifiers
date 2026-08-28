@@ -182,30 +182,30 @@ def test_wire_trace_round_trip():
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
 
 
-def _semantic_edge_manifest() -> vf.SemanticEdgeManifest:
-    return vf.SemanticEdgeManifest(
+def _semantic_edge_set() -> vf.SemanticEdgeSet:
+    return vf.SemanticEdgeSet(
         edges=[
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id="root-turn",
                 target_request_id="root-compact",
                 type="continuation",
             ),
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id="root-turn",
                 target_request_id="child-turn",
                 type="subagent_call",
             ),
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id="child-turn",
                 target_request_id="root-after",
                 type="subagent_return",
             ),
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id="root-compact",
                 target_request_id="root-after",
                 type="compaction",
             ),
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id="root-turn",
                 target_request_id="root-after",
                 type="critic_review",
@@ -241,25 +241,25 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     tr.calls = [
         vf.ModelCall(
             node=1,
-            acp_request_id="root-turn",
+            model_request_id="root-turn",
         ),
         vf.ModelCall(
             node=3,
-            acp_request_id="child-turn",
+            model_request_id="child-turn",
         ),
         vf.ModelCall(
             node=5,
-            acp_request_id="root-compact",
+            model_request_id="root-compact",
         ),
         vf.ModelCall(
             node=7,
-            acp_request_id="root-after",
+            model_request_id="root-after",
         ),
     ]
 
-    manifest = _semantic_edge_manifest()
+    edge_set = _semantic_edge_set()
     tr.reconcile_semantic_edges(
-        vf.SemanticEdgeManifest.model_validate(manifest.model_dump())
+        vf.SemanticEdgeSet.model_validate(edge_set.model_dump())
     )
     expected_parents = [
         [],
@@ -279,16 +279,14 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
-    assert [call.acp_request_id for call in restored.calls] == [
-        call.acp_request_id for call in tr.calls
+    assert [call.model_request_id for call in restored.calls] == [
+        call.model_request_id for call in tr.calls
     ]
 
     # The base ACP layer resolves the generic edge set before harness-owned metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
     turn_metadata = {
-        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_manifest().model_dump(
-            mode="json"
-        ),
+        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_set().model_dump(mode="json"),
         RLM_SESSION_METADATA_KEY: {
             "session_id": restored.id,
             "metrics": {"turns": 4},
@@ -303,9 +301,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
 
     # session/close may publish the same cumulative edge set again.
     close_metadata = {
-        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_manifest().model_dump(
-            mode="json"
-        ),
+        ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_set().model_dump(mode="json"),
         RLM_SESSION_METADATA_KEY: {
             "session_id": restored.id,
             "metrics": {"turns": 4},
@@ -319,11 +315,11 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     # A failed provider exchange and its SDK retry share one logical request ID.
     restored.calls.append(
         vf.ModelCall(
-            acp_request_id=restored.calls[0].acp_request_id,
+            model_request_id=restored.calls[0].model_request_id,
             error=vf.Error(type="E", message="x"),
         )
     )
-    restored.reconcile_semantic_edges(_semantic_edge_manifest())
+    restored.reconcile_semantic_edges(_semantic_edge_set())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
 
@@ -344,16 +340,16 @@ def test_semantic_edge_uses_last_committed_retry_node():
             ),
         ],
         calls=[
-            vf.ModelCall(node=1, acp_request_id="retried"),
-            vf.ModelCall(node=2, acp_request_id="retried"),
-            vf.ModelCall(node=3, acp_request_id="next"),
+            vf.ModelCall(node=1, model_request_id="retried"),
+            vf.ModelCall(node=2, model_request_id="retried"),
+            vf.ModelCall(node=3, model_request_id="next"),
         ],
     )
 
     tr.reconcile_semantic_edges(
-        vf.SemanticEdgeManifest(
+        vf.SemanticEdgeSet(
             edges=[
-                vf.RequestSemanticEdge(
+                vf.SemanticEdge(
                     source_request_id="retried",
                     target_request_id="next",
                     type="continuation",
@@ -365,7 +361,7 @@ def test_semantic_edge_uses_last_committed_retry_node():
     assert tr.nodes[3].semantic_parents == [vf.ParentLink(node=2, type="continuation")]
 
 
-def test_acp_request_id_is_validated_and_stripped():
+def test_model_request_id_is_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
         "Idempotency-Key": "provider-key",
@@ -381,7 +377,7 @@ def test_acp_request_id_is_validated_and_stripped():
     absent, unchanged = extract_acp_model_request_id({"OpenAI-Beta": "feature"})
     assert absent is None and unchanged == {"OpenAI-Beta": "feature"}
 
-    with pytest.raises(ValueError, match="not a valid ACP request ID"):
+    with pytest.raises(ValueError, match="not a valid model request ID"):
         extract_acp_model_request_id({"X-ACP-Model-Request-ID": "not/a/valid/id"})
 
 
@@ -403,14 +399,14 @@ def test_acp_semantic_edge_metadata_is_optional():
     assert all(not node.semantic_parents for node in trace.nodes)
 
 
-def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():
-    manifest = _semantic_edge_manifest().model_dump(mode="json")
-    manifest["edges"].append(manifest["edges"][0])
+def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():
+    edge_set = _semantic_edge_set().model_dump(mode="json")
+    edge_set["edges"].append(edge_set["edges"][0])
     with pytest.raises(ValueError, match="duplicate semantic edge"):
-        vf.SemanticEdgeManifest.model_validate(manifest)
+        vf.SemanticEdgeSet.model_validate(edge_set)
 
     with pytest.raises(ValueError, match="cannot link a request to itself"):
-        vf.SemanticEdgeManifest.model_validate(
+        vf.SemanticEdgeSet.model_validate(
             {
                 "edges": [
                     {
@@ -422,8 +418,8 @@ def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():
             }
         )
 
-    manifest = _semantic_edge_manifest().model_dump(mode="json")
-    manifest["edges"].append(
+    edge_set = _semantic_edge_set().model_dump(mode="json")
+    edge_set["edges"].append(
         {
             "source_request_id": "root-after",
             "target_request_id": "root-turn",
@@ -431,13 +427,13 @@ def test_semantic_edge_manifest_rejects_duplicate_self_and_cyclic_edges():
         }
     )
     with pytest.raises(ValueError, match="semantic edge cycle"):
-        vf.SemanticEdgeManifest.model_validate(manifest)
+        vf.SemanticEdgeSet.model_validate(edge_set)
 
 
-def test_semantic_edge_manifest_accepts_deep_acyclic_chain():
-    manifest = vf.SemanticEdgeManifest(
+def test_semantic_edge_set_accepts_deep_acyclic_chain():
+    edge_set = vf.SemanticEdgeSet(
         edges=[
-            vf.RequestSemanticEdge(
+            vf.SemanticEdge(
                 source_request_id=f"request-{index}",
                 target_request_id=f"request-{index + 1}",
                 type="continuation",
@@ -446,4 +442,4 @@ def test_semantic_edge_manifest_accepts_deep_acyclic_chain():
         ]
     )
 
-    assert len(manifest.edges) == 2_000
+    assert len(edge_set.edges) == 2_000
