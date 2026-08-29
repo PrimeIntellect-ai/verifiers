@@ -1,4 +1,4 @@
-"""In-process HTTP(S) proxy for Docker policy and host callbacks."""
+"""In-process HTTP(S) proxy for container policy and host callbacks."""
 
 import asyncio
 import base64
@@ -146,7 +146,7 @@ class EgressProxy:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
         if parsed.scheme != "http" or not is_loopback_host(host):
-            raise ValueError(f"unsupported Docker host callback URL: {url}")
+            raise ValueError(f"unsupported container host callback URL: {url}")
         port = parsed.port if parsed.port is not None else 80
         authority = parsed.netloc.rpartition("@")[2]
         key = (host, port, authority, host_alias, forward_authorization)

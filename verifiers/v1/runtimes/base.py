@@ -133,8 +133,8 @@ class Runtime(ABC):
 
     is_local: ClassVar[bool] = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
-    subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
-    override to False and use a host `Tunnel` inward plus `expose` outward."""
+    subprocess and local container runtimes; remote runtimes override to False and use a
+    host `Tunnel` inward plus `expose` outward."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;

@@ -12,7 +12,14 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     register,
 )
-from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.docker import (
+    DockerConfig,
+    DockerRuntime,
+    DockerRuntimeInfo,
+    PodmanConfig,
+    PodmanRuntime,
+    PodmanRuntimeInfo,
+)
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -27,12 +34,16 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig | DockerConfig | PodmanConfig | PrimeConfig | ModalConfig,
     Field(discriminator="type"),
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    SubprocessRuntimeInfo
+    | DockerRuntimeInfo
+    | PodmanRuntimeInfo
+    | PrimeRuntimeInfo
+    | ModalRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -44,6 +55,8 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         return ModalRuntime
     if isinstance(config, DockerConfig):
         return DockerRuntime
+    if isinstance(config, PodmanConfig):
+        return PodmanRuntime
     return SubprocessRuntime
 
 
@@ -87,6 +100,9 @@ __all__ = [
     "ModalRuntime",
     "ModalRuntimeInfo",
     "NetworkPolicyConfig",
+    "PodmanConfig",
+    "PodmanRuntime",
+    "PodmanRuntimeInfo",
     "PrimeConfig",
     "PrimeRuntime",
     "PrimeRuntimeInfo",

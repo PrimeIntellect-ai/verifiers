@@ -1,10 +1,11 @@
-"""Local Docker runtime with optional execution-time URL filtering."""
+"""Local OCI-container runtime backed by Docker or Podman."""
 
 import array
 import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 import socket
 import subprocess
@@ -13,8 +14,10 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Literal, Self
 from urllib.parse import urlsplit
+
+from pydantic import model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -37,24 +40,50 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 
-class DockerConfig(NetworkPolicyConfig):
-    type: Literal["docker"] = "docker"
+class _ContainerConfig(NetworkPolicyConfig):
     image: str = "python:3.11-slim"
     workdir: str = "/app"
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
-    """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
+    """Pin the container to this many CPU cores (`--cpus`). None = unlimited."""
     memory: float | None = None
-    """Hard memory limit in GB (docker `--memory`). None = unlimited."""
+    """Hard memory limit in GB (`--memory`). None = unlimited."""
     gpu: str | None = None
-    """GPU spec, e.g. "A100" or "2" (docker `--gpus` uses the count; needs the nvidia
-    container toolkit). None = none."""
+    """GPU spec, e.g. "A100" or "2". Docker uses the count with `--gpus`;
+    Podman maps it to NVIDIA CDI device indexes. None = none."""
     disk: float | None = None
-    """Advisory disk request in GB. Docker has no portable per-container size limit, so
-    this is accepted (so a task can declare it without a warning) but not enforced."""
+    """Advisory disk request in GB. OCI engines have no portable per-container size
+    limit, so this is accepted (so a task can declare it without a warning) but not
+    enforced."""
+
+
+class DockerConfig(_ContainerConfig):
+    type: Literal["docker"] = "docker"
+
+
+class PodmanConfig(_ContainerConfig):
+    type: Literal["podman"] = "podman"
+    image: str = "docker.io/library/python:3.11-slim"
+
+    @model_validator(mode="after")
+    def validate_support(self) -> Self:
+        if self.network_restricted:
+            raise ValueError(
+                "restricted network policies are not supported by the podman runtime; "
+                "the network cut has not been validated against rootless Podman"
+            )
+        if not 0 <= parse_gpu(self.gpu)[1] <= 1024:
+            raise ValueError(
+                "podman supports between 0 and 1024 indexed GPUs per container"
+            )
+        return self
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
+    pass
+
+
+class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
     pass
 
 
@@ -63,14 +92,16 @@ async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
         yield chunk
 
 
-class DockerProcess(RuntimeProcess):
+class ContainerProcess(RuntimeProcess):
     def __init__(
         self,
         process: asyncio.subprocess.Process,
+        engine: Literal["docker", "podman"],
         container: str,
         pid: int,
     ) -> None:
         self._process = process
+        self._engine = engine
         self._container = container
         self._pid = pid
         assert process.stdin is not None
@@ -96,7 +127,8 @@ class DockerProcess(RuntimeProcess):
     async def _signal(self, signal: str) -> None:
         if self._process.returncode is not None:
             return
-        result = await docker(
+        result = await _run_container_cli(
+            self._engine,
             "exec",
             self._container,
             "sh",
@@ -108,13 +140,15 @@ class DockerProcess(RuntimeProcess):
         )
         if result.exit_code != 0 and self._process.returncode is None:
             raise SandboxError(
-                f"docker exec process signal failed: {result.stderr.strip()}"
+                f"{self._engine} exec process signal failed: {result.stderr.strip()}"
             )
 
 
-async def docker(*args: str) -> ProgramResult:
+async def _run_container_cli(
+    engine: Literal["docker", "podman"], *args: str
+) -> ProgramResult:
     proc = await asyncio.create_subprocess_exec(
-        "docker",
+        engine,
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -139,9 +173,12 @@ def _environment_args(env: dict[str, str]) -> list[str]:
 
 
 async def _abort_process_startup(
-    proc: asyncio.subprocess.Process, container: str, pidfile: str
+    proc: asyncio.subprocess.Process,
+    engine: Literal["docker", "podman"],
+    container: str,
+    pidfile: str,
 ) -> str:
-    """Kill a partially opened container process and reap its local docker client."""
+    """Kill a partially opened container process and reap its local CLI client."""
     # The target normally writes its PID immediately, but cancellation can win
     # that race. Wait briefly for the file before signalling the process group.
     cleanup = (
@@ -154,7 +191,8 @@ async def _abort_process_startup(
     try:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                docker(
+                _run_container_cli(
+                    engine,
                     "exec",
                     container,
                     "sh",
@@ -173,7 +211,7 @@ async def _abort_process_startup(
     return stderr.decode(errors="replace").strip()
 
 
-_PROXY_HOST = "host.docker.internal"
+_DOCKER_HOST = "host.docker.internal"
 _PASS_LISTENER = r"""
 import array, socket
 control = socket.socket(socket.AF_UNIX)
@@ -186,11 +224,17 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 """
 
 
-class DockerRuntime(Runtime):
-    def __init__(self, config: DockerConfig, name: str | None = None) -> None:
+class _ContainerRuntime(Runtime):
+    engine: Literal["docker", "podman"]
+    info_class: type[BaseRuntimeInfo]
+    callback_host: str
+
+    def __init__(self, config: _ContainerConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = DockerRuntimeInfo(**config.model_dump())
+        # Task resource overlays use model_copy(), so validate the resolved values
+        # before constructing an external container command.
+        self.config = type(config).model_validate(config.model_dump())
+        self.info = self.info_class(**self.config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._image_env: dict[str, str] = {}
         self._proxy: EgressProxy | None = None
@@ -203,25 +247,97 @@ class DockerRuntime(Runtime):
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
+    async def _run_cli(self, *args: str) -> ProgramResult:
+        return await _run_container_cli(self.engine, *args)
+
     async def start(self) -> None:
         try:
-            version = await docker("version", "--format", "{{.Server.Version}}")
+            version_field = "Server" if self.engine == "docker" else "Client"
+            version = await self._run_cli(
+                "version", "--format", f"{{{{.{version_field}.Version}}}}"
+            )
         except FileNotFoundError as e:
             raise RuntimeError(
-                "docker runtime selected but the `docker` CLI is not installed"
+                f"{self.engine} runtime selected but the `{self.engine}` CLI is not installed"
             ) from e
         if version.exit_code != 0:
             detail = (version.stderr or version.stdout).strip()
             hint = ""
-            if "permission denied" in detail.lower():
+            if self.engine == "docker" and "permission denied" in detail.lower():
                 hint = (
                     "\nYour user isn't in the `docker` group. Either run the command "
                     'under `sg docker -c "..."`, or add yourself with '
                     "`sudo usermod -aG docker $USER` and start a new login shell."
                 )
-            raise RuntimeError(
-                f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
+            unavailable = (
+                "the Docker daemon is not reachable"
+                if self.engine == "docker"
+                else "Podman is not usable"
             )
+            raise RuntimeError(
+                f"{self.engine} runtime selected but {unavailable}: {detail}{hint}"
+            )
+        podman_host = None
+        if self.engine == "podman":
+            system = await self._run_cli("info", "--format", "json")
+            if system.exit_code != 0:
+                raise SandboxError(
+                    f"Podman prerequisite inspection failed: {system.stderr.strip()}"
+                )
+            try:
+                podman_host = json.loads(system.stdout)["host"]
+                remote = podman_host["serviceIsRemote"]
+            except (KeyError, TypeError, ValueError) as error:
+                raise SandboxError(
+                    "Podman did not report its backend location"
+                ) from error
+            if self.config.cpu is not None or self.config.memory is not None:
+                try:
+                    rootless = podman_host["security"]["rootless"]
+                    cgroup_version = podman_host["cgroupVersion"]
+                except (KeyError, TypeError, ValueError) as error:
+                    raise SandboxError(
+                        "Podman did not report the resource-limit prerequisites"
+                    ) from error
+                if rootless and cgroup_version == "v1":
+                    raise SandboxError(
+                        "rootless Podman on cgroups v1 does not support CPU or memory limits"
+                    )
+            if remote and sys.platform == "linux":
+                raise SandboxError("Podman remote clients are not supported")
+            if remote:
+                connections = await self._run_cli(
+                    "system", "connection", "list", "--format", "json"
+                )
+                local_machine = False
+                if connections.exit_code == 0:
+                    try:
+                        entries = json.loads(connections.stdout)
+                        container_host = os.environ.get("CONTAINER_HOST")
+                        if container_host is not None:
+                            selected = next(
+                                entry
+                                for entry in entries
+                                if entry["URI"] == container_host
+                            )
+                        else:
+                            connection_name = os.environ.get("CONTAINER_CONNECTION")
+                            selected = next(
+                                entry
+                                for entry in entries
+                                if entry["Name"] == connection_name
+                                or (connection_name is None and entry["Default"])
+                            )
+                        local_machine = selected["IsMachine"] is True
+                    except (KeyError, StopIteration, TypeError, ValueError) as error:
+                        raise SandboxError(
+                            "Podman did not identify its active connection"
+                        ) from error
+                if not local_machine:
+                    raise SandboxError(
+                        "Podman remote clients are supported only through a local "
+                        "Podman Machine"
+                    )
         limits: list[str] = []
         if self.config.cpu is not None:
             limits += ["--cpus", str(self.config.cpu)]
@@ -229,15 +345,37 @@ class DockerRuntime(Runtime):
             limits += ["--memory", f"{self.config.memory}g"]
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
-            limits += ["--gpus", str(gpu_count)]
+            if self.engine == "docker":
+                limits += ["--gpus", str(gpu_count)]
+            else:
+                assert podman_host is not None
+                try:
+                    rootless = podman_host["security"]["rootless"]
+                    selinux = podman_host["security"]["selinuxEnabled"]
+                    oci_runtime = podman_host["ociRuntime"]["name"]
+                except (KeyError, TypeError, ValueError) as error:
+                    raise SandboxError(
+                        "Podman did not report the GPU runtime prerequisites"
+                    ) from error
+                if selinux:
+                    raise SandboxError(
+                        "Podman GPU passthrough is not supported with SELinux enabled"
+                    )
+                if rootless and oci_runtime != "crun":
+                    raise SandboxError(
+                        "rootless Podman GPU passthrough requires the crun OCI runtime"
+                    )
+                for index in range(gpu_count):
+                    limits += ["--device", f"nvidia.com/gpu={index}"]
+                if rootless:
+                    limits += ["--group-add", "keep-groups"]
         restricted = self.network_restricted
-        options = [
-            "--network",
-            "bridge",
-            "--publish",
-            f"127.0.0.1::{SERVICE_PORT}",
-        ]
-        if restricted:
+        options = ["--publish", f"127.0.0.1::{SERVICE_PORT}"]
+        if self.engine == "podman":
+            options += ["--http-proxy=false", "--network", "private"]
+        else:
+            options += ["--network", "bridge"]
+        if self.engine == "docker" and restricted:
             options += [
                 "--cap-drop",
                 "NET_ADMIN",
@@ -249,11 +387,11 @@ class DockerRuntime(Runtime):
                 "net.ipv6.conf.all.disable_ipv6=1",
             ]
             if sys.platform != "linux":
-                options += ["--add-host", f"{_PROXY_HOST}:host-gateway"]
-        else:
+                options += ["--add-host", f"{_DOCKER_HOST}:host-gateway"]
+        elif self.engine == "docker":
             options += ["--add-host", f"{HOST_ALIAS}:host-gateway"]
         self._container = self.name
-        run = await docker(
+        run = await self._run_cli(
             "run",
             "--detach",
             *options,
@@ -269,24 +407,27 @@ class DockerRuntime(Runtime):
             "infinity",
         )
         if run.exit_code != 0:
-            raise SandboxError(f"docker run failed: {run.stderr.strip()}")
+            raise SandboxError(f"{self.engine} run failed: {run.stderr.strip()}")
         self.info.id = run.stdout.strip()[:12]
         try:
-            image_env = await docker(
+            image_env = await self._run_cli(
                 "inspect", "--format", "{{json .Config.Env}}", self._container
             )
             if image_env.exit_code != 0:
                 raise SandboxError(
-                    f"docker environment inspection failed: {image_env.stderr.strip()}"
+                    f"{self.engine} environment inspection failed: "
+                    f"{image_env.stderr.strip()}"
                 )
             try:
                 values = json.loads(image_env.stdout)
                 self._image_env = dict(value.split("=", 1) for value in values or [])
             except (TypeError, ValueError) as error:
                 raise SandboxError(
-                    "docker returned invalid container environment"
+                    f"{self.engine} returned invalid container environment"
                 ) from error
-            published = await docker("port", self._container, f"{SERVICE_PORT}/tcp")
+            published = await self._run_cli(
+                "port", self._container, f"{SERVICE_PORT}/tcp"
+            )
             lines = published.stdout.strip().splitlines()
             host, separator, port = lines[0].rpartition(":") if lines else ("", "", "")
             if (
@@ -297,8 +438,8 @@ class DockerRuntime(Runtime):
             ):
                 detail = (published.stderr or published.stdout).strip()
                 raise SandboxError(
-                    "container engine did not publish the Docker runtime service port "
-                    f"on host loopback: {detail}"
+                    "container engine did not publish the runtime service port on "
+                    f"host loopback: {detail}"
                 )
             self._service_url = f"http://127.0.0.1:{port}"
             # Restricted runtimes enforce policy through the proxy; unrestricted
@@ -311,35 +452,43 @@ class DockerRuntime(Runtime):
                 )
             )
             if not restricted:
-                hosts = await docker("exec", self._container, "cat", "/etc/hosts")
                 host_gateway = None
-                for line in hosts.stdout.splitlines():
-                    fields = line.split()
-                    if HOST_ALIAS in fields[1:]:
-                        host_gateway = fields[0]
-                        break
-                if hosts.exit_code != 0 or host_gateway is None:
-                    raise SandboxError(
-                        "container engine did not provide the host-gateway mapping "
-                        "required for Docker runtime callbacks"
+                required_alias = (
+                    self.callback_host
+                    if self.engine == "docker" or sys.platform == "linux"
+                    else None
+                )
+                if required_alias is not None:
+                    hosts = await self._run_cli(
+                        "exec", self._container, "cat", "/etc/hosts"
                     )
+                    for line in hosts.stdout.splitlines():
+                        fields = line.split()
+                        if required_alias in fields[1:]:
+                            host_gateway = fields[0]
+                            break
+                    if hosts.exit_code != 0 or host_gateway is None:
+                        raise SandboxError(
+                            f"{self.engine} did not provide the {required_alias!r} host "
+                            "mapping required for runtime callbacks"
+                        )
                 await self._proxy.start(
                     host_gateway if sys.platform == "linux" else "127.0.0.1"
                 )
             elif sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
             else:
-                host = await docker(
+                host = await self._run_cli(
                     "exec",
                     self._container,
                     "sh",
                     "-c",
-                    f"awk '$2 == \"{_PROXY_HOST}\" {{ print $1; exit }}' /etc/hosts",
+                    f"awk '$2 == \"{_DOCKER_HOST}\" {{ print $1; exit }}' /etc/hosts",
                 )
                 self._proxy_host_ip = host.stdout.strip()
                 if host.exit_code != 0 or not self._proxy_host_ip:
                     raise SandboxError(
-                        f"could not resolve {_PROXY_HOST} in Docker: {host.stderr.strip()}"
+                        f"could not resolve {_DOCKER_HOST} in Docker: {host.stderr.strip()}"
                     )
                 await self._proxy.start("127.0.0.1")
         except BaseException:
@@ -350,7 +499,8 @@ class DockerRuntime(Runtime):
                 await asyncio.to_thread(self.cleanup)
             raise
         logger.info(
-            "docker: started container %s (image=%s)",
+            "%s: started container %s (image=%s)",
+            self.engine,
             self._container,
             self.config.image,
         )
@@ -362,7 +512,7 @@ class DockerRuntime(Runtime):
             with socket.socket(socket.AF_UNIX) as control:
                 control.bind(path)
                 control.listen(1)
-                helper = await docker(
+                helper = await self._run_cli(
                     "run",
                     "--rm",
                     "--network",
@@ -382,7 +532,7 @@ class DockerRuntime(Runtime):
                 )
                 if helper.exit_code != 0:
                     raise SandboxError(
-                        f"docker proxy listener failed: {helper.stderr.strip()}"
+                        f"{self.engine} proxy listener failed: {helper.stderr.strip()}"
                     )
                 connection, _ = control.accept()
                 with connection:
@@ -402,8 +552,8 @@ class DockerRuntime(Runtime):
             return url
         if parsed.scheme != "http":
             raise ValueError(
-                "Docker host callbacks support only http URLs; transparent TLS "
-                "forwarding is unavailable across a private network namespace"
+                f"{self.engine} host callbacks support only http URLs; transparent "
+                "TLS forwarding is unavailable across a private network namespace"
             )
         if self.network_restricted:
             if not (
@@ -425,12 +575,12 @@ class DockerRuntime(Runtime):
                 self._proxy.policy.routes.append(route)
             return callback
         assert self._proxy is not None
-        return self._proxy.callback_url(url)
+        return self._proxy.callback_url(url, self.callback_host)
 
     async def expose(self, port: int) -> str:
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(
-                f"docker service port {port} was not published by this runtime"
+                f"{self.engine} service port {port} was not published by this runtime"
             )
         return self._service_url
 
@@ -472,7 +622,7 @@ class DockerRuntime(Runtime):
             '-p tcp --dport "$PORT" -j ACCEPT; fi; '
             "iptables -A OUTPUT -j REJECT"
         )
-        cut = await docker(
+        cut = await self._run_cli(
             "run",
             "--rm",
             "--network",
@@ -490,12 +640,14 @@ class DockerRuntime(Runtime):
             str(self._proxy.port),
         )
         if cut.exit_code != 0:
-            raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
+            raise SandboxError(
+                f"{self.engine} network cut failed: {cut.stderr.strip()}"
+            )
         self._cut = True
 
     def _proxy_env(self) -> dict[str, str]:
         assert self._proxy is not None
-        host = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
+        host = "127.0.0.1" if sys.platform == "linux" else _DOCKER_HOST
         proxy = f"http://verifiers:{self._proxy.token}@{host}:{self._proxy.port}"
         return {
             "HTTP_PROXY": proxy,
@@ -521,7 +673,7 @@ class DockerRuntime(Runtime):
             for entry in value.split(",")
             if entry.strip()
         )
-        no_proxy.update(dict.fromkeys(("localhost", "127.0.0.1", HOST_ALIAS)))
+        no_proxy.update(dict.fromkeys(("localhost", "127.0.0.1", self.callback_host)))
         bypass = ",".join(no_proxy)
         return {**env, "NO_PROXY": bypass, "no_proxy": bypass}
 
@@ -534,7 +686,7 @@ class DockerRuntime(Runtime):
         env_args = _environment_args(
             self._container_env(env, use_policy_proxy=self._cut)
         )
-        return await docker(
+        return await self._run_cli(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
         )
 
@@ -547,7 +699,7 @@ class DockerRuntime(Runtime):
         )
         pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
-        # terminate()/kill() reap its descendants while docker exec remains
+        # terminate()/kill() reap its descendants while the attached exec remains
         # attached if setsid needs to fork. The inner shell records the
         # post-setsid PID before exec preserves it as the target PID.
         wrapper = (
@@ -557,7 +709,7 @@ class DockerRuntime(Runtime):
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         proc = await asyncio.create_subprocess_exec(
-            "docker",
+            self.engine,
             "exec",
             "-i",
             *env_args,
@@ -578,24 +730,29 @@ class DockerRuntime(Runtime):
         deadline = loop.time() + 5
         try:
             while True:
-                ready = await docker("exec", self._container, "cat", pidfile)
+                ready = await self._run_cli("exec", self._container, "cat", pidfile)
                 if ready.exit_code == 0 and ready.stdout.strip().isdigit():
-                    return DockerProcess(
-                        proc, self._container, int(ready.stdout.strip())
+                    return ContainerProcess(
+                        proc,
+                        self.engine,
+                        self._container,
+                        int(ready.stdout.strip()),
                     )
                 if proc.returncode is not None or loop.time() >= deadline:
                     break
                 await asyncio.sleep(0.05)
         except BaseException:
-            await run_shielded(_abort_process_startup(proc, self._container, pidfile))
+            await run_shielded(
+                _abort_process_startup(proc, self.engine, self._container, pidfile)
+            )
             raise
 
         stderr = await run_shielded(
-            _abort_process_startup(proc, self._container, pidfile)
+            _abort_process_startup(proc, self.engine, self._container, pidfile)
         )
         detail = stderr or ready.stderr.strip()
         raise SandboxError(
-            f"docker live process failed to start: {detail or 'PID unavailable'}"
+            f"{self.engine} live process failed to start: {detail or 'PID unavailable'}"
         )
 
     async def run_background(
@@ -606,7 +763,7 @@ class DockerRuntime(Runtime):
             self._container_env(env, use_policy_proxy=self.network_restricted)
         )
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
-        run = await docker(
+        run = await self._run_cli(
             "exec",
             "--detach",
             *env_args,
@@ -618,11 +775,11 @@ class DockerRuntime(Runtime):
             inner,
         )  # detached → lives in the container until it's removed in stop()
         if run.exit_code != 0:
-            raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
+            raise SandboxError(f"{self.engine} exec -d failed: {run.stderr.strip()}")
 
     async def _read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
-            "docker",
+            self.engine,
             "exec",
             "--workdir",
             self.config.workdir,
@@ -642,7 +799,7 @@ class DockerRuntime(Runtime):
     async def write(self, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
         proc = await asyncio.create_subprocess_exec(
-            "docker",
+            self.engine,
             "exec",
             "-i",
             "--workdir",
@@ -665,12 +822,24 @@ class DockerRuntime(Runtime):
         if self._container is None or self._stopped:
             return
         self._stopped = True
-        logger.debug("docker: removing container %s", self._container)
+        logger.debug("%s: removing container %s", self.engine, self._container)
         with contextlib.suppress(Exception):
             subprocess.run(
-                ["docker", "rm", "--force", self._container],
+                [self.engine, "rm", "--force", self._container],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=30,
                 check=False,
             )
+
+
+class DockerRuntime(_ContainerRuntime):
+    engine = "docker"
+    info_class = DockerRuntimeInfo
+    callback_host = HOST_ALIAS
+
+
+class PodmanRuntime(_ContainerRuntime):
+    engine = "podman"
+    info_class = PodmanRuntimeInfo
+    callback_host = "host.containers.internal"
