@@ -10,7 +10,7 @@ budget (turns / tokens), checked between turns.
 import asyncio
 import inspect
 import logging
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -117,11 +117,11 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
-    last_request: bytes | None = None
-    """Digest of the most recently served request body. Together with `last_response`, this
-    replays the common SDK retry of the latest completed exchange without re-sampling it."""
-    last_response: dict | None = None
-    """The response returned for `last_request`, replayed verbatim on a retry."""
+    replays: "OrderedDict[bytes, dict]" = field(default_factory=OrderedDict)
+    """Request-body digest -> the response served for it, replayed verbatim on a marked SDK
+    retry instead of re-sampling. Keyed per digest (bounded by REPLAY_CACHE_SIZE) so a
+    harness running concurrent conversation branches cannot evict one branch's entry by
+    completing another's turn between the failure and the retry."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
     """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
     released: bool = False

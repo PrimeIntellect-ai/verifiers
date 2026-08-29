@@ -64,6 +64,11 @@ from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
+REPLAY_CACHE_SIZE = 32
+"""Recorded responses kept per session for marked-retry replay. One slot per outstanding
+conversation branch is enough; 32 covers any realistic harness fan-out with room to spare
+while bounding memory on long rollouts."""
+
 
 # Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
 # cap is an artificial bottleneck — a large tool result (e.g. a `cat` of a big file) trips it
@@ -406,19 +411,13 @@ class InterceptionServer(Interception):
         # alone is no proof of a retry (compaction can legitimately regenerate an identical
         # request), and a stale replay would loop the rollout.
         retried = is_retried_request(request.headers)
-        if (
-            retried
-            and session.last_request == req_hash
-            and session.last_response is not None
-        ):
+        if retried and (recorded := session.replays.get(req_hash)) is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
-        if session.last_request == req_hash:
-            # A fresh attempt supersedes the recorded response for the same body: drop it
-            # so this attempt's own retries coalesce or re-run instead of replaying the
-            # previous turn.
-            session.last_request = None
-            session.last_response = None
+            return _completion_response(recorded)
+        # A fresh attempt supersedes the recorded response for the same body: drop it
+        # so this attempt's own retries coalesce or re-run instead of replaying the
+        # previous turn.
+        session.replays.pop(req_hash, None)
 
         try:
             model_request = dialect.parse_request(body)
@@ -529,8 +528,9 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
+            session.replays[req_hash] = response.raw
+            while len(session.replays) > REPLAY_CACHE_SIZE:
+                session.replays.popitem(last=False)
             finish_inflight(response.raw)
             return _completion_response(response.raw)
 
