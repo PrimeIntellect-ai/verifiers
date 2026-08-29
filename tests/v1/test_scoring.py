@@ -127,3 +127,13 @@ def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
         )
         == "A"
     )
+    assert (
+        vf.parse_judge_choice(
+            "Draft: \\boxed{B}\nFinal Judgment: This is a \\boxed{B}",
+            choices=("A", "B"),
+        )
+        == "B"
+    )
+    assert (
+        vf.parse_judge_choice("Draft: \\boxed{A}\nAnswer: B", choices=("A", "B")) == "A"
+    )

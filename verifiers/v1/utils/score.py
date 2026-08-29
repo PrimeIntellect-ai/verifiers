@@ -63,7 +63,7 @@ def parse_judge_choice(
     horizontal_space = r"[^\S\n]"
     marker_tail = (
         rf"{horizontal_space}*(?:IS{horizontal_space}*)?[:\-]?"
-        rf"{horizontal_space}*[^\n]*?{choice_re}"
+        rf"{horizontal_space}*{choice_re}"
     )
     final_choices = re.findall(
         rf"^{horizontal_space}*FINAL{horizontal_space}+"
@@ -78,8 +78,12 @@ def parse_judge_choice(
     )
 
     boxed = extract_boxed_answer(text, strict=True).strip()
+    boxed_choices = re.findall(choice_re, boxed.upper())
     matches = (
-        final_choices or bare_choices or re.findall(choice_re, (boxed or text).upper())
+        final_choices
+        or boxed_choices
+        or bare_choices
+        or re.findall(choice_re, text_upper)
     )
     return choices_by_upper.get(matches[-1]) if matches else None
 
