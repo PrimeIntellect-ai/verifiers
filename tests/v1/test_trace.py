@@ -20,7 +20,7 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
-    extract_acp_model_request_id,
+    extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -241,26 +241,26 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     tr.calls = [
         vf.ModelCall(
             node=1,
-            model_request_id="root-turn",
+            acp=vf.ACPInfo(request_id="root-turn"),
         ),
         vf.ModelCall(
             node=3,
-            model_request_id="child-turn",
+            acp=vf.ACPInfo(request_id="child-turn"),
         ),
         vf.ModelCall(
             node=5,
-            model_request_id="root-compact",
+            acp=vf.ACPInfo(request_id="root-compact"),
         ),
         vf.ModelCall(
             node=7,
-            model_request_id="root-after",
+            acp=vf.ACPInfo(request_id="root-after"),
         ),
     ]
 
     edge_set = _semantic_edge_set()
-    tr.reconcile_semantic_edges(
-        vf.SemanticEdgeSet.model_validate(edge_set.model_dump())
-    )
+    tr.add_semantic_edges(vf.SemanticEdgeSet(edges=edge_set.edges[:2]))
+    first_semantic_parents = tr.nodes[3].semantic_parents
+    tr.add_semantic_edges(vf.SemanticEdgeSet.model_validate(edge_set.model_dump()))
     expected_parents = [
         [],
         [],
@@ -276,12 +276,11 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
         ],
     ]
     assert [node.semantic_parents for node in tr.nodes] == expected_parents
+    assert tr.nodes[3].semantic_parents is first_semantic_parents
 
     restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
-    assert [call.model_request_id for call in restored.calls] == [
-        call.model_request_id for call in tr.calls
-    ]
+    assert [call.acp for call in restored.calls] == [call.acp for call in tr.calls]
 
     # The base ACP layer resolves the generic edge set before harness-owned metadata.
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
@@ -315,11 +314,11 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     # A failed provider exchange and its SDK retry share one logical request ID.
     restored.calls.append(
         vf.ModelCall(
-            model_request_id=restored.calls[0].model_request_id,
+            acp=restored.calls[0].acp,
             error=vf.Error(type="E", message="x"),
         )
     )
-    restored.reconcile_semantic_edges(_semantic_edge_set())
+    restored.add_semantic_edges(_semantic_edge_set())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
 
@@ -340,13 +339,13 @@ def test_semantic_edge_uses_last_committed_retry_node():
             ),
         ],
         calls=[
-            vf.ModelCall(node=1, model_request_id="retried"),
-            vf.ModelCall(node=2, model_request_id="retried"),
-            vf.ModelCall(node=3, model_request_id="next"),
+            vf.ModelCall(node=1, acp=vf.ACPInfo(request_id="retried")),
+            vf.ModelCall(node=2, acp=vf.ACPInfo(request_id="retried")),
+            vf.ModelCall(node=3, acp=vf.ACPInfo(request_id="next")),
         ],
     )
 
-    tr.reconcile_semantic_edges(
+    tr.add_semantic_edges(
         vf.SemanticEdgeSet(
             edges=[
                 vf.SemanticEdge(
@@ -361,24 +360,60 @@ def test_semantic_edge_uses_last_committed_retry_node():
     assert tr.nodes[3].semantic_parents == [vf.ParentLink(node=2, type="continuation")]
 
 
-def test_model_request_id_is_validated_and_stripped():
+def test_semantic_edge_cycle_is_rejected_without_partial_mutation():
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="start")),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="first"), sampled=True
+            ),
+            MessageNode(parent=1, message=UserMessage(content="continue")),
+            MessageNode(
+                parent=2, message=AssistantMessage(content="second"), sampled=True
+            ),
+        ],
+        calls=[
+            vf.ModelCall(node=1, acp=vf.ACPInfo(request_id="first")),
+            vf.ModelCall(node=3, acp=vf.ACPInfo(request_id="second")),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="cycle in the message graph"):
+        tr.add_semantic_edges(
+            vf.SemanticEdgeSet(
+                edges=[
+                    vf.SemanticEdge(
+                        source_request_id="second",
+                        target_request_id="first",
+                        type="custom",
+                    )
+                ]
+            )
+        )
+
+    assert all(not node.semantic_parents for node in tr.nodes)
+
+
+def test_acp_info_is_validated_and_stripped():
     headers = {
         "Authorization": "Bearer local",
         "Idempotency-Key": "provider-key",
         "X-ACP-Model-Request-ID": "request-1",
         "OpenAI-Beta": "feature",
     }
-    request_id, forwarded = extract_acp_model_request_id(headers)
-    assert request_id == "request-1"
+    acp, forwarded = extract_acp_info(headers)
+    assert acp == vf.ACPInfo(request_id="request-1")
     assert not ACP_EXTENSION_HEADERS.intersection(map(str.lower, forwarded))
     assert forwarded["Idempotency-Key"] == "provider-key"
     assert forwarded["OpenAI-Beta"] == "feature"
 
-    absent, unchanged = extract_acp_model_request_id({"OpenAI-Beta": "feature"})
+    absent, unchanged = extract_acp_info({"OpenAI-Beta": "feature"})
     assert absent is None and unchanged == {"OpenAI-Beta": "feature"}
 
-    with pytest.raises(ValueError, match="not a valid model request ID"):
-        extract_acp_model_request_id({"X-ACP-Model-Request-ID": "not/a/valid/id"})
+    with pytest.raises(ValueError, match="not a valid ACP request ID"):
+        extract_acp_info({"X-ACP-Model-Request-ID": "not/a/valid/id"})
 
 
 def test_acp_semantic_edge_metadata_is_optional():

@@ -83,7 +83,7 @@ class ACPHarness(Harness[ConfigT]):
         edge_set = SemanticEdgeSet.model_validate(
             response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
         )
-        trace.reconcile_semantic_edges(edge_set)
+        trace.add_semantic_edges(edge_set)
 
     @abstractmethod
     async def prepare_acp(

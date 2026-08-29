@@ -273,7 +273,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
-        assert all(call.model_request_id is not None for call in trace.calls)
+        assert all(call.acp is not None for call in trace.calls)
         assert all(
             trace.nodes[parent.node].sampled and node.sampled
             for node in trace.nodes

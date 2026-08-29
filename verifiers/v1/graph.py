@@ -76,7 +76,9 @@ class MessageNode(BaseModel):
     """Additional harness-declared parents in the semantic execution graph.
 
     Unlike ``parent``, these links do not imply an exact token prefix and therefore do
-    not affect physical branch construction.
+    not affect physical branch construction. A list permits multiple parents of the same
+    type, supports incremental appends, and preserves their advertised wire order; edge
+    application prevents duplicate ``(node, type)`` links.
     """
     message: Message
     """The message this node carries (system / user / assistant / tool)."""

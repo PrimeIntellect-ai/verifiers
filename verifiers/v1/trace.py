@@ -20,7 +20,7 @@ from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import (
-    MODEL_REQUEST_ID_PATTERN,
+    ACPInfo,
     ParentLink,
     SemanticEdgeSet,
 )
@@ -176,8 +176,8 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
     """Policy mediation applied to the request before this call."""
-    model_request_id: str | None = Field(default=None, pattern=MODEL_REQUEST_ID_PATTERN)
-    """Opaque model-request ID used to resolve optional ACP semantic edges."""
+    acp: ACPInfo | None = None
+    """Metadata advertised by the ACP harness for this model request."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -195,14 +195,7 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
 
 
 class Branch(BaseModel):
-    """A root-to-leaf message-graph path; each branch becomes one training sample.
-
-    A branch often matches one harness context window, but the concepts are not
-    identical: non-prefix prompt changes can split one context across physical branches,
-    while exact prefix reuse can carry ancestral calls into a descendant branch. Runtime
-    provenance therefore stays in ``MessageNode.semantic_parents`` rather than being
-    inferred here.
-    """
+    """A root-to-leaf message-graph path; each branch becomes one training sample."""
 
     index: int
     nodes: list[MessageNode]
@@ -401,11 +394,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The tools advertised to the agent, automatically recorded from last intercepted turn."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
-    """The message graph, including physical and semantic parent links.
-
-    Branches are derived solely from exact-prefix ``MessageNode.parent`` links; semantic
-    parents describe execution provenance without changing training sequences.
-    """
+    """The message graph, including physical and semantic parent links."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
@@ -511,11 +500,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         return branches
 
-    def reconcile_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
-        """Resolve request edges into semantic parents on committed message nodes."""
+    def add_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
+        """Add newly advertised ACP edges; cumulative replays are idempotent."""
         node_by_request: dict[str, int] = {}
         for call in self.calls:
-            if call.model_request_id is None or call.node is None:
+            if call.acp is None or call.node is None:
                 continue
             if not 0 <= call.node < len(self.nodes):
                 raise ValueError(f"model call has invalid message node {call.node}")
@@ -523,10 +512,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 raise ValueError(f"model call node {call.node} is not sampled")
             # SDK retries are sequential. If more than one attempt commits, the last
             # sampled response is the logical request result consumed by the harness.
-            node_by_request[call.model_request_id] = call.node
+            node_by_request[call.acp.request_id] = call.node
 
-        semantic_parents: list[list[ParentLink]] = [[] for _ in self.nodes]
         resolved_identities: set[tuple[int, int, str]] = set()
+        additions: list[tuple[int, ParentLink]] = []
+        pending_parents: dict[int, list[ParentLink]] = {}
         for edge in edge_set.edges:
             endpoints: list[int] = []
             for request_id in (
@@ -546,34 +536,35 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if identity in resolved_identities:
                 raise ValueError(f"duplicate resolved semantic edge: {identity!r}")
             resolved_identities.add(identity)
-            semantic_parents[target].append(ParentLink(node=source, type=edge.type))
+            link = ParentLink(node=source, type=edge.type)
+            if link in self.nodes[target].semantic_parents:
+                continue
 
-        # The physical parent links and semantic relationships together remain a DAG.
-        children: list[list[int]] = [[] for _ in self.nodes]
-        indegree = [0] * len(self.nodes)
-        for child, node in enumerate(self.nodes):
-            if node.parent is not None:
-                children[node.parent].append(child)
-                indegree[child] += 1
-        for target, parents in enumerate(semantic_parents):
-            for parent in parents:
-                children[parent.node].append(target)
-                indegree[target] += 1
+            # Adding source -> target creates a cycle exactly when target is already an
+            # ancestor of source. Walk parent links directly so existing nodes and links
+            # are never rebuilt as cumulative ACP edge sets arrive.
+            stack = [source]
+            visited: set[int] = set()
+            while stack:
+                node_id = stack.pop()
+                if node_id == target:
+                    raise ValueError(
+                        "semantic edges create a cycle in the message graph"
+                    )
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                node = self.nodes[node_id]
+                if node.parent is not None:
+                    stack.append(node.parent)
+                stack.extend(parent.node for parent in node.semantic_parents)
+                stack.extend(parent.node for parent in pending_parents.get(node_id, ()))
 
-        stack = [node for node, degree in enumerate(indegree) if degree == 0]
-        visited = 0
-        while stack:
-            node = stack.pop()
-            visited += 1
-            for child in children[node]:
-                indegree[child] -= 1
-                if indegree[child] == 0:
-                    stack.append(child)
-        if visited != len(self.nodes):
-            raise ValueError("semantic edges create a cycle in the message graph")
+            additions.append((target, link))
+            pending_parents.setdefault(target, []).append(link)
 
-        for node, parents in zip(self.nodes, semantic_parents, strict=True):
-            node.semantic_parents = parents
+        for target, link in additions:
+            self.nodes[target].semantic_parents.append(link)
 
     @property
     def messages(self) -> Messages:

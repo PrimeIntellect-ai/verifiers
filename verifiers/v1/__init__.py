@@ -84,6 +84,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
+    ACPInfo,
     ParentLink,
     SemanticEdge,
     SemanticEdgeSet,
@@ -232,6 +233,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
+    "ACPInfo",
     "ACP_SEMANTIC_EDGES_METADATA_KEY",
     "ParentLink",
     "SemanticEdge",

@@ -58,7 +58,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.semantic import extract_acp_model_request_id
+from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
@@ -422,7 +422,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
-        model_request_id: str | None = None,
+        acp: ACPInfo | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -470,7 +470,7 @@ class InterceptionServer(Interception):
                 )
                 if policy_paths
                 else None,
-                model_request_id=model_request_id,
+                acp=acp,
             )
         )
 
@@ -495,9 +495,7 @@ class InterceptionServer(Interception):
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
         try:
-            model_request_id, upstream_headers = extract_acp_model_request_id(
-                request.headers
-            )
+            acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         logger.debug(
@@ -516,7 +514,7 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming and model_request_id is None:
+            if streaming and acp is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
@@ -647,7 +645,7 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
-                model_request_id=model_request_id,
+                acp=acp,
                 upstream_headers=upstream_headers,
             )
 
@@ -763,7 +761,7 @@ class InterceptionServer(Interception):
                     usage=call_response.usage if call_response else None,
                     error=error,
                     policy_paths=policy_paths,
-                    model_request_id=model_request_id,
+                    acp=acp,
                 )
             return serve(call_response)
 
@@ -780,7 +778,7 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
-        model_request_id: str | None = None,
+        acp: ACPInfo | None = None,
         upstream_headers: Mapping[str, str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
@@ -1026,7 +1024,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
                 policy_paths=policy_paths,
-                model_request_id=model_request_id,
+                acp=acp,
             )
 
     async def handle_aux(
