@@ -86,7 +86,12 @@ class ClineHarness(ACPHarness[ClineHarnessConfig]):
         mcp_settings = f"{settings_dir}/cline_mcp_settings.json"
         await runtime.write(
             f"{settings_dir}/global-settings.json",
-            json.dumps({"disabledTools": self.config.disabled_tools or []}).encode(),
+            json.dumps(
+                {
+                    "disabledTools": self.config.disabled_tools or [],
+                    "telemetryOptOut": True,
+                }
+            ).encode(),
         )
         await runtime.write(
             mcp_settings,
@@ -97,7 +102,8 @@ class ClineHarness(ACPHarness[ClineHarnessConfig]):
                             "transport": {
                                 "type": "streamableHttp",
                                 "url": url,
-                            }
+                            },
+                            "timeout": self.config.tool_timeout,
                         }
                         for name, url in mcp_urls.items()
                     }
@@ -116,7 +122,6 @@ class ClineHarness(ACPHarness[ClineHarnessConfig]):
             "CLINE_PROVIDER": "openai-compatible",
             "CLINE_API_KEY": secret,
             "CLINE_MODEL": ctx.model,
-            "CLINE_TELEMETRY_DISABLED": "1",
             "CLINE_NO_AUTO_UPDATE": "1",
             "NO_UPDATE_NOTIFIER": "1",
         }
