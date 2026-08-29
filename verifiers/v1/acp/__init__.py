@@ -188,6 +188,10 @@ class _PacketReader:
             raise ValueError(f"ACP session packet is too large: {size} bytes")
         return json.loads((await self._readexactly(size)).decode())
 
+    async def close(self) -> None:
+        if close := getattr(self._source, "aclose", None):
+            await close()
+
 
 class ACPHarnessSession(HarnessSession):
     """A live ACP process, connection, and native session for one rollout."""
@@ -316,6 +320,9 @@ class ACPHarnessSession(HarnessSession):
                         metadata = result.get("response_metadata")
                         if isinstance(metadata, dict):
                             response_metadata = metadata
+            if reader is not None:
+                with contextlib.suppress(BaseException):
+                    await reader.close()
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),

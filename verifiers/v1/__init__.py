@@ -73,6 +73,7 @@ from verifiers.v1.mcp import (
     ToolsetConfig,
 )
 from verifiers.v1.runtimes import (
+    ApptainerConfig,
     DockerConfig,
     PodmanConfig,
     PrimeConfig,
@@ -301,6 +302,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
+    "ApptainerConfig",
     "DockerConfig",
     "PodmanConfig",
     "PrimeConfig",

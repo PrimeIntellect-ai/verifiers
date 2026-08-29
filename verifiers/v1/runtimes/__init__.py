@@ -5,6 +5,11 @@ from typing import Annotated
 from pydantic import Field
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.runtimes.apptainer import (
+    ApptainerConfig,
+    ApptainerRuntime,
+    ApptainerRuntimeInfo,
+)
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -34,7 +39,12 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PodmanConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig
+    | DockerConfig
+    | PodmanConfig
+    | ApptainerConfig
+    | PrimeConfig
+    | ModalConfig,
     Field(discriminator="type"),
 ]
 
@@ -42,6 +52,7 @@ RuntimeInfo = Annotated[
     SubprocessRuntimeInfo
     | DockerRuntimeInfo
     | PodmanRuntimeInfo
+    | ApptainerRuntimeInfo
     | PrimeRuntimeInfo
     | ModalRuntimeInfo,
     Field(discriminator="type"),
@@ -57,6 +68,8 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         return DockerRuntime
     if isinstance(config, PodmanConfig):
         return PodmanRuntime
+    if isinstance(config, ApptainerConfig):
+        return ApptainerRuntime
     return SubprocessRuntime
 
 
@@ -92,6 +105,9 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 
 __all__ = [
+    "ApptainerConfig",
+    "ApptainerRuntime",
+    "ApptainerRuntimeInfo",
     "BaseRuntimeInfo",
     "DockerConfig",
     "DockerRuntime",

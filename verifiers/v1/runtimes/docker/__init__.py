@@ -11,8 +11,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import uuid
-from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import Literal, Self
 from urllib.parse import urlsplit
@@ -21,6 +19,7 @@ from pydantic import model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
+from verifiers.v1.runtimes.attached import open_attached_process
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -87,128 +86,8 @@ class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
     pass
 
 
-async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
-    while chunk := await reader.read(64 * 1024):
-        yield chunk
-
-
-class ContainerProcess(RuntimeProcess):
-    def __init__(
-        self,
-        process: asyncio.subprocess.Process,
-        engine: Literal["docker", "podman"],
-        container: str,
-        pid: int,
-    ) -> None:
-        self._process = process
-        self._engine = engine
-        self._container = container
-        self._pid = pid
-        assert process.stdin is not None
-        assert process.stdout is not None
-        assert process.stderr is not None
-        self._stdin = process.stdin
-        self.stdout = _read_stream(process.stdout)
-        self.stderr = _read_stream(process.stderr)
-
-    async def write(self, data: bytes) -> None:
-        self._stdin.write(data)
-        await self._stdin.drain()
-
-    async def wait(self) -> int:
-        return await self._process.wait()
-
-    async def terminate(self) -> None:
-        await self._signal("TERM")
-
-    async def kill(self) -> None:
-        await self._signal("KILL")
-
-    async def _signal(self, signal: str) -> None:
-        if self._process.returncode is not None:
-            return
-        result = await _run_container_cli(
-            self._engine,
-            "exec",
-            self._container,
-            "sh",
-            "-c",
-            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2"',
-            "vf-signal",
-            signal,
-            str(self._pid),
-        )
-        if result.exit_code != 0 and self._process.returncode is None:
-            raise SandboxError(
-                f"{self._engine} exec process signal failed: {result.stderr.strip()}"
-            )
-
-
-async def _run_container_cli(
-    engine: Literal["docker", "podman"], *args: str
-) -> ProgramResult:
-    proc = await asyncio.create_subprocess_exec(
-        engine,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await proc.communicate()
-    except BaseException:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        await run_shielded(proc.communicate())
-        raise
-    return ProgramResult(
-        exit_code=proc.returncode or 0,
-        stdout=stdout.decode(errors="replace"),
-        stderr=stderr.decode(errors="replace"),
-    )
-
-
 def _environment_args(env: dict[str, str]) -> list[str]:
     return [arg for key, value in env.items() for arg in ("--env", f"{key}={value}")]
-
-
-async def _abort_process_startup(
-    proc: asyncio.subprocess.Process,
-    engine: Literal["docker", "podman"],
-    container: str,
-    pidfile: str,
-) -> str:
-    """Kill a partially opened container process and reap its local CLI client."""
-    # The target normally writes its PID immediately, but cancellation can win
-    # that race. Wait briefly for the file before signalling the process group.
-    cleanup = (
-        'i=0; while [ "$i" -lt 20 ]; do '
-        'if [ -s "$1" ]; then pid=$(cat "$1"); '
-        'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
-        'rm -f "$1"; exit 0; fi; '
-        "i=$((i + 1)); sleep 0.05; done; exit 1"
-    )
-    try:
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                _run_container_cli(
-                    engine,
-                    "exec",
-                    container,
-                    "sh",
-                    "-c",
-                    cleanup,
-                    "vf-process-cleanup",
-                    pidfile,
-                ),
-                timeout=2,
-            )
-    finally:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        _, stderr = await proc.communicate()
-    return stderr.decode(errors="replace").strip()
 
 
 _DOCKER_HOST = "host.docker.internal"
@@ -248,7 +127,25 @@ class _ContainerRuntime(Runtime):
         return SERVICE_PORT
 
     async def _run_cli(self, *args: str) -> ProgramResult:
-        return await _run_container_cli(self.engine, *args)
+        process = await asyncio.create_subprocess_exec(
+            self.engine,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await process.communicate()
+        except BaseException:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            await run_shielded(process.communicate())
+            raise
+        return ProgramResult(
+            exit_code=process.returncode or 0,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
 
     async def start(self) -> None:
         try:
@@ -697,62 +594,23 @@ class _ContainerRuntime(Runtime):
         env_args = _environment_args(
             self._container_env(env, use_policy_proxy=self._cut)
         )
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
-        # Give the target its own process group when `setsid -w` is available so
-        # terminate()/kill() reap its descendants while the attached exec remains
-        # attached if setsid needs to fork. The inner shell records the
-        # post-setsid PID before exec preserves it as the target PID.
-        wrapper = (
-            "if setsid -w true >/dev/null 2>&1; then "
-            'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
-            'fi; echo $$ > "$1"; shift; exec "$@"'
-        )
-        proc = await asyncio.create_subprocess_exec(
-            self.engine,
-            "exec",
-            "-i",
-            *env_args,
-            "--workdir",
-            self.config.workdir,
-            self._container,
-            "sh",
-            "-c",
-            wrapper,
-            "vf-process",
-            pidfile,
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + 5
-        try:
-            while True:
-                ready = await self._run_cli("exec", self._container, "cat", pidfile)
-                if ready.exit_code == 0 and ready.stdout.strip().isdigit():
-                    return ContainerProcess(
-                        proc,
-                        self.engine,
-                        self._container,
-                        int(ready.stdout.strip()),
-                    )
-                if proc.returncode is not None or loop.time() >= deadline:
-                    break
-                await asyncio.sleep(0.05)
-        except BaseException:
-            await run_shielded(
-                _abort_process_startup(proc, self.engine, self._container, pidfile)
-            )
-            raise
 
-        stderr = await run_shielded(
-            _abort_process_startup(proc, self.engine, self._container, pidfile)
-        )
-        detail = stderr or ready.stderr.strip()
-        raise SandboxError(
-            f"{self.engine} live process failed to start: {detail or 'PID unavailable'}"
+        async def runtime_exec(command: list[str]) -> ProgramResult:
+            return await self._run_cli("exec", self._container, *command)
+
+        return await open_attached_process(
+            argv,
+            command=[
+                self.engine,
+                "exec",
+                "-i",
+                *env_args,
+                "--workdir",
+                self.config.workdir,
+                self._container,
+            ],
+            runtime_exec=runtime_exec,
+            runtime_name=self.engine,
         )
 
     async def run_background(
