@@ -2,6 +2,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
+import numpy as np
+
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
@@ -187,12 +189,22 @@ class RoutedExperts(TypedDict):
 class KeptTokens:
     """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
     in position order) and `counts` (kept-set size per completion token; 0 = no usable
-    mask). Base64 blobs straight off the `generate` response on the `TurnTokens`
-    carrier; decoded to flat int32 arrays on `MessageNode` (`len(ids) == sum(counts)`,
-    row boundaries recovered from `counts`)."""
+    mask) as flat int32 arrays (`len(ids) == sum(counts)`, row boundaries recovered
+    from `counts`). Built from vLLM's native `sampling_mask` payload on the `generate`
+    response (one list of surviving vocab ids per completion token)."""
 
     ids: Any
     counts: Any
+
+    @classmethod
+    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "KeptTokens":
+        counts = np.fromiter((len(row) for row in sampling_mask), dtype=np.int32, count=len(sampling_mask))
+        ids = (
+            np.concatenate([np.asarray(row, dtype=np.int32) for row in sampling_mask])
+            if int(counts.sum())
+            else np.empty(0, dtype=np.int32)
+        )
+        return cls(ids=ids, counts=counts)
 
 
 class TurnTokens(BaseModel):
@@ -224,7 +236,7 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
     # surviving top-p/top-k truncation, per completion token), attributed to the assistant
     # node by the turn's `commit`, then dropped. None unless the engine ran with
-    # `enable_return_kept_tokens`.
+    # `--return-sampling-mask`.
     kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
 
 

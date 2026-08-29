@@ -526,13 +526,10 @@ def _attribute_kept_tokens(
     that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
     if payload is None:
         return
-    counts = np.frombuffer(binascii.a2b_base64(payload.counts), dtype=np.int32)
-    ids = np.frombuffer(binascii.a2b_base64(payload.ids), dtype=np.int32)
     node = trace.nodes[assistant_id]
-    if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
+    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(payload.ids):
         return
-    # Own the buffers — the payload views reference the turn's response bytes.
-    node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
+    node.kept_tokens = payload
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> int:

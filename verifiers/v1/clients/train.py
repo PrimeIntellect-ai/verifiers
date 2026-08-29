@@ -162,8 +162,8 @@ def response_from_generate(
             multi_modal_data=result.get("multi_modal_data"),
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            kept_tokens=KeptTokens(**kept)
-            if (kept := result.get("kept_tokens"))
+            kept_tokens=KeptTokens.from_sampling_mask(mask)
+            if (mask := result.get("sampling_mask"))
             else None,
         ),
     )
