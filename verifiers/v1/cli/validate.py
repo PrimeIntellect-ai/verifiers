@@ -158,6 +158,7 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
     outcomes = {reason: counts[reason] for reason in REASONS}
     outcomes["missing"] = missing
     checked = outcomes["valid"] + outcomes["invalid"]
+    rate_total = total - outcomes["unchecked"]
     terminal = checked + outcomes["unchecked"]
     summary: dict[str, Any] = {
         "mode": mode,
@@ -166,9 +167,7 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
         "terminal": terminal,
         "owed": missing + outcomes["error"] + outcomes["timeout"],
         "outcomes": outcomes,
-        "valid_rate": round(outcomes["valid"] / total, 6)
-        if total and checked
-        else None,
+        "valid_rate": round(outcomes["valid"] / rate_total, 6) if checked else None,
     }
     if mode == "all":
         checks: dict[str, dict[str, int]] = {}
