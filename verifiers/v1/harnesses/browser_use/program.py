@@ -27,12 +27,14 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 
-from verifiers.v1.mcp.client import call_mcp, connect_mcp
+if TYPE_CHECKING:
+    # The harness bundles this module into the generated script before execution.
+    from verifiers.v1.mcp.client import call_mcp, connect_mcp  # noqa: TC004
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout."""

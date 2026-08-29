@@ -1,6 +1,6 @@
+import inspect
 import json
 from collections.abc import Sequence
-from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -10,13 +10,14 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
-MCP_CLIENT_IMPORT = "from verifiers.v1.mcp.client import call_mcp, connect_mcp"
-MCP_CLIENT_SOURCE = Path(mcp_client.__file__).read_text()
+MCP_CLIENT_SOURCE = inspect.getsource(mcp_client)
+PEP_723_END = "# ///\n"
 
 
 def inline_mcp_client(program: str) -> str:
     """Embed the public client so PEP 723 programs need only their declared packages."""
-    return program.replace(MCP_CLIENT_IMPORT, MCP_CLIENT_SOURCE)
+    metadata, body = program.split(PEP_723_END, 1)
+    return f"{metadata}{PEP_723_END}{MCP_CLIENT_SOURCE}\n{body}"
 
 
 async def launch_chat_program(

@@ -9,11 +9,14 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 from openai import APIStatusError, AsyncOpenAI
 
-from verifiers.v1.mcp.client import call_mcp, connect_mcp
+if TYPE_CHECKING:
+    # The harness bundles this module into the generated script before execution.
+    from verifiers.v1.mcp.client import call_mcp, connect_mcp  # noqa: TC004
 
 SERPER_URL = "https://google.serper.dev/search"
 
