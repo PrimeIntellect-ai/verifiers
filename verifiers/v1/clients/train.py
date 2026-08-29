@@ -361,6 +361,7 @@ class TrainClient(Client):
         model = body["model"]
         sampling_params = sampling.wire_args()
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        cache_salt = sampling_params.pop("cache_salt", None)
         pool = ElasticRendererPool(
             self.config.renderer_model_name or model,
             self.config.renderer,
@@ -433,6 +434,7 @@ class TrainClient(Client):
                     tools=wire_tools,
                     sampling_params=sampling_params,
                     process_multimodal=process_multimodal,
+                    cache_salt=cache_salt,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,

@@ -37,10 +37,9 @@ from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
-IDLE_FALLBACK_LIFETIME = 30 * 24 * 60 * 60
-"""Lifetime (seconds) given to container sandboxes that set an idle timeout: the
-platform requires a finite lifetime there as a safety fallback should idle detection
-fail. Far above any real run, so effectively unbounded."""
+EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
+"""Safety deadline for APIs that require a finite bound. Normal execution remains
+bounded by idle detection or rollout cancellation; 30 days is above any real run."""
 
 
 BASE_LABELS: list[str] = []
@@ -191,7 +190,7 @@ class PrimeRuntime(Runtime):
             "timeout_minutes": (
                 -1
                 if self.config.vm or idle_minutes is None
-                else max(IDLE_FALLBACK_LIFETIME // 60, idle_minutes + 1)
+                else max(EFFECTIVELY_UNBOUNDED_SECONDS // 60, idle_minutes + 1)
             ),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
@@ -294,21 +293,18 @@ class PrimeRuntime(Runtime):
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        # Poll the job by hand: the SDK's run_background_job needs a finite deadline,
-        # but the sandbox has no lifetime limit — the rollout's stage timeouts bound
-        # this via cancellation instead.
         try:
-            job = await self._client.start_background_job(
+            # The shared SDK client coalesces concurrent VM job polls into batches.
+            # Rollout cancellation remains the practical execution timeout; this
+            # long SDK deadline is only a final safety bound.
+            result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
+                timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                poll_interval=1,
             )
-            while True:
-                result = await self._client.get_background_job(self.info.id, job)
-                if result.completed:
-                    break
-                await asyncio.sleep(1)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
