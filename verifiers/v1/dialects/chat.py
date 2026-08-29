@@ -565,12 +565,15 @@ class ChatDialect(Dialect[ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
+        # Some OpenAI-compatible providers reject an explicit JSON null for `tools`; omitting it
+        # has the same no-tools meaning and keeps tool-less harness turns portable.
         overrides = sampling.wire_args()
         max_token_keys = {"max_tokens", "max_completion_tokens"}
         max_tokens_overridden = not max_token_keys.isdisjoint(overrides)
         steered = {
             k: v
             for k, v in body.items()
-            if not max_tokens_overridden or k not in max_token_keys
+            if (not max_tokens_overridden or k not in max_token_keys)
+            and (k != "tools" or v is not None)
         }
         return {**steered, **overrides, "model": model}
