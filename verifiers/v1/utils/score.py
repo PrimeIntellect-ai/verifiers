@@ -59,42 +59,30 @@ def parse_judge_choice(
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
-
     horizontal_space = r"[^\S\n]"
-    marker_tail = (
-        rf"{horizontal_space}*(?:IS{horizontal_space}*)?[:\-]?"
-        rf"{horizontal_space}*{choice_re}"
-    )
-    final_marker = (
-        rf"^{horizontal_space}*FINAL{horizontal_space}+"
-        rf"(?:JUDGMENT|ANSWER|VERDICT)"
-    )
-    final_boxed_choices = re.findall(
-        rf"{final_marker}[^\n]*{re.escape(BOXED_START.upper())}{horizontal_space}*"
-        rf"{choice_re}{horizontal_space}*\}}",
-        text_upper,
-        re.MULTILINE,
-    )
     final_choices = re.findall(
-        rf"{final_marker}{marker_tail}",
+        rf"^{horizontal_space}*FINAL{horizontal_space}+"
+        rf"(?:JUDGMENT|ANSWER|VERDICT){horizontal_space}*"
+        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*{choice_re}",
         text_upper,
         re.MULTILINE,
     )
-    bare_choices = re.findall(
-        rf"^{horizontal_space}*(?:JUDGMENT|ANSWER|VERDICT){marker_tail}",
-        text_upper,
-        re.MULTILINE,
+    if final_choices:
+        return choices_by_upper.get(final_choices[-1])
+
+    text = extract_boxed_answer(text, strict=True).strip() or text
+    text_upper = text.upper()
+    verdict_re = (
+        r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT|"
+        r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
     )
 
-    boxed = extract_boxed_answer(text, strict=True).strip()
-    boxed_choices = re.findall(choice_re, boxed.upper())
-    matches = (
-        final_boxed_choices
-        or final_choices
-        or boxed_choices
-        or bare_choices
-        or re.findall(choice_re, text_upper)
-    )
+    verdict = re.search(verdict_re, text_upper)
+    if verdict:
+        match = re.search(choice_re, text_upper[verdict.end() :])
+        return choices_by_upper.get(match.group(1)) if match else None
+
+    matches = re.findall(choice_re, text_upper)
     return choices_by_upper.get(matches[-1]) if matches else None
 
 
