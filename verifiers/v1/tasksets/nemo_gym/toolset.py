@@ -1,20 +1,13 @@
 """Expose NeMo Gym resource tools through Verifiers MCP."""
 
-from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
 import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import (
-    create_mcp_http_client,
-    streamable_http_client,
-)
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import Field
 
-from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.mcp import SharedToolsetConfig, Toolset, mcp_session
 from verifiers.v1.state import State
 
 
@@ -39,28 +32,6 @@ class NeMoGymState(State):
         ) as client:
             return await client.post(f"{self.resources_url}/{path}", json=body)
 
-    @asynccontextmanager
-    async def mcp_session(self) -> AsyncIterator[ClientSession]:
-        """Open an upstream MCP session using this rollout's credentials."""
-        assert self.mcp_url is not None
-        stack = AsyncExitStack()
-        try:
-            client = await stack.enter_async_context(
-                create_mcp_http_client(
-                    headers=self.mcp_headers,
-                    timeout=httpx.Timeout(self.request_timeout),
-                )
-            )
-            read, write, *_ = await stack.enter_async_context(
-                streamable_http_client(self.mcp_url, http_client=client)
-            )
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            yield session
-        finally:
-            with suppress(Exception):
-                await stack.aclose()
-
 
 class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
@@ -74,7 +45,17 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
 
     async def list_tools(self) -> list[Tool]:
         if self.state.mcp_url is not None:
-            async with self.state.mcp_session() as session:
+            async with mcp_session(
+                {
+                    "url": self.state.mcp_url,
+                    "headers": self.state.mcp_headers,
+                    "timeout": self.state.request_timeout,
+                    "connect_timeout": self.state.request_timeout,
+                },
+                server="nemo_gym",
+                operation="list_tools",
+                replay_safe=True,
+            ) as session:
                 tools = (await session.list_tools()).tools
         else:
             tools = [
@@ -90,7 +71,16 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         if self.state.mcp_url is not None:
-            async with self.state.mcp_session() as session:
+            async with mcp_session(
+                {
+                    "url": self.state.mcp_url,
+                    "headers": self.state.mcp_headers,
+                    "timeout": self.state.request_timeout,
+                    "connect_timeout": self.state.request_timeout,
+                },
+                server="nemo_gym",
+                operation="call_tool",
+            ) as session:
                 return await session.call_tool(name, arguments)
 
         if name not in self.state.direct_tools:
