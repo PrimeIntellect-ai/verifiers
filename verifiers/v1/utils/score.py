@@ -55,23 +55,32 @@ def parse_judge_choice(
         return None
 
     text = content.rsplit("</think>", 1)[-1].strip()
-    text = extract_boxed_answer(text, strict=True).strip() or text
-
     text_upper = text.upper()
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
-    verdict_re = (
-        r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT|"
-        r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
+
+    horizontal_space = r"[^\S\n]"
+    marker_tail = (
+        rf"{horizontal_space}*(?:IS{horizontal_space}*)?[:\-]?"
+        rf"{horizontal_space}*[^\n]*?{choice_re}"
+    )
+    final_choices = re.findall(
+        rf"^{horizontal_space}*FINAL{horizontal_space}+"
+        rf"(?:JUDGMENT|ANSWER|VERDICT){marker_tail}",
+        text_upper,
+        re.MULTILINE,
+    )
+    bare_choices = re.findall(
+        rf"^{horizontal_space}*(?:JUDGMENT|ANSWER|VERDICT){marker_tail}",
+        text_upper,
+        re.MULTILINE,
     )
 
-    verdict = re.search(verdict_re, text_upper)
-    if verdict:
-        match = re.search(choice_re, text_upper[verdict.end() :])
-        return choices_by_upper.get(match.group(1)) if match else None
-
-    matches = re.findall(choice_re, text_upper)
+    boxed = extract_boxed_answer(text, strict=True).strip()
+    matches = (
+        final_choices or bare_choices or re.findall(choice_re, (boxed or text).upper())
+    )
     return choices_by_upper.get(matches[-1]) if matches else None
 
 

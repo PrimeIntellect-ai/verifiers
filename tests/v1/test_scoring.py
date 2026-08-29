@@ -113,7 +113,17 @@ def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
     }
 
 
-def test_parse_judge_choice_uses_first_choice_after_verdict_marker() -> None:
-    response = "Final Judgment: B because it is a better answer"
-
-    assert vf.parse_judge_choice(response, choices=("A", "B")) == "B"
+def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
+    assert (
+        vf.parse_judge_choice(
+            "Draft: \\boxed{A}\nFinal Judgment: B", choices=("A", "B")
+        )
+        == "B"
+    )
+    assert (
+        vf.parse_judge_choice(
+            "Draft: \\boxed{A}\nFinal Judgment:\nReasoning mentions B",
+            choices=("A", "B"),
+        )
+        == "A"
+    )
