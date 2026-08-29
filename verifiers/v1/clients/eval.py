@@ -1,5 +1,6 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import asyncio
 import re
 from collections.abc import Mapping
 
@@ -53,6 +54,9 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
+
+_UPSTREAM_ATTEMPTS = 4
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 522, 529})
 
 
 class EvalClient(Client):
@@ -126,29 +130,50 @@ class EvalClient(Client):
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
-        request = self.client.build_request(
-            "POST",
-            url,
-            content=to_json(body, inf_nan_mode="null"),
-            headers=headers,
-        )
-        try:
-            response = await self.client.send(request, stream=stream)
-        except httpx.TimeoutException as e:
-            raise model_error(str(e), status_code=504) from e
-        except httpx.HTTPError as e:
-            raise model_error(str(e), status_code=503) from e
-        except ConnectionResetError as e:
-            raise model_error(str(e), status_code=503) from e
-        if not stream:
+        # Load-shed and transport faults retry HERE, next to the provider, before the
+        # failure crosses the tunnel: an upstream 5xx/429 or a dropped connection is
+        # infrastructure answering for the model, and surfacing it un-retried kills an
+        # otherwise healthy session (measured live: "upstream 504: upstream request
+        # timeout" storms under fleet concurrency). Bounded and short — the harness
+        # keeps its own outer ladder.
+        last_error: Exception | None = None
+        for attempt in range(1, _UPSTREAM_ATTEMPTS + 1):
+            request = self.client.build_request(
+                "POST",
+                url,
+                content=to_json(body, inf_nan_mode="null"),
+                headers=headers,
+            )
             try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise model_error(
-                    f"upstream {e.response.status_code}: {e.response.text}",
-                    status_code=e.response.status_code,
-                ) from e
-            return response
+                response = await self.client.send(request, stream=stream)
+            except httpx.TimeoutException as e:
+                last_error = model_error(str(e), status_code=504)
+                last_error.__cause__ = e
+            except httpx.HTTPError as e:
+                last_error = model_error(str(e), status_code=503)
+                last_error.__cause__ = e
+            except ConnectionResetError as e:
+                last_error = model_error(str(e), status_code=503)
+                last_error.__cause__ = e
+            else:
+                if stream:
+                    break
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    last_error = model_error(
+                        f"upstream {e.response.status_code}: {e.response.text}",
+                        status_code=e.response.status_code,
+                    )
+                    last_error.__cause__ = e
+                    if e.response.status_code not in _RETRY_STATUSES:
+                        raise last_error
+                else:
+                    return response
+            if attempt < _UPSTREAM_ATTEMPTS:
+                await asyncio.sleep(2.0 * attempt)
+        if not stream:
+            raise last_error
         if response.status_code < 400:
             return response
         try:
