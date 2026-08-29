@@ -615,6 +615,7 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
 _TRUNCATED_ANCHOR_MODELS = [
     pytest.param("Qwen/Qwen3-8B", "auto", id="Qwen/Qwen3-8B"),
     pytest.param("Qwen/Qwen3.5-9B", "auto", id="Qwen/Qwen3.5-9B"),
+    pytest.param("Qwen/Qwen3.8-27B", "auto", id="Qwen/Qwen3.8-27B"),
     pytest.param("Qwen/Qwen3-VL-4B-Instruct", "auto", id="Qwen/Qwen3-VL-4B-Instruct"),
     pytest.param("zai-org/GLM-5", "auto", id="zai-org/GLM-5"),
     pytest.param("zai-org/GLM-4.7-Flash", "auto", id="zai-org/GLM-4.7-Flash"),
