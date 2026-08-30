@@ -71,7 +71,7 @@ class ModalProcess(RuntimeProcess):
         self.stderr: AsyncIterator[bytes] = process.stderr
 
     async def write(self, data: bytes) -> None:
-        await self._process.stdin.write.aio(data)
+        self._process.stdin.write(data)
         await self._process.stdin.drain.aio()
 
     async def wait(self) -> int:
