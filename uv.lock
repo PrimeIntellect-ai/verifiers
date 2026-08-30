@@ -5053,7 +5053,6 @@ dependencies = [
     { name = "datasets" },
     { name = "gepa" },
     { name = "httpx" },
-    { name = "httpx2" },
     { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp" },
@@ -5092,7 +5091,6 @@ notebook = [
     { name = "nest-asyncio" },
 ]
 openenv = [
-    { name = "fastmcp" },
     { name = "openenv" },
 ]
 rg = [

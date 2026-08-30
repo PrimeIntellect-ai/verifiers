@@ -5,7 +5,6 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any, cast
 
 import httpx
-import httpx2
 from mcp import Client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
@@ -44,11 +43,9 @@ class NeMoGymState(State):
         stack = AsyncExitStack()
         try:
             http_client = await stack.enter_async_context(
-                create_mcp_http_client(
-                    headers=self.mcp_headers,
-                    timeout=httpx2.Timeout(self.request_timeout),
-                )
+                create_mcp_http_client(headers=self.mcp_headers)
             )
+            http_client.timeout = self.request_timeout
             transport = streamable_http_client(self.mcp_url, http_client=http_client)
             yield await stack.enter_async_context(Client(transport))
         finally:

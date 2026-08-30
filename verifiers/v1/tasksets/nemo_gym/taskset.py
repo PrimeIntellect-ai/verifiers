@@ -135,8 +135,10 @@ class NeMoGymEnv(SingleAgentEnv):
 
         runtime = self._nemo_runtime = make_runtime(SubprocessConfig())
         await runtime.start()
+        server = Path(__file__).with_name("server.py")
+        program = await runtime.prepare_uv_script(server.read_bytes())
         await runtime.run_background(
-            ["uv", "run", str(Path(__file__).with_name("server.py"))],
+            program,
             {"NEMO_GYM_RESOURCE_SERVER": entrypoint},
             "nemo_gym.log",
         )

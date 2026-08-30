@@ -53,7 +53,6 @@ dependencies = [
     "renderers>=0.1.10",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
-    "httpx2>=2.0.0",
 ]
 
 [dependency-groups]
@@ -119,7 +118,6 @@ notebook = [
     "nest-asyncio>=1.6.0",
 ]
 openenv = [
-    "fastmcp==4.0.0b3",
     "openenv>=0.4.1",
 ]
 nemo-gym = [
