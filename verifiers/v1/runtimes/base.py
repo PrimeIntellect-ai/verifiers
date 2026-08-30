@@ -43,9 +43,8 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
-# The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
-# hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
-# at the runtime's public URL.
+# The single port a runtime reserves for a non-colocated server. The server binds this on
+# 0.0.0.0; `expose()` returns either its provider URL or a host port mapping.
 SERVICE_PORT = 8000
 
 
@@ -383,13 +382,12 @@ class Runtime(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for local runtimes (subprocess/docker), which pick a free port."""
+        `None` for runtimes without a reserved service port."""
         return None
 
     async def expose(self, port: int) -> str | None:
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when local. A remote runtime overrides this with the provider's native port
-        exposure (modal `tunnels()`, prime `client.expose`), torn down with the sandbox in
-        `stop()`. The reverse of a host `Tunnel` (interception.tunnel, which reaches a host
-        port from inside a runtime)."""
-        return None
+        or None when unavailable. Local runtimes use host loopback; sandbox runtimes override
+        this with a provider URL or local port mapping, torn down in `stop()`. The reverse of a
+        host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
+        return f"http://127.0.0.1:{port}"

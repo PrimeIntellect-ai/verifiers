@@ -253,9 +253,9 @@ async def serve_in_runtime(
 ) -> int:
     """Start a server and return its bound port.
 
-    Exposed remote servers must use the runtime's forwarded port. Local or colocated servers let
-    the OS choose and report the result through a file. With a state channel, the server fetches
-    the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
+    Exposed servers must use the runtime's forwarded port. Colocated servers let the OS choose and
+    report the result through a file. With a state channel, the server fetches the current rollout
+    task from the adjacent `/task` endpoint rather than a launch argument.
     """
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
@@ -268,7 +268,7 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if runtime.published_port is not None:
+    if exposed and runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
     port_file = None
@@ -322,17 +322,23 @@ async def reachable_url(
     runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
+    - a non-colocated sandbox service -> its published URL (`expose`), when available;
+    - a host-local URL -> direct for a local consumer, through a host tunnel for a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
-    elif not service.is_local:  # in a remote sandbox → it publishes its own port
-        yield await service.expose(port)
-    elif consumer_is_local:  # local consumer → localhost, no public tunnel
-        yield f"http://127.0.0.1:{port}"
-    else:  # remote consumer → a host tunnel publishes the port outward
-        async with PrimeTunnel().expose(port) as url:
-            yield url
+    elif published := await service.expose(port):
+        if service.is_local and not consumer_is_local:
+            published_port = urlsplit(published).port
+            if published_port is None:
+                raise ToolsetError(
+                    f"{service.type} runtime exposed an invalid URL: {published}"
+                )
+            async with PrimeTunnel().expose(published_port) as url:
+                yield url
+        else:
+            yield published
+    else:
+        raise ToolsetError(f"{service.type} runtime did not expose service port {port}")
 
 
 @dataclass(frozen=True)
