@@ -455,6 +455,62 @@ def _attribute_kept_tokens(
     node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
+def _project_prompt_attribution(
+    renderer_prompt_ids: list[int],
+    prompt_ids: list[int],
+    mm_token_type_id_map: dict[int, int],
+    message_spans: list[tuple[int, int] | None] | None,
+    is_content: list[bool] | None,
+) -> tuple[list[tuple[int, int] | None] | None, list[bool] | None]:
+    """Repeat logical attribution across vLLM's multimodal placeholder runs."""
+    if renderer_prompt_ids == prompt_ids:
+        return message_spans, is_content
+    if not mm_token_type_id_map:
+        raise ValueError(
+            "cannot align renderer and vLLM prompt tokens without multimodal token types"
+        )
+
+    offsets = [0]
+    prompt_offset = 0
+    for token_id in renderer_prompt_ids:
+        if prompt_offset >= len(prompt_ids) or prompt_ids[prompt_offset] != token_id:
+            raise ValueError("renderer prompt does not align with vLLM prompt tokens")
+        prompt_offset += 1
+        token_type = mm_token_type_id_map.get(token_id)
+        if token_type is not None:
+            while (
+                prompt_offset < len(prompt_ids)
+                and mm_token_type_id_map.get(prompt_ids[prompt_offset]) == token_type
+            ):
+                prompt_offset += 1
+        offsets.append(prompt_offset)
+    if prompt_offset != len(prompt_ids):
+        raise ValueError("renderer prompt does not align with vLLM prompt tokens")
+
+    projected_spans = None
+    if message_spans is not None:
+        projected_spans = []
+        for span in message_spans:
+            if span is None:
+                projected_spans.append(None)
+                continue
+            start, end = span
+            if not 0 <= start <= end <= len(renderer_prompt_ids):
+                raise ValueError("message span exceeds renderer prompt tokens")
+            projected_spans.append((offsets[start], offsets[end]))
+
+    projected_is_content = is_content
+    if is_content:
+        if len(is_content) != len(renderer_prompt_ids):
+            raise ValueError(
+                "content attribution does not match renderer prompt tokens"
+            )
+        projected_is_content = []
+        for index, value in enumerate(is_content):
+            projected_is_content.extend([value] * (offsets[index + 1] - offsets[index]))
+    return projected_spans, projected_is_content
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -468,14 +524,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         if tokens and tokens.renderer_prompt_ids is not None
         else prompt_ids
     )
-    spans = tokens.message_spans if tokens else None
-    is_content = tokens.is_content if tokens else None
-    attribution_matches = renderer_prompt_ids == prompt_ids
-    has_is_content = (
-        attribution_matches
-        and is_content is not None
-        and len(is_content) == len(prompt_ids)
-    )
+    renderer_spans = tokens.message_spans if tokens else None
+    renderer_is_content = tokens.is_content if tokens else None
     idx = _head_index(trace)
 
     prefix = turn.prefix_node_ids
@@ -506,6 +556,14 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         prefix = prefix[:keep]
         path_len = off
         renderer_path_len = renderer_off
+    spans, is_content = _project_prompt_attribution(
+        renderer_prompt_ids,
+        prompt_ids,
+        trace.mm_token_type_id_map,
+        renderer_spans,
+        renderer_is_content,
+    )
+    has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     cursor: int | None = None
@@ -514,13 +572,15 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
         key = (parent, message_hash(msg))
         start = path_len if cursor is None else cursor
-        span = spans[i] if attribution_matches and spans and i < len(spans) else None
+        span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
         node_tokens = prompt_ids[start:end]
         renderer_start = (
             renderer_path_len if renderer_cursor is None else renderer_cursor
         )
-        renderer_span = spans[i] if spans and i < len(spans) else None
+        renderer_span = (
+            renderer_spans[i] if renderer_spans and i < len(renderer_spans) else None
+        )
         renderer_end = renderer_span[1] if renderer_span else renderer_start
         trace.nodes.append(
             MessageNode.model_construct(

@@ -233,7 +233,7 @@ def test_renderer_level_break_forks_by_token_id():
     ]
 
 
-def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
+def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
@@ -256,9 +256,10 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
             finish_reason="stop",
             tokens=TurnTokens(
                 prompt_ids=[1, 9, 9, 3],
-                renderer_prompt_ids=[1, 2, 3],
+                renderer_prompt_ids=[1, 9, 3],
                 completion_ids=[4],
                 message_spans=[(0, 2)],
+                is_content=[False, True, False],
                 mm_token_type_id_map={9: 1},
             ),
         )
@@ -266,8 +267,10 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
 
     assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
     assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
+    assert trace.nodes[0].token_ids == [1, 9, 9]
+    assert trace.nodes[0].is_content == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
-    assert turn.previous_renderer_token_ids() == ([1, 2, 3], [4])
+    assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
 
     with pytest.raises(ValueError, match="exactly extend"):
         turn.commit(
@@ -279,12 +282,37 @@ def test_expanded_prompt_is_canonical_while_bridge_uses_logical_tokens():
                 finish_reason="stop",
                 tokens=TurnTokens(
                     prompt_ids=[1, 9, 8, 3, 4, 5],
-                    renderer_prompt_ids=[1, 2, 3, 4, 5],
+                    renderer_prompt_ids=[1, 9, 3, 4, 5],
                     completion_ids=[6],
                     message_spans=[None, None, (4, 5)],
                 ),
             )
         )
+
+    tool = vf.ToolMessage(content="result", tool_call_id="call_0")
+    graph.prepare_turn(trace, [user, assistant, tool]).commit(
+        vf.Response(
+            id="b",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="done"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3, 4, 5, 6, 7],
+                renderer_prompt_ids=[1, 9, 3, 4, 5, 6, 7],
+                completion_ids=[8],
+                message_spans=[None, None, (4, 6)],
+                is_content=[False, True, False, True, False, True, False],
+                mm_token_type_id_map={9: 1},
+            ),
+        )
+    )
+
+    tool_node = trace.nodes[-2]
+    assert tool_node.message == tool
+    assert tool_node.token_ids == [5, 6]
+    assert tool_node.renderer_token_ids == [5, 6]
+    assert tool_node.is_content == [False, True]
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
