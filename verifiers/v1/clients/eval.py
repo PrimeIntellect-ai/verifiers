@@ -55,8 +55,9 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
-_UPSTREAM_ATTEMPTS = 4
+_UPSTREAM_ATTEMPTS = 7
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 522, 529})
+_BACKOFF_CAP_SECONDS = 60.0
 
 
 class EvalClient(Client):
@@ -171,7 +172,9 @@ class EvalClient(Client):
                 else:
                     return response
             if attempt < _UPSTREAM_ATTEMPTS:
-                await asyncio.sleep(2.0 * attempt)
+                # Exponential to a minute: measured 504 storms run multi-minute, and a
+                # turn stalled in retry beats a dead session under wall-clock stops.
+                await asyncio.sleep(min(_BACKOFF_CAP_SECONDS, 2.0 * (2 ** (attempt - 1))))
         if not stream:
             raise last_error
         if response.status_code < 400:
