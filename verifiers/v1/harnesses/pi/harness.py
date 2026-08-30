@@ -8,14 +8,11 @@ from typing import Literal
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, patch_acp_adapter
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.interception import (
-    TOOL_CONTENT_SOURCE,
-    stage_tool_interception_config,
-)
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -33,6 +30,7 @@ ACP_VERSION = "0.0.33"
 PI_VERSION = "0.84.1"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
+ACP_LIB = f"{PACKAGES_DIR}/node_modules/pi-acp/dist/index.js"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 TOOL_HOOK_SOURCE = (
     Path(__file__)
@@ -41,6 +39,18 @@ TOOL_HOOK_SOURCE = (
     .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
     .encode()
 )
+ACP_PATCH_TARGET = '    if (method === "input" || method === "editor") {'
+ACP_PATCH = """    if (method === "input" && stringProp(ev, "title") === "vf_tool_interception") {
+      try {
+        const body = JSON.parse(stringProp(ev, "placeholder") ?? "");
+        const decision = await this.conn.extMethod("_verifiers/tool_interception", body);
+        await this.proc.sendExtensionUiResponse({ id, value: JSON.stringify(decision) });
+      } catch {
+        await this.proc.sendExtensionUiResponse({ id, cancelled: true });
+      }
+      return;
+    }
+"""
 
 INSTALL = r"""
 set -e
@@ -222,17 +232,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         self,
         config: ACPConfig,
         runtime: Runtime,
-        url: str,
-        secret: str,
     ) -> None:
+        await patch_acp_adapter(
+            runtime,
+            ACP_LIB,
+            ACP_PATCH_TARGET,
+            ACP_PATCH + ACP_PATCH_TARGET,
+            "Pi",
+        )
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
         hook_path = f"{agent_dir}/extensions/tool-hook.js"
         await runtime.write(hook_path, TOOL_HOOK_SOURCE)
-        credentials_path = await stage_tool_interception_config(
-            runtime, f"{agent_dir}/extensions", url, secret
-        )
-        config.env["NODE_USE_ENV_PROXY"] = "1"
-        config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", f".vf-pi-agent-{trace.id}"], {})

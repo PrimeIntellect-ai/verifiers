@@ -14,10 +14,6 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.interception import (
-    DIRECT_TOOL_SOURCE,
-    stage_tool_interception_config,
-)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -31,12 +27,7 @@ CODEX_VERSION = "0.149.1"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
-TOOL_HOOK_SOURCE = (
-    Path(__file__)
-    .with_name("tool_hook.py")
-    .read_text()
-    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
-)
+PROXY_SOURCE = Path(__file__).with_name("proxy.py").read_text()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -61,7 +52,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_PRE_TOOL_INTERCEPTION = True
-    SUPPORTS_POST_TOOL_INTERCEPTION = False
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
     TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec"})
     TOOL_INTERCEPTION_VERSION = CODEX_VERSION
 
@@ -223,45 +214,19 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         self,
         config: ACPConfig,
         runtime: Runtime,
-        url: str,
-        secret: str,
     ) -> None:
-        hook_command = await runtime.prepare_uv_script(
-            TOOL_HOOK_SOURCE,
-            {**config.env, "UV_FROZEN": "false"},
-            activate=False,
-        )
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         home = config.env["CODEX_HOME"]
-        credentials_path = await stage_tool_interception_config(
-            runtime, home, url, secret
-        )
 
         codex_config = json.loads(config.env["CODEX_CONFIG"])
         features = codex_config.setdefault("features", {})
-        features["hooks"] = True
         features.setdefault("code_mode", True)
+        features["code_mode_only"] = True
         codex_config.setdefault("tools", {})["experimental_request_user_input"] = {
             "enabled": False
         }
-        codex_config["bypass_hook_trust"] = True
-        mcp_servers = codex_config.setdefault("mcp_servers", {})
-        server_name = "vf_interceptor"
-        while server_name in mcp_servers:
-            server_name += "_"
-        mcp_servers[server_name] = {
-            "command": hook_command[0],
-            "args": hook_command[1:],
-            "env": {"VF_TOOL_INTERCEPTION_CONFIG": credentials_path},
-            "required": True,
-            "enabled_tools": ["before"],
-            "omit_tools_from": ["direct", "deferred", "code_mode"],
-            "startup_timeout_sec": 60,
-            "tool_timeout_sec": 35,
-        }
         config.env["CODEX_CONFIG"] = json.dumps(codex_config)
-        real_codex = CODEX_BIN.format(
-            version=self.config.version, acp_version=ACP_VERSION
-        )
+        real_codex = CODEX_BIN.format(**versions)
         launcher = f"{home}/codex"
         await runtime.write(
             launcher,
@@ -269,7 +234,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 "#!/bin/sh\n"
                 f"export PATH={shlex.quote(NODE_BIN_DIR)}:$PATH\n"
                 f"exec {shlex.quote(NODE_BIN_DIR + '/node')} "
-                f'{shlex.quote(real_codex)} "$@"\n'
+                f'{shlex.quote(real_codex)} "$@" '
+                '--code-mode-host "$VF_CODE_MODE_HOST_URL"\n'
             ).encode(),
         )
         executable = await runtime.run(["chmod", "+x", launcher], {})
@@ -278,29 +244,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
             )
         config.env["CODEX_PATH"] = launcher
-        await runtime.write(
-            f"{home}/hooks.json",
-            json.dumps(
-                {
-                    "hooks": {
-                        "PreToolUse": [
-                            {
-                                "hooks": [
-                                    {
-                                        "type": "mcp_tool",
-                                        "server": server_name,
-                                        "tool": "before",
-                                        "input": {
-                                            "tool_name": "${tool_name}",
-                                            "tool_use_id": "${tool_use_id}",
-                                            "tool_input": "${tool_input}",
-                                        },
-                                        "timeout": 35,
-                                    }
-                                ]
-                            }
-                        ],
-                    }
-                }
-            ).encode(),
-        )
+        config.tool_interception_proxy = [
+            *await runtime.prepare_uv_script(
+                PROXY_SOURCE,
+                {**config.env, "UV_FROZEN": "false"},
+                activate=False,
+            ),
+            real_codex,
+        ]

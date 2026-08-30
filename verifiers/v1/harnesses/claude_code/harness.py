@@ -134,10 +134,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         self,
         config: ACPConfig,
         runtime: Runtime,
-        url: str,
-        secret: str,
     ) -> None:
-        config.tool_interception = (url, secret)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         config.command = [
             f"{NODE_BIN_DIR}/node",

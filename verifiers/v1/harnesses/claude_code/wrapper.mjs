@@ -1,4 +1,4 @@
-/** Route Claude SDK tool hooks through standard ACP permission requests. */
+/** Route Claude SDK tool hooks through Verifiers' private ACP extension. */
 
 // {tool_content}
 
@@ -89,24 +89,13 @@ async function requestDecision(agent, hook, hookOptions) {
   } catch (error) {
     toolInterception = { error: String(error) };
   }
-  const response = await agent.client.requestPermission(
-    {
-      sessionId: hook.session_id,
-      toolCall: {
-        toolCallId: hook.tool_use_id,
-        title: hook.tool_name,
-        rawInput: hook.tool_input,
-        _meta: { toolInterception },
-      },
-      options: [{ optionId: "continue", name: "Continue", kind: "allow_once" }],
-    },
-    hookOptions?.signal,
-  );
   if (toolInterception.error) throw new Error(toolInterception.error);
-  const decision = validateToolDecision(
-    response?._meta?.toolInterception,
-    "LiveACPClient",
+  const response = await agent.client.ctx.request(
+    "_verifiers/tool_interception",
+    toolInterception,
+    { cancellationSignal: hookOptions?.signal },
   );
+  const decision = validateToolDecision(response, "LiveACPClient");
   return { decision, output, before, failed };
 }
 

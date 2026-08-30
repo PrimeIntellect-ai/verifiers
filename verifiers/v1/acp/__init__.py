@@ -33,7 +33,7 @@ ACP_SOURCE = (
 )
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
-__all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
+__all__ = ["ACPConfig", "ACPHarness", "ACPTurn", "patch_acp_adapter"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
@@ -64,6 +64,7 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     tool_interception: tuple[str, str] | None = None
+    tool_interception_proxy: list[str] | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -110,8 +111,6 @@ class ACPHarness(Harness[ConfigT]):
         self,
         config: ACPConfig,
         runtime: Runtime,
-        url: str,
-        secret: str,
     ) -> None:
         """Install an adapter bridge when the agent cannot use the ACP capability directly."""
 
@@ -143,7 +142,8 @@ class ACPHarness(Harness[ConfigT]):
                     f"{self.config.id} tool interception is verified only for version "
                     f"{self.TOOL_INTERCEPTION_VERSION}"
                 )
-            await self.configure_tool_interception(config, runtime, *tool_interception)
+            config.tool_interception = tool_interception
+            await self.configure_tool_interception(config, runtime)
         return ACPHarnessSession(
             self,
             ctx,
@@ -170,6 +170,17 @@ class ACPHarness(Harness[ConfigT]):
         raise HarnessError(
             f"harness {self.config.id!r} requires a rollout-scoped session"
         )
+
+
+async def patch_acp_adapter(
+    runtime: Runtime, path: str, target: str, patch: str, harness: str
+) -> None:
+    source = (await runtime.read(path)).decode()
+    if patch in source:
+        return
+    if source.count(target) != 1:
+        raise RuntimeError(f"{harness} ACP interception patch target was not found")
+    await runtime.write(path, source.replace(target, patch).encode())
 
 
 def _packet(value: JsonObject) -> bytes:
@@ -302,6 +313,7 @@ class ACPHarnessSession(HarnessSession):
                 if self.config.tool_interception is not None
                 else None
             ),
+            "toolInterceptionProxy": self.config.tool_interception_proxy,
         }
         async with self._lock:
             if self._closed:

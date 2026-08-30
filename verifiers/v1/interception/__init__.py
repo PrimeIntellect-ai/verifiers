@@ -1,5 +1,3 @@
-import json
-import uuid
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -63,35 +61,6 @@ def prepare_tool_interception(
         f"--tool-interception-secret-bytes={len(payload)}",
     ]
     return payload
-
-
-async def stage_tool_interception_config(
-    runtime: Runtime,
-    directory: str,
-    url: str,
-    secret: str,
-) -> str:
-    """Stage one private, single-use native-hook configuration."""
-    path = f"{directory}/tool-interception-{uuid.uuid4().hex}.credentials"
-    payload = json.dumps({"url": url, "secret": secret}).encode()
-    result = await runtime.run_with_input(
-        [
-            "sh",
-            "-c",
-            'umask 077; set -C; head -c "$1" > "$2"',
-            "write-tool-credentials",
-            str(len(payload)),
-            path,
-        ],
-        {},
-        payload,
-    )
-    if result.exit_code != 0:
-        raise RuntimeError(
-            "failed to stage tool interception credentials: "
-            f"{result.stderr.strip()[-500:]}"
-        )
-    return path
 
 
 def requires_tunnel(
@@ -182,5 +151,4 @@ __all__ = [
     "prepare_tool_interception",
     "requires_tunnel",
     "serve_interception",
-    "stage_tool_interception_config",
 ]

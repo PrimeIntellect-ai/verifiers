@@ -1,6 +1,4 @@
-/** Bridge Pi's native tool hooks to the rollout's /tool policy. */
-
-import { readFileSync, unlinkSync } from "node:fs";
+/** Bridge Pi's native tool hooks through Verifiers' private ACP extension. */
 
 // {tool_content}
 
@@ -9,18 +7,11 @@ async function intercept(
   toolCallId,
   name,
   content,
-  url,
-  secret,
-  signal,
+  ctx,
 ) {
-  const timeout = AbortSignal.timeout(30_000);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const response = await ctx.ui.input(
+    "vf_tool_interception",
+    JSON.stringify({
       phase,
       content: "nonempty_text",
       message: {
@@ -30,21 +21,13 @@ async function intercept(
         name,
       },
     }),
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-  });
-  if (!response.ok) throw new Error(`tool interception returned ${response.status}`);
-  return validateToolDecision(await response.json(), "tool interception");
+    { timeout: 30_000 },
+  );
+  if (!response) throw new Error("LiveACPClient cancelled tool interception");
+  return validateToolDecision(JSON.parse(response), "LiveACPClient");
 }
 
 export default function toolInterceptionExtension(pi) {
-  const credentialsPath = process.env.VF_TOOL_INTERCEPTION_CONFIG;
-  delete process.env.VF_TOOL_INTERCEPTION_CONFIG;
-  const credentialsJson = readFileSync(credentialsPath, "utf8");
-  unlinkSync(credentialsPath);
-  const { url, secret } = JSON.parse(credentialsJson);
-  if (typeof url !== "string" || typeof secret !== "string") {
-    throw new Error("Tool interception configuration is unavailable");
-  }
   const preReplacements = new Map();
 
   pi.on("message_end", (event) => {
@@ -74,9 +57,7 @@ export default function toolInterceptionExtension(pi) {
         toolCallId,
         event.toolName,
         "",
-        url,
-        secret,
-        ctx.signal,
+        ctx,
       );
     } catch (error) {
       console.error("Tool interception failed:", error);
@@ -108,9 +89,7 @@ export default function toolInterceptionExtension(pi) {
         toolCallId,
         event.toolName,
         content,
-        url,
-        secret,
-        ctx.signal,
+        ctx,
       );
     } catch (error) {
       console.error("Tool interception failed:", error);

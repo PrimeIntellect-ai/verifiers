@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 import traceback
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -38,6 +38,7 @@ from acp.schema import (
 # {tool_interception}
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+TOOL_INTERCEPTION_METHOD = "verifiers/tool_interception"
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ class ACPTurn:
 
 
 class LiveACPClient(Client):
-    """ACP client with an awaited metadata channel for native tool policy."""
+    """ACP client with a private awaited extension for native tool policy."""
 
     def __init__(self) -> None:
         self.visible_reply = ""
@@ -105,36 +106,79 @@ class LiveACPClient(Client):
         options: list[PermissionOption],
         **kwargs: Any,
     ) -> RequestPermissionResponse:
-        interception = (tool_call.field_meta or {}).get("toolInterception")
         option = next(
             (item for item in options if item.kind in ("allow_once", "allow_always")),
             None,
         )
-        response_meta = None
-        if interception is not None:
-            try:
-                if self.tool_interceptor is None:
-                    raise RuntimeError("Tool interception is not configured")
-                if not isinstance(interception, dict):
-                    raise TypeError("Tool interception metadata must be an object")
-                if error := interception.get("error"):
-                    raise RuntimeError(str(error))
-                decision = await asyncio.to_thread(
-                    self.tool_interceptor.request, interception
-                )
-                response_meta = {"toolInterception": decision}
-            except Exception as error:  # noqa: BLE001 - fail closed across ACP
-                self.prompt_error = RuntimeError(
-                    f"Tool interception is unavailable: {error}"
-                )
-                response_meta = {"toolInterception": {"error": str(error)}}
-                option = None
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
             if option
             else DeniedOutcome(outcome="cancelled")
         )
-        return RequestPermissionResponse(outcome=outcome, field_meta=response_meta)
+        return RequestPermissionResponse(outcome=outcome)
+
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method != TOOL_INTERCEPTION_METHOD:
+            raise RequestError.method_not_found(method)
+        try:
+            if self.tool_interceptor is None:
+                raise RuntimeError("Tool interception is not configured")
+            return await asyncio.to_thread(self.tool_interceptor.request, params)
+        except Exception as error:
+            self.prompt_error = RuntimeError(
+                f"Tool interception is unavailable: {error}"
+            )
+            raise RequestError.internal_error({"details": str(error)}) from error
+
+
+@asynccontextmanager
+async def running_tool_proxy(command: list[str], client: LiveACPClient):
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,
+        env=os.environ.copy(),
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    relay: asyncio.Task[None] | None = None
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
+        url = line.decode().strip()
+        if not url.startswith("ws://127.0.0.1:"):
+            raise RuntimeError(
+                f"Tool interception proxy returned an invalid endpoint: {url!r}"
+            )
+
+        async def relay_requests() -> None:
+            async for line in process.stdout:
+                request = json.loads(line)
+                request_id = request.get("id")
+                try:
+                    decision = await client.ext_method(
+                        TOOL_INTERCEPTION_METHOD, request["body"]
+                    )
+                    response = {"id": request_id, "decision": decision}
+                except Exception as error:  # noqa: BLE001 - proxy needs the failure text
+                    response = {"id": request_id, "error": str(error)}
+                process.stdin.write((json.dumps(response) + "\n").encode())
+                await process.stdin.drain()
+
+        relay = asyncio.create_task(relay_requests())
+        yield url
+    finally:
+        if relay is not None:
+            relay.cancel()
+            with suppress(asyncio.CancelledError):
+                await relay
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
 
 
 def user_content_blocks(contents: list, supports_images: bool) -> list:
@@ -244,6 +288,14 @@ class ACPSession:
                 self.client.tool_interceptor = ToolInterceptionClient(  # noqa: F821
                     interception["url"], interception["secret"]
                 )
+            if proxy_command := config.get("toolInterceptionProxy"):
+                if self.client.tool_interceptor is None:
+                    raise RuntimeError("Tool interception is not configured")
+                agent_env[
+                    "VF_CODE_MODE_HOST_URL"
+                ] = await self.stack.enter_async_context(
+                    running_tool_proxy(proxy_command, self.client)
+                )
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
@@ -254,13 +306,7 @@ class ACPSession:
                 )
             )
             self.connection = agent_process[0]
-            client_capabilities = ClientCapabilities(
-                field_meta=(
-                    {"toolInterception": True}
-                    if self.client.tool_interceptor is not None
-                    else None
-                )
-            )
+            client_capabilities = ClientCapabilities()
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=client_capabilities,

@@ -9,13 +9,10 @@ from pathlib import Path
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, patch_acp_adapter
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.interception import (
-    TOOL_CONTENT_SOURCE,
-    stage_tool_interception_config,
-)
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -35,6 +32,29 @@ OPENCLAW_VERSION = "2026.7.1-2"
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
+ACP_LIB = (
+    f"{OPENCLAW_DIR}/tools/node/lib/node_modules/openclaw/dist/acp-cli-BXc5GttU.js"
+)
+ACP_PATCH_TARGET = """	start() {
+		this.log("ready");
+	}"""
+ACP_PATCH = """	start() {
+		this.log("ready");
+		void this.forwardToolInterception().catch((error) => {
+			this.log(`tool interception bridge stopped: ${error}`);
+		});
+	}
+	async forwardToolInterception() {
+		while (true) {
+			const request = await this.gateway.request("verifiers.tool_interception.next", {}, { timeoutMs: null });
+			try {
+				const decision = await this.connection.extMethod("_verifiers/tool_interception", request.body);
+				await this.gateway.request("verifiers.tool_interception.resolve", { id: request.id, decision });
+			} catch (error) {
+				await this.gateway.request("verifiers.tool_interception.resolve", { id: request.id, error: String(error) });
+			}
+		}
+	}"""
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -62,32 +82,18 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
 root=${VF_OPENCLAW_BIN%/bin/openclaw}
-tool_interception_config=
-if [ -n "${VF_TOOL_INTERCEPTION_CONFIG:-}" ]; then
-    tool_interception_config=$(cat -- "$VF_TOOL_INTERCEPTION_CONFIG")
-    rm -f -- "$VF_TOOL_INTERCEPTION_CONFIG"
-    unset VF_TOOL_INTERCEPTION_CONFIG
-fi
 gateway_attempt=0
 while [ "$gateway_attempt" -lt 5 ]; do
     port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
     export OPENCLAW_GATEWAY_PORT="$port"
-    credentials_path=
-    if [ -n "$tool_interception_config" ]; then
-        credentials_path="$OPENCLAW_STATE_DIR/tool-interception-$gateway_attempt.credentials"
-        (umask 077; set -C; printf %s "$tool_interception_config" > "$credentials_path")
-        export VF_TOOL_INTERCEPTION_CONFIG="$credentials_path"
-    fi
     # OpenClaw respawns Node; separate groups let the trap reap both process trees.
     setsid "$VF_OPENCLAW_BIN" gateway run </dev/null >"$OPENCLAW_STATE_DIR/gateway.log" &
     gateway_pid=$!
-    unset VF_TOOL_INTERCEPTION_CONFIG
     attempt=0
     while ! curl -fsS "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
         if ! kill -0 "$gateway_pid" 2>/dev/null; then
             wait "$gateway_pid" 2>/dev/null || true
             gateway_pid=
-            [ -z "$credentials_path" ] || rm -f -- "$credentials_path"
             break
         fi
         attempt=$((attempt + 1))
@@ -103,7 +109,6 @@ if [ -z "$gateway_pid" ]; then
     tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
     exit 1
 fi
-[ -z "$credentials_path" ] || rm -f -- "$credentials_path"
 setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
 acp_pid=$!
 wait "$acp_pid"
@@ -268,9 +273,14 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         self,
         config: ACPConfig,
         runtime: Runtime,
-        url: str,
-        secret: str,
     ) -> None:
+        await patch_acp_adapter(
+            runtime,
+            ACP_LIB.format(version=self.config.version),
+            ACP_PATCH_TARGET,
+            ACP_PATCH,
+            "OpenClaw",
+        )
         state_dir = config.env["OPENCLAW_STATE_DIR"]
         plugin_dir = f"{state_dir}/tool-interception"
         await runtime.write(f"{plugin_dir}/index.mjs", TOOL_INTERCEPTION_PLUGIN_SOURCE)
@@ -302,12 +312,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 }
             ).encode(),
         )
-
-        credentials_path = await stage_tool_interception_config(
-            runtime, plugin_dir, url, secret
-        )
-        config.env["NODE_USE_ENV_PROXY"] = "1"
-        config.env["VF_TOOL_INTERCEPTION_CONFIG"] = credentials_path
 
         config_path = config.env["OPENCLAW_CONFIG_PATH"]
         openclaw = json.loads(await runtime.read(config_path))

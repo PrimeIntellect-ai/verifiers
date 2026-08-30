@@ -1,6 +1,6 @@
-/** Route OpenClaw's awaited tool boundaries through rollout policy. */
+/** Route OpenClaw's awaited tool boundaries through Verifiers' ACP extension. */
 
-import { readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 // {tool_content}
@@ -8,29 +8,26 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 const pluginId = "verifiers-tool-interception";
 const unavailable = "Tool interception is unavailable.";
 const replaced = "Tool result replaced by interception.";
-const credentialsPath = process.env.VF_TOOL_INTERCEPTION_CONFIG;
-delete process.env.VF_TOOL_INTERCEPTION_CONFIG;
-if (!credentialsPath) throw new TypeError(unavailable);
-const credentialsJson = readFileSync(credentialsPath, "utf8");
-rmSync(credentialsPath);
-const credentials = JSON.parse(credentialsJson);
-if (typeof credentials.url !== "string" || typeof credentials.secret !== "string") {
-  throw new TypeError(unavailable);
-}
+const stateKey = Symbol.for("verifiers.toolInterception");
+const state = (globalThis[stateKey] ??= {
+  pending: new Map(),
+  queued: [],
+  waiting: [],
+});
 
-async function intercept(phase, toolCallId, name, content) {
+async function intercept(pending, queued, waiting, phase, toolCallId, name, content) {
   if (typeof toolCallId !== "string" || !toolCallId) {
     throw new TypeError("OpenClaw omitted the tool call ID");
   }
   const separator = toolCallId.lastIndexOf("|fc_");
   const policyToolCallId = separator > 0 ? toolCallId.slice(0, separator) : toolCallId;
-  const response = await fetch(credentials.url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${credentials.secret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const id = randomUUID();
+  const response = new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+  });
+  const request = {
+    id,
+    body: {
       phase,
       message: {
         role: "tool",
@@ -38,11 +35,23 @@ async function intercept(phase, toolCallId, name, content) {
         content,
         name,
       },
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new Error(`tool interception returned ${response.status}`);
-  return validateToolDecision(await response.json(), "Tool interception");
+    },
+  };
+  const waiter = waiting.shift();
+  if (waiter) waiter(request);
+  else queued.push(request);
+  const timeout = setTimeout(() => {
+    pending.get(id)?.reject(new Error("LiveACPClient timed out"));
+    pending.delete(id);
+    const position = queued.findIndex((item) => item.id === id);
+    if (position >= 0) queued.splice(position, 1);
+  }, 30_000);
+  try {
+    return validateToolDecision(await response, "LiveACPClient");
+  } finally {
+    clearTimeout(timeout);
+    pending.delete(id);
+  }
 }
 
 export default definePluginEntry({
@@ -50,7 +59,29 @@ export default definePluginEntry({
   name: "Verifiers tool interception",
   register(api) {
     const blockedCalls = new Map();
+    const { pending, queued, waiting } = state;
     let halted = false;
+    api.registerGatewayMethod(
+      "verifiers.tool_interception.next",
+      async ({ respond }) => {
+        const request = queued.shift() ?? (await new Promise((resolve) => waiting.push(resolve)));
+        respond(true, request);
+      },
+      { scope: "operator.write" },
+    );
+    api.registerGatewayMethod(
+      "verifiers.tool_interception.resolve",
+      ({ params, respond }) => {
+        const request = pending.get(params.id);
+        if (request) {
+          if (typeof params.error === "string") {
+            request.reject(new Error(params.error));
+          } else request.resolve(params.decision);
+        }
+        respond(true, { resolved: Boolean(request) });
+      },
+      { scope: "operator.write" },
+    );
     api.on(
       "before_tool_call",
       async (event) => {
@@ -61,7 +92,15 @@ export default definePluginEntry({
         }
         let decision;
         try {
-          decision = await intercept("before", toolCallId, event.toolName, "");
+          decision = await intercept(
+            pending,
+            queued,
+            waiting,
+            "before",
+            toolCallId,
+            event.toolName,
+            "",
+          );
         } catch (error) {
           console.error(`${unavailable} ${error}`);
           process.exit(70);
@@ -106,6 +145,9 @@ export default definePluginEntry({
         let decision;
         try {
           decision = await intercept(
+            pending,
+            queued,
+            waiting,
             "after",
             toolCallId,
             event.toolName,
