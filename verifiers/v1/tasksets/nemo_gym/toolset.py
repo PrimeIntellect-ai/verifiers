@@ -51,10 +51,7 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
                     "headers": self.state.mcp_headers,
                     "timeout": self.state.request_timeout,
                     "connect_timeout": self.state.request_timeout,
-                },
-                server="nemo_gym",
-                operation="list_tools",
-                replay_safe=True,
+                }
             ) as session:
                 tools = (await session.list_tools()).tools
         else:
@@ -77,9 +74,7 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
                     "headers": self.state.mcp_headers,
                     "timeout": self.state.request_timeout,
                     "connect_timeout": self.state.request_timeout,
-                },
-                server="nemo_gym",
-                operation="call_tool",
+                }
             ) as session:
                 return await session.call_tool(name, arguments)
 

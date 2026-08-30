@@ -13,5 +13,5 @@ class RetryConfig(BaseConfig):
     already retry transient per-call faults; rerunning a whole trajectory is opt-in."""
     include: list[str] = Field(default_factory=list)
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
-    exclude: list[str] = Field(default_factory=lambda: ["MCPDeliveryUnknownError"])
+    exclude: list[str] = Field(default_factory=list)
     """Never retry errors whose type is listed (wins over `include`)."""

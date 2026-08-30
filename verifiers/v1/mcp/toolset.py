@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mcp.types import ToolAnnotations
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
@@ -28,19 +27,8 @@ class SharedToolsetConfig(BaseConfig):
 class Toolset(ServerBase[ConfigT, StateT]):
     def register(self, mcp: FastMCP) -> None:
         for fn in discover_decorated(self, "tool"):
-            read_only = getattr(fn, "tool_read_only", False)
-            idempotent = getattr(fn, "tool_idempotent", False)
-            annotations = (
-                ToolAnnotations(
-                    readOnlyHint=read_only,
-                    idempotentHint=idempotent,
-                )
-                if read_only or idempotent
-                else None
-            )
             mcp.add_tool(
                 self._with_state(fn),
                 name=getattr(fn, "tool_name", None) or fn.__name__,
                 description=(fn.__doc__ or "").strip() or None,
-                annotations=annotations,
             )

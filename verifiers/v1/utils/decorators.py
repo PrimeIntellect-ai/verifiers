@@ -72,37 +72,13 @@ def mark(attr: str, **extra: Any) -> Callable[[F], F]:
 
 
 @overload
-def tool(
-    func: F,
-    name: str | None = None,
-    *,
-    read_only: bool = False,
-    idempotent: bool = False,
-) -> F: ...
+def tool(func: F, name: str | None = None) -> F: ...
 @overload
-def tool(
-    func: None = None,
-    name: str | None = None,
-    *,
-    read_only: bool = False,
-    idempotent: bool = False,
-) -> Callable[[F], F]: ...
-def tool(
-    func: F | None = None,
-    name: str | None = None,
-    *,
-    read_only: bool = False,
-    idempotent: bool = False,
-) -> F | Callable[[F], F]:
+def tool(func: None = None, name: str | None = None) -> Callable[[F], F]: ...
+def tool(func: F | None = None, name: str | None = None) -> F | Callable[[F], F]:
     """Mark a `Toolset` method as an MCP tool exposed to the model. The tool name defaults
-    to the method name (override with `name`); the docstring becomes its description.
-    Set `read_only` or `idempotent` only when repeating an identical call is safe."""
-    decorator = mark(
-        "tool",
-        tool_name=name,
-        tool_read_only=read_only,
-        tool_idempotent=idempotent,
-    )
+    to the method name (override with `name`); the docstring becomes its description."""
+    decorator = mark("tool", tool_name=name)
     return decorator if func is None else decorator(func)
 
 

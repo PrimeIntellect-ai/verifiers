@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -9,13 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import (
-    HarnessError,
-    MCPDeliveryUnknownError,
-    MCPTransportError,
-    SandboxError,
-    boundary,
-)
+from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
@@ -158,37 +151,11 @@ class Harness(ABC, Generic[ConfigT]):
             return
         # The real cause is at the END of a traceback, so keep the tail.
         detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
-        marker = "VF_MCP_ERROR="
-        mcp_error: MCPTransportError | None = None
-        if marker in detail:
-            diagnostic = detail.rsplit(marker, 1)[1].splitlines()[0]
-            try:
-                payload = json.loads(diagnostic)
-            except json.JSONDecodeError:
-                payload = None
-            if (
-                isinstance(payload, dict)
-                and payload.get("delivery")
-                in {"operation_not_started", "response_unknown"}
-                and isinstance(payload.get("replay_safe"), bool)
-            ):
-                error_cls = (
-                    MCPDeliveryUnknownError
-                    if payload["delivery"] == "response_unknown"
-                    and not payload["replay_safe"]
-                    else MCPTransportError
-                )
-                mcp_error = error_cls(diagnostic)
-        # Preserve a possibly accepted mutation even when its sandbox died too.
-        if isinstance(mcp_error, MCPDeliveryUnknownError):
-            raise mcp_error
         if not await runtime.alive():
             raise SandboxError(
                 f"runtime died under harness {self.config.id!r} "
                 f"(exit {result.exit_code}): {detail}"
             )
-        if mcp_error is not None:
-            raise mcp_error
         raise HarnessError(
             f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
         )
