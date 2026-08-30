@@ -31,9 +31,8 @@ dependencies = [
     "datasets>=3.3.0,<6.0.0",
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
-    "mcp>=1.24.0,<2",
     "openai>=2.9.0",
-    "openai-agents>=0.8.2",
+    "openai-agents>=0.20.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
     "pydantic>=2.12.3",
@@ -53,6 +52,8 @@ dependencies = [
     "tomli-w>=1.0.0",
     "renderers>=0.1.10",
     "typing_extensions>=4.12.2",
+    "mcp==2.0.0",
+    "httpx2>=2.0.0",
 ]
 
 [dependency-groups]
@@ -118,11 +119,11 @@ notebook = [
     "nest-asyncio>=1.6.0",
 ]
 openenv = [
+    "fastmcp==4.0.0b3",
     "openenv>=0.4.1",
 ]
 nemo-gym = [
     # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
-    "nemo-gym==0.4.0; python_version >= '3.12'",
 ]
 [tool.uv]
 preview = true

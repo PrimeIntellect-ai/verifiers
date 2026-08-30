@@ -10,7 +10,7 @@ from verifiers.v1.state import StateT
 from verifiers.v1.utils.decorators import discover_decorated
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 
 class ToolsetConfig(BaseConfig):
@@ -25,7 +25,7 @@ class SharedToolsetConfig(BaseConfig):
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
-    def register(self, mcp: FastMCP) -> None:
+    def register(self, mcp: MCPServer) -> None:
         for fn in discover_decorated(self, "tool"):
             mcp.add_tool(
                 self._with_state(fn),

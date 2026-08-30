@@ -138,7 +138,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"failed to create Codex home: {created.stderr.strip()[-500:]}"
             )
 
-        mcp_config = (
+        mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(
                 f"{json.dumps(name, ensure_ascii=False)}="

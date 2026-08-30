@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
 
@@ -59,12 +59,14 @@ async def chat(
 
 
 @asynccontextmanager
-async def mcp_session(spec: dict):
-    """One fresh streamable-HTTP session to an MCP server, opened and closed within the caller's
-    task so AnyIO cancellation scopes stay correctly nested. A teardown failure after the body
-    completed is swallowed — the result is already in hand, and closing noise must not fail (or
-    replay) an already-answered call."""
-    from mcp import ClientSession
+async def mcp_client(spec: dict):
+    """One fresh MCP client, negotiating the newest protocol and falling back for old servers.
+
+    It is opened and closed within the caller's task so AnyIO cancellation scopes stay correctly
+    nested. Closing noise after a completed body cannot fail or replay an answered call.
+    """
+    import httpx2
+    from mcp import Client
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
@@ -75,22 +77,18 @@ async def mcp_session(spec: dict):
         http_client = await stack.enter_async_context(
             create_mcp_http_client(
                 headers=spec.get("headers") or None,
-                timeout=httpx.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
+                timeout=httpx2.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
             )
         )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        yield session
+        transport = streamable_http_client(spec["url"], http_client=http_client)
+        yield await stack.enter_async_context(Client(transport))
     finally:
         with suppress(Exception):
             await stack.aclose()
 
 
 async def with_retry(call):
-    """Run one session-scoped operation, retrying transient failures with backoff. A call whose
+    """Run one client operation, retrying transient failures with backoff. A call whose
     response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
     at-least-once delivery (a tool that fails reports through its result, not an exception)."""
     async for attempt in AsyncRetrying(
@@ -105,7 +103,7 @@ async def with_retry(call):
 async def connect_mcp(config: dict) -> tuple[list[dict], dict, dict]:
     """Enumerate each configured MCP server's tools (a streamable-HTTP `url`); return (tool schemas,
     dispatch mapping advertised name -> (server name, raw tool name), servers mapping name -> spec).
-    No session is held — a stateless-HTTP server is reconnected per call. Tools are advertised as
+    No protocol session is held; a fresh client handles each call. Tools are advertised as
     `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None) advertises its tools bare, so names
     must be unique across the rollout's servers."""
     tool_schemas: list[dict] = []
@@ -115,8 +113,8 @@ async def connect_mcp(config: dict) -> tuple[list[dict], dict, dict]:
         servers[name] = spec
 
         async def list_tools(spec: dict = spec):
-            async with mcp_session(spec) as session:
-                return (await session.list_tools()).tools
+            async with mcp_client(spec) as client:
+                return (await client.list_tools()).tools
 
         for tool in await with_retry(list_tools):
             full = f"{name}_{tool.name}" if name else tool.name
@@ -130,7 +128,7 @@ async def connect_mcp(config: dict) -> tuple[list[dict], dict, dict]:
                     "function": {
                         "name": full,
                         "description": tool.description or "",
-                        "parameters": tool.inputSchema,
+                        "parameters": tool.input_schema,
                     },
                 }
             )
@@ -144,7 +142,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
         elif block.type == "image":
-            url = f"data:{block.mimeType};base64,{block.data}"
+            url = f"data:{block.mime_type};base64,{block.data}"
             parts.append({"type": "image_url", "image_url": {"url": url}})
         else:
             parts.append({"type": "text", "text": str(block)})
@@ -158,13 +156,13 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> str | list[dict]:
-    """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
+    """Call a tool with a fresh client per attempt — see `with_retry` for replay semantics.
     The result is converted outside the retry so a conversion failure fails once."""
     server_name, raw = dispatch[name]
 
     async def call():
-        async with mcp_session(servers[server_name]) as session:
-            return await session.call_tool(raw, arguments)
+        async with mcp_client(servers[server_name]) as client:
+            return await client.call_tool(raw, arguments)
 
     result = await with_retry(call)
     return mcp_content_to_chat_content(result.content)
@@ -197,7 +195,7 @@ async def main() -> None:
     )
     config = json.loads(args.mcp_config or "{}")
     if config.get("mcpServers"):
-        # Bound only tool enumeration; each session is opened and closed within this task.
+        # Bound only tool enumeration; each client is opened and closed within this task.
         async with asyncio.timeout(60):
             tools, dispatch, servers = await connect_mcp(config)
     else:
