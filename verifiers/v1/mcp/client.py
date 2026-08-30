@@ -178,7 +178,7 @@ async def mcp_session(
                     )
                 else:
                     await asyncio.shield(transport)
-            except TimeoutError:
+            except asyncio.TimeoutError:  # noqa: UP041 - distinct on Python 3.10
                 transport.cancel()
             except asyncio.CancelledError as error:
                 task = asyncio.current_task()
