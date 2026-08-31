@@ -325,15 +325,17 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     token = "opaque-generic-token-0123456789"
     access_key = "opaque-aws-secret-access-key-0123456789"
     plural_key = "opaque-plural-key-0123456789"
+    property_key = "opaque-property-key-0123456789"
     payload = {
         "APIKey": secret,
         "apiKeys": [plural_key],
         "awsSecretAccessKey": access_key,
         "credential": {"value": "pin"},
+        "authentication": "opaque-authentication-0123456789",
         "rubric": "keep the pin label",
         "secret": {"value": secret},
         "token": token,
-        "properties": {"password": secret},
+        "properties": {"password": {"type": "string", "value": property_key}},
         "schema": {
             "properties": {
                 "password": {"type": ["string", "null"]},
@@ -348,10 +350,11 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["apiKeys"] == ["[REDACTED]"]
     assert reduced["awsSecretAccessKey"] == "[REDACTED]"
     assert reduced["credential"]["value"] == "[REDACTED]"
+    assert reduced["authentication"] == "[REDACTED]"
     assert reduced["rubric"] == payload["rubric"]
     assert reduced["secret"]["value"] == "[REDACTED]"
     assert reduced["token"] == "[REDACTED]"
-    assert reduced["properties"]["password"] == "[REDACTED]"
+    assert reduced["properties"]["password"]["value"] == "[REDACTED]"
     assert reduced["schema"] == payload["schema"]
 
 
@@ -359,6 +362,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     token = "opaque-json-token-0123456789"
     payload = {
         "completion": json.dumps({"Authorization": f"Bearer {token}"}),
+        "error": "Authorization: Basic dXNlcjpwYXNz",
         "answer": "Use abc123 and token=version-123 for the example.",
         "password": "s3cr3t",
         "api_key": "abc123",
@@ -367,6 +371,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     reduced, _ = platform.prepare_upload(payload)
 
     assert token not in reduced["completion"]
+    assert "dXNlcjpwYXNz" not in reduced["error"]
     assert reduced["answer"] == payload["answer"]
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
@@ -403,9 +408,8 @@ def test_platform_preflight_finds_additional_provider_credentials(token):
 def test_platform_preflight_redacts_every_value_in_a_raw_cookie_header():
     session = "opaque-cookie-session-0123456789"
     refresh = "opaque-cookie-refresh-0123456789"
-    reduced, _ = platform.prepare_upload(
-        {"completion": f"Cookie: session={session}; refresh={refresh}"}
-    )
+    header = json.dumps({"Cookie": f"session={session}; refresh={refresh}"})
+    reduced, _ = platform.prepare_upload({"completion": f"request: {header}"})
 
     assert session not in reduced["completion"]
     assert refresh not in reduced["completion"]

@@ -33,6 +33,7 @@ _SENSITIVE_FIELDS = {
     "access_token",
     "auth_token",
     "auth",
+    "authentication",
     "authorization",
     "client_secret",
     "connection_string",
@@ -55,8 +56,10 @@ _SENSITIVE_FIELDS = {
     "token",
 }
 _SCHEMA_VALUES = {"const", "default", "example", "examples"}
-_SCHEMA_FIELDS = {
+_SCHEMA_MARKERS = {
+    "$defs",
     "$ref",
+    "$schema",
     "allOf",
     "anyOf",
     "const",
@@ -68,7 +71,6 @@ _SCHEMA_FIELDS = {
     "items",
     "oneOf",
     "pattern",
-    "properties",
     "required",
     "title",
     "type",
@@ -96,12 +98,18 @@ _PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"^\s*cookie\s*:\s*(?P<secret>[^\r\n]{8,})",
-        re.IGNORECASE | re.MULTILINE,
+        r"(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization)"
+        r"[\"']?\s*[:=]\s*[\"']?(?:(?:bearer|basic)\s+)?"
+        r"(?P<secret>[^\s,;\"']{8,})",
+        re.IGNORECASE,
     ),
     re.compile(
-        r"(?:(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization|"
-        r"x-api-key|api[_ -]?key|"
+        r"(?<![A-Za-z0-9_-])[\"']?cookie[\"']?\s*:\s*[\"']?"
+        r"(?P<secret>[^\r\n\"']{8,})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:(?<![A-Za-z0-9_])[\"']?(?:x-api-key|api[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
         r"secret|password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|ACCESS_?TOKEN|REFRESH_?TOKEN|"
@@ -187,17 +195,20 @@ def prepare_upload(
                 remember(item)
 
     def discover(
-        child: Any, schema_secret: bool = False, properties: bool = False
+        child: Any,
+        schema_secret: bool = False,
+        schema_context: bool = False,
+        properties: bool = False,
     ) -> None:
         if isinstance(child, Mapping):
+            object_schema = schema_context or any(
+                field in child for field in _SCHEMA_MARKERS
+            )
             for key, nested in child.items():
                 name = _normalize(str(key))
                 if properties:
-                    schema = isinstance(nested, Mapping) and (
-                        not nested or any(field in nested for field in _SCHEMA_FIELDS)
-                    )
-                    if schema:
-                        discover(nested, _sensitive(name))
+                    if isinstance(nested, (Mapping, bool)):
+                        discover(nested, _sensitive(name), True)
                     else:
                         if _sensitive(name):
                             remember(nested)
@@ -205,10 +216,15 @@ def prepare_upload(
                     continue
                 if _sensitive(name) or schema_secret and name in _SCHEMA_VALUES:
                     remember(nested)
-                discover(nested, schema_secret, name == "properties")
+                discover(
+                    nested,
+                    schema_secret,
+                    object_schema or name in {"schema", "json_schema"},
+                    object_schema and name == "properties",
+                )
         elif isinstance(child, (list, tuple)):
             for nested in child:
-                discover(nested, schema_secret)
+                discover(nested, schema_secret, schema_context, properties)
 
     for secret in known_secrets:
         remember(secret)
@@ -251,11 +267,15 @@ def prepare_upload(
         child: Any,
         structured_secret: bool = False,
         schema_secret: bool = False,
+        schema_context: bool = False,
         properties: bool = False,
     ) -> Any:
         nonlocal replacements
         if isinstance(child, Mapping):
             reduced = {}
+            object_schema = schema_context or any(
+                field in child for field in _SCHEMA_MARKERS
+            )
             for key, nested in child.items():
                 safe_key = redact_text(key) if isinstance(key, str) else key
                 if safe_key in reduced:
@@ -263,13 +283,9 @@ def prepare_upload(
                         "credential reduction would create duplicate object keys"
                     )
                 normalized = _normalize(str(key))
-                schema = (
-                    properties
-                    and isinstance(nested, Mapping)
-                    and (not nested or any(field in nested for field in _SCHEMA_FIELDS))
-                )
+                property_schema = properties and isinstance(nested, (Mapping, bool))
                 nested_secret = structured_secret or (
-                    not schema
+                    not property_schema
                     and (
                         _sensitive(str(key))
                         or schema_secret
@@ -279,18 +295,35 @@ def prepare_upload(
                 reduced[safe_key] = reduce(
                     nested,
                     nested_secret,
-                    _sensitive(str(key)) if schema else schema_secret,
-                    not structured_secret and normalized == "properties",
+                    _sensitive(str(key)) if property_schema else schema_secret,
+                    property_schema
+                    or object_schema
+                    or normalized in {"schema", "json_schema"},
+                    not structured_secret
+                    and object_schema
+                    and normalized == "properties",
                 )
             return reduced
         if isinstance(child, list):
             return [
-                reduce(nested, structured_secret, schema_secret, properties)
+                reduce(
+                    nested,
+                    structured_secret,
+                    schema_secret,
+                    schema_context,
+                    properties,
+                )
                 for nested in child
             ]
         if isinstance(child, tuple):
             return tuple(
-                reduce(nested, structured_secret, schema_secret, properties)
+                reduce(
+                    nested,
+                    structured_secret,
+                    schema_secret,
+                    schema_context,
+                    properties,
+                )
                 for nested in child
             )
         if not isinstance(child, str):
