@@ -9,7 +9,11 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    resolve_api_key,
+    resolve_headers,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -63,7 +67,7 @@ class EvalClient(Client):
         self.api_key = resolve_api_key(config)
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
-        self.headers = dict(config.headers or {})
+        self.headers = resolve_headers(config)
         self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
     async def get_response(

@@ -1,9 +1,10 @@
 """Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
 
 Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
-samples -> finalize). Each sample keeps the complete native Episode as its source
-of truth and includes a flat summary for older Platform consumers. Auth + base URL
-come from `$PRIME_API_KEY` / `~/.prime/config.json`.
+samples -> finalize). Each sample keeps a reviewable native Episode projection and
+a flat summary for older Platform consumers. Run-local configuration remains in the
+saved output directory. Auth + base URL come from `$PRIME_API_KEY` /
+`~/.prime/config.json`.
 """
 
 import json
@@ -16,7 +17,7 @@ import httpx
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,40 @@ DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
 _MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+
+_PROVIDER_STATE_FIELDS = {
+    "encrypted_content",
+    "signature",
+    "data",
+}
+_PLATFORM_TRACE_EXCLUDE = {
+    "agent": {
+        "config": {
+            "client": {"headers"},
+            "harness": {"env", "skills"},
+        },
+        "runtime": {"id"},
+    },
+    "nodes": {
+        "__all__": {
+            **{field: True for field in EXCLUDE_FIELDS["nodes"]["__all__"]},
+            **{
+                field: True
+                for field in (
+                    "token_ids",
+                    "mask",
+                    "is_content",
+                    "logprobs",
+                    "advantages",
+                    "reference_logprobs",
+                    "loss_weights",
+                )
+            },
+            "message": {"provider_state": {"__all__": _PROVIDER_STATE_FIELDS}},
+        }
+    },
+    "mm_token_type_id_map": True,
+}
 
 
 def json_bytes(value: Any) -> int:
@@ -49,7 +84,9 @@ class PushState:
 
 
 def trace_to_sample(
-    trace: Trace, rollout_number: int = 1, episode_id: str | None = None
+    trace: Trace,
+    rollout_number: int = 1,
+    episode_id: str | None = None,
 ) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the v0 eval-sample format).
 
@@ -60,7 +97,14 @@ def trace_to_sample(
     final branch's messages, `trajectory` one message list per branch."""
 
     def dump(messages):
-        return [m.model_dump(mode="json", exclude_none=True) for m in messages]
+        return [
+            message.model_dump(
+                mode="json",
+                exclude={"provider_state": {"__all__": _PROVIDER_STATE_FIELDS}},
+                exclude_none=True,
+            )
+            for message in messages
+        ]
 
     task = trace.task.data.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
@@ -163,9 +207,10 @@ def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
 def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
     """One Platform sample per Episode, with a legacy-compatible trace summary.
 
-    The native Episode in `info.native_wrapper` is authoritative and contains every
-    trace. One trainable trace (or the first trace) supplies only the flat summary
-    used by older consumers. `native_trace_index` identifies that summary trace.
+    The Episode projection in `info.native_wrapper` contains every trace's review
+    data, without transport, runtime identity, opaque continuation, or per-token
+    training state. One trainable trace (or the first trace) supplies the flat
+    summary used by older consumers. `native_trace_index` identifies that trace.
     """
     counts: dict[int, int] = {}
     samples = []
@@ -187,7 +232,11 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
         sample["sample_id"] = episode.id
         sample["info"] = {
             **(sample["info"] or {}),
-            "native_wrapper": episode.to_record(),
+            "native_wrapper": episode.model_dump(
+                mode="json",
+                exclude={"traces": {"__all__": _PLATFORM_TRACE_EXCLUDE}},
+                exclude_none=True,
+            ),
             "native_trace_index": summary_trace_index,
         }
         if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
@@ -228,6 +277,13 @@ def push_traces(
         )
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
+    try:
+        from prime_evals import prepare_upload, secret_values
+    except ImportError:
+        error = "prime-evals with upload preflight is required"
+        logger.warning("--push: %s; skipping upload", error)
+        return finish(error=error)
+
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = config.env.taskset.id
     metrics = run_metrics(episodes, traces)
@@ -248,6 +304,24 @@ def push_traces(
     # — log and skip the upload instead.
     try:
         samples = build_samples(episodes)
+        prepared = prepare_upload(
+            {
+                "name": config.run.name,
+                "metadata": metadata,
+                "metrics": metrics,
+                "samples": samples,
+            },
+            secret_values(api_key),
+        )
+        name = prepared.data["name"]
+        metadata = prepared.data["metadata"]
+        metrics = prepared.data["metrics"]
+        samples = prepared.data["samples"]
+        if prepared.report:
+            logger.warning(
+                "--push: preflight redacted %s; saved traces were not changed",
+                prepared.report,
+            )
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
         payload_bytes = len(b'{"samples":[]}')
@@ -284,7 +358,7 @@ def push_traces(
             eval_id = post(
                 "/evaluations/",
                 {
-                    "name": config.run.name,
+                    "name": name,
                     "environments": [{"id": env_id}],
                     "model_name": config.model,
                     "dataset": env_name,
