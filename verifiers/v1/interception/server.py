@@ -58,6 +58,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
+from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
@@ -421,6 +422,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
+        acp: ACPInfo | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -468,6 +470,7 @@ class InterceptionServer(Interception):
                 )
                 if policy_paths
                 else None,
+                acp=acp,
             )
         )
 
@@ -491,7 +494,10 @@ class InterceptionServer(Interception):
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
-        upstream_headers = dict(request.headers)
+        try:
+            acp, upstream_headers = extract_acp_info(request.headers)
+        except ValueError as error:
+            return web.json_response(dialect.error_body(str(error)), status=400)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -508,14 +514,18 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming:
+            if streaming and acp is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
                     ),
                     status=400,
                 )
-            replay_key = f"explicit:{idempotency_key}"
+            if not streaming:
+                replay_key = f"explicit:{idempotency_key}"
+            # This key identifies the harness-to-interception hop. The server owns its
+            # replay semantics, and the body has since been rewritten with rollout model
+            # and sampling overrides, so never expose the local key to the provider.
             upstream_headers = {
                 name: value
                 for name, value in upstream_headers.items()
@@ -643,6 +653,8 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
+                acp=acp,
+                upstream_headers=upstream_headers,
             )
 
         def serve(response: Response) -> web.Response:
@@ -757,6 +769,7 @@ class InterceptionServer(Interception):
                     usage=call_response.usage if call_response else None,
                     error=error,
                     policy_paths=policy_paths,
+                    acp=acp,
                 )
             return serve(call_response)
 
@@ -773,6 +786,8 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
+        acp: ACPInfo | None = None,
+        upstream_headers: Mapping[str, str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -788,7 +803,7 @@ class InterceptionServer(Interception):
                 reply = await session.client.relay(
                     dialect,
                     body,
-                    headers=request.headers,
+                    headers=upstream_headers,
                     session_id=session.trace.id,
                 )
             except RolloutError as e:
@@ -1017,6 +1032,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
                 policy_paths=policy_paths,
+                acp=acp,
             )
 
     async def handle_aux(

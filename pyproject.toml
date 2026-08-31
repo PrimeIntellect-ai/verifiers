@@ -41,7 +41,7 @@ dependencies = [
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
     "httpx>=0.27.0",
-    "aiohttp>=3.14.0",
+    "aiohttp>=3.14.1",
     "prime-pydantic-config[toml]>=0.4.3",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
