@@ -320,6 +320,21 @@ def test_platform_preflight_redacts_credentials_without_reducing_review_data():
     assert platform.prepare_upload(reduced)[1] == 0
 
 
+def test_platform_preflight_finds_nested_and_properties_credentials():
+    secret = "opaque-nested-secret-0123456789"
+    payload = {
+        "secret": {"value": secret},
+        "properties": {"password": secret},
+        "schema": {"properties": {"password": {"type": "string"}}},
+    }
+
+    reduced, _ = platform.prepare_upload(payload)
+
+    assert reduced["secret"]["value"] == "[REDACTED]"
+    assert reduced["properties"]["password"] == "[REDACTED]"
+    assert reduced["schema"] == payload["schema"]
+
+
 def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

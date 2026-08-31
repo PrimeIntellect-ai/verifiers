@@ -49,6 +49,7 @@ _SENSITIVE_FIELDS = {
     "signature",
 }
 _SCHEMA_VALUES = {"const", "default", "example", "examples"}
+_SCHEMA_TYPES = {"array", "boolean", "integer", "null", "number", "object", "string"}
 _AUTH_VALUE = re.compile(r"^(?:bearer|basic)\s+(.+)$", re.IGNORECASE)
 _PATTERNS = (
     re.compile(
@@ -138,6 +139,9 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
                 token := match.group(1)
             ):
                 secrets.add(token)
+        elif isinstance(candidate, Mapping):
+            for item in candidate.values():
+                remember(item)
         elif isinstance(candidate, (list, tuple)):
             for item in candidate:
                 remember(item)
@@ -149,7 +153,19 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
             for key, nested in child.items():
                 name = _normalize(str(key))
                 if properties:
-                    discover(nested, _sensitive(name))
+                    schema = isinstance(nested, Mapping) and (
+                        nested.get("type") in _SCHEMA_TYPES
+                        or any(
+                            field in nested
+                            for field in ("$ref", "allOf", "anyOf", "oneOf")
+                        )
+                    )
+                    if schema:
+                        discover(nested, _sensitive(name))
+                    else:
+                        if _sensitive(name):
+                            remember(nested)
+                        discover(nested)
                     continue
                 if _sensitive(name) or schema_secret and name in _SCHEMA_VALUES:
                     remember(nested)
