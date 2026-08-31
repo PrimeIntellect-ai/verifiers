@@ -27,6 +27,8 @@ _REFERENCE_SUFFIXES = (
     "_variable",
 )
 _SENSITIVE_FIELDS = {
+    "access_key",
+    "access_key_id",
     "api_key",
     "access_token",
     "auth_token",
@@ -44,6 +46,7 @@ _SENSITIVE_FIELDS = {
     "refresh_token",
     "sas_token",
     "secret",
+    "secret_access_key",
     "secret_key",
     "session_token",
     "signature",
@@ -113,8 +116,13 @@ def _normalize(name: str) -> str:
 
 def _sensitive(name: str) -> bool:
     name = _normalize(name)
-    return not name.endswith(_REFERENCE_SUFFIXES) and any(
-        name == field or name.endswith(f"_{field}") for field in _SENSITIVE_FIELDS
+    names = (name, name.removesuffix("s"))
+    return not any(
+        candidate.endswith(_REFERENCE_SUFFIXES) for candidate in names
+    ) and any(
+        candidate == field or candidate.endswith(f"_{field}")
+        for candidate in names
+        for field in _SENSITIVE_FIELDS
     )
 
 

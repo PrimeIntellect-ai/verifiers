@@ -323,8 +323,12 @@ def test_platform_preflight_redacts_credentials_without_reducing_review_data():
 def test_platform_preflight_finds_nested_and_properties_credentials():
     secret = "opaque-nested-secret-0123456789"
     token = "opaque-generic-token-0123456789"
+    access_key = "opaque-aws-secret-access-key-0123456789"
+    plural_key = "opaque-plural-key-0123456789"
     payload = {
         "APIKey": secret,
+        "apiKeys": [plural_key],
+        "awsSecretAccessKey": access_key,
         "secret": {"value": secret},
         "token": token,
         "properties": {"password": secret},
@@ -334,6 +338,8 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     reduced, _ = platform.prepare_upload(payload)
 
     assert reduced["APIKey"] == "[REDACTED]"
+    assert reduced["apiKeys"] == ["[REDACTED]"]
+    assert reduced["awsSecretAccessKey"] == "[REDACTED]"
     assert reduced["secret"]["value"] == "[REDACTED]"
     assert reduced["token"] == "[REDACTED]"
     assert reduced["properties"]["password"] == "[REDACTED]"
