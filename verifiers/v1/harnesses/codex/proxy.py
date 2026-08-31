@@ -29,7 +29,7 @@ def unpack_frame(frame: bytes) -> dict:
 
 
 def pack_frame(message: dict) -> bytes:
-    payload = json.dumps(message, separators=(",", ":")).encode()
+    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
     if len(payload) > MAX_FRAME_BYTES:
         raise ValueError("Code Mode frame exceeds the protocol limit")
     return len(payload).to_bytes(4, "little") + payload
@@ -51,7 +51,8 @@ def find_host() -> str:
 
 
 class PolicyClient:
-    def __init__(self) -> None:
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        self.reader = reader
         self.request_id = 0
         self.lock = asyncio.Lock()
 
@@ -60,7 +61,7 @@ class PolicyClient:
             self.request_id += 1
             request_id = self.request_id
             print(json.dumps({"id": request_id, "body": body}), flush=True)
-            line = await asyncio.to_thread(sys.stdin.buffer.readline)
+            line = await self.reader.readline()
             if not line:
                 raise EOFError("LiveACPClient closed the interception channel")
             response = json.loads(line)
@@ -291,7 +292,7 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                     cell_id = continuations.pop(request_id)
                     outcome = result.get("value", {}).get("outcome")
                     if isinstance(outcome, dict) and len(outcome) == 1:
-                        response = next(iter(outcome.values()))
+                        response = outcome
                         call = cells.get(cell_id)
                 if response is not None and call is not None:
                     variant, value = next(iter(response.items()))
@@ -319,6 +320,10 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
 
 
 async def run() -> None:
+    reader = asyncio.StreamReader()
+    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
+    )
     host = await asyncio.create_subprocess_exec(
         find_host(),
         "--listen",
@@ -338,7 +343,7 @@ async def run() -> None:
                 f"Codex Code Mode host returned an invalid endpoint: {host_url!r}"
             )
         claimed = False
-        policy = PolicyClient()
+        policy = PolicyClient(reader)
 
         async def accept(client) -> None:
             nonlocal claimed
@@ -362,6 +367,7 @@ async def run() -> None:
                 f"Codex Code Mode host exited with status {host.returncode}"
             )
     finally:
+        transport.close()
         if host.returncode is None:
             host.terminate()
             try:

@@ -40,8 +40,10 @@ class NullHarness(Harness[NullHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         args: list[str] = []
-        tool_interception_secret = prepare_tool_interception(
-            args, runtime, tool_interception, "Null"
+        tool_interception_secret = (
+            prepare_tool_interception(args, runtime, tool_interception, "Null")
+            if mcp_urls
+            else None
         )
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,

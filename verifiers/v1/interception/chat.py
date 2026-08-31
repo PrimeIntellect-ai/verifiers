@@ -5,7 +5,6 @@ import json
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
-import httpx
 from openai import APIStatusError, AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
@@ -39,9 +38,10 @@ def add_chat_arguments(parser) -> None:
 
 
 @asynccontextmanager
-async def mcp_session(spec: dict):
-    """Open one operation-scoped streamable HTTP session."""
-    from mcp import ClientSession
+async def mcp_client(spec: dict):
+    """Open one operation-scoped streamable HTTP client."""
+    import httpx2
+    from mcp import Client
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
@@ -52,15 +52,11 @@ async def mcp_session(spec: dict):
         http_client = await stack.enter_async_context(
             create_mcp_http_client(
                 headers=spec.get("headers") or None,
-                timeout=httpx.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
+                timeout=httpx2.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
             )
         )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        yield session
+        transport = streamable_http_client(spec["url"], http_client=http_client)
+        yield await stack.enter_async_context(Client(transport))
     finally:
         # Closing noise must not fail or replay an already answered tool call.
         with suppress(Exception):
@@ -87,8 +83,8 @@ async def connect_mcp(config: dict, reserved: set[str]) -> tuple[list, dict, dic
         servers[server_name] = spec
 
         async def list_tools(spec: dict = spec):
-            async with mcp_session(spec) as session:
-                return (await session.list_tools()).tools
+            async with mcp_client(spec) as client:
+                return (await client.list_tools()).tools
 
         for tool in await with_mcp_retry(list_tools):
             name = f"{server_name}_{tool.name}" if server_name else tool.name
@@ -102,7 +98,7 @@ async def connect_mcp(config: dict, reserved: set[str]) -> tuple[list, dict, dic
                     "function": {
                         "name": name,
                         "description": tool.description or "",
-                        "parameters": tool.inputSchema,
+                        "parameters": tool.input_schema,
                     },
                 }
             )
@@ -116,7 +112,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
         elif block.type == "image":
-            url = f"data:{block.mimeType};base64,{block.data}"
+            url = f"data:{block.mime_type};base64,{block.data}"
             parts.append({"type": "image_url", "image_url": {"url": url}})
         else:
             parts.append({"type": "text", "text": str(block)})
@@ -131,8 +127,8 @@ async def call_mcp(servers: dict, dispatch: dict, name: str, arguments: dict):
     server_name, raw_name = dispatch[name]
 
     async def call():
-        async with mcp_session(servers[server_name]) as session:
-            return await session.call_tool(raw_name, arguments)
+        async with mcp_client(servers[server_name]) as client:
+            return await client.call_tool(raw_name, arguments)
 
     result = await with_mcp_retry(call)
     return mcp_content_to_chat_content(result.content)

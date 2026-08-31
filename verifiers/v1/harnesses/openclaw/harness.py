@@ -40,20 +40,47 @@ ACP_PATCH_TARGET = """	start() {
 	}"""
 ACP_PATCH = """	start() {
 		this.log("ready");
-		void this.forwardToolInterception().catch((error) => {
-			this.log(`tool interception bridge stopped: ${error}`);
+		void this.serveToolInterception().catch((error) => {
+			this.log(`tool interception socket stopped: ${error}`);
 		});
 	}
-	async forwardToolInterception() {
-		while (true) {
-			const request = await this.gateway.request("verifiers.tool_interception.next", {}, { timeoutMs: null });
-			try {
-				const decision = await this.connection.extMethod("_verifiers/tool_interception", request.body);
-				await this.gateway.request("verifiers.tool_interception.resolve", { id: request.id, decision });
-			} catch (error) {
-				await this.gateway.request("verifiers.tool_interception.resolve", { id: request.id, error: String(error) });
-			}
-		}
+	async serveToolInterception() {
+		const socketPath = process.env.VF_OPENCLAW_TOOL_SOCKET;
+		delete process.env.VF_OPENCLAW_TOOL_SOCKET;
+		if (!socketPath) return;
+		const { createServer } = await import("node:net");
+		const { rm } = await import("node:fs/promises");
+		await rm(socketPath, { force: true });
+		const server = createServer((socket) => {
+			server.close();
+			const hidden = rm(socketPath, { force: true });
+			let buffer = "";
+			let processing = Promise.resolve();
+			socket.setEncoding("utf8");
+			socket.on("data", (chunk) => {
+				buffer += chunk;
+				let newline;
+				while ((newline = buffer.indexOf("\\n")) >= 0) {
+					const line = buffer.slice(0, newline);
+					buffer = buffer.slice(newline + 1);
+					processing = processing.then(async () => {
+						await hidden;
+						const request = JSON.parse(line);
+						try {
+							const decision = await this.connection.extMethod("_verifiers/tool_interception", request.body);
+							socket.write(`${JSON.stringify({ id: request.id, decision })}\\n`);
+						} catch (error) {
+							socket.write(`${JSON.stringify({ id: request.id, error: String(error) })}\\n`);
+						}
+					});
+				}
+			});
+		});
+		this.toolInterceptionServer = server;
+		await new Promise((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(socketPath, resolve);
+		});
 	}"""
 INSTALL = r"""
 set -e
@@ -282,6 +309,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             "OpenClaw",
         )
         state_dir = config.env["OPENCLAW_STATE_DIR"]
+        config.env["VF_OPENCLAW_TOOL_SOCKET"] = f"{state_dir}/tool-interception.sock"
         plugin_dir = f"{state_dir}/tool-interception"
         await runtime.write(f"{plugin_dir}/index.mjs", TOOL_INTERCEPTION_PLUGIN_SOURCE)
         await runtime.write(
