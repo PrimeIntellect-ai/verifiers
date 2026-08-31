@@ -2,8 +2,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any, TypeVar, cast
 
-import httpx
-from mcp import ClientSession
+import httpx2
+from mcp import Client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
@@ -14,9 +14,10 @@ T = TypeVar("T")
 
 
 @asynccontextmanager
-async def mcp_session(spec: dict[str, Any]) -> AsyncIterator[ClientSession]:
-    """Open one fresh streamable-HTTP session in the caller's task.
+async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
+    """Open one fresh MCP client in the caller's task.
 
+    The client negotiates the newest protocol and falls back for older servers.
     Teardown failures after the body completes are suppressed so closing noise cannot
     fail or replay a call whose result is already available.
     """
@@ -25,25 +26,21 @@ async def mcp_session(spec: dict[str, Any]) -> AsyncIterator[ClientSession]:
         http_client = await stack.enter_async_context(
             create_mcp_http_client(
                 headers=spec.get("headers") or None,
-                timeout=httpx.Timeout(
+                timeout=httpx2.Timeout(
                     spec.get("timeout", MCP_TIMEOUT),
                     connect=spec.get("connect_timeout", 5.0),
                 ),
             )
         )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        yield session
+        transport = streamable_http_client(spec["url"], http_client=http_client)
+        yield await stack.enter_async_context(Client(transport))
     finally:
         with suppress(Exception):
             await stack.aclose()
 
 
 async def with_retry(call: Callable[[], Awaitable[T]]) -> T:
-    """Run one session-scoped operation with the existing at-least-once retries."""
+    """Run one client operation with the existing at-least-once retries."""
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
         wait=wait_exponential_jitter(initial=0.5, max=30),
@@ -70,8 +67,8 @@ async def connect_mcp(
         servers[name] = spec
 
         async def list_tools(spec: dict[str, Any] = spec):
-            async with mcp_session(spec) as session:
-                return (await session.list_tools()).tools
+            async with mcp_client(spec) as client:
+                return (await client.list_tools()).tools
 
         for tool in await with_retry(list_tools):
             full = f"{name}_{tool.name}" if name else tool.name
@@ -85,7 +82,7 @@ async def connect_mcp(
                     "function": {
                         "name": full,
                         "description": tool.description or "",
-                        "parameters": tool.inputSchema,
+                        "parameters": tool.input_schema,
                     },
                 }
             )
@@ -102,7 +99,7 @@ def mcp_content_to_chat_content(
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
         elif block.type == "image":
-            url = f"data:{block.mimeType};base64,{block.data}"
+            url = f"data:{block.mime_type};base64,{block.data}"
             parts.append({"type": "image_url", "image_url": {"url": url}})
         else:
             parts.append({"type": "text", "text": str(block)})
@@ -119,12 +116,12 @@ async def call_mcp(
     name: str,
     arguments: dict[str, Any],
 ) -> str | list[dict[str, Any]]:
-    """Call one MCP tool on a fresh session per retry attempt."""
+    """Call one MCP tool with a fresh client per retry attempt."""
     server_name, raw = dispatch[name]
 
     async def call():
-        async with mcp_session(servers[server_name]) as session:
-            return await session.call_tool(raw, arguments)
+        async with mcp_client(servers[server_name]) as client:
+            return await client.call_tool(raw, arguments)
 
     result = await with_retry(call)
     return mcp_content_to_chat_content(result.content)

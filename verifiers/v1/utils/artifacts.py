@@ -83,6 +83,12 @@ async def collect(
                 )
             entries.append(artifact)
 
+    seen: set[str] = set()
+    for artifact in entries:
+        if artifact.source in seen:
+            raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
+        seen.add(artifact.source)
+
     collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:

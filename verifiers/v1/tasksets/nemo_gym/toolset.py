@@ -1,13 +1,13 @@
 """Expose NeMo Gym resource tools through Verifiers MCP."""
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import Field
 
-from verifiers.v1.mcp import SharedToolsetConfig, Toolset, mcp_session
+from verifiers.v1.mcp import SharedToolsetConfig, Toolset, mcp_client
 from verifiers.v1.state import State
 
 
@@ -38,45 +38,52 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
 
     TOOL_PREFIX = None
 
-    def register(self, mcp: FastMCP) -> None:
-        server = mcp._mcp_server
-        server.list_tools()(self._with_state(self.list_tools))
-        server.call_tool(validate_input=False)(self._with_state(self.call_tool))
+    def register(self, mcp: MCPServer) -> None:
+        # MCPServer's protocol handlers call these public methods, so replacing them keeps the
+        # dynamic, rollout-specific catalog without registering a fake static tool schema.
+        server = cast(Any, mcp)
+        server.list_tools = self._with_state(self.list_tools)
+        server.call_tool = self._with_state(self.call_tool)
 
     async def list_tools(self) -> list[Tool]:
         if self.state.mcp_url is not None:
-            async with mcp_session(
+            async with mcp_client(
                 {
                     "url": self.state.mcp_url,
                     "headers": self.state.mcp_headers,
                     "timeout": self.state.request_timeout,
                     "connect_timeout": self.state.request_timeout,
                 }
-            ) as session:
-                tools = (await session.list_tools()).tools
+            ) as client:
+                tools = (await client.list_tools()).tools
         else:
             tools = [
                 Tool(
                     name=spec["name"],
                     description=spec.get("description") or None,
-                    inputSchema=spec.get("parameters") or {},
+                    input_schema=spec.get("parameters") or {},
                 )
                 for spec in self.state.direct_tools.values()
             ]
         self.state.tool_names = [tool.name for tool in tools]
         return tools
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context | None = None,
+    ) -> CallToolResult:
         if self.state.mcp_url is not None:
-            async with mcp_session(
+            async with mcp_client(
                 {
                     "url": self.state.mcp_url,
                     "headers": self.state.mcp_headers,
                     "timeout": self.state.request_timeout,
                     "connect_timeout": self.state.request_timeout,
                 }
-            ) as session:
-                return await session.call_tool(name, arguments)
+            ) as client:
+                return await client.call_tool(name, arguments)
 
         if name not in self.state.direct_tools:
             raise ValueError(f"unknown NeMo Gym tool: {name}")
@@ -84,7 +91,7 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
         response = await self.state.post(name, arguments)
         return CallToolResult(
             content=[TextContent(type="text", text=response.text)],
-            isError=not response.is_success,
+            is_error=not response.is_success,
         )
 
 

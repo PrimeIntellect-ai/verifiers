@@ -1,8 +1,8 @@
 from verifiers.v1.mcp.client import (
     call_mcp,
     connect_mcp,
+    mcp_client,
     mcp_content_to_chat_content,
-    mcp_session,
     with_retry,
 )
 from verifiers.v1.mcp.launch import (
@@ -22,8 +22,8 @@ __all__ = [
     "ToolsetConfig",
     "call_mcp",
     "connect_mcp",
+    "mcp_client",
     "mcp_content_to_chat_content",
-    "mcp_session",
     "serve",
     "serve_shared",
     "serve_tools",

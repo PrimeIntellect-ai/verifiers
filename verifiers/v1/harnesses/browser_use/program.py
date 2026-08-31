@@ -1,10 +1,11 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
 #     "browser-harness==0.1.8",
 #     "openai",
-#     "mcp>=1.24.0,<2",
+#     "mcp==2.0.0",
 #     "httpx",
+#     "httpx2",
 #     "tenacity",
 # ]
 # ///

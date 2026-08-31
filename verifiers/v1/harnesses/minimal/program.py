@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]
 # ///
 """Shared Null/Bash chat program; secrets use argv so tools do not inherit them."""
 

@@ -55,12 +55,23 @@ def parse_judge_choice(
         return None
 
     text = content.rsplit("</think>", 1)[-1].strip()
-    text = extract_boxed_answer(text, strict=True).strip() or text
-
     text_upper = text.upper()
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
+    horizontal_space = r"[^\S\n]"
+    final_choices = re.findall(
+        rf"^{horizontal_space}*FINAL{horizontal_space}+"
+        rf"(?:JUDGMENT|ANSWER|VERDICT){horizontal_space}*"
+        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*{choice_re}",
+        text_upper,
+        re.MULTILINE,
+    )
+    if final_choices:
+        return choices_by_upper.get(final_choices[-1])
+
+    text = extract_boxed_answer(text, strict=True).strip() or text
+    text_upper = text.upper()
     verdict_re = (
         r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT|"
         r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
