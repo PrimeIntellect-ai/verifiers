@@ -101,6 +101,17 @@ class TestXMLParser:
             result == "45"
         )  # Should return just the last answer, not a full parse() namespace
 
+    def test_parse_answer_from_message_completion_uses_last_answer(self, xml_parser):
+        """Test extracting the last answer from a message completion."""
+        completion = [
+            {
+                "role": "assistant",
+                "content": "<answer>44</answer><reasoning>Actually, that's not right either.</reasoning><answer>45</answer>",
+            }
+        ]
+        result = xml_parser.parse_answer(completion)
+        assert result == "45"
+
     def test_parse_answer_no_answer_field(self, xml_parser):
         """Test parse_answer when no answer field is found."""
         completion = [
