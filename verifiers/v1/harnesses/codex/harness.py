@@ -53,7 +53,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_PRE_TOOL_INTERCEPTION = True
     SUPPORTS_POST_TOOL_INTERCEPTION = True
-    TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec"})
+    TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec", "wait"})
     TOOL_INTERCEPTION_VERSION = CODEX_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
