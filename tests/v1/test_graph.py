@@ -260,6 +260,7 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
                 completion_ids=[4],
                 message_spans=[(0, 2)],
                 is_content=[False, True, False],
+                mm_placeholders=[(1, 2)],
                 mm_token_type_id_map={9: 1},
             ),
         )
@@ -303,6 +304,7 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
                 completion_ids=[8],
                 message_spans=[None, None, (4, 6)],
                 is_content=[False, True, False, True, False, True, False],
+                mm_placeholders=[(1, 2)],
                 mm_token_type_id_map={9: 1},
             ),
         )

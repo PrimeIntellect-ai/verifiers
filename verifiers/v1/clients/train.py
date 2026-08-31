@@ -135,6 +135,16 @@ def response_from_generate(
         message_spans = bridged_turn.prompt_message_spans(attribution)
     else:
         message_spans = attribution.message_token_spans()
+    raw_mm_placeholders = result.get("mm_placeholders")
+    mm_placeholders = (
+        sorted(
+            (placeholder["offset"], placeholder["length"])
+            for ranges in raw_mm_placeholders.values()
+            for placeholder in ranges
+        )
+        if raw_mm_placeholders is not None
+        else None
+    )
     return Response(
         id=result.get("request_id", ""),
         created=0,
@@ -159,6 +169,7 @@ def response_from_generate(
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
+            mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
             kept_tokens=KeptTokens(**kept)

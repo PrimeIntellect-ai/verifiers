@@ -459,32 +459,45 @@ def _project_prompt_attribution(
     renderer_prompt_ids: list[int],
     prompt_ids: list[int],
     mm_token_type_id_map: dict[int, int],
+    mm_placeholders: list[tuple[int, int]] | None,
     message_spans: list[tuple[int, int] | None] | None,
     is_content: list[bool] | None,
 ) -> tuple[list[tuple[int, int] | None] | None, list[bool] | None]:
-    """Repeat logical attribution across vLLM's multimodal placeholder runs."""
+    """Project logical attribution using vLLM's multimodal placeholder ranges."""
     if renderer_prompt_ids == prompt_ids:
         return message_spans, is_content
-    if not mm_token_type_id_map:
+    if not mm_token_type_id_map or mm_placeholders is None:
         raise ValueError(
-            "cannot align renderer and vLLM prompt tokens without multimodal token types"
+            "cannot align renderer and vLLM prompt tokens without multimodal placeholders"
         )
 
     offsets = [0]
     prompt_offset = 0
+    placeholder_index = 0
     for token_id in renderer_prompt_ids:
-        if prompt_offset >= len(prompt_ids) or prompt_ids[prompt_offset] != token_id:
-            raise ValueError("renderer prompt does not align with vLLM prompt tokens")
-        prompt_offset += 1
-        token_type = mm_token_type_id_map.get(token_id)
-        if token_type is not None:
-            while (
-                prompt_offset < len(prompt_ids)
-                and mm_token_type_id_map.get(prompt_ids[prompt_offset]) == token_type
+        if token_id in mm_token_type_id_map:
+            if placeholder_index >= len(mm_placeholders):
+                raise ValueError(
+                    "vLLM multimodal placeholders do not align with renderer prompt"
+                )
+            offset, length = mm_placeholders[placeholder_index]
+            if offset != prompt_offset or length < 1:
+                raise ValueError(
+                    "vLLM multimodal placeholders do not align with renderer prompt"
+                )
+            prompt_offset += length
+            placeholder_index += 1
+        else:
+            if (
+                prompt_offset >= len(prompt_ids)
+                or prompt_ids[prompt_offset] != token_id
             ):
-                prompt_offset += 1
+                raise ValueError(
+                    "renderer prompt does not align with vLLM prompt tokens"
+                )
+            prompt_offset += 1
         offsets.append(prompt_offset)
-    if prompt_offset != len(prompt_ids):
+    if prompt_offset != len(prompt_ids) or placeholder_index != len(mm_placeholders):
         raise ValueError("renderer prompt does not align with vLLM prompt tokens")
 
     projected_spans = None
@@ -560,6 +573,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         renderer_prompt_ids,
         prompt_ids,
         trace.mm_token_type_id_map,
+        tokens.mm_placeholders if tokens else None,
         renderer_spans,
         renderer_is_content,
     )

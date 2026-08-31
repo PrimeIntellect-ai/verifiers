@@ -210,6 +210,8 @@ class TurnTokens(BaseModel):
         default=None, exclude=True
     )
     is_content: list[bool] | None = Field(default=None, exclude=True)
+    # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
+    mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
     # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
     # rendering renderer is multimodal.
