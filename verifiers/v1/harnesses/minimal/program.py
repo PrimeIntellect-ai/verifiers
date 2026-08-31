@@ -2,23 +2,42 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]
 # ///
-"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
+"""Shared Null/Bash chat program; secrets use argv so tools do not inherit them."""
 
 import argparse
 import asyncio
 import json
 import subprocess
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
-from openai import AsyncOpenAI
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+from openai import APIStatusError, AsyncOpenAI
+
+if TYPE_CHECKING:
+    # The harness bundles this module into the generated script before execution.
+    from verifiers.v1.mcp.client import call_mcp, connect_mcp  # noqa: TC004
 
 SERPER_URL = "https://google.serper.dev/search"
 
-MCP_CALL_ATTEMPTS = 6
-MCP_TIMEOUT = 600.0
+CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "exceeds the context window",
+    "reduce the length of the messages",
+    "maximum context length",
+    "prompt is too long",
+    "request_too_large",
+    "request entity too large",
+    "exceeds the maximum number of tokens",
+    "maximum prompt length is",
+)
+
+
+def is_context_overflow(error: APIStatusError) -> bool:
+    details = f"{error} {error.body or ''}".casefold()
+    return error.status_code in (400, 413) and any(
+        marker in details for marker in CONTEXT_OVERFLOW_MARKERS
+    )
 
 
 BASH_TOOL = {
@@ -186,117 +205,6 @@ async def chat(
     return completion.choices[0].message
 
 
-@asynccontextmanager
-async def mcp_client(spec: dict):
-    """One fresh MCP client, negotiating the newest protocol and falling back for old servers.
-
-    It is opened and closed within the caller's task so AnyIO cancellation scopes stay correctly
-    nested. Closing noise after a completed body cannot fail or replay an answered call.
-    """
-    import httpx2
-    from mcp import Client
-    from mcp.client.streamable_http import (
-        create_mcp_http_client,
-        streamable_http_client,
-    )
-
-    stack = AsyncExitStack()
-    try:
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(
-                headers=spec.get("headers") or None,
-                timeout=httpx2.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
-            )
-        )
-        transport = streamable_http_client(spec["url"], http_client=http_client)
-        yield await stack.enter_async_context(Client(transport))
-    finally:
-        with suppress(Exception):
-            await stack.aclose()
-
-
-async def with_retry(call):
-    """Run one client operation, retrying transient failures with backoff. A call whose
-    response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
-    at-least-once delivery (a tool that fails reports through its result, not an exception)."""
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
-        reraise=True,
-    ):
-        with attempt:
-            return await call()
-
-
-async def connect_mcp(
-    config: dict, reserved: set[str]
-) -> tuple[list[dict], dict, dict]:
-    """Enumerate each configured MCP server's tools (a streamable-HTTP `url`); return (tool schemas,
-    dispatch mapping `<server>_<tool>` -> (server name, raw tool name), servers mapping name -> spec).
-    No protocol session is held; a fresh client handles each call."""
-    tool_schemas: list[dict] = []
-    dispatch: dict[str, tuple] = {}
-    servers: dict[str, dict] = {}
-    for name, spec in config.get("mcpServers", {}).items():
-        servers[name] = spec
-
-        async def list_tools(spec: dict = spec):
-            async with mcp_client(spec) as client:
-                return (await client.list_tools()).tools
-
-        for tool in await with_retry(list_tools):
-            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
-            full = f"{name}_{tool.name}" if name else tool.name
-            if full in reserved or full in dispatch:
-                raise ValueError(
-                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
-                )
-            tool_schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": full,
-                        "description": tool.description or "",
-                        "parameters": tool.input_schema,
-                    },
-                }
-            )
-            dispatch[full] = (name, tool.name)
-    return tool_schemas, dispatch, servers
-
-
-def mcp_content_to_chat_content(blocks) -> str | list[dict]:
-    parts = []
-    for block in blocks:
-        if block.type == "text":
-            parts.append({"type": "text", "text": block.text})
-        elif block.type == "image":
-            url = f"data:{block.mime_type};base64,{block.data}"
-            parts.append({"type": "image_url", "image_url": {"url": url}})
-        else:
-            parts.append({"type": "text", "text": str(block)})
-    if not parts:
-        return str(blocks)
-    if all(part["type"] == "text" for part in parts):
-        return "\n".join(part["text"] for part in parts)
-    return parts
-
-
-async def call_mcp(
-    servers: dict, dispatch: dict, name: str, arguments: dict
-) -> str | list[dict]:
-    """Call a tool with a fresh client per attempt — see `with_retry` for replay semantics.
-    The result is converted outside the retry so a conversion failure fails once."""
-    server_name, raw = dispatch[name]
-
-    async def call():
-        async with mcp_client(servers[server_name]) as client:
-            return await client.call_tool(raw, arguments)
-
-    result = await with_retry(call)
-    return mcp_content_to_chat_content(result.content)
-
-
 async def run_tool_hook(
     client: httpx.AsyncClient,
     url: str,
@@ -326,6 +234,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--bash", action="store_true")
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -340,26 +249,31 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    client = AsyncOpenAI(
+        base_url=args.base_url,
+        api_key=args.api_key,
+        timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+    )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
         if args.tool_interception_url
         else None
     )
     config = json.loads(args.mcp_config or "{}")
-    tools = [BASH_TOOL]
-    reserved = {"bash"}
+    tools = [BASH_TOOL] if args.bash else []
+    reserved = {"bash"} if args.bash else set()
     if args.edit:
         tools.append(EDIT_TOOL)
         reserved.add("edit")
     if args.search:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
-    mcp_tools, dispatch, servers = (
-        await connect_mcp(config, reserved)
-        if config.get("mcpServers")
-        else ([], {}, {})
-    )
+    if config.get("mcpServers"):
+        mcp_tools, dispatch, servers = await asyncio.wait_for(
+            connect_mcp(config, reserved), timeout=None if args.bash else 60
+        )
+    else:
+        mcp_tools, dispatch, servers = [], {}, {}
     tools += mcp_tools
     messages = (
         [{"role": "system", "content": args.system_prompt}]
@@ -371,7 +285,13 @@ async def main() -> None:
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
     while True:
-        message = await chat(client, args.model, messages, tools)
+        try:
+            message = await chat(client, args.model, messages, tools)
+        except APIStatusError as error:
+            # Null cannot compact, so context exhaustion ends it with the transcript so far.
+            if args.bash or not is_context_overflow(error):
+                raise
+            return
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             break
@@ -405,7 +325,7 @@ async def main() -> None:
                     content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
                 elif name in dispatch:
                     content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "bash":
+                elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
                         run_bash, tool_args.get("command", "")
                     )
