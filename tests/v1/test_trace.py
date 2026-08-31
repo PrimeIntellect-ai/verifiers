@@ -410,6 +410,8 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         "secret": None,
         "auth": False,
     }
+    usage = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+    assert platform.prepare_upload({"usage": usage})[0]["usage"] == usage
 
     reduced, _ = platform.prepare_upload(
         {"completion": "runtime-secret-0123456789", "answer": "keep 1 and keep"},

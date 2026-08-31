@@ -31,6 +31,7 @@ _SENSITIVE_FIELDS = {
     "access_key",
     "access_key_id",
     "api_key",
+    "api_token",
     "access_token",
     "auth_token",
     "auth",
@@ -150,7 +151,12 @@ def _normalize(name: str) -> str:
 
 def _sensitive(name: str) -> bool:
     name = _normalize(name)
-    names = (name, name.removesuffix("s"))
+    singular = name.removesuffix("s")
+    plural_secret = singular != name and any(
+        singular == field or singular.endswith(f"_{field}")
+        for field in _SENSITIVE_FIELDS - {"token"}
+    )
+    names = (name, singular) if plural_secret else (name,)
     return not any(
         candidate.endswith(_REFERENCE_SUFFIXES) for candidate in names
     ) and any(
