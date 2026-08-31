@@ -328,8 +328,6 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
-        # One models route serves every dialect: OpenAI and Anthropic SDKs both list
-        # models at `GET /v1/models` (the response schema is the upstream's).
         app.router.add_get("/v1/models", self.handle_models)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
