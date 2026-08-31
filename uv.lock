@@ -4205,7 +4205,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.10"
+version = "0.1.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4215,11 +4215,16 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
-    { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/bf/a8da1f1d09d246652c9aee548053259eab4bf717c274f9331b62fb81930b/renderers-0.1.10.tar.gz", hash = "sha256:5bc8fe3de04ba08cd9873298479a4477ac445e9fe524754d51af93bd6ca4802b", size = 386483, upload-time = "2026-08-24T18:25:00.941Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/37/3441c75b45fc818ad1881d7837ff073f92ce4e3ab3bfd1640ad3062d6bb0/renderers-0.1.11.tar.gz", hash = "sha256:575f02e44200b525dc5c4fac207148d18bacadc083eca783068d4195d21f8960", size = 392707, upload-time = "2026-08-31T17:36:02.706Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/23/57c52455f7f796be582420252de47a002b013eaec02759afeaafba525f70/renderers-0.1.10-py3-none-any.whl", hash = "sha256:1ad75a504b611fee2df4d714bfbc37a9ab4c2a2dd49dd6945f64d5ca20e7b82d", size = 220065, upload-time = "2026-08-24T18:24:59.163Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/bb/4e2d84f717a0266dcb5c26c6cd1f1beae46582de41cf323ee29e57fcb45a/renderers-0.1.11-py3-none-any.whl", hash = "sha256:8fac795d32f8aeacffe6dbb863d60f1b3437a06389c27593ebabe66cec9bdc45", size = 230033, upload-time = "2026-08-31T17:36:00.652Z" },
+]
+
+[package.optional-dependencies]
+multimodal = [
+    { name = "pillow" },
+    { name = "transformers" },
 ]
 
 [[package]]
@@ -5066,7 +5071,7 @@ dependencies = [
     { name = "prime-tunnel" },
     { name = "pydantic" },
     { name = "pyzmq" },
-    { name = "renderers" },
+    { name = "renderers", extra = ["multimodal"] },
     { name = "requests" },
     { name = "rich" },
     { name = "setproctitle" },

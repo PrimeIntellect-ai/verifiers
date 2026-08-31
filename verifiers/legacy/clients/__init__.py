@@ -33,23 +33,18 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
             case "openai_responses":
                 return OpenAIResponsesClient(client_or_config)
             case "renderer":
-                from verifiers.legacy.clients.renderer_client import RendererClient
-
-                return RendererClient(client_or_config)
+                raise ValueError(
+                    "client_type 'renderer' was removed: the legacy "
+                    "RendererClient depended on renderer pool APIs dropped in "
+                    "renderers 0.1.11. Use the verifiers.v1 train client for "
+                    "renderer-backed token generation."
+                )
             case "anthropic_messages":
                 return AnthropicMessagesClient(client_or_config)
             case "nemorl_chat_completions":
                 return NeMoRLChatCompletionsClient(client_or_config)
     else:
         raise ValueError(f"Unsupported client type: {type(client_or_config)}")
-
-
-def __getattr__(name: str):
-    if name == "RendererClient":
-        from verifiers.legacy.clients.renderer_client import RendererClient
-
-        return RendererClient
-    raise AttributeError(f"module 'verifiers.legacy.clients' has no attribute '{name}'")
 
 
 __all__ = [
@@ -59,6 +54,5 @@ __all__ = [
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",
     "OpenAIResponsesClient",
-    "RendererClient",
     "Client",
 ]
