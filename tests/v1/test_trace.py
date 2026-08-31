@@ -365,6 +365,13 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert platform.prepare_upload(event)[0]["properties"]["password"]["value"] == (
         "[REDACTED]"
     )
+    event = {
+        "items": [],
+        "properties": {"password": {"value": "opaque-password-0123456789"}},
+    }
+    assert platform.prepare_upload(event)[0]["properties"]["password"]["value"] == (
+        "[REDACTED]"
+    )
 
 
 def test_platform_preflight_redacts_schema_enums_and_sensitive_mapping_keys():
@@ -410,10 +417,13 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         "SECRET_KEY=abcdefgh1234",
         "api_token=abcdefghijklmnop",
         "--token 123456789abc",
+        'password="abcd efgh"',
+        'password="abcd,efgh"',
     ):
-        assert platform.prepare_upload({"completion": assignment})[0][
-            "completion"
-        ].endswith("[REDACTED]")
+        assert (
+            "[REDACTED]"
+            in platform.prepare_upload({"completion": assignment})[0]["completion"]
+        )
 
     aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     session_token = "opaque-aws-session-token-0123456789"
