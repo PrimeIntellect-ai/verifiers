@@ -4,7 +4,6 @@ recompute on load), transient `state` never crosses the wire, and the permissive
 dump without importing the originating taskset."""
 
 import json
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -237,6 +236,7 @@ def test_platform_sample_separates_runtime_data_without_reducing_review_data():
                             "signature": "opaque-signature",
                             "data": "opaque-redacted-thinking",
                             "input": "reviewable provider input",
+                            "phase": "commentary",
                         }
                     ],
                 ),
@@ -278,6 +278,7 @@ def test_platform_sample_separates_runtime_data_without_reducing_review_data():
         "id": "provider-action-id",
         "container_id": "container-private",
         "input": "reviewable provider input",
+        "phase": "commentary",
     }
 
     local_trace = episode.to_record()["traces"][0]
@@ -299,6 +300,26 @@ def test_prime_team_header_is_resolved_live_without_entering_config(monkeypatch)
     }
 
 
+def test_platform_preflight_redacts_credentials_without_reducing_review_data():
+    provider_key = "sk-test-0123456789abcdefghijklmnopqrstuv"
+    opaque_key = "opaque-judge-key-0123456789"
+    payload = {
+        "metadata": {"judgeApiKey": opaque_key},
+        "completion": f"repeated {provider_key} and {opaque_key}",
+        "answer": "reference answer",
+        "rubric": "compare against the reference answer",
+    }
+
+    reduced, redactions = platform.prepare_upload(payload)
+
+    assert redactions == 3
+    assert provider_key not in json.dumps(reduced)
+    assert opaque_key not in json.dumps(reduced)
+    assert reduced["answer"] == payload["answer"]
+    assert reduced["rubric"] == payload["rubric"]
+    assert platform.prepare_upload(reduced)[1] == 0
+
+
 def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -318,14 +339,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
         assert "prime-api-key" in known_secrets
         raise RuntimeError("preflight stopped upload")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "prime_evals",
-        SimpleNamespace(
-            prepare_upload=stop_in_preflight,
-            secret_values=lambda *values: values,
-        ),
-    )
+    monkeypatch.setattr(platform, "prepare_upload", stop_in_preflight)
     monkeypatch.setattr(
         platform,
         "credentials",

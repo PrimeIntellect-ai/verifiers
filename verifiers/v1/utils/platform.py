@@ -18,6 +18,7 @@ import httpx
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
+from verifiers.v1.utils.preflight import prepare_upload
 from verifiers.v1.utils.prime import load_prime_config
 
 logger = logging.getLogger(__name__)
@@ -277,13 +278,6 @@ def push_traces(
         )
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
-    try:
-        from prime_evals import prepare_upload, secret_values
-    except ImportError:
-        error = "prime-evals with upload preflight is required"
-        logger.warning("--push: %s; skipping upload", error)
-        return finish(error=error)
-
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = config.env.taskset.id
     metrics = run_metrics(episodes, traces)
@@ -304,23 +298,24 @@ def push_traces(
     # — log and skip the upload instead.
     try:
         samples = build_samples(episodes)
-        prepared = prepare_upload(
+        payload, redactions = prepare_upload(
             {
                 "name": config.run.name,
                 "metadata": metadata,
                 "metrics": metrics,
                 "samples": samples,
             },
-            secret_values(api_key),
+            [api_key],
         )
-        name = prepared.data["name"]
-        metadata = prepared.data["metadata"]
-        metrics = prepared.data["metrics"]
-        samples = prepared.data["samples"]
-        if prepared.report:
+        name = payload["name"]
+        metadata = payload["metadata"]
+        metrics = payload["metrics"]
+        samples = payload["samples"]
+        if redactions:
             logger.warning(
-                "--push: preflight redacted %s; saved traces were not changed",
-                prepared.report,
+                "--push: preflight redacted %d credential-bearing value(s); "
+                "saved traces were not changed",
+                redactions,
             )
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
