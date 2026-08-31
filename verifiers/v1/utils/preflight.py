@@ -85,7 +85,7 @@ _PATTERNS = (
         r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
         r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
         r"secret|token)(?:=|\s+))[\"']?(?:(?:bearer|basic)\s+)?[\"']?"
-        r"(?P<secret>[^\s,;\"']{8,})",
+        r"(?P<secret>[^\s,;\"']{16,})",
         re.IGNORECASE,
     ),
     re.compile(

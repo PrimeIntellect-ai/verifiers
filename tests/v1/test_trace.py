@@ -350,6 +350,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     token = "opaque-json-token-0123456789"
     payload = {
         "completion": json.dumps({"Authorization": f"Bearer {token}"}),
+        "answer": "Use token=version-123 for the example.",
         "password": "s3cr3t",
         "api_key": "abc123",
     }
@@ -357,6 +358,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     reduced, _ = platform.prepare_upload(payload)
 
     assert token not in reduced["completion"]
+    assert reduced["answer"] == payload["answer"]
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
 
