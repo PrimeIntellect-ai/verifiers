@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, cast
 
-from mcp import ClientSession, StdioServerParameters
+from mcp import Client, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent, Tool as MCPTool
 
@@ -27,7 +27,7 @@ class MCPServerConnection:
     def __init__(self, config: MCPServerConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
-        self.session: Optional[ClientSession] = None
+        self.client: Optional[Client] = None
         self.tools: Dict[str, MCPTool] = {}
 
         self._connection_task: Optional[asyncio.Task] = None
@@ -54,21 +54,18 @@ class MCPServerConnection:
                 env=self.config.env,
             )
 
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    self.session = session
+            async with Client(stdio_client(server_params)) as client:
+                self.client = client
 
-                    await session.initialize()
+                tools_response = await client.list_tools()
 
-                    tools_response = await session.list_tools()
+                for tool in tools_response.tools:
+                    self.tools[tool.name] = tool
 
-                    for tool in tools_response.tools:
-                        self.tools[tool.name] = tool
+                self._ready.set()
 
-                    self._ready.set()
-
-                    while True:
-                        await asyncio.sleep(1)
+                while True:
+                    await asyncio.sleep(1)
 
         except asyncio.CancelledError:
             raise
@@ -76,14 +73,14 @@ class MCPServerConnection:
             self._error = e
             self._ready.set()
         finally:
-            self.session = None
+            self.client = None
             self.tools = {}
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        assert self.session is not None, f"Server '{self.config.name}' not connected"
+        assert self.client is not None, f"Server '{self.config.name}' not connected"
         assert self.loop is not None, "Connection loop not initialized"
         fut = asyncio.run_coroutine_threadsafe(
-            self.session.call_tool(tool_name, arguments=arguments), self.loop
+            self.client.call_tool(tool_name, arguments=arguments), self.loop
         )
         result = await asyncio.wrap_future(fut)
 
@@ -130,7 +127,7 @@ class MCPToolWrapper:
         """Convert the MCP tool metadata directly to vf.Tool."""
         parameters = cast(
             dict[str, object],
-            self.tool.inputSchema or {"type": "object", "properties": {}},
+            self.tool.input_schema or {"type": "object", "properties": {}},
         )
         return Tool(
             name=self.__name__,
