@@ -358,6 +358,14 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["properties"]["password"]["value"] == "[REDACTED]"
     assert reduced["schema"] == payload["schema"]
 
+    event = {
+        "type": "event",
+        "properties": {"password": {"value": "opaque-password-0123456789"}},
+    }
+    assert platform.prepare_upload(event)[0]["properties"]["password"]["value"] == (
+        "[REDACTED]"
+    )
+
 
 def test_platform_preflight_redacts_schema_enums_and_sensitive_mapping_keys():
     secrets = ["opaque-map-key-0123456789", "second-map-key-0123456789"]
@@ -395,6 +403,15 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["answer"] == payload["answer"]
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
+
+    for assignment in (
+        "password=abcdefgh1234",
+        "TOKEN=abcdefgh1234",
+        "api_token=abcdefghijklmnop",
+    ):
+        assert platform.prepare_upload({"completion": assignment})[0][
+            "completion"
+        ].endswith("[REDACTED]")
 
     aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     reduced, _ = platform.prepare_upload(

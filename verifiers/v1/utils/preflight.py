@@ -64,21 +64,23 @@ _SCHEMA_MARKERS = {
     "$schema",
     "allOf",
     "anyOf",
-    "const",
-    "default",
-    "description",
-    "enum",
-    "examples",
-    "format",
     "items",
     "oneOf",
-    "pattern",
     "required",
-    "title",
-    "type",
 }
 _AUTH_VALUE = re.compile(r"^(?:bearer|basic|token)\s+(.+)$", re.IGNORECASE)
 _PATTERNS = (
+    re.compile(
+        r"(?:(?<![A-Za-z0-9_])[\"']?(?i:(?:[A-Za-z][A-Za-z0-9]*[_-]+)*"
+        r"(?:x-api-key|api[_ -]?(?:key|token)|account[_ -]?key|"
+        r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|session[_ -]?token|"
+        r"client[_ -]?secret|secret[_ -]?access[_ -]?key|password|passwd|"
+        r"credential|private[_ -]?key|signature))\b[\"']?\s*[:=]\s*|"
+        r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|API_?TOKEN|ACCESS_?TOKEN|"
+        r"REFRESH_?TOKEN|AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|"
+        r"SECRET(?:_ACCESS_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*)"
+        r"[\"']?(?:(?i:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{8,})"
+    ),
     re.compile(
         r"(?P<secret>-----BEGIN (?P<label>(?:(?:RSA|EC|OPENSSH|DSA|ENCRYPTED) )?"
         r"PRIVATE KEY)-----.*?-----END (?P=label)-----)",
@@ -112,7 +114,7 @@ _PATTERNS = (
     ),
     re.compile(
         r"(?:(?<![A-Za-z0-9_])[\"']?(?:[A-Za-z][A-Za-z0-9]*[_-]+)*"
-        r"(?:x-api-key|api[_ -]?key|account[_ -]?key|"
+        r"(?:x-api-key|api[_ -]?(?:key|token)|account[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
         r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?access[_ -]?key)?|"
         r"password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
@@ -212,8 +214,16 @@ def prepare_upload(
         properties: bool = False,
     ) -> None:
         if isinstance(child, Mapping):
-            object_schema = schema_context or any(
-                field in child for field in _SCHEMA_MARKERS
+            schema_type = child.get("type")
+            object_schema = (
+                schema_context
+                or any(field in child for field in _SCHEMA_MARKERS)
+                or "properties" in child
+                and (
+                    schema_type == "object"
+                    or isinstance(schema_type, (list, tuple))
+                    and "object" in schema_type
+                )
             )
             for key, nested in child.items():
                 name = _normalize(str(key))
@@ -302,8 +312,16 @@ def prepare_upload(
         nonlocal replacements
         if isinstance(child, Mapping):
             reduced = {}
-            object_schema = schema_context or any(
-                field in child for field in _SCHEMA_MARKERS
+            schema_type = child.get("type")
+            object_schema = (
+                schema_context
+                or any(field in child for field in _SCHEMA_MARKERS)
+                or "properties" in child
+                and (
+                    schema_type == "object"
+                    or isinstance(schema_type, (list, tuple))
+                    and "object" in schema_type
+                )
             )
             for key, nested in child.items():
                 if structured_secret and _is_secret(key):
