@@ -78,7 +78,9 @@ _PATTERNS = (
         r"credential|private[_ -]?key|signature))\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|API_?TOKEN|ACCESS_?TOKEN|"
         r"REFRESH_?TOKEN|AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|"
-        r"SECRET(?:_ACCESS_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*)"
+        r"SECRET(?:_ACCESS_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
+        r"--(?:api-key|api-token|access-token|auth-token|client-secret|password|"
+        r"private-key|secret|token)(?:=|\s+))"
         r"[\"']?(?:(?i:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{8,})"
     ),
     re.compile(

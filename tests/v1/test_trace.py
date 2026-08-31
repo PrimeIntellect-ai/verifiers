@@ -408,22 +408,26 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         "password=abcdefgh1234",
         "TOKEN=abcdefgh1234",
         "api_token=abcdefghijklmnop",
+        "--token 123456789abc",
     ):
         assert platform.prepare_upload({"completion": assignment})[0][
             "completion"
         ].endswith("[REDACTED]")
 
     aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    session_token = "opaque-aws-session-token-0123456789"
     reduced, _ = platform.prepare_upload(
         {
             "completion": (
                 'password="correct horse battery staple" '
-                f'{{"aws_secret_access_key":"{aws_secret}"}}'
+                f'{{"aws_secret_access_key":"{aws_secret}",'
+                f'"aws_session_token":"{session_token}"}}'
             )
         }
     )
     assert "correct horse battery staple" not in reduced["completion"]
     assert aws_secret not in reduced["completion"]
+    assert session_token not in reduced["completion"]
 
     azure_secret = "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
     reduced, _ = platform.prepare_upload(
