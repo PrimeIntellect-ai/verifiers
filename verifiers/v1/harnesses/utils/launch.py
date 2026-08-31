@@ -6,6 +6,7 @@ from types import ModuleType
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -18,6 +19,19 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
     metadata, body = program.split(PEP_723_END, 1)
     sources = "\n".join(inspect.getsource(module) for module in modules)
     return f"{metadata}{PEP_723_END}{sources}\n{body}"
+
+
+# The shared Null/Bash chat program is the utils modules themselves: `core` ends with
+# the `__main__` entry point, so the program text is only the script metadata. Secrets
+# use argv so tools do not inherit them.
+CHAT_PROGRAM_SOURCE = bundle_program(
+    '# /// script\n# requires-python = ">=3.10"\n'
+    '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]\n'
+    "# ///\n",
+    mcp,
+    compaction,
+    core,
+)
 
 
 async def launch_chat_program(
