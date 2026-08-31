@@ -30,6 +30,7 @@ _REFERENCE_SUFFIXES = (
 _SENSITIVE_FIELDS = {
     "access_key",
     "access_key_id",
+    "account_key",
     "api_key",
     "api_token",
     "access_token",
@@ -111,7 +112,7 @@ _PATTERNS = (
     ),
     re.compile(
         r"(?:(?<![A-Za-z0-9_])[\"']?(?:[A-Za-z][A-Za-z0-9]*[_-]+)*"
-        r"(?:x-api-key|api[_ -]?key|"
+        r"(?:x-api-key|api[_ -]?key|account[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
         r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?access[_ -]?key)?|"
         r"password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
@@ -254,13 +255,21 @@ def prepare_upload(
                 remember(secret)
     discover(value)
     replacements = 0
+    exact = (
+        re.compile(
+            "|".join(
+                re.escape(secret) for secret in sorted(secrets, key=len, reverse=True)
+            )
+        )
+        if secrets
+        else None
+    )
 
     def redact_text(text: str) -> str:
         nonlocal replacements
-        for secret in sorted(secrets, key=len, reverse=True):
-            if secret in text:
-                replacements += 1
-                text = text.replace(secret, REDACTED)
+        if exact and (matches := {match.group() for match in exact.finditer(text)}):
+            replacements += len(matches)
+            text = exact.sub(REDACTED, text)
         for pattern in _PATTERNS:
 
             def replace(match: re.Match[str]) -> str:

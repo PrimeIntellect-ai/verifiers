@@ -408,6 +408,12 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert "correct horse battery staple" not in reduced["completion"]
     assert aws_secret not in reduced["completion"]
 
+    azure_secret = "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
+    reduced, _ = platform.prepare_upload(
+        {"completion": f"AccountName=example;AccountKey={azure_secret}"}
+    )
+    assert azure_secret not in reduced["completion"]
+
     reduced, _ = platform.prepare_upload(
         {"password": 12345678, "token": 987654321, "secret": None, "auth": False}
     )
