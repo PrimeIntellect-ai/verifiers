@@ -363,6 +363,32 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["api_key"] == "[REDACTED]"
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "xwfp-0123456789-abcdefghijklmnop",
+        "xapp-0123456789-abcdefghijklmnop",
+        "rk_" + "live_" + "0" * 24,
+        "sk_" + "test_" + "0" * 24,
+    ],
+)
+def test_platform_preflight_finds_additional_provider_credentials(token):
+    reduced, _ = platform.prepare_upload({"completion": token})
+
+    assert reduced["completion"] == "[REDACTED]"
+
+
+def test_platform_preflight_redacts_every_value_in_a_raw_cookie_header():
+    session = "opaque-cookie-session-0123456789"
+    refresh = "opaque-cookie-refresh-0123456789"
+    reduced, _ = platform.prepare_upload(
+        {"completion": f"Cookie: session={session}; refresh={refresh}"}
+    )
+
+    assert session not in reduced["completion"]
+    assert refresh not in reduced["completion"]
+
+
 def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
     monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
     monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")

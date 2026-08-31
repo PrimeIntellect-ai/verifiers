@@ -67,13 +67,18 @@ _PATTERNS = (
         r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|"
         r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
         r"hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|"
-        r"xox[baprs]-[A-Za-z0-9-]{10,}|npm_[A-Za-z0-9]{20,}|"
+        r"xox[baprs]-[A-Za-z0-9-]{10,}|x(?:wfp|app)-[A-Za-z0-9-]{10,}|"
+        r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|"
         r"pypi-[A-Za-z0-9_-]{30,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})"
     ),
     re.compile(
         r"(?P<secret>https://(?:hooks\.slack\.com/services|"
         r"discord(?:app)?\.com/api/webhooks)/[^\s\"']+)",
         re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*cookie\s*:\s*(?P<secret>[^\r\n]{8,})",
+        re.IGNORECASE | re.MULTILINE,
     ),
     re.compile(
         r"(?:(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization|"
