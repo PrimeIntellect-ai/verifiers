@@ -16,6 +16,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     ToolsetError,
+    TunnelUnavailableError,
     boundary,
 )
 from verifiers.v1.harness import Harness, HarnessSession
@@ -130,6 +131,7 @@ class Rollout:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
+        self._base_url: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self.deadline_at: float | None = None
@@ -168,6 +170,12 @@ class Rollout:
             ) from error
         if not isinstance(error, RolloutError):
             logger.exception("unexpected error in rollout %s", self.trace.id)
+        if (
+            isinstance(error, TunnelUnavailableError)
+            and self._interception is not None
+            and self._base_url is not None
+        ):
+            self._interception.quarantine(self._base_url, str(error))
         self._failed = True
         self._failure = error
         self.trace.record_error(error)
@@ -253,6 +261,7 @@ class Rollout:
                     self._shared_tools,
                 )
             )
+            self._base_url = base_url
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(

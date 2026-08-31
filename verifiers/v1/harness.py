@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError, SandboxError, boundary
+from verifiers.v1.errors import (
+    HarnessError,
+    SandboxError,
+    TunnelUnavailableError,
+    boundary,
+    is_tunnel_unavailable_detail,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
@@ -151,6 +157,11 @@ class Harness(ABC, Generic[ConfigT]):
             return
         # The real cause is at the END of a traceback, so keep the tail.
         detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+        if is_tunnel_unavailable_detail(detail):
+            raise TunnelUnavailableError(
+                f"interception tunnel became unavailable under harness "
+                f"{self.config.id!r} (exit {result.exit_code}): {detail}"
+            )
         if not await runtime.alive():
             raise SandboxError(
                 f"runtime died under harness {self.config.id!r} "

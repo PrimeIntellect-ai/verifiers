@@ -56,6 +56,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
+    TunnelUnavailableError,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessSession
@@ -261,6 +262,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TaskError",
     "InterceptionError",
     "TunnelError",
+    "TunnelUnavailableError",
     # clients
     "Client",
     "BaseClientConfig",

@@ -42,6 +42,39 @@ IDLE_FALLBACK_LIFETIME = 30 * 24 * 60 * 60
 platform requires a finite lifetime there as a safety fallback should idle detection
 fail. Far above any real run, so effectively unbounded."""
 
+PRIME_CONNECTIVITY_INITIAL_DELAY = 1.0
+PRIME_CONNECTIVITY_MAX_DELAY = 30.0
+_TERMINAL_SANDBOX_STATUSES = {"ERROR", "TERMINATED", "TIMEOUT"}
+
+
+def _exception_chain(error: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _is_transient_prime_route_error(error: BaseException) -> bool:
+    """Recognize ambiguous gateway misses on idempotent Prime sandbox operations."""
+    text = "\n".join(str(item).lower() for item in _exception_chain(error))
+    return (
+        ("sandbox_not_found" in text and "502" in text)
+        or "tunnel not found or no longer active" in text
+        or "http 504" in text
+        or "status code: 504" in text
+        or "504 gateway time-out" in text
+        or "504 gateway timeout" in text
+    )
+
+
+def _is_control_plane_not_found(error: BaseException) -> bool:
+    text = "\n".join(str(item).lower() for item in _exception_chain(error))
+    return "http 404" in text or "status code: 404" in text
+
 
 BASE_LABELS: list[str] = []
 
@@ -100,6 +133,9 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced user-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+    connectivity_grace: float = Field(600.0, ge=0)
+    """Seconds to preserve the same sandbox while retrying ambiguous route failures on
+    idempotent polls and reads. Confirmed terminal sandbox state fails immediately."""
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":
@@ -160,6 +196,60 @@ class PrimeRuntime(Runtime):
     @property
     def published_port(self) -> int | None:
         return SERVICE_PORT
+
+    async def _control_plane_alive(self) -> bool | None:
+        """Return lifecycle truth from the control plane, or ``None`` when unavailable."""
+        if self._client is None or self.info.id is None:
+            return False
+        try:
+            sandbox = await self._client.get(self.info.id)
+        except Exception as e:  # noqa: BLE001 - distinguish terminal from unreachable
+            return False if _is_control_plane_not_found(e) else None
+        status = getattr(sandbox, "status", "")
+        status = getattr(status, "value", status)
+        return str(status).upper() not in _TERMINAL_SANDBOX_STATUSES
+
+    def _clock(self) -> float:
+        return asyncio.get_running_loop().time()
+
+    async def _sleep(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+
+    async def _retry_idempotent(self, operation, label: str):
+        """Retry one safe operation through a bounded route outage on this sandbox."""
+        deadline = self._clock() + self.config.connectivity_grace
+        delay = PRIME_CONNECTIVITY_INITIAL_DELAY
+        while True:
+            try:
+                return await operation()
+            except Exception as e:
+                if not _is_transient_prime_route_error(e):
+                    raise
+                alive = await self._control_plane_alive()
+                if alive is False:
+                    raise
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise
+                wait = min(delay, remaining)
+                logger.warning(
+                    "prime: transient route failure during %s on sandbox %s; "
+                    "retrying in %.1fs (%.1fs grace remains): %s",
+                    label,
+                    self.info.id,
+                    wait,
+                    remaining,
+                    e,
+                )
+                await self._sleep(wait)
+                delay = min(delay * 2, PRIME_CONNECTIVITY_MAX_DELAY)
+
+    async def alive(self) -> bool:
+        """Use control-plane lifecycle state before probing the sandbox gateway."""
+        alive = await self._control_plane_alive()
+        if alive is not None:
+            return alive
+        return await super().alive()
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
@@ -305,7 +395,10 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
             while True:
-                result = await self._client.get_background_job(self.info.id, job)
+                result = await self._retry_idempotent(
+                    lambda: self._client.get_background_job(self.info.id, job),
+                    "background-job poll",
+                )
                 if result.completed:
                     break
                 await asyncio.sleep(1)
@@ -380,7 +473,12 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await self._retry_idempotent(
+                    lambda: self._client.download_file(
+                        self.info.id, target, str(download)
+                    ),
+                    f"read {path!r}",
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e

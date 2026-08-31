@@ -45,3 +45,15 @@ class Tunnel(ABC, Generic[ConfigT]):
         from a remote runtime. Entered only when a consumer is remote; torn down on exit.
         A setup failure raises `TunnelError`; an error raised while the URL is held (the
         caller's body) propagates unchanged."""
+
+    async def healthy(self) -> bool | None:
+        """Return route health when this tunnel can check it, else ``None``.
+
+        ``None`` means unknown, not unhealthy. Pools keep the last known state when a
+        health backend is temporarily unreachable.
+        """
+        return None
+
+    async def reconnect(self, port: int) -> str | None:
+        """Replace an unhealthy registration and return its new URL when supported."""
+        return None

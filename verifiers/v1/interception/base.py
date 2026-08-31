@@ -64,3 +64,6 @@ class Interception(ABC):
     def acquire(self, session: RolloutSession) -> AbstractAsyncContextManager[Slot]:
         """Register `session` on a server (bringing one up if needed) and yield its `Slot`;
         free it on exit."""
+
+    def quarantine(self, base_url: str, reason: str) -> None:
+        """Stop new assignments to the server behind ``base_url`` when supported."""

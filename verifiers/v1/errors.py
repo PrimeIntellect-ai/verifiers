@@ -72,6 +72,29 @@ class TunnelError(InterceptionError):
     """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
 
 
+class TunnelUnavailableError(TunnelError):
+    """An established interception tunnel temporarily lost its public route."""
+
+
+def is_tunnel_unavailable_detail(detail: str) -> bool:
+    """Match Prime tunnel gateway failures without treating arbitrary HTTP errors as tunnels."""
+    text = detail.lower()
+    if "tunnel not found or no longer active" in text:
+        return True
+    has_tunnel_endpoint = "tunnel" in text and (
+        "prime" in text or "http://" in text or "https://" in text
+    )
+    return has_tunnel_endpoint and any(
+        marker in text
+        for marker in (
+            "504 gateway time-out",
+            "504 gateway timeout",
+            "http 504",
+            "status code: 504",
+        )
+    )
+
+
 @contextlib.asynccontextmanager
 async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[None]:
     """Run a framework→code boundary, attributing any error escaping it to `error_cls`. An

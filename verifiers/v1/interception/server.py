@@ -64,6 +64,10 @@ from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
+TUNNEL_HEALTH_INTERVAL = 15.0
+TUNNEL_RECONNECT_GRACE = 600.0
+TUNNEL_RECONNECT_MAX_DELAY = 30.0
+
 
 # Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
 # cap is an artificial bottleneck — a large tool result (e.g. a `cat` of a big file) trips it
@@ -246,11 +250,101 @@ class InterceptionServer(Interception):
         self.port = 0
         self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
+        self._healthy = True
+        self._health_task: asyncio.Task | None = None
+        self._reconnect_delay = 1.0
+        self._next_reconnect_at = 0.0
+        self._unhealthy_since: float | None = None
 
     @property
     def load(self) -> int:
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
+
+    @property
+    def healthy(self) -> bool:
+        """Whether a pool may assign a new rollout to this server."""
+        return self._healthy
+
+    def quarantine(self, base_url: str, reason: str) -> None:
+        """Stop new assignments without disrupting sessions already using this URL."""
+        if base_url != self.base_url:
+            return
+        if self._healthy:
+            logger.warning(
+                "interception quarantined: url=%s reason=%s", self.base_url, reason
+            )
+        self._healthy = False
+
+    async def refresh_health(self) -> None:
+        """Refresh tunnel registration state and repair an idle stale registration."""
+        if self.tunnel is None:
+            self._healthy = True
+            return
+        status = await self.tunnel.healthy()
+        if status is None:
+            return
+        if status:
+            if not self._healthy:
+                logger.info("interception tunnel recovered: url=%s", self.base_url)
+            self._healthy = True
+            self._reconnect_delay = 1.0
+            self._next_reconnect_at = 0.0
+            self._unhealthy_since = None
+            return
+
+        self.quarantine(
+            self.base_url, "tunnel process or backend registration is unavailable"
+        )
+        if self.load:
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._unhealthy_since is None:
+            self._unhealthy_since = now
+        if now - self._unhealthy_since >= TUNNEL_RECONNECT_GRACE:
+            return
+        if now < self._next_reconnect_at:
+            return
+        try:
+            url = await self.tunnel.reconnect(self.port)
+        except Exception as e:  # noqa: BLE001 - health repair must not stop the monitor
+            logger.warning("interception tunnel reconnect failed: %s", e)
+            self._next_reconnect_at = now + self._reconnect_delay
+            self._reconnect_delay = min(
+                self._reconnect_delay * 2, TUNNEL_RECONNECT_MAX_DELAY
+            )
+            return
+        if url is not None:
+            old_url = self.base_url
+            self.base_url = url
+            self._healthy = True
+            self._reconnect_delay = 1.0
+            self._next_reconnect_at = 0.0
+            self._unhealthy_since = None
+            logger.info(
+                "interception tunnel re-registered: old_url=%s new_url=%s",
+                old_url,
+                url,
+            )
+
+    async def _monitor_health(self) -> None:
+        while True:
+            await asyncio.sleep(TUNNEL_HEALTH_INTERVAL)
+            try:
+                await self.refresh_health()
+            except Exception:
+                logger.warning(
+                    "interception tunnel health monitor failed", exc_info=True
+                )
+
+    async def _stop_health_monitor(self) -> None:
+        if self._health_task is None:
+            return
+        self._health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._health_task
+        self._health_task = None
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
@@ -355,6 +449,8 @@ class InterceptionServer(Interception):
             self.base_url = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)
             )
+            self._health_task = asyncio.create_task(self._monitor_health())
+            self.stack.push_async_callback(self._stop_health_monitor)
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
