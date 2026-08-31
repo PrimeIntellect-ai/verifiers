@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
 LOG_FILE = "logs/validate.log"
-FINAL_REASONS = frozenset({"valid", "invalid"})
-REASONS = ("valid", "invalid", "error", "timeout")
+FINAL_VALUES = {"valid": True, "invalid": False, "unchecked": None}
+REASONS = ("valid", "invalid", "unchecked", "error", "timeout")
 
 ResultRow = dict[str, Any]
 
@@ -99,8 +99,8 @@ def _is_final(row: object, key: str, mode: str) -> bool:
     return (
         row.get("task_key") == key
         and row.get("mode") == mode
-        and reason in FINAL_REASONS
-        and row.get("valid") is (reason == "valid")
+        and reason in FINAL_VALUES
+        and row.get("valid") is FINAL_VALUES[reason]
     )
 
 
@@ -157,7 +157,9 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
     missing = max(0, total - len(rows))
     outcomes = {reason: counts[reason] for reason in REASONS}
     outcomes["missing"] = missing
-    terminal = outcomes["valid"] + outcomes["invalid"]
+    checked = outcomes["valid"] + outcomes["invalid"]
+    rate_total = total - outcomes["unchecked"]
+    terminal = checked + outcomes["unchecked"]
     summary: dict[str, Any] = {
         "mode": mode,
         "total": total,
@@ -165,7 +167,7 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
         "terminal": terminal,
         "owed": missing + outcomes["error"] + outcomes["timeout"],
         "outcomes": outcomes,
-        "valid_rate": round(outcomes["valid"] / total, 6) if total else None,
+        "valid_rate": round(outcomes["valid"] / rate_total, 6) if checked else None,
     }
     if mode == "all":
         checks: dict[str, dict[str, int]] = {}
@@ -194,24 +196,26 @@ def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
     write_summary(results_dir, summarize([], total, validation_mode(config)))
 
 
-def _classify(valid: bool, exc: BaseException | None) -> str:
-    if valid:
+def _classify(valid: bool | None, exc: BaseException | None) -> str:
+    if valid is True:
         return "valid"
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if exc is not None:
         return "error"
+    if valid is None:
+        return "unchecked"
     return "invalid"
 
 
 def _row(
-    task, mode: str, valid: bool, exc: BaseException | None, start: float
+    task, mode: str, valid: bool | None, exc: BaseException | None, start: float
 ) -> ResultRow:
     return {
         "index": task.data.idx,
         "name": task.data.name,
         "mode": mode,
-        "valid": bool(valid),
+        "valid": valid,
         "reason": _classify(valid, exc),
         "elapsed": round(time.time() - start, 2),
         "error": str(exc) if exc is not None else None,
@@ -230,7 +234,8 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
         if config.timeout.setup is not None
         else task.data.timeout.setup
     )
-    valid, exc = False, None
+    valid: bool | None = False
+    exc = None
     try:
         runtime.env = dict(task.runtime_env())
         trace = Trace(
@@ -275,11 +280,13 @@ def _all_reason(rows: list[ResultRow]) -> str:
         return "error"
     if "timeout" in reasons:
         return "timeout"
-    return "invalid"
+    if "invalid" in reasons:
+        return "invalid"
+    return "unchecked"
 
 
 def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
-    failed = [row for row in rows if not row["valid"]]
+    failed = [row for row in rows if row["reason"] not in ("valid", "unchecked")]
     parts = [f"{row['mode']}: {row['error'] or row['reason']}" for row in failed]
     error_types = {str(row["error_type"]) for row in failed if row["error_type"]}
     return ("; ".join(parts) or None, "+".join(sorted(error_types)) or None)
@@ -290,13 +297,14 @@ async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
     gold = await _run_check(task, config, "gold")
     setup = await _run_check(task, config, "setup")
     rows = [gold, setup]
+    reason = _all_reason(rows)
     error, error_type = _all_error(rows)
     return {
         "index": task.data.idx,
         "name": task.data.name,
         "mode": "all",
-        "valid": all(row["valid"] for row in rows),
-        "reason": _all_reason(rows),
+        "valid": None if reason == "unchecked" else reason == "valid",
+        "reason": reason,
         "elapsed": round(time.time() - start, 2),
         "error": error,
         "error_type": error_type,
@@ -406,9 +414,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     )
     async with display:
         if not plan:
-            logger.info(
-                "nothing to resume: all %d task(s) are valid or invalid", len(tasks)
-            )
+            logger.info("nothing to resume: all %d task(s) are terminal", len(tasks))
             return rows
         await asyncio.gather(
             *(_one(position, task, key) for position, task, key in plan)

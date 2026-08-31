@@ -21,6 +21,7 @@ _STYLE = {
     "running": "cyan",
     "valid": "green",
     "invalid": "yellow",
+    "unchecked": "dim",
     "error": "red",
     "timeout": "red",
 }
@@ -29,7 +30,7 @@ _MARK_WIDTH = max(len(state) for state in _STYLE)
 # the name left-aligned inside — the outcome reads at a glance. `escape` keeps the brackets
 # literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
-_DONE = ("valid", "invalid", "error", "timeout")
+_DONE = ("valid", "invalid", "unchecked", "error", "timeout")
 # State -> (visible label, color); insertion order is the summary order.
 _OUTCOMES = {state: (state, _STYLE[state]) for state in _DONE}
 

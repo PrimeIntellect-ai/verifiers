@@ -10,6 +10,7 @@ import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from urllib.parse import parse_qs
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
@@ -19,7 +20,7 @@ from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 logger = logging.getLogger(__name__)
@@ -95,18 +96,14 @@ def state_signature(secret: str, url: str, route: str) -> str:
 _call_state: contextvars.ContextVar[State | None] = contextvars.ContextVar(
     "vf_call_state", default=None
 )
+_request_query_params: contextvars.ContextVar[dict[str, list[str]] | None] = (
+    contextvars.ContextVar("vf_request_query_params", default=None)
+)
 
 
 def _request_query(name: str) -> str | None:
-    from mcp.server.lowlevel.server import request_ctx
-
-    try:
-        request = request_ctx.get().request
-    except LookupError:
-        return None
-    if request is None:
-        return None
-    values = request.query_params.getlist(name)
+    params = _request_query_params.get()
+    values = params.get(name, []) if params else []
     if len(values) > 1:
         raise ValueError(f"duplicate {name!r} state coordinate")
     return values[0] if values else None
@@ -248,7 +245,7 @@ class ServerBase(Generic[ConfigT, StateT]):
             finally:
                 _call_state.reset(token)
 
-        # FastMCP must advertise the wrapped tool's parameters, not `*args, **kwargs`.
+        # MCPServer must advertise the wrapped tool's parameters, not `*args, **kwargs`.
         wrapper.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
         return wrapper
 
@@ -266,7 +263,7 @@ class ServerBase(Generic[ConfigT, StateT]):
     async def setup_task(self, task) -> None:
         """Initialize per-task state; taskset-scoped servers skip this hook."""
 
-    def register(self, mcp: FastMCP) -> None:
+    def register(self, mcp: MCPServer) -> None:
         """Register this server's MCP handlers."""
         raise NotImplementedError
 
@@ -276,7 +273,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         from pathlib import Path
 
         import uvicorn
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
+
+        from verifiers import __version__
 
         _die_with_parent()
         host = os.environ.get("MCP_HOST", "127.0.0.1")
@@ -306,14 +305,34 @@ class ServerBase(Generic[ConfigT, StateT]):
                     security = TransportSecuritySettings(
                         enable_dns_rebinding_protection=False
                     )
-                    mcp = FastMCP(
-                        self.server_name,
+                    mcp = MCPServer(
+                        self.server_name or type(self).__name__,
+                        version=__version__,
+                    )
+                    self.register(mcp)
+                    # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
+                    # older agent clients can use the same reconnect-per-call endpoint.
+                    mcp_app = mcp.streamable_http_app(
                         json_response=True,
                         stateless_http=True,
                         transport_security=security,
                     )
-                    self.register(mcp)
-                    app = mcp.streamable_http_app()
+
+                    async def app(scope, receive, send):
+                        query = (
+                            parse_qs(
+                                scope.get("query_string", b"").decode(),
+                                keep_blank_values=True,
+                            )
+                            if scope["type"] == "http"
+                            else None
+                        )
+                        token = _request_query_params.set(query)
+                        try:
+                            await mcp_app(scope, receive, send)
+                        finally:
+                            _request_query_params.reset(token)
+
                     server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
                     await server.serve(sockets=[sock])
             finally:

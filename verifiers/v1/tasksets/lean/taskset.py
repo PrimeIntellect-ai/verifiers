@@ -126,11 +126,11 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         trace.info["compile_output"] = output[-4000:]
         return 1.0 if compiled else 0.0
 
-    async def validate(self, runtime: Runtime) -> bool:
+    async def validate(self, runtime: Runtime) -> bool | None:
         """Compile the gold proof; rows without one have nothing to preflight."""
         gold = (self.data.formal_proof or "").rstrip()
         if not gold:
-            return True
+            return None
         content = build_starter_file(
             self.data.formal_statement,
             header=self.data.header,
