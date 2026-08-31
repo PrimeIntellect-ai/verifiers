@@ -167,6 +167,98 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
+def test_parallel_commits_reconcile_shared_prompt_prefix():
+    """Two requests prepared from the same graph snapshot share any common prompt prefix that
+    the first response commits while the second is in flight. A later turn must keep following
+    its original child path rather than re-rooting through the sibling and stranding an orphan."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="root")),
+    )
+    system = vf.SystemMessage(content="shared")
+    user_a = vf.UserMessage(content="child A")
+    user_b = vf.UserMessage(content="child B")
+    assistant_a = vf.AssistantMessage(content="A1")
+
+    # Both model requests leave before either response has committed its prompt.
+    pending_a = graph.prepare_turn(trace, [system, user_a])
+    pending_b = graph.prepare_turn(trace, [system, user_b])
+    assistant_a_id = pending_a.commit(_response(assistant_a))
+    pending_b.commit(_response(vf.AssistantMessage(content="B1")))
+
+    graph.prepare_turn(
+        trace,
+        [
+            system,
+            user_a,
+            assistant_a,
+            vf.ToolMessage(content="tool A", tool_call_id="call_a"),
+        ],
+    ).commit(_response(vf.AssistantMessage(content="A2")))
+
+    roots = [node for node in trace.nodes if node.parent is None]
+    identities = [
+        (node.parent, graph.message_hash(node.message)) for node in trace.nodes
+    ]
+    assert len(roots) == 1
+    assert len(identities) == len(set(identities))
+    assert trace.num_branches == 2
+    assert assistant_a_id not in graph.leaves(trace)
+
+
+def test_parallel_commit_reconciles_only_token_identical_prefixes():
+    """Content-equivalent prompt nodes share exact physical variants and retain token forks."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="root")),
+    )
+    system = vf.SystemMessage(content="shared")
+
+    first = graph.prepare_turn(trace, [system])
+    second = graph.prepare_turn(trace, [system])
+    third = graph.prepare_turn(trace, [system])
+    first.commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content="A"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 2], completion_ids=[3], message_spans=[(0, 2)]
+            ),
+        )
+    )
+    second.commit(
+        vf.Response(
+            id="b",
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content="B"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 2], completion_ids=[4], message_spans=[(0, 2)]
+            ),
+        )
+    )
+    third.commit(
+        vf.Response(
+            id="c",
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content="C"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 99], completion_ids=[5], message_spans=[(0, 2)]
+            ),
+        )
+    )
+
+    roots = [node for node in trace.nodes if node.parent is None]
+    assert [node.token_ids for node in roots] == [[1, 2], [1, 99]]
+    assert trace.num_branches == 3
+
+
 def test_renderer_level_break_forks_by_token_id():
     """Two turns with the *same* message sequence and identical message hashes, but the prior
     assistant turn is retokenized (renderer drift — e.g. a chat template dropping a `<think>`
