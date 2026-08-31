@@ -603,7 +603,9 @@ def _attribute_kept_tokens(
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(payload.ids):
+    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
+        payload.ids
+    ):
         return
     node.kept_tokens = payload
 

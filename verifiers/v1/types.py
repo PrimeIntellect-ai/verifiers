@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 import numpy as np
-
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
@@ -198,7 +197,11 @@ class KeptTokens:
 
     @classmethod
     def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "KeptTokens":
-        counts = np.fromiter((len(row) for row in sampling_mask), dtype=np.int32, count=len(sampling_mask))
+        counts = np.fromiter(
+            (len(row) for row in sampling_mask),
+            dtype=np.int32,
+            count=len(sampling_mask),
+        )
         ids = (
             np.concatenate([np.asarray(row, dtype=np.int32) for row in sampling_mask])
             if int(counts.sum())
