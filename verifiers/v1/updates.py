@@ -16,7 +16,7 @@ class BranchUpdate(BaseModel):
     over the sampled mask, so applying never depends on the producer's loss mask. A null
     entry marks an unknown value (e.g. a packing-boundary token)."""
 
-    index: int
+    branch_id: int
     """`Branch.index` of the branch the streams cover (leaf order)."""
     advantages: list[float | None] | None = None
     trainer_logprobs: list[float | None] | None = None
@@ -59,9 +59,9 @@ def apply_trace_update(trace: Trace, update: TraceUpdate) -> None:
         return
     branches = trace.branches
     for branch_update in update.branches:
-        if not 0 <= branch_update.index < len(branches):
+        if not 0 <= branch_update.branch_id < len(branches):
             continue
-        nodes = branches[branch_update.index].nodes
+        nodes = branches[branch_update.branch_id].nodes
         for field in STREAM_FIELDS:
             stream = getattr(branch_update, field)
             if stream is None:
