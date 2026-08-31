@@ -32,6 +32,7 @@ _SENSITIVE_FIELDS = {
     "api_key",
     "access_token",
     "auth_token",
+    "auth",
     "authorization",
     "client_secret",
     "connection_string",
@@ -50,10 +51,28 @@ _SENSITIVE_FIELDS = {
     "secret_key",
     "session_token",
     "signature",
+    "team_id",
     "token",
 }
 _SCHEMA_VALUES = {"const", "default", "example", "examples"}
-_SCHEMA_TYPES = {"array", "boolean", "integer", "null", "number", "object", "string"}
+_SCHEMA_FIELDS = {
+    "$ref",
+    "allOf",
+    "anyOf",
+    "const",
+    "default",
+    "description",
+    "enum",
+    "examples",
+    "format",
+    "items",
+    "oneOf",
+    "pattern",
+    "properties",
+    "required",
+    "title",
+    "type",
+}
 _AUTH_VALUE = re.compile(r"^(?:bearer|basic)\s+(.+)$", re.IGNORECASE)
 _PATTERNS = (
     re.compile(
@@ -139,7 +158,11 @@ def _is_secret(value: Any) -> bool:
     )
 
 
-def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, int]:
+def prepare_upload(
+    value: Any,
+    known_secrets: Iterable[str] = (),
+    secret_sources: Iterable[Mapping[str, str]] = (),
+) -> tuple[Any, int]:
     """Return a reduced copy and the number of credential-bearing values changed."""
     secrets = {
         value
@@ -150,14 +173,12 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
     }
 
     def remember(candidate: Any) -> None:
-        if (
-            isinstance(candidate, str)
-            and bool(candidate.strip())
-            and not _PLACEHOLDER.fullmatch(candidate.strip())
-        ):
+        if _is_secret(candidate):
             secrets.add(candidate)
-            if match := _AUTH_VALUE.fullmatch(candidate.strip()):
-                remember(match.group(1))
+            if (match := _AUTH_VALUE.fullmatch(candidate.strip())) and _is_secret(
+                token := match.group(1)
+            ):
+                secrets.add(token)
         elif isinstance(candidate, Mapping):
             for item in candidate.values():
                 remember(item)
@@ -173,11 +194,7 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
                 name = _normalize(str(key))
                 if properties:
                     schema = isinstance(nested, Mapping) and (
-                        nested.get("type") in _SCHEMA_TYPES
-                        or any(
-                            field in nested
-                            for field in ("$ref", "allOf", "anyOf", "oneOf")
-                        )
+                        not nested or any(field in nested for field in _SCHEMA_FIELDS)
                     )
                     if schema:
                         discover(nested, _sensitive(name))
@@ -195,6 +212,10 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
 
     for secret in known_secrets:
         remember(secret)
+    for source in secret_sources:
+        for name, secret in source.items():
+            if _sensitive(name):
+                remember(secret)
     discover(value)
     replacements = 0
 
@@ -226,7 +247,13 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
             text = pattern.sub(replace, text)
         return text
 
-    def reduce(child: Any) -> Any:
+    def reduce(
+        child: Any,
+        structured_secret: bool = False,
+        schema_secret: bool = False,
+        properties: bool = False,
+    ) -> Any:
+        nonlocal replacements
         if isinstance(child, Mapping):
             reduced = {}
             for key, nested in child.items():
@@ -235,13 +262,47 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
                     raise ValueError(
                         "credential reduction would create duplicate object keys"
                     )
-                reduced[safe_key] = reduce(nested)
+                normalized = _normalize(str(key))
+                schema = (
+                    properties
+                    and isinstance(nested, Mapping)
+                    and (not nested or any(field in nested for field in _SCHEMA_FIELDS))
+                )
+                nested_secret = structured_secret or (
+                    not schema
+                    and (
+                        _sensitive(str(key))
+                        or schema_secret
+                        and normalized in _SCHEMA_VALUES
+                    )
+                )
+                reduced[safe_key] = reduce(
+                    nested,
+                    nested_secret,
+                    _sensitive(str(key)) if schema else schema_secret,
+                    not structured_secret and normalized == "properties",
+                )
             return reduced
         if isinstance(child, list):
-            return [reduce(nested) for nested in child]
+            return [
+                reduce(nested, structured_secret, schema_secret, properties)
+                for nested in child
+            ]
         if isinstance(child, tuple):
-            return tuple(reduce(nested) for nested in child)
-        return redact_text(child) if isinstance(child, str) else child
+            return tuple(
+                reduce(nested, structured_secret, schema_secret, properties)
+                for nested in child
+            )
+        if not isinstance(child, str):
+            return child
+        if (
+            structured_secret
+            and child.strip()
+            and not _PLACEHOLDER.fullmatch(child.strip())
+        ):
+            replacements += 1
+            return REDACTED
+        return redact_text(child)
 
     reduced = reduce(value)
     count = replacements

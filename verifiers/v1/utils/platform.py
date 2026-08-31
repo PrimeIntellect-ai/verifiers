@@ -35,6 +35,7 @@ _PROVIDER_STATE_FIELDS = {
     "data",
 }
 _PLATFORM_TRACE_EXCLUDE = {
+    "upload_secrets": True,
     "agent": {
         "config": {
             "client": {"headers"},
@@ -299,17 +300,18 @@ def push_traces(
     # — log and skip the upload instead.
     try:
         clients = [config.client]
-        runtime_secrets = []
+        known_secrets = [api_key]
+        secret_sources = []
         for trace in traces:
             agent = trace.agent.config
+            known_secrets.extend(trace.upload_secrets)
             if agent.client is not None:
                 clients.append(agent.client)
             if agent.harness is not None:
-                runtime_secrets.extend(agent.harness.resolved_env.values())
+                secret_sources.append(agent.harness.resolved_env)
         for client in clients:
-            runtime_secrets.extend(
-                (resolve_api_key(client), *resolve_headers(client).values())
-            )
+            known_secrets.append(resolve_api_key(client))
+            secret_sources.append(resolve_headers(client))
 
         samples = build_samples(episodes)
         payload, redactions = prepare_upload(
@@ -319,7 +321,8 @@ def push_traces(
                 "metrics": metrics,
                 "samples": samples,
             },
-            [api_key, *runtime_secrets],
+            known_secrets,
+            secret_sources,
         )
         name = payload["name"]
         metadata = payload["metadata"]

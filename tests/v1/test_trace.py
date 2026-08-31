@@ -329,10 +329,17 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
         "APIKey": secret,
         "apiKeys": [plural_key],
         "awsSecretAccessKey": access_key,
+        "credential": {"value": "pin"},
+        "rubric": "keep the pin label",
         "secret": {"value": secret},
         "token": token,
         "properties": {"password": secret},
-        "schema": {"properties": {"password": {"type": "string"}}},
+        "schema": {
+            "properties": {
+                "password": {"type": ["string", "null"]},
+                "apiKey": {"description": "typeless schema"},
+            }
+        },
     }
 
     reduced, _ = platform.prepare_upload(payload)
@@ -340,6 +347,8 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["APIKey"] == "[REDACTED]"
     assert reduced["apiKeys"] == ["[REDACTED]"]
     assert reduced["awsSecretAccessKey"] == "[REDACTED]"
+    assert reduced["credential"]["value"] == "[REDACTED]"
+    assert reduced["rubric"] == payload["rubric"]
     assert reduced["secret"]["value"] == "[REDACTED]"
     assert reduced["token"] == "[REDACTED]"
     assert reduced["properties"]["password"] == "[REDACTED]"
@@ -350,7 +359,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     token = "opaque-json-token-0123456789"
     payload = {
         "completion": json.dumps({"Authorization": f"Bearer {token}"}),
-        "answer": "Use token=version-123 for the example.",
+        "answer": "Use abc123 and token=version-123 for the example.",
         "password": "s3cr3t",
         "api_key": "abc123",
     }
@@ -361,6 +370,19 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["answer"] == payload["answer"]
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
+
+    reduced, _ = platform.prepare_upload(
+        {"completion": "runtime-secret-0123456789", "answer": "keep 1 and keep"},
+        ["EMPTY"],
+        [
+            {
+                "RUNTIME_SECRET": "runtime-secret-0123456789",
+                "DEBUG": "1",
+                "X-Custom": "keep",
+            }
+        ],
+    )
+    assert reduced == {"completion": "[REDACTED]", "answer": "keep 1 and keep"}
 
 
 @pytest.mark.parametrize(
@@ -408,7 +430,12 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
         ),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
     )
+    trace.upload_secrets.append("rollout-capability-0123456789")
     episode = Episode(task=trace.task, traces=[trace])
+    assert "rollout-capability" not in json.dumps(episode.to_record())
+    assert vf.WireEpisode.model_validate(episode.model_dump()).traces[
+        0
+    ].upload_secrets == ["rollout-capability-0123456789"]
     config = SimpleNamespace(
         env=SimpleNamespace(taskset=SimpleNamespace(id="test-env")),
         run=SimpleNamespace(id="run-1", name="test-run"),
@@ -421,17 +448,24 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
     )
     state = PushState()
 
-    def stop_in_preflight(payload, known_secrets):
+    def stop_in_preflight(payload, known_secrets, secret_sources):
         assert payload["samples"]
+        assert "rollout-capability" not in json.dumps(payload)
         assert {
             "prime-api-key",
-            "runtime-secret-0123456789",
-            "forwarded-secret-0123456789",
             "agent-api-key-0123456789",
-            "agent-header-secret-0123456789",
             "run-api-key-0123456789",
-            "run-header-secret-0123456789",
+            "rollout-capability-0123456789",
         }.issubset(known_secrets)
+        sources = {
+            name: value for source in secret_sources for name, value in source.items()
+        }
+        assert sources["RUNTIME_SECRET"] == "runtime-secret-0123456789"
+        assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
+        assert sources["X-Auth"] in {
+            "agent-header-secret-0123456789",
+            "run-header-secret-0123456789",
+        }
         raise RuntimeError("preflight stopped upload")
 
     monkeypatch.setattr(platform, "prepare_upload", stop_in_preflight)
