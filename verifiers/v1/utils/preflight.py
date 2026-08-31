@@ -13,7 +13,8 @@ _PLACEHOLDER = re.compile(
     re.IGNORECASE,
 )
 _SECRET_ENV = re.compile(
-    r"API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTHORIZATION|COOKIE|"
+    r"(?:^|_)AUTH(?:$|_)|API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|"
+    r"AUTHORIZATION|COOKIE|"
     r"PRIVATE_?KEY|CONNECTION_STRING|DATABASE_URL|REDIS_URL",
     re.IGNORECASE,
 )
@@ -52,10 +53,9 @@ _SENSITIVE_FIELDS = {
     "secret_key",
     "session_token",
     "signature",
-    "team_id",
     "token",
 }
-_SCHEMA_VALUES = {"const", "default", "example", "examples"}
+_SCHEMA_VALUES = {"const", "default", "enum", "example", "examples"}
 _SCHEMA_MARKERS = {
     "$defs",
     "$ref",
@@ -75,7 +75,7 @@ _SCHEMA_MARKERS = {
     "title",
     "type",
 }
-_AUTH_VALUE = re.compile(r"^(?:bearer|basic)\s+(.+)$", re.IGNORECASE)
+_AUTH_VALUE = re.compile(r"^(?:bearer|basic|token)\s+(.+)$", re.IGNORECASE)
 _PATTERNS = (
     re.compile(
         r"(?P<secret>-----BEGIN (?P<label>(?:(?:RSA|EC|OPENSSH|DSA|ENCRYPTED) )?"
@@ -99,7 +99,7 @@ _PATTERNS = (
     ),
     re.compile(
         r"(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization)"
-        r"[\"']?\s*[:=]\s*[\"']?(?:(?:bearer|basic)\s+)?"
+        r"[\"']?\s*[:=]\s*[\"']?(?:(?:bearer|basic|token)\s+)?"
         r"(?P<secret>[^\s,;\"']{8,})",
         re.IGNORECASE,
     ),
@@ -116,8 +116,10 @@ _PATTERNS = (
         r"AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|SECRET(?:_ACCESS_?KEY)?|"
         r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
         r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
-        r"secret|token)(?:=|\s+))[\"']?(?:(?:bearer|basic)\s+)?[\"']?"
-        r"(?P<secret>[^\s,;\"']{16,})",
+        r"secret|token)(?:=|\s+))"
+        r"(?:\"(?P<secret_double>(?:\\.|[^\"\\\r\n]){16,})\"|"
+        r"'(?P<secret_single>(?:\\.|[^'\\\r\n]){16,})'|"
+        r"(?:(?:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{16,}))",
         re.IGNORECASE,
     ),
     re.compile(
@@ -245,10 +247,10 @@ def prepare_upload(
 
             def replace(match: re.Match[str]) -> str:
                 nonlocal replacements
-                group = (
-                    "secret"
-                    if match.groupdict().get("secret") is not None
-                    else "secret_query"
+                group = next(
+                    name
+                    for name, value in match.groupdict().items()
+                    if name.startswith("secret") and value is not None
                 )
                 if not _is_secret(match.group(group)):
                     return match.group(0)
@@ -277,7 +279,11 @@ def prepare_upload(
                 field in child for field in _SCHEMA_MARKERS
             )
             for key, nested in child.items():
-                safe_key = redact_text(key) if isinstance(key, str) else key
+                if structured_secret and _is_secret(key):
+                    safe_key = REDACTED
+                    replacements += 1
+                else:
+                    safe_key = redact_text(key) if isinstance(key, str) else key
                 if safe_key in reduced:
                     raise ValueError(
                         "credential reduction would create duplicate object keys"

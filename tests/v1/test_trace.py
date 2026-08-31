@@ -359,6 +359,25 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["schema"] == payload["schema"]
 
 
+def test_platform_preflight_redacts_schema_enums_and_sensitive_mapping_keys():
+    secret = "opaque-map-key-0123456789"
+    schema_secret = "opaque-schema-secret-0123456789"
+    reduced, _ = platform.prepare_upload(
+        {
+            "api_keys": {secret: {"owner": "alice"}},
+            "team_id": "team-0123456789",
+            "schema": {
+                "type": "object",
+                "properties": {"api_key": {"type": "string", "enum": [schema_secret]}},
+            },
+        }
+    )
+
+    assert list(reduced["api_keys"]) == ["[REDACTED]"]
+    assert reduced["team_id"] == "team-0123456789"
+    assert reduced["schema"]["properties"]["api_key"]["enum"] == ["[REDACTED]"]
+
+
 def test_platform_preflight_finds_quoted_and_short_credentials():
     token = "opaque-json-token-0123456789"
     payload = {
@@ -376,6 +395,11 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["answer"] == payload["answer"]
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
+
+    reduced, _ = platform.prepare_upload(
+        {"completion": 'password="correct horse battery staple"'}
+    )
+    assert "correct horse battery staple" not in reduced["completion"]
 
     reduced, _ = platform.prepare_upload(
         {"password": 12345678, "token": 987654321, "secret": None, "auth": False}
@@ -399,6 +423,19 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         ],
     )
     assert reduced == {"completion": "[REDACTED]", "answer": "keep 1 and keep"}
+
+
+def test_platform_preflight_finds_auth_environment_and_header_tokens(monkeypatch):
+    env_secret = "opaque-auth-env-secret-0123456789"
+    header_secret = "opaque-auth-header-secret-0123456789"
+    monkeypatch.setenv("AUTH", env_secret)
+
+    reduced, _ = platform.prepare_upload(
+        {"completion": f"{env_secret} {header_secret}"},
+        secret_sources=[{"Authorization": f"Token {header_secret}"}],
+    )
+
+    assert reduced["completion"] == "[REDACTED] [REDACTED]"
 
 
 @pytest.mark.parametrize(
