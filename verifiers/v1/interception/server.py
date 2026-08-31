@@ -40,7 +40,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
-from verifiers.v1.clients.base import DEFAULT_TIMEOUT, join_url
+from verifiers.v1.clients.base import join_url
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
@@ -1076,7 +1076,11 @@ class InterceptionServer(Interception):
         headers = dict(config.headers or {})
         headers.update(dialect.auth_headers(resolve_api_key(config)))
         try:
-            async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            # Finite read timeout: a hung provider must not stall threshold discovery
+            # for the rollout's whole outer timeout - the loop falls back to no compaction.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=5.0)
+            ) as client:
                 upstream = await client.get(
                     join_url(config.base_url, "/v1/models"), headers=headers
                 )

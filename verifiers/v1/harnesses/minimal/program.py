@@ -355,6 +355,7 @@ class Compactor:
         self.tools = tools
         self.enabled = enabled
         self.threshold = threshold
+        self.compacted = False
         self.last_good = 0
         """Message count of the newest state that passed a threshold check - by
         definition a state with a full reserve of room, so a checkpoint over it fits."""
@@ -377,8 +378,15 @@ class Compactor:
                 not self.enabled
                 or self.threshold is None
                 or not is_context_overflow(error)
-                or not compactable(messages)
             ):
+                raise
+            if not compactable(messages):
+                if self.compacted:
+                    # The conversation is already a compaction floor and still
+                    # overflows - out of moves, end cleanly.
+                    raise CompactionFailed(
+                        "the compacted conversation still overflows"
+                    ) from error
                 raise
         else:
             choice = completion.choices[0]
@@ -435,6 +443,7 @@ class Compactor:
                 framed = POST_COMPACTION_FRAMING + "\n\n" + text
                 rebuilt = [*system, {"role": "user", "content": framed}]
                 self.note_good(rebuilt)
+                self.compacted = True
                 return rebuilt
         raise CompactionFailed(
             f"no usable summary after {COMPACTION_ATTEMPTS} attempts"
