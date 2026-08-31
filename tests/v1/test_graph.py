@@ -303,6 +303,64 @@ def test_parallel_commit_reconciles_unspanned_assistant_tokens():
     assert [node.token_ids for node in trace.nodes] == [[1], [2, 3], [4], [5]]
 
 
+def test_unspanned_reconciliation_stops_at_next_message_boundary():
+    """A longer sampled variant may share the prompt's token prefix only by consuming the next
+    message. Reconciliation must choose the variant ending before that attributed boundary."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="root")),
+    )
+    user = vf.UserMessage(content="question")
+    assistant = vf.AssistantMessage(content="answer")
+    follow_up = vf.UserMessage(content="follow up")
+
+    pending = graph.prepare_turn(trace, [user, assistant, follow_up])
+    first = graph.prepare_turn(trace, [user])
+    second = graph.prepare_turn(trace, [user])
+    first.commit(
+        vf.Response(
+            id="short",
+            created=0,
+            model="test",
+            message=assistant,
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1], completion_ids=[2, 3], message_spans=[(0, 1)]
+            ),
+        )
+    )
+    second.commit(
+        vf.Response(
+            id="long",
+            created=0,
+            model="test",
+            message=assistant,
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1], completion_ids=[2, 3, 4], message_spans=[(0, 1)]
+            ),
+        )
+    )
+    pending.commit(
+        vf.Response(
+            id="continued",
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content="done"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 2, 3, 4],
+                completion_ids=[5],
+                message_spans=[(0, 1), None, (3, 4)],
+            ),
+        )
+    )
+
+    follow_up_node = next(node for node in trace.nodes if node.message == follow_up)
+    assert follow_up_node.token_ids == [4]
+    assert trace.nodes[follow_up_node.parent].token_ids == [2, 3]
+
+
 def test_renderer_level_break_forks_by_token_id():
     """Two turns with the *same* message sequence and identical message hashes, but the prior
     assistant turn is retokenized (renderer drift — e.g. a chat template dropping a `<think>`

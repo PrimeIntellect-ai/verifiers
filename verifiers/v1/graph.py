@@ -351,12 +351,14 @@ def _matching_prefix_node(
     message: Message,
     prompt_ids: list[int],
     start: int,
+    stop: int,
 ) -> int | None:
-    """Find the longest content-equivalent child whose tokens match at `start`.
+    """Find the longest content-equivalent child matching inside `[start, stop]`.
 
     Renderers may leave a prompt-supplied assistant unattributed (`message_spans[i] is None`).
     Its existing sampled node still owns physical tokens, so use those tokens to recover the
-    otherwise-missing message boundary without consuming any unmatched prompt suffix.
+    otherwise-missing message boundary. The next attributed message's start bounds the match:
+    a sampled variant must never consume tokens that the renderer assigned to that message.
     """
     key = (parent, message_hash(message))
     indexed = _head_index(trace).get(key)
@@ -373,7 +375,8 @@ def _matching_prefix_node(
     matches = [
         node_id
         for node_id in candidates
-        if prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
+        if start + len(trace.nodes[node_id].token_ids) <= stop
+        and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
         == trace.nodes[node_id].token_ids
     ]
     return max(
@@ -661,8 +664,16 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         end = span[1] if span else path_len
         parent = prefix[-1] if prefix else None
         if tokens is not None and span is None:
+            next_start = next(
+                (
+                    later_span[0]
+                    for later_span in (spans[i + 1 :] if spans else [])
+                    if later_span is not None
+                ),
+                len(prompt_ids),
+            )
             existing = _matching_prefix_node(
-                trace, parent, prompt[i], prompt_ids, path_len
+                trace, parent, prompt[i], prompt_ids, path_len, next_start
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
