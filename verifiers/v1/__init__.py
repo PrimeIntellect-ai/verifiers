@@ -126,6 +126,7 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+from verifiers.v1.updates import BranchUpdate, TraceUpdate, apply_trace_update
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     Artifact,
@@ -243,6 +244,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TimeSplit",
     "AgentSpan",
     "Error",
+    "TraceUpdate",
+    "BranchUpdate",
+    "apply_trace_update",
     # decorators
     "intercept",
     "stop",

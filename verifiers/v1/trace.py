@@ -264,6 +264,20 @@ class Branch(BaseModel):
             return None
         return self.spread(lambda node: node.reference_logprobs)
 
+    @property
+    def trainer_logprobs(self) -> list[float] | None:
+        """Trainer-recomputed logprobs aligned to `token_ids`, or None when unannotated."""
+        if all(node.trainer_logprobs is None for node in self.nodes):
+            return None
+        return self.spread(lambda node: node.trainer_logprobs)
+
+    @property
+    def entropies(self) -> list[float] | None:
+        """Trainer policy entropies aligned to `token_ids`, or None when unannotated."""
+        if all(node.entropies is None for node in self.nodes):
+            return None
+        return self.spread(lambda node: node.entropies)
+
     def loss_weights(self, name: str) -> list[float] | None:
         """One named loss-weight stream aligned to `token_ids`, or None when absent."""
         if all(
