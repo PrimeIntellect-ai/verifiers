@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 from verifiers.v1.trace import Trace
 
+STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
+
 
 class BranchUpdate(BaseModel):
     """Per-token streams over one branch's token prefix.
@@ -16,6 +18,7 @@ class BranchUpdate(BaseModel):
 
     index: int
     """`Branch.index` of the branch the streams cover (leaf order)."""
+    advantages: list[float | None] | None = None
     trainer_logprobs: list[float | None] | None = None
     entropies: list[float | None] | None = None
 
@@ -26,9 +29,17 @@ class TraceUpdate(BaseModel):
     version: int = 1
     trace_id: str
     info: dict[str, Any] = Field(default_factory=dict)
-    """Merged into `Trace.info` per top-level key; dict values shallow-merge, new wins.
-    Producers namespace their keys (e.g. `info["train"]`)."""
+    """Deep-merged into `Trace.info`; on collisions the update wins."""
     branches: list[BranchUpdate] = Field(default_factory=list)
+
+
+def _deep_merge(old: Any, new: Any) -> Any:
+    if isinstance(old, dict) and isinstance(new, dict):
+        return {
+            **old,
+            **{key: _deep_merge(old.get(key), value) for key, value in new.items()},
+        }
+    return new
 
 
 def apply_trace_update(trace: Trace, update: TraceUpdate) -> None:
@@ -36,19 +47,14 @@ def apply_trace_update(trace: Trace, update: TraceUpdate) -> None:
 
     Each stream is cursor-walked over the branch's nodes. A node is stamped — compact over
     its `mask`, like `logprobs` — only when the stream fully covers it with non-null values
-    at every sampled position, and only while the node field is still unset: the first
-    writer wins on nodes shared across branches. A stream shorter than the branch (e.g. a
-    truncated training sample) leaves the tail nodes unstamped."""
+    at every sampled position. Updates apply in call order and the newest wins, on nodes
+    shared across branches too. A stream shorter than the branch (e.g. a truncated
+    training sample) leaves the tail nodes untouched."""
     if trace.id != update.trace_id:
         raise ValueError(
             f"update for trace {update.trace_id} applied to trace {trace.id}"
         )
-    for key, value in update.info.items():
-        old = trace.info.get(key)
-        if isinstance(old, dict) and isinstance(value, dict):
-            trace.info[key] = {**old, **value}
-        else:
-            trace.info[key] = value
+    trace.info = _deep_merge(trace.info, update.info)
     if not update.branches:
         return
     branches = trace.branches
@@ -56,7 +62,7 @@ def apply_trace_update(trace: Trace, update: TraceUpdate) -> None:
         if not 0 <= branch_update.index < len(branches):
             continue
         nodes = branches[branch_update.index].nodes
-        for field in ("trainer_logprobs", "entropies"):
+        for field in STREAM_FIELDS:
             stream = getattr(branch_update, field)
             if stream is None:
                 continue
@@ -69,5 +75,4 @@ def apply_trace_update(trace: Trace, update: TraceUpdate) -> None:
                 values = [v for v, sampled in zip(span, node.mask) if sampled]
                 if not values or any(v is None for v in values):
                     continue
-                if getattr(node, field) is None:
-                    setattr(node, field, values)
+                setattr(node, field, values)
