@@ -312,13 +312,85 @@ def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
     return trace._head_index
 
 
+def _matching_node(
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    token_ids: list[int] | None = None,
+) -> int | None:
+    """Find an existing child, optionally requiring its exact physical token span.
+
+    The head index deliberately points at only the latest content-equivalent child. Token-level
+    prefix breaks can leave older physical variants under the same key, so a token mismatch falls
+    back to a reverse scan rather than materializing a duplicate of an already-existing variant.
+    """
+    key = (parent, message_hash(message))
+    indexed = _head_index(trace).get(key)
+    if indexed is not None and (
+        token_ids is None or trace.nodes[indexed].token_ids == token_ids
+    ):
+        return indexed
+    if token_ids is None:
+        return indexed
+    for node_id in range(len(trace.nodes) - 1, -1, -1):
+        if node_id == indexed:
+            continue
+        node = trace.nodes[node_id]
+        if (
+            node.parent == parent
+            and node.token_ids == token_ids
+            and message_hash(node.message) == key[1]
+        ):
+            return node_id
+    return None
+
+
+def _matching_prefix_node(
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    prompt_ids: list[int],
+    start: int,
+    stop: int,
+) -> int | None:
+    """Find the longest content-equivalent child matching inside `[start, stop]`.
+
+    Renderers may leave a prompt-supplied assistant unattributed (`message_spans[i] is None`).
+    Its existing sampled node still owns physical tokens, so use those tokens to recover the
+    otherwise-missing message boundary. The next attributed message's start bounds the match:
+    a sampled variant must never consume tokens that the renderer assigned to that message.
+    """
+    key = (parent, message_hash(message))
+    indexed = _head_index(trace).get(key)
+    candidates: list[int] = []
+    if indexed is not None:
+        candidates.append(indexed)
+    candidates.extend(
+        node_id
+        for node_id in range(len(trace.nodes) - 1, -1, -1)
+        if node_id != indexed
+        and trace.nodes[node_id].parent == parent
+        and message_hash(trace.nodes[node_id].message) == key[1]
+    )
+    matches = [
+        node_id
+        for node_id in candidates
+        if start + len(trace.nodes[node_id].token_ids) <= stop
+        and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
+        == trace.nodes[node_id].token_ids
+    ]
+    return max(
+        matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
+    )
+
+
 @dataclass(frozen=True)
 class PendingTurn:
     """A resolved prompt waiting on model inference.
 
-    `prepare_turn` does the one canonical graph prefix walk. Training clients use the resolved
-    prefix for renderer bridging before inference, and `commit` uses the same prefix after
-    inference to add only the prompt tail plus the sampled assistant response.
+    `prepare_turn` resolves the graph prefix used for renderer bridging before inference. `commit`
+    preserves that inference-producing prefix, extends it with any matching nodes committed while
+    inference was in flight, then adds only the remaining prompt tail and sampled response.
     """
 
     trace: Trace
@@ -390,6 +462,10 @@ class PendingTurn:
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
         index = _head_index(self.trace)
         for message in self.tail:
+            existing = _matching_node(self.trace, parent, message)
+            if existing is not None:
+                parent = existing
+                continue
             previous = parent
             self.trace.nodes.append(MessageNode(parent=parent, message=message))
             parent = len(self.trace.nodes) - 1
@@ -572,6 +648,45 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             keep += 1
         prefix = prefix[:keep]
         path_len = off
+
+    # A parallel request may have committed more of this prompt after `prepare_turn` resolved
+    # the inference prefix. Reconcile that still-uncommitted tail now, one whole message at a
+    # time. Exact token-span equality preserves intentional renderer-level forks; tokenless relay
+    # turns use message identity. Because commit is synchronous, once this loop stops the rest of
+    # the tail can be appended without another request interleaving.
+    prefix = list(prefix)
+    while len(prefix) < len(prompt):
+        i = len(prefix)
+        span = spans[i] if spans and i < len(spans) else None
+        end = span[1] if span else path_len
+        parent = prefix[-1] if prefix else None
+        if tokens is not None and span is None:
+            next_start = next(
+                (
+                    later_span[0]
+                    for later_span in (spans[i + 1 :] if spans else [])
+                    if later_span is not None
+                ),
+                len(prompt_ids),
+            )
+            existing = _matching_prefix_node(
+                trace, parent, prompt[i], prompt_ids, path_len, next_start
+            )
+            if existing is not None:
+                end += len(trace.nodes[existing].token_ids)
+        else:
+            node_tokens = prompt_ids[path_len:end]
+            existing = _matching_node(
+                trace,
+                parent,
+                prompt[i],
+                node_tokens if tokens is not None else None,
+            )
+        if existing is None:
+            break
+        prefix.append(existing)
+        path_len = end
+
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens

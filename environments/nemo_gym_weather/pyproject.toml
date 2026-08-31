@@ -3,7 +3,7 @@ name = "nemo-gym-weather"
 version = "0.1.0"
 description = "NeMo Gym's MCP weather example through the reusable Verifiers v1 taskset."
 requires-python = ">=3.12"
-dependencies = ["verifiers[nemo-gym]"]
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
