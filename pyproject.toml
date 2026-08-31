@@ -120,9 +120,6 @@ notebook = [
 openenv = [
     "openenv>=0.4.1",
 ]
-nemo-gym = [
-    # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
-]
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
