@@ -345,6 +345,42 @@ def _matching_node(
     return None
 
 
+def _matching_prefix_node(
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    prompt_ids: list[int],
+    start: int,
+) -> int | None:
+    """Find the longest content-equivalent child whose tokens match at `start`.
+
+    Renderers may leave a prompt-supplied assistant unattributed (`message_spans[i] is None`).
+    Its existing sampled node still owns physical tokens, so use those tokens to recover the
+    otherwise-missing message boundary without consuming any unmatched prompt suffix.
+    """
+    key = (parent, message_hash(message))
+    indexed = _head_index(trace).get(key)
+    candidates: list[int] = []
+    if indexed is not None:
+        candidates.append(indexed)
+    candidates.extend(
+        node_id
+        for node_id in range(len(trace.nodes) - 1, -1, -1)
+        if node_id != indexed
+        and trace.nodes[node_id].parent == parent
+        and message_hash(trace.nodes[node_id].message) == key[1]
+    )
+    matches = [
+        node_id
+        for node_id in candidates
+        if prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
+        == trace.nodes[node_id].token_ids
+    ]
+    return max(
+        matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
+    )
+
+
 @dataclass(frozen=True)
 class PendingTurn:
     """A resolved prompt waiting on model inference.
@@ -623,13 +659,21 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         i = len(prefix)
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else path_len
-        node_tokens = prompt_ids[path_len:end]
-        existing = _matching_node(
-            trace,
-            prefix[-1] if prefix else None,
-            prompt[i],
-            node_tokens if tokens is not None else None,
-        )
+        parent = prefix[-1] if prefix else None
+        if tokens is not None and span is None:
+            existing = _matching_prefix_node(
+                trace, parent, prompt[i], prompt_ids, path_len
+            )
+            if existing is not None:
+                end += len(trace.nodes[existing].token_ids)
+        else:
+            node_tokens = prompt_ids[path_len:end]
+            existing = _matching_node(
+                trace,
+                parent,
+                prompt[i],
+                node_tokens if tokens is not None else None,
+            )
         if existing is None:
             break
         prefix.append(existing)
