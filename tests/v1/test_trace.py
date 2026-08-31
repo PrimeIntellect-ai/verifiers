@@ -360,11 +360,11 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
 
 
 def test_platform_preflight_redacts_schema_enums_and_sensitive_mapping_keys():
-    secret = "opaque-map-key-0123456789"
+    secrets = ["opaque-map-key-0123456789", "second-map-key-0123456789"]
     schema_secret = "opaque-schema-secret-0123456789"
     reduced, _ = platform.prepare_upload(
         {
-            "api_keys": {secret: {"owner": "alice"}},
+            "api_keys": {secret: {"owner": "alice"} for secret in secrets},
             "team_id": "team-0123456789",
             "schema": {
                 "type": "object",
@@ -373,7 +373,7 @@ def test_platform_preflight_redacts_schema_enums_and_sensitive_mapping_keys():
         }
     )
 
-    assert list(reduced["api_keys"]) == ["[REDACTED]"]
+    assert list(reduced["api_keys"]) == ["[REDACTED]", "[REDACTED 2]"]
     assert reduced["team_id"] == "team-0123456789"
     assert reduced["schema"]["properties"]["api_key"]["enum"] == ["[REDACTED]"]
 
@@ -396,10 +396,17 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["password"] == "[REDACTED]"
     assert reduced["api_key"] == "[REDACTED]"
 
+    aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     reduced, _ = platform.prepare_upload(
-        {"completion": 'password="correct horse battery staple"'}
+        {
+            "completion": (
+                'password="correct horse battery staple" '
+                f'{{"aws_secret_access_key":"{aws_secret}"}}'
+            )
+        }
     )
     assert "correct horse battery staple" not in reduced["completion"]
+    assert aws_secret not in reduced["completion"]
 
     reduced, _ = platform.prepare_upload(
         {"password": 12345678, "token": 987654321, "secret": None, "auth": False}
@@ -438,6 +445,16 @@ def test_platform_preflight_finds_auth_environment_and_header_tokens(monkeypatch
     )
 
     assert reduced["completion"] == "[REDACTED] [REDACTED]"
+
+
+def test_platform_preflight_redacts_pattern_discovered_secrets_everywhere():
+    secret = "opaque-password-value-0123456789"
+    reduced, _ = platform.prepare_upload(
+        {"prompt": f"model repeated {secret}", "log": f"password={secret}"}
+    )
+
+    assert secret not in json.dumps(reduced)
+    assert reduced["prompt"] == "model repeated [REDACTED]"
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ from typing import Any
 REDACTED = "[REDACTED]"
 
 _PLACEHOLDER = re.compile(
-    r"^(?:\[?redacted\]?|masked|dummy|example|test|none|null|changeme|"
+    r"^(?:\[?redacted(?:[_ -]?\d+)?\]?|masked|dummy|example|test|none|null|changeme|"
     r"replace[_ -]?me|x{4,}|\*{4,}|<[^>]+>|\$\{?[A-Z][A-Z0-9_]*\}?)$",
     re.IGNORECASE,
 )
@@ -110,9 +110,11 @@ _PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:(?<![A-Za-z0-9_])[\"']?(?:x-api-key|api[_ -]?key|"
+        r"(?:(?<![A-Za-z0-9_])[\"']?(?:[A-Za-z][A-Za-z0-9]*[_-]+)*"
+        r"(?:x-api-key|api[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
-        r"secret|password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
+        r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?access[_ -]?key)?|"
+        r"password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|ACCESS_?TOKEN|REFRESH_?TOKEN|"
         r"AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|SECRET(?:_ACCESS_?KEY)?|"
         r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
@@ -233,6 +235,16 @@ def prepare_upload(
         elif isinstance(child, (list, tuple)):
             for nested in child:
                 discover(nested, schema_secret, schema_context, properties)
+        elif isinstance(child, str):
+            for pattern in _PATTERNS:
+                for match in pattern.finditer(child):
+                    secret = next(
+                        value
+                        for name, value in match.groupdict().items()
+                        if name.startswith("secret") and value is not None
+                    )
+                    if _is_secret(secret):
+                        secrets.add(secret)
 
     for secret in known_secrets:
         remember(secret)
@@ -288,6 +300,10 @@ def prepare_upload(
                 if structured_secret and _is_secret(key):
                     safe_key = REDACTED
                     replacements += 1
+                    suffix = 2
+                    while safe_key in reduced:
+                        safe_key = f"[REDACTED {suffix}]"
+                        suffix += 1
                 else:
                     safe_key = redact_text(key) if isinstance(key, str) else key
                 if safe_key in reduced:
