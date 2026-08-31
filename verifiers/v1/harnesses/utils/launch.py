@@ -3,9 +3,6 @@ import json
 from collections.abc import Sequence
 from types import ModuleType
 
-from pydantic import PositiveInt
-from pydantic_config import BaseConfig
-
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
@@ -15,14 +12,6 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
 PEP_723_END = "# ///\n"
-
-
-class CompactionConfig(BaseConfig):
-    """Context compaction policy for the shared chat loop."""
-
-    summarize_at_tokens: PositiveInt | None = None
-    """Compact at this token count. When unset, compact when 16k tokens remain below the
-    model context window when the provider advertises it."""
 
 
 def bundle_program(program: str, *modules: ModuleType) -> str:

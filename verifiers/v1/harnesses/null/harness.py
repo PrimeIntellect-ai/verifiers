@@ -1,9 +1,9 @@
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.config import CompactionConfig
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
-    CompactionConfig,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
