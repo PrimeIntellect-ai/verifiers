@@ -407,6 +407,7 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     for assignment in (
         "password=abcdefgh1234",
         "TOKEN=abcdefgh1234",
+        "SECRET_KEY=abcdefgh1234",
         "api_token=abcdefghijklmnop",
         "--token 123456789abc",
     ):
@@ -482,6 +483,15 @@ def test_platform_preflight_redacts_pattern_discovered_secrets_everywhere():
 
     assert secret not in json.dumps(reduced)
     assert reduced["prompt"] == "model repeated [REDACTED]"
+
+    reduced, _ = platform.prepare_upload(
+        {
+            "log": "redis://user:password@example.com/0",
+            "rubric": "mention the password field",
+        }
+    )
+    assert "user:password" not in reduced["log"]
+    assert reduced["rubric"] == "mention the password field"
 
 
 @pytest.mark.parametrize(

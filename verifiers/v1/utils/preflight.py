@@ -78,7 +78,7 @@ _PATTERNS = (
         r"credential|private[_ -]?key|signature))\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|API_?TOKEN|ACCESS_?TOKEN|"
         r"REFRESH_?TOKEN|AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|"
-        r"SECRET(?:_ACCESS_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
+        r"SECRET(?:_ACCESS_?KEY|_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
         r"--(?:api-key|api-token|access-token|auth-token|client-secret|password|"
         r"private-key|secret|token)(?:=|\s+))"
         r"[\"']?(?:(?i:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{8,})"
@@ -118,11 +118,11 @@ _PATTERNS = (
         r"(?:(?<![A-Za-z0-9_])[\"']?(?:[A-Za-z][A-Za-z0-9]*[_-]+)*"
         r"(?:x-api-key|api[_ -]?(?:key|token)|account[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
-        r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?access[_ -]?key)?|"
+        r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?(?:access[_ -]?)?key)?|"
         r"password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|ACCESS_?TOKEN|REFRESH_?TOKEN|"
         r"AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|SECRET(?:_ACCESS_?KEY)?|"
-        r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
+        r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|SECRET_?KEY)\s*=\s*|"
         r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
         r"secret|token)(?:=|\s+))"
         r"(?:\"(?P<secret_double>(?:\\.|[^\"\\\r\n]){16,})\"|"
@@ -249,7 +249,7 @@ def prepare_upload(
             for nested in child:
                 discover(nested, schema_secret, schema_context, properties)
         elif isinstance(child, str):
-            for pattern in _PATTERNS:
+            for pattern in _PATTERNS[:-1]:
                 for match in pattern.finditer(child):
                     secret = next(
                         value
