@@ -523,6 +523,14 @@ class InterceptionServer(Interception):
                 )
             if not streaming:
                 replay_key = f"explicit:{idempotency_key}"
+            # This key identifies the harness-to-interception hop. The server owns its
+            # replay semantics, and the body has since been rewritten with rollout model
+            # and sampling overrides, so never expose the local key to the provider.
+            upstream_headers = {
+                name: value
+                for name, value in upstream_headers.items()
+                if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
+            }
         elif not streaming:
             replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
