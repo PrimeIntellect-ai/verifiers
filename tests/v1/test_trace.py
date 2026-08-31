@@ -322,15 +322,20 @@ def test_platform_preflight_redacts_credentials_without_reducing_review_data():
 
 def test_platform_preflight_finds_nested_and_properties_credentials():
     secret = "opaque-nested-secret-0123456789"
+    token = "opaque-generic-token-0123456789"
     payload = {
+        "APIKey": secret,
         "secret": {"value": secret},
+        "token": token,
         "properties": {"password": secret},
         "schema": {"properties": {"password": {"type": "string"}}},
     }
 
     reduced, _ = platform.prepare_upload(payload)
 
+    assert reduced["APIKey"] == "[REDACTED]"
     assert reduced["secret"]["value"] == "[REDACTED]"
+    assert reduced["token"] == "[REDACTED]"
     assert reduced["properties"]["password"] == "[REDACTED]"
     assert reduced["schema"] == payload["schema"]
 
