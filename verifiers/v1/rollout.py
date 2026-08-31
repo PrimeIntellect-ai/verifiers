@@ -93,6 +93,11 @@ class Rollout:
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
         )
+        self.trace.upload_secrets.extend(
+            tool.state_secret
+            for tool in self._shared_tools.values()
+            if tool.state_secret
+        )
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [

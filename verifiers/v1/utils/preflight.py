@@ -326,15 +326,20 @@ def prepare_upload(
                 )
                 for nested in child
             )
-        if not isinstance(child, str):
-            return child
         if (
             structured_secret
-            and child.strip()
-            and not _PLACEHOLDER.fullmatch(child.strip())
+            and child is not None
+            and not isinstance(child, bool)
+            and (
+                not isinstance(child, str)
+                or child.strip()
+                and not _PLACEHOLDER.fullmatch(child.strip())
+            )
         ):
             replacements += 1
             return REDACTED
+        if not isinstance(child, str):
+            return child
         return redact_text(child)
 
     reduced = reduce(value)

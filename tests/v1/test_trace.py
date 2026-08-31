@@ -10,6 +10,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.cli.output import TRACES_FILE, write_episode
 from verifiers.v1.configs.client import (
     PRIME_TEAM_ID_HEADER,
     EvalClientConfig,
@@ -377,6 +378,16 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
     assert reduced["api_key"] == "[REDACTED]"
 
     reduced, _ = platform.prepare_upload(
+        {"password": 12345678, "token": 987654321, "secret": None, "auth": False}
+    )
+    assert reduced == {
+        "password": "[REDACTED]",
+        "token": "[REDACTED]",
+        "secret": None,
+        "auth": False,
+    }
+
+    reduced, _ = platform.prepare_upload(
         {"completion": "runtime-secret-0123456789", "answer": "keep 1 and keep"},
         ["EMPTY"],
         [
@@ -415,7 +426,7 @@ def test_platform_preflight_redacts_every_value_in_a_raw_cookie_header():
     assert refresh not in reduced["completion"]
 
 
-def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
+def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_path):
     monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
     monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")
     monkeypatch.setenv("RUN_API_KEY", "run-api-key-0123456789")
@@ -440,6 +451,9 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
     assert vf.WireEpisode.model_validate(episode.model_dump()).traces[
         0
     ].upload_secrets == ["rollout-capability-0123456789"]
+    (tmp_path / TRACES_FILE).touch()
+    write_episode(tmp_path, episode)
+    assert "rollout-capability" not in (tmp_path / TRACES_FILE).read_text()
     config = SimpleNamespace(
         env=SimpleNamespace(taskset=SimpleNamespace(id="test-env")),
         run=SimpleNamespace(id="run-1", name="test-run"),
