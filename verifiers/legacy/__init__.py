@@ -87,7 +87,6 @@ __all__ = [
     "OpenAIChatCompletionsClient",
     "OpenAICompletionsClient",
     "OpenAIResponsesClient",
-    "RendererClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -116,7 +115,6 @@ _LAZY_IMPORTS = {
     "OpenAIChatCompletionsClient": (
         "verifiers.legacy.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
     ),
-    "RendererClient": ("verifiers.legacy.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
         "verifiers.legacy.clients.openai_completions_client:OpenAICompletionsClient"
     ),
@@ -152,8 +150,6 @@ def __getattr__(name: str):
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     except ModuleNotFoundError as e:
-        if name == "RendererClient":
-            raise
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e
@@ -167,7 +163,6 @@ if TYPE_CHECKING:
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
     from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
-    from .clients.renderer_client import RendererClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401

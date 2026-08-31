@@ -220,7 +220,7 @@ class TrajectoryStepTokens(TypedDict):
     ]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
     prompt_attribution: NotRequired[
         Any
-    ]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
+    ]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on renderer-backed token rollouts (RendererClient, removed with renderers 0.1.11)
 ```
 
 Token-level data for training.
@@ -772,7 +772,6 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 | `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
 | `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
 | `OpenAIResponsesClient` | `"openai_responses"` | `AsyncOpenAI` | OpenAI Responses API |
-| `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
 | `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
 
