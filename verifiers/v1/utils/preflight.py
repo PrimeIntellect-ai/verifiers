@@ -73,14 +73,15 @@ _PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:\b(?:authorization|proxy-authorization|x-api-key|api[_ -]?key|"
+        r"(?:(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization|"
+        r"x-api-key|api[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
-        r"secret|password|passwd|cookie|private[_ -]?key|signature)\b\s*[:=]\s*|"
+        r"secret|password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|ACCESS_?TOKEN|REFRESH_?TOKEN|"
         r"AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|SECRET(?:_ACCESS_?KEY)?|"
         r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
         r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
-        r"secret|token)(?:=|\s+))(?:(?:bearer|basic)\s+)?[\"']?"
+        r"secret|token)(?:=|\s+))[\"']?(?:(?:bearer|basic)\s+)?[\"']?"
         r"(?P<secret>[^\s,;\"']{8,})",
         re.IGNORECASE,
     ),
@@ -128,26 +129,22 @@ def _is_secret(value: Any) -> bool:
 def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, int]:
     """Return a reduced copy and the number of credential-bearing values changed."""
     secrets = {
-        secret
-        for secret in (
-            *known_secrets,
-            *(
-                value
-                for name, value in os.environ.items()
-                if _SECRET_ENV.search(name)
-                and not _normalize(name).endswith(_REFERENCE_SUFFIXES)
-            ),
-        )
-        if _is_secret(secret)
+        value
+        for name, value in os.environ.items()
+        if _SECRET_ENV.search(name)
+        and not _normalize(name).endswith(_REFERENCE_SUFFIXES)
+        and _is_secret(value)
     }
 
     def remember(candidate: Any) -> None:
-        if _is_secret(candidate):
+        if (
+            isinstance(candidate, str)
+            and bool(candidate.strip())
+            and not _PLACEHOLDER.fullmatch(candidate.strip())
+        ):
             secrets.add(candidate)
-            if (match := _AUTH_VALUE.fullmatch(candidate.strip())) and _is_secret(
-                token := match.group(1)
-            ):
-                secrets.add(token)
+            if match := _AUTH_VALUE.fullmatch(candidate.strip()):
+                remember(match.group(1))
         elif isinstance(candidate, Mapping):
             for item in candidate.values():
                 remember(item)
@@ -183,6 +180,8 @@ def prepare_upload(value: Any, known_secrets: Iterable[str] = ()) -> tuple[Any, 
             for nested in child:
                 discover(nested, schema_secret)
 
+    for secret in known_secrets:
+        remember(secret)
     discover(value)
     replacements = 0
 

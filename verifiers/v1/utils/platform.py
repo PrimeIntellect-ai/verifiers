@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.preflight import prepare_upload
@@ -297,6 +298,19 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
+        clients = [config.client]
+        runtime_secrets = []
+        for trace in traces:
+            agent = trace.agent.config
+            if agent.client is not None:
+                clients.append(agent.client)
+            if agent.harness is not None:
+                runtime_secrets.extend(agent.harness.resolved_env.values())
+        for client in clients:
+            runtime_secrets.extend(
+                (resolve_api_key(client), *resolve_headers(client).values())
+            )
+
         samples = build_samples(episodes)
         payload, redactions = prepare_upload(
             {
@@ -305,7 +319,7 @@ def push_traces(
                 "metrics": metrics,
                 "samples": samples,
             },
-            [api_key],
+            [api_key, *runtime_secrets],
         )
         name = payload["name"]
         metadata = payload["metadata"]

@@ -340,9 +340,38 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["schema"] == payload["schema"]
 
 
+def test_platform_preflight_finds_quoted_and_short_credentials():
+    token = "opaque-json-token-0123456789"
+    payload = {
+        "completion": json.dumps({"Authorization": f"Bearer {token}"}),
+        "password": "s3cr3t",
+        "api_key": "abc123",
+    }
+
+    reduced, _ = platform.prepare_upload(payload)
+
+    assert token not in reduced["completion"]
+    assert reduced["password"] == "[REDACTED]"
+    assert reduced["api_key"] == "[REDACTED]"
+
+
 def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
+    monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
+    monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")
+    monkeypatch.setenv("RUN_API_KEY", "run-api-key-0123456789")
     trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=EvalClientConfig(
+                    api_key_var="AGENT_API_KEY",
+                    headers={"X-Auth": "agent-header-secret-0123456789"},
+                ),
+                harness=HarnessConfig(
+                    env={"RUNTIME_SECRET": "runtime-secret-0123456789"},
+                    forward_env=["FORWARDED_RUNTIME_SECRET"],
+                ),
+            )
+        ),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
     )
     episode = Episode(task=trace.task, traces=[trace])
@@ -351,12 +380,24 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch):
         run=SimpleNamespace(id="run-1", name="test-run"),
         model="test-model",
         num_rollouts=1,
+        client=EvalClientConfig(
+            api_key_var="RUN_API_KEY",
+            headers={"X-Auth": "run-header-secret-0123456789"},
+        ),
     )
     state = PushState()
 
     def stop_in_preflight(payload, known_secrets):
         assert payload["samples"]
-        assert "prime-api-key" in known_secrets
+        assert {
+            "prime-api-key",
+            "runtime-secret-0123456789",
+            "forwarded-secret-0123456789",
+            "agent-api-key-0123456789",
+            "agent-header-secret-0123456789",
+            "run-api-key-0123456789",
+            "run-header-secret-0123456789",
+        }.issubset(known_secrets)
         raise RuntimeError("preflight stopped upload")
 
     monkeypatch.setattr(platform, "prepare_upload", stop_in_preflight)
