@@ -3,6 +3,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
+    CompactionConfig,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -11,7 +12,8 @@ from verifiers.v1.trace import Trace
 
 
 class NullHarnessConfig(HarnessConfig):
-    pass
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
 
 class NullHarness(Harness[NullHarnessConfig]):
@@ -35,6 +37,12 @@ class NullHarness(Harness[NullHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        args = []
+        if self.config.compaction is not None:
+            args.append("--compaction")
+            threshold = self.config.compaction.summarize_at_tokens
+            if threshold is not None:
+                args.append(f"--summarize-at-tokens={threshold}")
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,
@@ -46,4 +54,5 @@ class NullHarness(Harness[NullHarnessConfig]):
             mcp_urls,
             system_prompt,
             prompt,
+            extra_args=args,
         )

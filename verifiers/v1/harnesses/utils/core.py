@@ -230,7 +230,7 @@ async def run_chat_loop(
             # cleanly with what the conversation holds - still a trainable sample.
             return
         except APIStatusError as error:
-            # Null cannot compact, so context exhaustion ends it with the transcript so far.
+            # Null ends unrecoverable context exhaustion with the transcript so far.
             if args.bash or not is_context_overflow(error):
                 raise
             return

@@ -1,13 +1,11 @@
 import os
 
-from pydantic import PositiveInt
-from pydantic_config import BaseConfig
-
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
+    CompactionConfig,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -27,14 +25,6 @@ SEARCH_PROMPT = (
     "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
-
-
-class CompactionConfig(BaseConfig):
-    """Context compaction policy for the bash agent loop."""
-
-    summarize_at_tokens: PositiveInt | None = None
-    """Compact at this token count. When unset, compact when 16k tokens remain below the
-    model context window when the provider advertises it."""
 
 
 class BashHarnessConfig(HarnessConfig):
