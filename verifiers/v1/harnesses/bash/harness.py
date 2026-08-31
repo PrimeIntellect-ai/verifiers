@@ -1,16 +1,16 @@
-import json
 import os
-from pathlib import Path
+
+from pydantic import PositiveInt
+from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.minimal import PROGRAM_SOURCE
+from verifiers.v1.harnesses.standalone import launch_chat_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
@@ -27,6 +27,14 @@ SEARCH_PROMPT = (
 )
 
 
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the bash agent loop."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
+
+
 class BashHarnessConfig(HarnessConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
@@ -36,6 +44,9 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
+
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
@@ -69,14 +80,14 @@ class BashHarness(Harness[BashHarnessConfig]):
             p for p in (" ".join(fragments), system_prompt) if p
         )
         env = {**self.config.resolved_env}
-        args = [
-            f"--base-url={endpoint}",
-            f"--api-key={secret}",
-            f"--model={ctx.model}",
-            f"--system-prompt={system_prompt}",
-        ]
+        args = ["--bash"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+        if self.config.compaction is not None:
+            args.append("--compaction")
+            threshold = self.config.compaction.summarize_at_tokens
+            if threshold is not None:
+                args.append(f"--summarize-at-tokens={threshold}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
@@ -97,31 +108,18 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "(the host env or the harness config's env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
-        if mcp_urls:
-            # The program connects to the tool servers over HTTP; hand it a standard
-            # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {
-                        "mcpServers": {
-                            name: {"url": url, "timeout": self.config.tool_timeout}
-                            for name, url in mcp_urls.items()
-                        }
-                    }
-                )
-            )
-        if isinstance(prompt, str):
-            args.append(f"--prompt={prompt}")
-        elif prompt is not None:
-            # Base64 images can exceed exec limits, so hand Messages off through a file.
-            path = f".vf-initial-messages-{trace.id}.json"
-            await runtime.write(
-                path,
-                json.dumps([message_to_wire(m) for m in prompt]).encode(),
-            )
-            args.append(f"--initial-messages-file={path}")
-        program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, self.config.resolved_env, activate=False
+        return await launch_chat_program(
+            PROGRAM_SOURCE,
+            self.config,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            system_prompt,
+            prompt,
+            extra_args=args,
+            env=env,
+            activate=False,
         )
-        return await runtime.run_program([*program, *args], env)
