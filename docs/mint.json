@@ -18,18 +18,6 @@
             "v1/harbor",
             "v1/gepa"
           ]
-        },
-        {
-          "group": "Legacy (v0)",
-          "pages": [
-            "legacy/overview",
-            "legacy/environments",
-            "legacy/evaluation",
-            "legacy/training",
-            "legacy/development",
-            "legacy/reference",
-            "legacy/faqs"
-          ]
         }
       ]
     }
@@ -37,31 +25,59 @@
   "redirects": [
     {
       "source": "/v0/overview",
-      "destination": "/legacy/overview"
+      "destination": "/overview"
     },
     {
       "source": "/v0/environments",
-      "destination": "/legacy/environments"
+      "destination": "/overview"
     },
     {
       "source": "/v0/evaluation",
-      "destination": "/legacy/evaluation"
+      "destination": "/overview"
     },
     {
       "source": "/v0/training",
-      "destination": "/legacy/training"
+      "destination": "/overview"
     },
     {
       "source": "/v0/development",
-      "destination": "/legacy/development"
+      "destination": "/overview"
     },
     {
       "source": "/v0/reference",
-      "destination": "/legacy/reference"
+      "destination": "/overview"
     },
     {
       "source": "/v0/faqs",
-      "destination": "/legacy/faqs"
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/overview",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/environments",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/evaluation",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/training",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/development",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/reference",
+      "destination": "/overview"
+    },
+    {
+      "source": "/legacy/faqs",
+      "destination": "/overview"
     }
   ]
 }
