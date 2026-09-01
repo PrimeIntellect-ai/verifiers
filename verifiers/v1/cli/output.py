@@ -222,27 +222,17 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     return episodes
 
 
-async def persist_episode(
-    results_dir: Path,
-    episode: Episode[DataT, StateT, AgentConfigT],
-    lock: asyncio.Lock,
-) -> None:
-    async with lock:
-        await asyncio.to_thread(write_episode, results_dir, episode)
-
-
 async def append_episode(
     results_dir: Path,
     episode: Episode[DataT, StateT, AgentConfigT],
     lock: asyncio.Lock,
 ) -> None:
     """Append one finished rollout episode without blocking the event loop. The run's
-    shared lock preserves whole-line ordering, and awaiting the worker preserves
-    per-episode durability."""
+    shared lock preserves whole-line ordering. Callers shield the whole operation so
+    cancellation cannot interrupt lock acquisition or the worker."""
 
-    # Run lock acquisition and the worker to completion even under cancellation, so
-    # finalized episodes are never lost mid-write (`run_shielded` re-raises the cancellation).
-    await run_shielded(persist_episode(results_dir, episode, lock))
+    async with lock:
+        await asyncio.to_thread(write_episode, results_dir, episode)
 
 
 async def append_trace(
@@ -256,4 +246,4 @@ async def append_trace(
         traces=[trace],
         ok=trace.ok,
     )
-    await append_episode(results_dir, episode, lock)
+    await run_shielded(append_episode(results_dir, episode, lock))
