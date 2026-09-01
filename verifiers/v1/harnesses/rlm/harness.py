@@ -5,7 +5,14 @@ import logging
 import shlex
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    PositiveInt,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
@@ -17,7 +24,7 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-BuiltinSkill = Literal["edit", "search"]
+BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
@@ -43,15 +50,36 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="4ef3438", min_length=1)
-    """Git ref (branch, tag, or commit) of nano-rlm to install."""
-    max_depth: int = 0
-    """Recursion depth RLM may spawn sub-harnesses to."""
+    version: str = Field(default="240090d", min_length=1)
+    """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
+    field this harness puts on the wire, i.e. be at least the default ref."""
+    max_depth: NonNegativeInt | None = None
+    """Recursion depth RLM may spawn sub-agents to; `None` = nano-rlm's default (1).
+    Set 0 to disable recursion."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
     compaction: CompactionConfig | None = None
     """Context compaction policy. Set an empty config to use automatic thresholds."""
+    max_concurrent_subagents: PositiveInt | None = None
+    """Sub-agents running at once per session tree; `None` = nano-rlm's default (4).
+    nano-rlm requires it to be at least `max_depth`."""
+    max_total_turns: PositiveInt | None = None
+    """Tree-total turn budget (one turn = one work-loop model call, any engine); every
+    engine stops before its next call once spent. `None` = uncapped."""
+    max_total_tokens: PositiveInt | None = None
+    """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
+    tree; once spent every engine stops and no further sub-agents spawn. `None` = unbounded."""
+    max_tool_output_bytes: PositiveInt | None = None
+    """Byte budget for a single tool result entering the conversation (middle truncation);
+    overrides rlm's built-in 20KB default in either direction."""
+    append_to_system_prompt: str | None = None
+    """Appended to the root engine's system prompt, after the taskset's system prompt."""
+    subagent_append_to_system_prompt: str | None = None
+    """Append for sub-agent engines that can still delegate (depth >= 1, below
+    `max_depth`); unset falls back to `append_to_system_prompt`."""
+    leaf_append_to_system_prompt: str | None = None
+    """Append for depth-capped leaf engines; unset falls back to the sub-agent append."""
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -59,6 +87,15 @@ class RLMHarnessConfig(HarnessConfig):
             raise ValueError(
                 "the rlm harness has a fixed tool set (ipython) and does not support "
                 "`disabled_tools`; use `builtin_skills` to enable built-in skills instead."
+            )
+        if (
+            self.max_depth is not None
+            and self.max_concurrent_subagents is not None
+            and self.max_concurrent_subagents < self.max_depth
+        ):
+            raise ValueError(
+                "`max_concurrent_subagents` must be at least `max_depth` "
+                "(nano-rlm rejects the policy otherwise)."
             )
         return self
 
@@ -109,6 +146,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         system_prompt: str | None,
     ) -> JsonObject:
         compaction = self.config.compaction
+        appends = [
+            text
+            for text in (system_prompt, self.config.append_to_system_prompt)
+            if text
+        ]
         payload = {
             "session_id": trace.id,
             "model": ctx.model,
@@ -116,16 +158,29 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 "base_url": endpoint,
                 "api_key": secret,
             },
+            # None = passthrough: the key stays off the wire and nano-rlm's own
+            # default applies.
             "policy": {
-                "max_depth": self.config.max_depth,
-                "compaction": compaction is not None,
-                "summarize_at_tokens": (
-                    compaction.summarize_at_tokens if compaction else None
-                ),
-                "max_concurrent_subagents": max(4, self.config.max_depth),
+                key: value
+                for key, value in {
+                    "max_depth": self.config.max_depth,
+                    "compaction": compaction is not None,
+                    "summarize_at_tokens": (
+                        compaction.summarize_at_tokens if compaction else None
+                    ),
+                    "max_concurrent_subagents": self.config.max_concurrent_subagents,
+                    "max_total_turns": self.config.max_total_turns,
+                    "max_total_tokens": self.config.max_total_tokens,
+                    "max_tool_output_bytes": self.config.max_tool_output_bytes,
+                }.items()
+                if value is not None
             },
             "system_prompt_path": None,
-            "append_to_system_prompt": system_prompt,
+            "append_to_system_prompt": "\n\n".join(appends) or None,
+            "subagent_append_to_system_prompt": (
+                self.config.subagent_append_to_system_prompt
+            ),
+            "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
             "kernel_env": runtime.env,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
