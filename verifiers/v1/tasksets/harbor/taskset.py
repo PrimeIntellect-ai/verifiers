@@ -250,6 +250,11 @@ class HarborTask(Task[HarborData]):
                 )
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
+    async def stage_verifier(self, runtime: Runtime) -> None:
+        # An artifact under /tests must not replace the task package's verifier.
+        await self.stage_tests(runtime, wipe=True)
+        self.verifier_staged = True
+
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
 

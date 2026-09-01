@@ -71,8 +71,8 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         solution = episode.traces[0]
         if solution.ok:
-            verifier_task = copy.deepcopy(task)
-            await self.grade(self.verifier_config(task), verifier_task, solution)
+            graded = await self.grade(self.verifier_config(task), task, solution)
+            episode.traces[0] = graded[1]
 
     async def stage_verifier(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
@@ -81,13 +81,15 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         async with boundary(TaskError, "verifier task setup"):
             await invoke(task.setup, {"trace": solution, "runtime": runtime})
         await vf.restore(runtime, artifacts)
+        async with boundary(TaskError, "verifier staging"):
+            await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
 
     async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
         await task.score(solution, runtime)
 
     async def grade(
         self, config: RuntimeConfig, task: vf.Task, solution: vf.Trace
-    ) -> Any:
+    ) -> tuple[Any, vf.Trace]:
         last: Exception | None = None
         for attempt in range(self.config.verifier_retries + 1):
             if attempt:
@@ -105,21 +107,29 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 # survive a slow cleanup of the verifier runtime.
                 async with AsyncExitStack() as boxes:
                     async with asyncio.timeout(task.data.timeout.scoring):
+                        # Failed setup or scoring must not alter the next attempt.
+                        # Only the successful controller and trace leave this scope.
+                        verifier_task = copy.deepcopy(task)
+                        verifier_solution = copy.deepcopy(solution)
                         runtime = await boxes.enter_async_context(
                             provision_runtime(
                                 config,
                                 env=(
-                                    task.runtime_env()
+                                    verifier_task.runtime_env()
                                     if self.config.verifier_env is None
                                     else self.config.verifier_env
                                 ),
                             )
                         )
                         await runtime.prepare_setup()
-                        await self.stage_verifier(task, solution, runtime)
+                        await self.stage_verifier(
+                            verifier_task, verifier_solution, runtime
+                        )
                         await runtime.prepare_execution([])
-                        result = await self.verify(task, solution, runtime)
-                    return result
+                        result = await self.verify(
+                            verifier_task, verifier_solution, runtime
+                        )
+                    return result, verifier_solution
             except Exception as error:  # noqa: BLE001 - retry the whole fresh box
                 last = error
         assert last is not None

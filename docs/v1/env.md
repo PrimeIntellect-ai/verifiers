@@ -44,10 +44,11 @@ PRIVATE_TESTS = Path("tests/test_solution.sh").read_bytes()
 
 
 class CodeTask(vf.Task[CodeData]):
+    async def stage_verifier(self, runtime: vf.Runtime) -> None:
+        await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
+
     @vf.reward
     async def tests(self, runtime: vf.Runtime) -> float:
-        # Stage private verifier inputs here, then execute and parse them.
-        await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
         result = await runtime.run(["bash", "/tmp/test_solution.sh"], {})
         return float(result.exit_code == 0)
 
@@ -68,8 +69,9 @@ The lifecycle is fixed:
    the solver runtime.
 3. It creates a fresh task controller and provisions either the same resolved
    container/runtime policy or the independently configured verifier runtime, runs
-   task `setup`, restores the artifacts at their original paths, reapplies the
-   execution network policy, and runs task metrics and rewards onto the solver trace.
+   task `setup`, restores the artifacts at their original paths, runs task
+   `stage_verifier`, reapplies the execution network policy, and runs task metrics
+   and rewards onto the solver trace.
 
 The verifier runtime must be Docker, Prime, or another container runtime; absolute
 artifact restoration is intentionally refused on the host subprocess runtime.

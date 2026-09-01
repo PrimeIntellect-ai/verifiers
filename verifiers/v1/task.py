@@ -173,6 +173,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        """Prepare trusted verifier-only inputs after artifacts are restored."""
+        return
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None

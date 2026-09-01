@@ -74,19 +74,13 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         if not solution.ok:
             return
         grader = HarborTask(verifier_box_data(task.data))
-        scores = await self.grade(self.verifier_config(task), grader, solution)
+        scores, solution = await self.grade(
+            self.verifier_config(task), grader, solution
+        )
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
             solution.record_reward(name, value)
-
-    async def stage_verifier(
-        self, task: vf.Task, solution: vf.Trace, runtime: Runtime
-    ) -> None:
-        await super().stage_verifier(task, solution, runtime)
-        assert isinstance(task, HarborTask)
-        # An artifact under /tests must not replace the task package's verifier.
-        await task.stage_tests(runtime, wipe=True)
-        task.verifier_staged = True
+        episode.traces[0] = solution
 
     async def verify(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
