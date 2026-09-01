@@ -1,11 +1,14 @@
 """Message-graph trajectory: store each message once, recover branches by walking.
 
 A rollout is a graph of `MessageNode`s — one per distinct message, each linked to its
-predecessor. The conversation is a path from a root to a leaf; branches (compaction,
-subagents) are simply multiple leaves, so branching falls out of the walk. Each node stores
-only the tokens it *adds* to the cumulative sequence, keeping size linear in turns and
-making a branch's training sample a cheap concat of node `token_ids`/`mask`/`logprobs` along
-its path.
+predecessor. A conversation is a path from a root to a leaf; prompt divergence from
+compaction, subagents, or other history rewrites produces multiple leaves, so branching
+falls out of the walk. A branch often corresponds to one harness context window, but it is
+a physical, exact-prefix training view rather than a semantic context identity: a prefix
+break can split one context and prefix reuse can preserve an ancestral path. Each node
+stores only the tokens it *adds* to the cumulative sequence, keeping size linear in turns
+and making a branch's training sample a cheap concat of node
+`token_ids`/`mask`/`logprobs` along its path.
 
 Token attribution (renderer client): the renderer reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new
@@ -29,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
+from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
@@ -68,6 +72,14 @@ class MessageNode(BaseModel):
 
     parent: int | None = None
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
+    semantic_parents: list[ParentLink] = Field(default_factory=list)
+    """Additional harness-declared parents in the semantic execution graph.
+
+    Unlike ``parent``, these links do not imply an exact token prefix and therefore do
+    not affect physical branch construction. A list permits multiple parents of the same
+    type, supports incremental appends, and preserves their advertised wire order; edge
+    application prevents duplicate ``(node, type)`` links.
+    """
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
     sampled: bool = False

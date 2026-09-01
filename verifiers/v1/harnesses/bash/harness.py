@@ -1,10 +1,15 @@
 import os
 
+from pydantic import PositiveInt
+from pydantic_config import BaseConfig
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses.minimal import PROGRAM_SOURCE
-from verifiers.v1.harnesses.standalone import launch_chat_program
+from verifiers.v1.harnesses.utils.launch import (
+    CHAT_PROGRAM_SOURCE,
+    launch_chat_program,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -24,6 +29,14 @@ SEARCH_PROMPT = (
 )
 
 
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the bash agent loop."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
+
+
 class BashHarnessConfig(HarnessConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
@@ -34,6 +47,9 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
+
 
 class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
@@ -43,7 +59,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+        await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
 
     async def launch(
         self,
@@ -69,6 +85,11 @@ class BashHarness(Harness[BashHarnessConfig]):
         args = ["--bash"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+        if self.config.compaction is not None:
+            args.append("--compaction")
+            threshold = self.config.compaction.summarize_at_tokens
+            if threshold is not None:
+                args.append(f"--summarize-at-tokens={threshold}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
@@ -90,7 +111,7 @@ class BashHarness(Harness[BashHarnessConfig]):
                 )
             args += ["--search", f"--serper-key={serper_key}"]
         return await launch_chat_program(
-            PROGRAM_SOURCE,
+            CHAT_PROGRAM_SOURCE,
             self.config,
             ctx,
             trace,

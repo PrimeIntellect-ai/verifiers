@@ -1,8 +1,4 @@
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]
-# ///
-"""Shared Null/Bash chat program; secrets use argv so tools do not inherit them."""
+"""Chat loop, local tools, and interception hook for bundled chat programs."""
 
 import argparse
 import asyncio
@@ -16,29 +12,18 @@ from openai import APIStatusError, AsyncOpenAI
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.mcp.client import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
+        CompactionFailed,
+        Compactor,
+        bound_tool_message,
+        compactable,
+        discover_threshold,
+        estimated_tokens,
+        is_context_overflow,
+    )
+    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
 SERPER_URL = "https://google.serper.dev/search"
-
-CONTEXT_OVERFLOW_MARKERS = (
-    "context_length_exceeded",
-    "exceeds the context window",
-    "reduce the length of the messages",
-    "maximum context length",
-    "prompt is too long",
-    "request_too_large",
-    "request entity too large",
-    "exceeds the maximum number of tokens",
-    "maximum prompt length is",
-)
-
-
-def is_context_overflow(error: APIStatusError) -> bool:
-    details = f"{error} {error.body or ''}".casefold()
-    return error.status_code in (400, 413) and any(
-        marker in details for marker in CONTEXT_OVERFLOW_MARKERS
-    )
-
 
 BASH_TOOL = {
     "type": "function",
@@ -79,7 +64,6 @@ EDIT_TOOL = {
         },
     },
 }
-
 
 SEARCH_TOOL = {
     "type": "function",
@@ -197,12 +181,17 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 
 
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None = None,
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
-    )
-    return completion.choices[0].message
+    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    if tools and tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    return await client.chat.completions.create(**kwargs)
 
 
 async def run_tool_hook(
@@ -224,6 +213,108 @@ async def run_tool_hook(
     return decision
 
 
+async def run_chat_loop(
+    args: argparse.Namespace,
+    compactor: "Compactor",
+    messages: list[dict],
+    dispatch: dict,
+    servers: dict,
+    tool_client: httpx.AsyncClient | None,
+) -> None:
+    """Run the tool-calling conversation until a text-only reply or context exhaustion."""
+    while True:
+        try:
+            completion, messages = await compactor.complete(messages)
+        except CompactionFailed:
+            # The context is exhausted and could not be summarized: end the run
+            # cleanly with what the conversation holds - still a trainable sample.
+            return
+        except APIStatusError as error:
+            # Null cannot compact, so context exhaustion ends it with the transcript so far.
+            if args.bash or not is_context_overflow(error):
+                raise
+            return
+        message = completion.choices[0].message
+        messages.append(message.model_dump(exclude_none=True))
+        if not message.tool_calls:
+            return
+        tool_result_tokens = 0
+        for call in message.tool_calls:
+            name = call.function.name
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": "",
+                "name": name,
+            }
+            if args.tool_interception_url:
+                assert tool_client is not None
+                decision = await run_tool_hook(
+                    tool_client,
+                    args.tool_interception_url,
+                    args.api_key,
+                    "before",
+                    tool_message,
+                )
+                if decision["action"] == "rewrite":
+                    rewritten = bound_tool_message(decision["message"])
+                    messages.append(rewritten)
+                    tool_result_tokens += estimated_tokens(
+                        str(rewritten.get("content", ""))
+                    )
+                    continue
+            try:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as e:
+                content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
+            else:
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`).
+                if not isinstance(tool_args, dict):
+                    content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
+                elif name in dispatch:
+                    content = await call_mcp(servers, dispatch, name, tool_args)
+                elif name == "bash" and args.bash:
+                    content = await asyncio.to_thread(
+                        run_bash, tool_args.get("command", "")
+                    )
+                elif name == "edit" and args.edit:
+                    content = await asyncio.to_thread(
+                        run_edit,
+                        tool_args.get("path"),
+                        tool_args.get("old_str"),
+                        tool_args.get("new_str"),
+                    )
+                elif name == "search" and args.search:
+                    content = await asyncio.to_thread(
+                        run_search,
+                        tool_args.get("query", ""),
+                        args.serper_key,
+                        tool_args.get("num_results", 5),
+                    )
+                else:
+                    content = f"error: unknown tool {name!r}"
+            tool_message["content"] = content
+            tool_message = bound_tool_message(tool_message)
+            if args.tool_interception_url:
+                assert tool_client is not None
+                decision = await run_tool_hook(
+                    tool_client,
+                    args.tool_interception_url,
+                    args.api_key,
+                    "after",
+                    tool_message,
+                )
+                if decision["action"] == "rewrite":
+                    tool_message = bound_tool_message(decision["message"])
+            messages.append(tool_message)
+            tool_result_tokens += estimated_tokens(str(tool_message["content"]))
+        if compactor.reached(completion, tool_result_tokens) and compactable(messages):
+            try:
+                messages = await compactor.compact(messages)
+            except CompactionFailed:
+                return
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -235,6 +326,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
+    parser.add_argument("--compaction", action="store_true")
+    parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -284,83 +377,23 @@ async def main() -> None:
         messages.extend(initial)
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
-    while True:
-        try:
-            message = await chat(client, args.model, messages, tools)
-        except APIStatusError as error:
-            # Null cannot compact, so context exhaustion ends it with the transcript so far.
-            if args.bash or not is_context_overflow(error):
-                raise
-            return
-        messages.append(message.model_dump(exclude_none=True))
-        if not message.tool_calls:
-            break
-        for call in message.tool_calls:
-            name = call.function.name
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": "",
-                "name": name,
-            }
-            if args.tool_interception_url:
-                assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "before",
-                    tool_message,
-                )
-                if decision["action"] == "rewrite":
-                    messages.append(decision["message"])
-                    continue
-            try:
-                tool_args = json.loads(call.function.arguments or "{}")
-            except json.JSONDecodeError as e:
-                content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
-            else:
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`).
-                if not isinstance(tool_args, dict):
-                    content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
-                elif name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "bash" and args.bash:
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                elif name == "edit" and args.edit:
-                    content = await asyncio.to_thread(
-                        run_edit,
-                        tool_args.get("path"),
-                        tool_args.get("old_str"),
-                        tool_args.get("new_str"),
-                    )
-                elif name == "search" and args.search:
-                    content = await asyncio.to_thread(
-                        run_search,
-                        tool_args.get("query", ""),
-                        args.serper_key,
-                        tool_args.get("num_results", 5),
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
-            tool_message["content"] = content
-            if args.tool_interception_url:
-                assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "after",
-                    tool_message,
-                )
-                if decision["action"] == "rewrite":
-                    tool_message = decision["message"]
-            messages.append(tool_message)
+    compactor = Compactor(
+        client,
+        args.model,
+        tools,
+        args.compaction,
+        args.summarize_at_tokens,
+    )
+    if compactor.enabled and compactor.threshold is None:
+        compactor.threshold = await discover_threshold(client, args.model)
+    # The initial conversation is the floor for checkpoint fallbacks: a first-turn
+    # checkpoint must never retry from an empty base.
+    compactor.note_good(messages)
+    await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
     if tool_client is not None:
         await tool_client.aclose()
 
 
+# Inert on package import; the entry point once this module ends the bundled script.
 if __name__ == "__main__":
     asyncio.run(main())
