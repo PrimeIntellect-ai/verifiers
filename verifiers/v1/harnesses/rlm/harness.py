@@ -17,7 +17,8 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-BuiltinSkill = Literal["edit", "search"]
+BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
+BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
@@ -42,8 +43,12 @@ class RLMHarnessConfig(HarnessConfig):
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
-    """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
-    The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
+    """Built-in rlm skills to enable (the contract's `skills`), e.g. `["edit"]`;
+    empty enables none. The base `skills` field takes SKILL.md paths."""
+    builtin_tools: list[BuiltinTool] | None = None
+    """Builtin tool set to run rlm with (the contract's `builtin_tools`). None keeps
+    rlm's default (`ipython` alone) and stays off the wire, so nano-rlm pins that
+    predate the field keep validating; setting it needs a pin that understands it."""
     summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
@@ -63,8 +68,8 @@ class RLMHarnessConfig(HarnessConfig):
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
         if self.disabled_tools:
             raise ValueError(
-                "the rlm harness has a fixed tool set (ipython) and does not support "
-                "`disabled_tools`; use `builtin_skills` to enable built-in skills instead."
+                "the rlm harness does not support `disabled_tools`; select the tool "
+                "set with `builtin_tools` and skills with `builtin_skills` instead."
             )
         return self
 
@@ -143,6 +148,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "kernel_env": runtime.env,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
+        # Off the wire when unset: the rlm contract rejects unknown keys, so pins
+        # that predate `builtin_tools` keep validating.
+        if self.config.builtin_tools is not None:
+            payload["builtin_tools"] = list(self.config.builtin_tools)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
     async def prepare_acp(
