@@ -46,7 +46,7 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.11",
+    "renderers[multimodal]>=0.1.12.dev2",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
 ]
