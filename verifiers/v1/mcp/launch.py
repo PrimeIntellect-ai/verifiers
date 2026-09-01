@@ -173,6 +173,10 @@ def _verifiers_root() -> Path:
     return root
 
 
+def _venv_command(venv: str) -> str:
+    return f"uv venv --allow-existing {shlex.quote(venv)}"
+
+
 async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     source_dir = _source_dir(type(server))
     if source_dir is None:
@@ -208,7 +212,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
         f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
         f"{_ENSURE_UV}; "
-        f"uv venv {venv_q} && "
+        f"{_venv_command(venv)} && "
         f"uv pip install --python {venv_q} {vf_source} && "
         f"uv pip install --python {venv_q} {env_source}"
     )
