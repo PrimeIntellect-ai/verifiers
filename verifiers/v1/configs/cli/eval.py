@@ -49,18 +49,14 @@ class RunConfig(BaseConfig):
     set it only when the directory should differ from the display name."""
 
     _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
-    """The platform's run id once `prime_runs.init()` has opened the run (see
-    `adopt_id`); the local uuid until then, and for a run that stays local."""
+    """The platform's run id once `adopt_id` has been called; a local uuid until then."""
 
     @property
     def id(self) -> str:
         return self._id
 
     def adopt_id(self, run_id: str) -> None:
-        """Take the platform's run id as this run's id.
-
-        Called once, before the first rollout, so that every trace is stamped
-        with the id the platform knows the run by."""
+        """Take the platform's run id, before the first rollout, so every trace carries it."""
         self._id = run_id
 
 

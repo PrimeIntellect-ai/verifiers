@@ -8,150 +8,74 @@ from dataclasses import dataclass
 from typing import Any
 
 import prime_runs as pr
-from prime_runs.projection import build_samples
+from prime_runs.projection import (
+    build_samples,  # noqa: F401 - prime-rl imports it from here
+)
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 
 logger = logging.getLogger(__name__)
 
-FRAMEWORK = "verifiers"
-
-__all__ = [
-    "PushState",
-    "abort_run",
-    "build_samples",
-    "finish_run",
-    "open_run",
-    "run_config",
-]
-
 
 @dataclass
 class PushState:
-    """The dashboard's view of the upload. Owns no I/O — the run does.
+    """The dashboard's view of the run: reads through to it, owns no I/O."""
 
-    Reads through to the live run, so the footer can show the run's URL from the
-    moment it opens rather than only once everything has been uploaded."""
-
-    run: "pr.Run | None" = None
+    run: pr.Run | None = None
     error: str | None = None
 
     @property
     def url(self) -> str | None:
-        """Where to watch the run. `None` for a run that stays local."""
         return self.run.url if self.run is not None else None
 
     @property
     def finished(self) -> bool:
-        """Whether the run has been closed out."""
         return self.run is not None and self.run.finished
 
     @property
     def started(self) -> bool:
-        """Whether there is anything to report: a live run, or why there isn't one."""
+        """A live run, or a reason there isn't one."""
         return self.error is not None or self.url is not None
 
-    @property
-    def warning(self) -> str | None:
-        """What went wrong without sinking the upload, or `None` if nothing did.
 
-        Records that were lost first, and how: dropped records reached no sink at
-        all (the rollouts outran the uploader), while a sink failing says nothing
-        about the others — with traces and samples both on, those records are
-        usually still safe in the one that worked. Failing that, the first thing
-        the SDK contained (`on_error="warn"`), which would otherwise be visible
-        only in the run's log file."""
-        if self.run is None:
-            return None
-        parts = (
-            [f"{self.run.dropped_records} dropped"] if self.run.dropped_records else []
-        )
-        parts += [
-            f"{count} failed via {sink}"
-            for sink, count in sorted(self.run.failed_records.items())
-            if count
-        ]
-        if parts:
-            return ", ".join(parts)
-        return self.run.errors[0] if self.run.errors else None
-
-
-def open_run(
-    config: EvalConfig,
-    state: PushState | None = None,
-    *,
-    num_examples: int | None = None,
-) -> "pr.Run":
-    """Open the run this eval streams into, before the first rollout.
-
-    `num_examples` is how many tasks the run covers once selection has been
-    applied (`-n`, the taskset's size); it is known to the runner, not the config.
-    """
+def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.Run:
+    """Open the run this eval streams into, before the first rollout. A run that
+    cannot be opened is logged and replaced by a disabled one; the eval goes on."""
     identity: dict[str, Any] = {
         "name": config.run.name,
-        # The environment is resolved by name through the hub's get-or-create, so
-        # a local env uploads without a prior `prime env push`. A run with no
-        # taskset has nothing to attach to and can only be a local run — say so
-        # by passing none, rather than asking the hub to resolve an empty name.
+        # Resolved by name via the hub's get-or-create; no taskset, nothing to attach to.
         "environments": [config.env.taskset.id] if config.env.taskset.id else [],
         "model": config.model,
-        "framework": FRAMEWORK,
-        "config": run_config(config, num_examples=num_examples),
+        "framework": "verifiers",
+        # The v0 keys the dashboard's lists read. The config itself is a follow-up:
+        # a dump or the launched file can carry credentials and needs masking first.
+        "config": {
+            "model": config.model,
+            "num_examples": num_examples,
+            "rollouts_per_example": config.num_rollouts,
+        },
     }
     if config.push and os.getenv(pr.MODE_ENV, "").strip().lower() == "disabled":
-        # The SDK's own kill switch, honoured here because the explicit
-        # `mode="online"` below would otherwise take precedence over it.
+        # The SDK's own kill switch; the explicit `mode="online"` below would override it.
         logger.info("--push: %s=disabled; running without a platform run", pr.MODE_ENV)
     elif config.push:
         try:
-            run = pr.init(mode="online", **identity)
-            if state is not None:
-                state.run = run
-            return run
+            state.run = pr.init(mode="online", **identity)
+            return state.run
         except Exception as e:  # noqa: BLE001 - a failed upload must not fail the eval
             logger.warning(
                 "--push: could not open the run (%s: %s); running without it",
                 type(e).__name__,
                 e,
             )
-            if state is not None:
-                state.error = f"{type(e).__name__}: {e}"
-    run = pr.init(mode="disabled", **identity)
-    if state is not None:
-        state.run = run
-    return run
+            state.error = f"{type(e).__name__}: {e}"
+    state.run = pr.init(mode="disabled", **identity)
+    return state.run
 
 
-def run_config(
-    config: EvalConfig, *, num_examples: int | None = None
-) -> dict[str, Any]:
-    """What the run was configured with, as the dashboard stores it: the handful
-    of v0 keys its lists and reproduce command read (`model`, `num_examples`,
-    `rollouts_per_example`) — what the pre-SDK upload sent.
-
-    The config itself is deliberately not uploaded yet. A dump or the launched
-    file can carry credentials (`client.headers`, `harness.env`), so uploading
-    either needs masking that belongs with the platform's rendering of it;
-    that lands together, as a follow-up."""
-    return {
-        "model": config.model,
-        "num_examples": (
-            num_examples
-            if num_examples is not None
-            else (config.num_tasks if config.num_tasks is not None else -1)
-        ),
-        "rollouts_per_example": config.num_rollouts,
-    }
-
-
-def finish_run(
-    run: "pr.Run", episodes: list[Episode], state: PushState | None = None
-) -> None:
-    """Drain the queued episodes, write the run's aggregates and close it out.
-
-    Blocking — call it off the event loop (`asyncio.to_thread`) so the dashboard
-    keeps refreshing while the last uploads land."""
+def finish_run(run: pr.Run, episodes: list[Episode], state: PushState) -> None:
+    """Drain, write the run's aggregates, close it out. Blocking: call it off the loop."""
     try:
         summary = pr.metrics.from_episodes(episodes)
     except Exception as e:  # noqa: BLE001 - close the run even without its headline
@@ -164,9 +88,7 @@ def finish_run(
     _close(run, state, summary=summary)
 
 
-def abort_run(
-    run: "pr.Run", error: BaseException, state: PushState | None = None
-) -> None:
+def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
     """Close the run out after the eval broke, so it doesn't sit at running."""
     if run.finished:
         return
@@ -178,21 +100,20 @@ def abort_run(
 
 
 def _close(
-    run: "pr.Run",
-    state: PushState | None,
+    run: pr.Run,
+    state: PushState,
     summary: Mapping[str, Any] | None = None,
-    status: "pr.RunStatus" = pr.RunStatus.COMPLETED,
+    status: pr.RunStatus = pr.RunStatus.COMPLETED,
     error: str | None = None,
 ) -> None:
-    """`run.finish()` with the same best-effort contract as the rest of this
-    module: the eval's results are already on disk, so nothing here may raise."""
+    """`run.finish()`, best effort: the results are on disk, so nothing here may raise."""
     try:
         run.finish(summary, status=status, error=error)
     except Exception as e:  # noqa: BLE001 - the run is over; report, don't raise
         logger.warning(
             "--push: could not close out the run (%s: %s)", type(e).__name__, e
         )
-        if state is not None and state.error is None:
+        if state.error is None:
             state.error = f"{type(e).__name__}: {e}"
     else:
         if run.url:

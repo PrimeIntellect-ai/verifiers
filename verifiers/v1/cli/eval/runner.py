@@ -38,25 +38,17 @@ T = TypeVar("T")
 
 
 async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
-    """`asyncio.gather`, but one rollout failing stops the others too.
-
-    Plain `gather` raises the first error and leaves the rest running. They then
-    keep going while the caller is already handling that error — still uploading
-    to a run it has just closed, still using an env it is tearing down.
-    Cancelling them here, and waiting for each one to finish unwinding, keeps
-    those two things from overlapping.
-
-    The error is re-raised exactly as it arrived, which is why this is not an
-    `asyncio.TaskGroup`: a TaskGroup wraps everything in an `ExceptionGroup`, and
-    `main` would stop recognizing a `KeyboardInterrupt` as Ctrl-C."""
+    """`asyncio.gather`, but one rollout failing cancels the rest and waits for them
+    to unwind, so nothing keeps uploading into a run the caller is already closing.
+    Not a `TaskGroup`: that wraps errors in an `ExceptionGroup`, and `main` would no
+    longer see a `KeyboardInterrupt` as Ctrl-C."""
     tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
     try:
         return await asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
             task.cancel()
-        # return_exceptions so this waits for all of them; without it the first
-        # cancellation would raise and the rest would be left running again.
+        # return_exceptions: wait for every task, not just the first to cancel.
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
 
@@ -231,15 +223,14 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     write_lock = asyncio.Lock()
-    push_state = PushState() if config.push and config.rich is not None else None
+    push_state = PushState()
 
-    # Opened before the first rollout so the platform's id is the run's id. A
-    # run that stays local keeps its own uuid rather than the SDK's placeholder.
+    # Opened before the first rollout so the platform's id is the run's id; a
+    # local run keeps its uuid.
     run = open_run(config, push_state, num_examples=len(tasks))
     if run.mode == "online":
         config.run.adopt_id(run.id)
-    # A resume's kept rollouts are part of this run too, so they carry its id and
-    # go up with the rest
+    # Resumed rollouts are part of this run too: re-stamp and upload them.
     for episode in finished:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
     run.log_episodes(finished)
@@ -254,9 +245,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         if env is not None
         else _server(config, config.serve, semaphore, on_complete)
     )
-    # Everything from bringing the backend up (serving resources, or the worker
-    # pool) to tearing it down is inside the try: a run that was opened is closed
-    # out whatever breaks, so none of them sits at running.
+    # The run is closed out whatever breaks, backend setup and teardown included.
     try:
         async with backend as run_slot:
             # The display slots: in-process ones are the env's own (it fills their live
