@@ -148,8 +148,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         try:
             from datasets import load_dataset
         except ModuleNotFoundError as e:
-            if e.name != "datasets":
-                raise
             raise ModuleNotFoundError(
                 "the Lean taskset requires the `lean` extra; install `verifiers[lean]`"
             ) from e
