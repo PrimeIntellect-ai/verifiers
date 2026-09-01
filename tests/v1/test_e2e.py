@@ -563,6 +563,31 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
+async def test_env_id_isolated_verifier(run_v1, tmp_path):
+    """One solver trace is scored only after its declared artifact crosses into a
+    fresh equivalent runtime; undeclared solver state does not cross."""
+    (trace,) = await run_v1(
+        "isolated-verifier-v1",
+        harness=None,
+        env={
+            "id": "isolated-verifier",
+            "agent": {
+                "harness": {"id": "bash"},
+                "runtime": {"type": "docker"},
+            },
+        },
+        output_dir=tmp_path,
+        max_turns=6,
+        rollout_timeout=300,
+    )
+    assert trace.ok and trace.reward == 1.0
+    assert trace.info["solver_runtime"] != trace.info["verifier_runtime"]
+    assert "/app/answer.txt" in trace.state.artifacts
+    assert trace.agent.runtime is not None and trace.agent.runtime.borrowed
+
+
+@pytest.mark.e2e
 async def test_env_id_user_sim(run_v1, tmp_path):
     """The user-sim env over the echo taskset: a modeled user (null harness) opens
     the conversation from the task's prompt-as-scenario; the assistant's trace is

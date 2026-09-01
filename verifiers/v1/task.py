@@ -177,11 +177,28 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
+    def graded_elsewhere(self) -> Self:
+        """An independent copy whose task signals are deferred to another runtime.
+
+        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
+        the state an environment collects before destroying the solver's runtime.
+        Only task metrics, rewards, and judges are skipped; harness metrics remain
+        attached to the solver trace.
+        """
+        clone = copy.deepcopy(self)
+        clone.scoring_deferred = True
+        return clone
+
+    scoring_deferred: bool = False
+
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        if self.scoring_deferred:
+            return
+
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
             # A defaulted runtime parameter can still be called offline with None.
