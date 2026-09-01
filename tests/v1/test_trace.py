@@ -362,6 +362,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
     monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")
     monkeypatch.setenv("RUN_API_KEY", "run-api-key-0123456789")
+    monkeypatch.setenv("PRIME_API_KEY", "prime-api-key")
     capability = "rollout-capability-0123456789"
     trace = vf.Trace(
         agent=vf.AgentInfo(
@@ -415,17 +416,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     monkeypatch.setattr(
         platform,
-        "credentials",
-        lambda: (
-            "prime-api-key",
-            "https://api.example",
-            "https://app.example",
-            None,
-        ),
-    )
-    monkeypatch.setattr(
-        platform.httpx,
-        "Client",
+        "APIClient",
         lambda **unused_kwargs: pytest.fail("network opened before upload preflight"),
     )
 
