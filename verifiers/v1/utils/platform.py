@@ -330,21 +330,12 @@ def push_traces(
             known_secrets.append(resolve_api_key(client))
             secret_sources.append(resolve_headers(client))
 
-        resumed = {
-            episode.id
-            for episode in episodes
-            if episode.traces
-            and any(not trace.upload_secrets for trace in episode.traces)
-        }
-        if resumed and results_dir is None:
-            raise ValueError(
-                "resumed trace upload requires its saved results directory"
-            )
-        if resumed:
-            assert results_dir is not None
-            secret_fingerprints = read_upload_secret_fingerprints(results_dir, resumed)
-        else:
-            secret_fingerprints = ()
+        saved_episode_ids = {episode.id for episode in episodes if episode.traces}
+        secret_fingerprints = (
+            read_upload_secret_fingerprints(results_dir, saved_episode_ids)
+            if results_dir is not None
+            else ()
+        )
 
         samples = build_samples(episodes)
         payload, redactions = prepare_upload(

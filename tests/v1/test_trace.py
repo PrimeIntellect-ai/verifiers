@@ -49,15 +49,18 @@ class FailingSegmentRollout:
 
 
 class StopInPreflight:
-    def __init__(self, capability: str) -> None:
+    def __init__(self, capability: str, has_fingerprint: bool = True) -> None:
         self.capability = capability
+        self.has_fingerprint = has_fingerprint
 
     def __call__(
         self, payload, known_secrets, secret_sources, secret_fingerprints
     ) -> None:
         assert payload["samples"]
         assert self.capability in json.dumps(payload)
-        assert fingerprint_secret(self.capability) in secret_fingerprints
+        assert (
+            fingerprint_secret(self.capability) in secret_fingerprints
+        ) is self.has_fingerprint
         assert {
             "prime-api-key",
             "agent-api-key-0123456789",
@@ -366,6 +369,11 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
         "awsSecretAccessKey": access_key,
         "credential": {"value": "pin"},
         "authentication": "opaque-authentication-0123456789",
+        "oauth": "enabled",
+        "hasOauth": True,
+        "secret_value": "opaque-secret-value-0123456789",
+        "api_key_value": "opaque-api-key-value-0123456789",
+        "token_value": "opaque-token-value-0123456789",
         "rubric": "keep the pin label",
         "secret": {"value": secret},
         "token": token,
@@ -385,6 +393,11 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["awsSecretAccessKey"] == "[REDACTED]"
     assert reduced["credential"]["value"] == "[REDACTED]"
     assert reduced["authentication"] == "[REDACTED]"
+    assert reduced["oauth"] == "enabled"
+    assert reduced["hasOauth"] is True
+    assert reduced["secret_value"] == "[REDACTED]"
+    assert reduced["api_key_value"] == "[REDACTED]"
+    assert reduced["token_value"] == "[REDACTED]"
     assert reduced["rubric"] == payload["rubric"]
     assert reduced["secret"]["value"] == "[REDACTED]"
     assert reduced["token"] == "[REDACTED]"
@@ -456,6 +469,8 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         'password="abcd,efgh"',
         r"password=\"abcdefgh1234\"",
         r"password=\'abcdefgh1234\'",
+        "sas_token=opaque-sas-token-0123456789",
+        "cookie=abcdefgh",
     ):
         assert (
             "[REDACTED]"
@@ -482,6 +497,12 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         {"completion": f"AccountName=example;AccountKey={azure_secret}"}
     )
     assert azure_secret not in reduced["completion"]
+
+    escaped_token = "opaque-escaped-token-0123456789"
+    reduced, _ = platform.prepare_upload(
+        {"completion": rf"{{\"Authorization\":\"Bearer {escaped_token}\"}}"}
+    )
+    assert escaped_token not in reduced["completion"]
 
     reduced, _ = platform.prepare_upload(
         {"password": 12345678, "token": 987654321, "secret": None, "auth": False}
@@ -630,6 +651,15 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
 
     assert push_traces([episode], config, state, tmp_path) is None
+    assert state.error == "RuntimeError: preflight stopped upload"
+
+    state = PushState()
+    monkeypatch.setattr(
+        platform,
+        "prepare_upload",
+        StopInPreflight(capability, has_fingerprint=False),
+    )
+    assert push_traces([episode], config, state) is None
     assert state.error == "RuntimeError: preflight stopped upload"
 
 

@@ -75,12 +75,14 @@ PATTERNS = (
         r"(?:x-api-key|api[_ -]?(?:key|token)|account[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|session[_ -]?token|"
         r"client[_ -]?secret|secret[_ -]?access[_ -]?key|password|passwd|"
-        r"credential|private[_ -]?key|signature))\b[\"']?\s*[:=]\s*|"
+        r"cookie|credential|private[_ -]?key|sas[_ -]?token|signature))\b"
+        r"[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|API_?TOKEN|ACCESS_?TOKEN|"
         r"REFRESH_?TOKEN|AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|"
-        r"SECRET(?:_ACCESS_?KEY|_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
-        r"--(?:api-key|api-token|access-token|auth-token|client-secret|password|"
-        r"private-key|secret|token)(?:=|\s+))"
+        r"SECRET(?:_ACCESS_?KEY|_?KEY)?|PASSWORD|PASSWD|COOKIE|CREDENTIAL|"
+        r"PRIVATE_?KEY|SAS_?TOKEN)\s*=\s*|"
+        r"--(?:api-key|api-token|access-token|auth-token|client-secret|cookie|"
+        r"password|private-key|sas-token|secret|token)(?:=|\s+))"
         r"(?:\\?\"(?P<secret_short_double>(?:\\.|[^\"\\\r\n]){8,})\\?\"|"
         r"\\?'(?P<secret_short_single>(?:\\.|[^'\\\r\n]){8,})\\?'|"
         r"(?:(?i:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{8,}))"
@@ -106,9 +108,9 @@ PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?<![A-Za-z0-9_])[\"']?(?:authorization|proxy-authorization)"
-        r"[\"']?\s*[:=]\s*[\"']?(?:(?:bearer|basic|token)\s+)?"
-        r"(?P<secret>[^\s,;\"']{8,})",
+        r"(?<![A-Za-z0-9_])\\?[\"']?(?:authorization|proxy-authorization)"
+        r"\\?[\"']?\s*[:=]\s*\\?[\"']?(?:(?:bearer|basic|token)\s+)?"
+        r"(?P<secret>[^\s,;\\\"']{8,})",
         re.IGNORECASE,
     ),
     re.compile(
@@ -121,12 +123,14 @@ PATTERNS = (
         r"(?:x-api-key|api[_ -]?(?:key|token)|account[_ -]?key|"
         r"access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|client[_ -]?secret|"
         r"access[_ -]?key(?:[_ -]?id)?|secret(?:[_ -]?(?:access[_ -]?)?key)?|"
-        r"password|passwd|cookie|private[_ -]?key|signature)\b[\"']?\s*[:=]\s*|"
+        r"password|passwd|cookie|private[_ -]?key|sas[_ -]?token|signature)\b"
+        r"[\"']?\s*[:=]\s*|"
         r"\b(?:[A-Z][A-Z0-9_]*_)?(?:API_?KEY|ACCESS_?TOKEN|REFRESH_?TOKEN|"
         r"AUTH_?TOKEN|SESSION_?TOKEN|TOKEN|CLIENT_?SECRET|SECRET(?:_ACCESS_?KEY)?|"
-        r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|SECRET_?KEY)\s*=\s*|"
-        r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
-        r"secret|token)(?:=|\s+))"
+        r"PASSWORD|PASSWD|COOKIE|CREDENTIAL|PRIVATE_?KEY|SAS_?TOKEN|SECRET_?KEY)"
+        r"\s*=\s*|"
+        r"--(?:api-key|access-token|auth-token|client-secret|cookie|password|"
+        r"private-key|sas-token|secret|token)(?:=|\s+))"
         r"(?:\\?\"(?P<secret_double>(?:\\.|[^\"\\\r\n]){16,})\\?\"|"
         r"\\?'(?P<secret_single>(?:\\.|[^'\\\r\n]){16,})\\?'|"
         r"(?:(?:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{16,}))",
@@ -169,9 +173,8 @@ def is_sensitive(name: str) -> bool:
     return not any(
         candidate.endswith(REFERENCE_SUFFIXES) for candidate in names
     ) and any(
-        candidate == field
-        or candidate.endswith(f"_{field}")
-        or candidate.replace("_", "").endswith(field.replace("_", ""))
+        f"_{field}_" in f"_{candidate}_"
+        or candidate.replace("_", "") == field.replace("_", "")
         for candidate in names
         for field in SENSITIVE_FIELDS
     )
