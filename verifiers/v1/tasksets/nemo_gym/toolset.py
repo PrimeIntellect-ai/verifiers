@@ -1,16 +1,13 @@
 """Expose NeMo Gym resource tools through Verifiers MCP."""
 
-from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any, cast
 
 import httpx
-from mcp import Client
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import Field
 
+from verifiers.v1.harnesses.utils.mcp import mcp_client
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.state import State
 
@@ -36,22 +33,6 @@ class NeMoGymState(State):
         ) as client:
             return await client.post(f"{self.resources_url}/{path}", json=body)
 
-    @asynccontextmanager
-    async def mcp_client(self) -> AsyncIterator[Client]:
-        """Open an upstream MCP client using this rollout's credentials."""
-        assert self.mcp_url is not None
-        stack = AsyncExitStack()
-        try:
-            http_client = await stack.enter_async_context(
-                create_mcp_http_client(headers=self.mcp_headers)
-            )
-            http_client.timeout = self.request_timeout
-            transport = streamable_http_client(self.mcp_url, http_client=http_client)
-            yield await stack.enter_async_context(Client(transport))
-        finally:
-            with suppress(Exception):
-                await stack.aclose()
-
 
 class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
@@ -67,7 +48,14 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
 
     async def list_tools(self) -> list[Tool]:
         if self.state.mcp_url is not None:
-            async with self.state.mcp_client() as client:
+            async with mcp_client(
+                {
+                    "url": self.state.mcp_url,
+                    "headers": self.state.mcp_headers,
+                    "timeout": self.state.request_timeout,
+                    "connect_timeout": self.state.request_timeout,
+                }
+            ) as client:
                 tools = (await client.list_tools()).tools
         else:
             tools = [
@@ -88,7 +76,14 @@ class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
         context: Context | None = None,
     ) -> CallToolResult:
         if self.state.mcp_url is not None:
-            async with self.state.mcp_client() as client:
+            async with mcp_client(
+                {
+                    "url": self.state.mcp_url,
+                    "headers": self.state.mcp_headers,
+                    "timeout": self.state.request_timeout,
+                    "connect_timeout": self.state.request_timeout,
+                }
+            ) as client:
                 return await client.call_tool(name, arguments)
 
         if name not in self.state.direct_tools:

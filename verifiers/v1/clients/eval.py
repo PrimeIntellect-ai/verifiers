@@ -17,41 +17,45 @@ from verifiers.v1.configs.client import (
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
+from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
 
 # These fields describe the localhost request, its original bytes, or its connection. HTTPX
 # rebuilds the provider request from JSON; endpoint configuration and provider auth apply last.
-_BLOCKED_REQUEST_HEADERS = frozenset(
-    {
-        # The harness uses this rollout secret to authenticate with the localhost server.
-        # The dialect adds the actual provider authorization after filtering.
-        "authorization",
-        # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
-        "accept-encoding",
-        "content-encoding",
-        "content-length",
-        "content-type",
-        "host",
-        "transfer-encoding",
-        # These control only the localhost HTTP exchange.
-        "expect",
-        "keep-alive",
-        "proxy-authorization",
-        "proxy-connection",
-        "te",
-        "trailer",
-        "upgrade",
-        # Provider affinity must not compete with the rollout-wide session header below.
-        "session_id",
-        # The eval owns the model and sampling settings, so it changes those JSON fields before
-        # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
-        "content-digest",
-        "content-md5",
-        "digest",
-        "repr-digest",
-        "signature",
-        "signature-input",
-    }
+_BLOCKED_REQUEST_HEADERS = (
+    frozenset(
+        {
+            # The harness uses this rollout secret to authenticate with the localhost server.
+            # The dialect adds the actual provider authorization after filtering.
+            "authorization",
+            # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
+            "accept-encoding",
+            "content-encoding",
+            "content-length",
+            "content-type",
+            "host",
+            "transfer-encoding",
+            # These control only the localhost HTTP exchange.
+            "expect",
+            "keep-alive",
+            "proxy-authorization",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "upgrade",
+            # Provider affinity must not compete with the rollout-wide session header below.
+            "session_id",
+            # The eval owns the model and sampling settings, so it changes those JSON fields before
+            # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
+            "content-digest",
+            "content-md5",
+            "digest",
+            "repr-digest",
+            "signature",
+            "signature-input",
+        }
+    )
+    | ACP_EXTENSION_HEADERS
 )
 
 
