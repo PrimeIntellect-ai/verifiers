@@ -409,9 +409,10 @@ class Rollout:
                     0.0, self._agent_time_remaining - (loop.time() - segment_start)
                 )
             self.deadline_at = None
-        if self._session.error is not None:
-            self.fail(self._session.error)
-            return False
+        # A harness that completes cleanly after a failed model call handled it (e.g. it
+        # ends its run on context overflow); the failure stays recorded on the call. A
+        # harness that dies on it surfaces the stashed error through the except above.
+        self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.

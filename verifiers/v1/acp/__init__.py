@@ -16,6 +16,10 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1.semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    SemanticEdgeSet,
+)
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -66,6 +70,20 @@ class ACPHarness(Harness[ConfigT]):
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         """Consume the typed result of one ACP prompt."""
+
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        """Consume extension metadata returned by `session/close`, when supported."""
+
+    def _consume_protocol_metadata(
+        self, trace: Trace, response_metadata: dict[str, Any]
+    ) -> None:
+        """Attach optional protocol extensions understood by every ACP harness."""
+        if ACP_SEMANTIC_EDGES_METADATA_KEY not in response_metadata:
+            return
+        edge_set = SemanticEdgeSet.model_validate(
+            response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
+        )
+        trace.add_semantic_edges(edge_set)
 
     @abstractmethod
     async def prepare_acp(
@@ -274,22 +292,30 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        cast(ACPHarness, self.harness).acp_turn_result(self.trace, turn)
+        harness = cast(ACPHarness, self.harness)
+        harness._consume_protocol_metadata(self.trace, turn.response_metadata)
+        harness.acp_turn_result(self.trace, turn)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result
 
-    async def _stop(self, *, graceful: bool) -> None:
+    async def _stop(self, *, graceful: bool) -> dict[str, Any]:
         process, self._process = self._process, None
         reader, self._reader = self._reader, None
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
-            return
+            return {}
+        response_metadata: dict[str, Any] = {}
         try:
             if graceful and reader is not None:
                 with contextlib.suppress(BaseException):
                     await process.write(_packet({"operation": "shutdown"}))
-                    await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    result = response.get("result")
+                    if response.get("ok") and isinstance(result, dict):
+                        metadata = result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            response_metadata = metadata
             for timeout, stop in (
                 (10 if graceful else 0.1, None),
                 (5, process.terminate),
@@ -309,6 +335,7 @@ class ACPHarnessSession(HarnessSession):
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):
                     await stderr_task
+        return response_metadata
 
     async def close(self) -> None:
         if self._closed:
@@ -320,6 +347,10 @@ class ACPHarnessSession(HarnessSession):
 
         async def close_process() -> None:
             async with self._lock:
-                await self._stop(graceful=True)
+                response_metadata = await self._stop(graceful=True)
+                if response_metadata:
+                    harness = cast(ACPHarness, self.harness)
+                    harness._consume_protocol_metadata(self.trace, response_metadata)
+                    harness.acp_close_result(self.trace, response_metadata)
 
         await run_shielded(close_process())

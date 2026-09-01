@@ -31,29 +31,25 @@ dependencies = [
     "datasets>=3.3.0,<6.0.0",
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
-    "mcp>=1.24.0,<2",
     "openai>=2.9.0",
-    "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
     "prime-runs>=0.1.0",
     "pydantic>=2.12.3",
-    "requests",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
     "gepa>=0.0.6",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
-    "aiolimiter>=1.2.1",
-    "setproctitle>=1.3.0",
     "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.14.1",
     "prime-pydantic-config[toml]>=0.4.3",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.10",
+    "renderers[multimodal]>=0.1.11",
     "typing_extensions>=4.12.2",
+    "mcp==2.0.0",
 ]
 
 [dependency-groups]
@@ -65,12 +61,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "pytest-xdist>=3.8.0",
-    "nest-asyncio>=1.6.0",
-    "reasoning-gym>=0.1.8",
-    "stagehand>=3.4.0",
-    "python-dotenv>=1.0.0",
-    "nltk>=3.9.2",
-    "textarena==0.7.4",
 ]
 # V1 examples and support packages, resolved from their local sources below.
 # Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, validate) run straight
@@ -97,16 +87,9 @@ examples = [
 ]
 
 [project.optional-dependencies]
-rg = [
-    "reasoning-gym>=0.1.8",
-]
 ta = [
     "textarena==0.7.4",
     "nltk>=3.9.2",
-]
-browser = [
-    "stagehand>=3.4.0",
-    "python-dotenv>=1.0.0",
 ]
 harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
@@ -115,15 +98,8 @@ harbor = [
 modal = [
     "modal>=1.4.0",
 ]
-notebook = [
-    "nest-asyncio>=1.6.0",
-]
 openenv = [
     "openenv>=0.4.1",
-]
-nemo-gym = [
-    # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
-    "nemo-gym==0.4.0; python_version >= '3.12'",
 ]
 [tool.uv]
 preview = true
@@ -206,13 +182,6 @@ debug = "verifiers.v1.cli.debug:main"
 replay = "verifiers.v1.cli.replay:main"
 init = "verifiers.v1.cli.init:main"
 gepa = "verifiers.v1.cli.gepa:main"
-vf-eval = "verifiers.legacy.scripts.eval:main"
-vf-gepa = "verifiers.legacy.scripts.gepa:main"
-vf-init = "verifiers.legacy.scripts.init:main"
-vf-install = "verifiers.legacy.scripts.install:main"
-vf-setup = "verifiers.legacy.scripts.setup:main"
-vf-build = "verifiers.legacy.scripts.build:main"
-vf-tui = "verifiers.legacy.scripts.tui:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -261,9 +230,6 @@ Repository = "https://github.com/primeintellect-ai/verifiers.git"
 Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 
 [tool.ruff.lint.isort]
-# The legacy tree answers at both verifiers.* and verifiers.legacy.* (the
-# package-root alias); path probing would classify the moved submodules as
-# third-party, so pin the whole namespace first-party.
 known-first-party = ["verifiers"]
 
 [tool.pytest.ini_options]
@@ -293,6 +259,9 @@ markers = [
     "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
     "browser_use: v1 e2e cases on the browser_use harness",
+    "claude_code: v1 e2e cases on the claude-code harness",
+    "openclaw: v1 e2e cases on the OpenClaw harness",
+    "hermes_agent: v1 e2e cases on the hermes-agent harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "pi: v1 e2e cases on the pi harness",
@@ -327,14 +296,6 @@ redundant-cast = "ignore"
 # of verifiers' ty gate. environments/ are user-authored envs, also out of scope.
 exclude = ["environments", "verifiers/v1"]
 
-[[tool.ty.overrides]]
-include = ["verifiers/legacy/envs/experimental/composable/tasksets/**"]
-
-[tool.ty.overrides.rules]
-unresolved-import = "ignore"
-invalid-method-override = "ignore"
-invalid-assignment = "ignore"
-not-iterable = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]

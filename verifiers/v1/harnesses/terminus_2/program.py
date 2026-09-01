@@ -69,6 +69,7 @@ async def main() -> None:
         api_base=args.base_url,
         llm_kwargs={"custom_llm_provider": "openai", "api_key": args.api_key},
         record_terminal_session=False,
+        interleaved_thinking=True,
     )
     if system_prompt:
         call = agent._llm.call
