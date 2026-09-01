@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
     if config.push and config.rich is None:
         from verifiers.v1.utils.platform import push_traces
 
-        push_traces(episodes, config)
+        push_traces(episodes, config, results_dir=run_path)
     if (
         config.rich is None
     ):  # --rich is the whole output; otherwise dump each trace as JSON

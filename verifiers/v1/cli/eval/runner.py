@@ -245,5 +245,5 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
                 from verifiers.v1.utils.platform import push_traces
 
                 push_state.started = True
-                await asyncio.to_thread(push_traces, episodes, config, push_state)
+                await asyncio.to_thread(push_traces, episodes, config, push_state, out)
     return episodes

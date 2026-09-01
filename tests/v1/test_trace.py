@@ -10,7 +10,12 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.cli.output import TRACES_FILE, write_episode
+from verifiers.v1.cli.output import (
+    TRACES_FILE,
+    UPLOAD_SECRET_FINGERPRINTS_FILE,
+    read_episodes,
+    write_episode,
+)
 from verifiers.v1.configs.client import (
     PRIME_TEAM_ID_HEADER,
     EvalClientConfig,
@@ -25,6 +30,7 @@ from verifiers.v1.trace import Error
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils import platform
 from verifiers.v1.utils.platform import PushState, build_samples, push_traces
+from verifiers.v1.utils.preflight import fingerprint_secret
 
 
 class MyTask(vf.TaskData):
@@ -357,6 +363,8 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["token"] == "[REDACTED]"
     assert reduced["properties"]["password"]["value"] == "[REDACTED]"
     assert reduced["schema"] == payload["schema"]
+    for field in ("apikey", "accesstoken", "clientsecret", "secretkey"):
+        assert platform.prepare_upload({field: secret})[0][field] == "[REDACTED]"
 
     event = {
         "type": "event",
@@ -419,6 +427,8 @@ def test_platform_preflight_finds_quoted_and_short_credentials():
         "--token 123456789abc",
         'password="abcd efgh"',
         'password="abcd,efgh"',
+        r"password=\"abcdefgh1234\"",
+        r"password=\'abcdefgh1234\'",
     ):
         assert (
             "[REDACTED]"
@@ -533,6 +543,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
     monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")
     monkeypatch.setenv("RUN_API_KEY", "run-api-key-0123456789")
+    capability = "rollout-capability-0123456789"
     trace = vf.Trace(
         agent=vf.AgentInfo(
             config=vf.AgentConfig(
@@ -546,17 +557,22 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
                 ),
             )
         ),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
+        task=vf.TraceTask(
+            type="Task", data=vf.TaskData(idx=0, prompt=f"echoed {capability}")
+        ),
     )
-    trace.upload_secrets.append("rollout-capability-0123456789")
+    trace.upload_secrets.append(capability)
     episode = Episode(task=trace.task, traces=[trace])
-    assert "rollout-capability" not in json.dumps(episode.to_record())
+    assert "upload_secrets" not in json.dumps(episode.to_record())
     assert vf.WireEpisode.model_validate(episode.model_dump()).traces[
         0
     ].upload_secrets == ["rollout-capability-0123456789"]
     (tmp_path / TRACES_FILE).touch()
     write_episode(tmp_path, episode)
-    assert "rollout-capability" not in (tmp_path / TRACES_FILE).read_text()
+    assert capability in (tmp_path / TRACES_FILE).read_text()
+    assert capability not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
+    (episode,) = read_episodes(tmp_path, vf.WireTrace)
+    assert episode.traces[0].upload_secrets == []
     config = SimpleNamespace(
         env=SimpleNamespace(taskset=SimpleNamespace(id="test-env")),
         run=SimpleNamespace(id="run-1", name="test-run"),
@@ -569,14 +585,14 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     state = PushState()
 
-    def stop_in_preflight(payload, known_secrets, secret_sources):
+    def stop_in_preflight(payload, known_secrets, secret_sources, secret_fingerprints):
         assert payload["samples"]
-        assert "rollout-capability" not in json.dumps(payload)
+        assert capability in json.dumps(payload)
+        assert fingerprint_secret(capability) in secret_fingerprints
         assert {
             "prime-api-key",
             "agent-api-key-0123456789",
             "run-api-key-0123456789",
-            "rollout-capability-0123456789",
         }.issubset(known_secrets)
         sources = {
             name: value for source in secret_sources for name, value in source.items()
@@ -606,5 +622,16 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
         lambda **_kwargs: pytest.fail("network opened before upload preflight"),
     )
 
-    assert push_traces([episode], config, state) is None
+    assert push_traces([episode], config, state, tmp_path) is None
     assert state.error == "RuntimeError: preflight stopped upload"
+
+
+def test_platform_preflight_redacts_a_fingerprinted_secret_after_resume():
+    capability = "rollout-capability-0123456789"
+    reduced, redactions = platform.prepare_upload(
+        {"prompt": f"the model echoed {capability}"},
+        secret_fingerprints=[fingerprint_secret(capability)],
+    )
+
+    assert reduced == {"prompt": "the model echoed [REDACTED]"}
+    assert redactions == 1

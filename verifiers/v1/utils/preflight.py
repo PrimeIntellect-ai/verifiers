@@ -3,9 +3,11 @@
 import os
 import re
 from collections.abc import Iterable, Mapping
+from hashlib import sha256
 from typing import Any
 
 REDACTED = "[REDACTED]"
+SecretFingerprint = tuple[int, str]
 
 _PLACEHOLDER = re.compile(
     r"^(?:\[?redacted(?:[_ -]?\d+)?\]?|masked|dummy|example|test|none|null|changeme|"
@@ -79,8 +81,8 @@ _PATTERNS = (
         r"SECRET(?:_ACCESS_?KEY|_?KEY)?|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY)\s*=\s*|"
         r"--(?:api-key|api-token|access-token|auth-token|client-secret|password|"
         r"private-key|secret|token)(?:=|\s+))"
-        r"(?:\"(?P<secret_short_double>(?:\\.|[^\"\\\r\n]){8,})\"|"
-        r"'(?P<secret_short_single>(?:\\.|[^'\\\r\n]){8,})'|"
+        r"(?:\\?\"(?P<secret_short_double>(?:\\.|[^\"\\\r\n]){8,})\\?\"|"
+        r"\\?'(?P<secret_short_single>(?:\\.|[^'\\\r\n]){8,})\\?'|"
         r"(?:(?i:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{8,}))"
     ),
     re.compile(
@@ -125,8 +127,8 @@ _PATTERNS = (
         r"PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|SECRET_?KEY)\s*=\s*|"
         r"--(?:api-key|access-token|auth-token|client-secret|password|private-key|"
         r"secret|token)(?:=|\s+))"
-        r"(?:\"(?P<secret_double>(?:\\.|[^\"\\\r\n]){16,})\"|"
-        r"'(?P<secret_single>(?:\\.|[^'\\\r\n]){16,})'|"
+        r"(?:\\?\"(?P<secret_double>(?:\\.|[^\"\\\r\n]){16,})\\?\"|"
+        r"\\?'(?P<secret_single>(?:\\.|[^'\\\r\n]){16,})\\?'|"
         r"(?:(?:bearer|basic|token)\s+)?(?P<secret>[^\s,;\"']{16,}))",
         re.IGNORECASE,
     ),
@@ -167,7 +169,9 @@ def _sensitive(name: str) -> bool:
     return not any(
         candidate.endswith(_REFERENCE_SUFFIXES) for candidate in names
     ) and any(
-        candidate == field or candidate.endswith(f"_{field}")
+        candidate == field
+        or candidate.endswith(f"_{field}")
+        or candidate.replace("_", "").endswith(field.replace("_", ""))
         for candidate in names
         for field in _SENSITIVE_FIELDS
     )
@@ -181,10 +185,16 @@ def _is_secret(value: Any) -> bool:
     )
 
 
+def fingerprint_secret(secret: str) -> SecretFingerprint:
+    """Non-plaintext material used to find an echoed transport capability after resume."""
+    return len(secret), sha256(secret.encode()).hexdigest()
+
+
 def prepare_upload(
     value: Any,
     known_secrets: Iterable[str] = (),
     secret_sources: Iterable[Mapping[str, str]] = (),
+    secret_fingerprints: Iterable[SecretFingerprint] = (),
 ) -> tuple[Any, int]:
     """Return a reduced copy and the number of credential-bearing values changed."""
     secrets = {
@@ -267,6 +277,9 @@ def prepare_upload(
         for name, secret in source.items():
             if _sensitive(name):
                 remember(secret)
+    fingerprints: dict[int, set[str]] = {}
+    for length, digest in secret_fingerprints:
+        fingerprints.setdefault(length, set()).add(digest)
     discover(value)
     replacements = 0
     exact = (
@@ -284,6 +297,15 @@ def prepare_upload(
         if exact and (matches := {match.group() for match in exact.finditer(text)}):
             replacements += len(matches)
             text = exact.sub(REDACTED, text)
+        fingerprinted = set()
+        for length, digests in fingerprints.items():
+            for start in range(len(text) - length + 1):
+                candidate = text[start : start + length]
+                if sha256(candidate.encode()).hexdigest() in digests:
+                    fingerprinted.add(candidate)
+        replacements += len(fingerprinted)
+        for secret in sorted(fingerprinted, key=len, reverse=True):
+            text = text.replace(secret, REDACTED)
         for pattern in _PATTERNS:
 
             def replace(match: re.Match[str]) -> str:

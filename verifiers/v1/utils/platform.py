@@ -11,10 +11,12 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from verifiers.v1.cli.output import read_upload_secret_fingerprints
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import Episode
@@ -260,6 +262,7 @@ def push_traces(
     episodes: list[Episode],
     config: EvalConfig,
     state: "PushState | None" = None,
+    results_dir: Path | None = None,
 ) -> str | None:
     """Upload a finished run to the platform; return the viewer URL (None if
     skipped/failed). Resolves the env by name (get-or-create, so a local run
@@ -313,6 +316,22 @@ def push_traces(
             known_secrets.append(resolve_api_key(client))
             secret_sources.append(resolve_headers(client))
 
+        resumed = {
+            episode.id
+            for episode in episodes
+            if episode.traces
+            and any(not trace.upload_secrets for trace in episode.traces)
+        }
+        if resumed and results_dir is None:
+            raise ValueError(
+                "resumed trace upload requires its saved results directory"
+            )
+        if resumed:
+            assert results_dir is not None
+            secret_fingerprints = read_upload_secret_fingerprints(results_dir, resumed)
+        else:
+            secret_fingerprints = ()
+
         samples = build_samples(episodes)
         payload, redactions = prepare_upload(
             {
@@ -323,6 +342,7 @@ def push_traces(
             },
             known_secrets,
             secret_sources,
+            secret_fingerprints,
         )
         name = payload["name"]
         metadata = payload["metadata"]
