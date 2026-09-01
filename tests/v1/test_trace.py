@@ -49,9 +49,15 @@ class FailingSegmentRollout:
 
 
 class StopInPreflight:
-    def __init__(self, capability: str, has_fingerprint: bool = True) -> None:
+    def __init__(
+        self,
+        capability: str,
+        has_fingerprint: bool = True,
+        persisted_secrets: tuple[str, ...] = (),
+    ) -> None:
         self.capability = capability
         self.has_fingerprint = has_fingerprint
+        self.persisted_secrets = (capability, *persisted_secrets)
 
     def __call__(
         self, payload, known_secrets, secret_sources, secret_fingerprints
@@ -59,8 +65,12 @@ class StopInPreflight:
         assert payload["samples"]
         assert self.capability in json.dumps(payload)
         assert (
-            fingerprint_secret(self.capability) in secret_fingerprints
-        ) is self.has_fingerprint
+            all(
+                fingerprint_secret(secret) in secret_fingerprints
+                for secret in self.persisted_secrets
+            )
+            is self.has_fingerprint
+        )
         assert {
             "prime-api-key",
             "agent-api-key-0123456789",
@@ -70,7 +80,8 @@ class StopInPreflight:
             name: value for source in secret_sources for name, value in source.items()
         }
         assert sources["RUNTIME_SECRET"] == "runtime-secret-0123456789"
-        assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
+        if "FORWARDED_RUNTIME_SECRET" in sources:
+            assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
         assert sources["X-Auth"] in {
             "agent-header-secret-0123456789",
             "run-header-secret-0123456789",
@@ -371,6 +382,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     assert capability not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
     (episode,) = read_episodes(tmp_path, vf.WireTrace)
     assert episode.traces[0].upload_secrets == []
+    monkeypatch.delenv("FORWARDED_RUNTIME_SECRET")
     config = SimpleNamespace(
         env=SimpleNamespace(taskset=SimpleNamespace(id="test-env")),
         run=SimpleNamespace(id="run-1", name="test-run"),
@@ -383,7 +395,14 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     state = PushState()
 
-    monkeypatch.setattr(platform, "prepare_upload", StopInPreflight(capability))
+    monkeypatch.setattr(
+        platform,
+        "prepare_upload",
+        StopInPreflight(
+            capability,
+            persisted_secrets=("forwarded-secret-0123456789",),
+        ),
+    )
     monkeypatch.setattr(
         platform,
         "credentials",

@@ -5,9 +5,9 @@ next to its flat, self-contained traces — so an episode persists whole or not 
 whole episode owed on resume, and a failure before any trace minted still leaves
 its errors on disk. The JSON file is the run's resolved config in the format the
 CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
-append as episodes complete, so results are durable mid-run. Generated transport
-capabilities stay out of the trace; a non-plaintext sidecar lets resumed uploads redact
-them if the agent echoed one into review data.
+append as episodes complete, so results are durable mid-run. Runtime credentials stay
+out of the trace; a non-plaintext sidecar lets resumed uploads redact them if the agent
+echoed one into review data.
 """
 
 import asyncio
@@ -16,10 +16,11 @@ import os
 from functools import cache
 from pathlib import Path
 
-from prime_evals import SecretFingerprint, fingerprint_secret
+from prime_evals import SecretFingerprint, fingerprint_secret, secret_values
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
@@ -155,13 +156,19 @@ def write_episode(
     results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
+    agents = [trace.agent.config for trace in episode.traces]
+    clients = [agent.client for agent in agents if agent.client is not None]
+    sources = [
+        agent.harness.resolved_env for agent in agents if agent.harness is not None
+    ] + [resolve_headers(client) for client in clients]
+    secrets = secret_values(
+        *(secret for trace in episode.traces for secret in trace.upload_secrets),
+        *(resolve_api_key(client) for client in clients),
+        secret_sources=sources,
+    )
     fingerprint_record = {
         "episode_id": episode.id,
-        "fingerprints": [
-            fingerprint_secret(secret)
-            for trace in episode.traces
-            for secret in trace.upload_secrets
-        ],
+        "fingerprints": [fingerprint_secret(secret) for secret in secrets],
     }
     with (results_dir / UPLOAD_SECRET_FINGERPRINTS_FILE).open("a") as f:
         f.write(json.dumps(fingerprint_record, separators=(",", ":")) + "\n")
