@@ -371,6 +371,8 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
         "authentication": "opaque-authentication-0123456789",
         "oauth": "enabled",
         "hasOauth": True,
+        "auth_header": "Bearer opaque-auth-token-0123456789",
+        "authorization_header": "Bearer opaque-authorization-token-0123456789",
         "secret_value": "opaque-secret-value-0123456789",
         "api_key_value": "opaque-api-key-value-0123456789",
         "token_value": "opaque-token-value-0123456789",
@@ -395,6 +397,8 @@ def test_platform_preflight_finds_nested_and_properties_credentials():
     assert reduced["authentication"] == "[REDACTED]"
     assert reduced["oauth"] == "enabled"
     assert reduced["hasOauth"] is True
+    assert reduced["auth_header"] == "[REDACTED]"
+    assert reduced["authorization_header"] == "[REDACTED]"
     assert reduced["secret_value"] == "[REDACTED]"
     assert reduced["api_key_value"] == "[REDACTED]"
     assert reduced["token_value"] == "[REDACTED]"
@@ -581,10 +585,16 @@ def test_platform_preflight_redacts_every_value_in_a_raw_cookie_header():
     session = "opaque-cookie-session-0123456789"
     refresh = "opaque-cookie-refresh-0123456789"
     header = json.dumps({"Cookie": f"session={session}; refresh={refresh}"})
-    reduced, _ = platform.prepare_upload({"completion": f"request: {header}"})
+    reduced, _ = platform.prepare_upload(
+        {
+            "completion": f"request: {header}",
+            "response": f"Set-Cookie: session={session}",
+        }
+    )
 
     assert session not in reduced["completion"]
     assert refresh not in reduced["completion"]
+    assert session not in reduced["response"]
 
 
 def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_path):

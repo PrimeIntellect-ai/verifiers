@@ -145,4 +145,4 @@ def main(argv: list[str] | None = None) -> None:
     ):  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
-                print(trace.model_dump_json(indent=2, exclude_none=True))
+                print(json.dumps(trace.to_record(), indent=2))

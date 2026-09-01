@@ -114,8 +114,8 @@ PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?<![A-Za-z0-9_-])[\"']?cookie[\"']?\s*:\s*[\"']?"
-        r"(?P<secret>[^\r\n\"']{8,})",
+        r"(?<![A-Za-z0-9_-])\\?[\"']?(?:set-)?cookie\\?[\"']?\s*:\s*"
+        r"\\?[\"']?(?P<secret>[^\r\n\\\"']{8,})",
         re.IGNORECASE,
     ),
     re.compile(
