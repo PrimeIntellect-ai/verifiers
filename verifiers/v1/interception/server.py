@@ -248,6 +248,7 @@ class InterceptionServer(Interception):
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
+        self.tool_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
@@ -276,20 +277,25 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def register(self, session: RolloutSession) -> tuple[str, str]:
-        """Register separate capabilities for model inference and private task state, and
-        assign the session its server-owned model client."""
+    def register(self, session: RolloutSession) -> tuple[str, str, str]:
+        """Register separate capabilities for model inference, private task state, and
+        native tool policy, and assign the session its server-owned model client."""
         session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
+        tool_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
+        self.tool_sessions[tool_secret] = session
         self.state_routes[session.trace.id] = session
-        return model_secret, state_secret
+        return model_secret, state_secret, tool_secret
 
-    def unregister(self, model_secret: str, state_secret: str) -> None:
+    def unregister(
+        self, model_secret: str, state_secret: str, tool_secret: str
+    ) -> None:
         session = self.sessions.pop(model_secret, None)
         self.state_sessions.pop(state_secret, None)
+        self.tool_sessions.pop(tool_secret, None)
         if session is not None:
             self.state_routes.pop(session.trace.id, None)
             # The rollout concluded; its trace is sealed. Cancel straggler handlers
@@ -299,11 +305,11 @@ class InterceptionServer(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        model_secret, state_secret = self.register(session)
+        model_secret, state_secret, tool_secret = self.register(session)
         try:
-            yield self.base_url, model_secret, state_secret
+            yield self.base_url, model_secret, state_secret, tool_secret
         finally:
-            self.unregister(model_secret, state_secret)
+            self.unregister(model_secret, state_secret, tool_secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -401,7 +407,7 @@ class InterceptionServer(Interception):
         return mediated, capabilities
 
     async def handle_tool(self, request: web.Request) -> web.Response:
-        session = self.sessions.get(
+        session = self.tool_sessions.get(
             request.headers.get("Authorization", "").removeprefix("Bearer ")
         )
         if session is None:

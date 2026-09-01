@@ -517,19 +517,40 @@ class RolloutSession:
                     f"{len(matches)} branches"
                 )
             assistant_node, assistant = parents[0]
-            detached = True
-            if phase == "before":
-                if message.tool_call_id in self.detached_tools:
+            parent_calls = [
+                call
+                for call in assistant.tool_calls or []
+                if call.name == detached_parent
+            ]
+            if phase == "after" and message.name == detached_parent:
+                if len(parent_calls) != 1:
                     raise HarnessError(
-                        f"nested tool call {message.tool_call_id!r} crossed its pre hook twice"
+                        f"parent tool result matched {len(parent_calls)} calls"
                     )
-            elif message.tool_call_id not in self.detached_tools:
-                raise HarnessError(
-                    f"nested tool call {message.tool_call_id!r} reached a post-execution "
-                    "hook without crossing its pre-execution hook"
-                )
+                call = parent_calls[0]
+                message.tool_call_id = call.id
+                message.name = call.name
+                tool_key = (assistant_node, call.id)
+                prepared_result = self.prepared_tools.pop(tool_key, None)
+                if prepared_result is not None:
+                    raise HarnessError(
+                        f"harness reported tool call {call.id!r} after its result "
+                        "was already replaced"
+                    )
             else:
-                self.detached_tools.discard(message.tool_call_id)
+                detached = True
+                if phase == "before":
+                    if message.tool_call_id in self.detached_tools:
+                        raise HarnessError(
+                            f"nested tool call {message.tool_call_id!r} crossed its pre hook twice"
+                        )
+                elif message.tool_call_id not in self.detached_tools:
+                    raise HarnessError(
+                        f"nested tool call {message.tool_call_id!r} reached a post-execution "
+                        "hook without crossing its pre-execution hook"
+                    )
+                else:
+                    self.detached_tools.discard(message.tool_call_id)
 
         branch = []
         node: int | None = assistant_node

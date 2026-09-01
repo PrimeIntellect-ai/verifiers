@@ -85,12 +85,13 @@ async def intercept(
     call_id: str,
     name: str,
     content,
+    detached_parent: str,
 ) -> dict:
     decision = await policy.request(
         {
             "phase": phase,
             "content": "any",
-            "detachedParent": "exec",
+            "detachedParent": detached_parent,
             "message": {
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -103,7 +104,8 @@ async def intercept(
         message = decision.get("message")
         if not isinstance(message, dict):
             raise ValueError("Tool interception omitted its replacement")
-        if message.get("tool_call_id") != call_id or message.get("name") != name:
+        policy_call_id = decision.get("toolCallId", call_id)
+        if message.get("tool_call_id") != policy_call_id or message.get("name") != name:
             raise ValueError("Tool interception changed the Code Mode tool identity")
     return decision
 
@@ -161,10 +163,14 @@ def replacement(decision: dict):
 
 
 async def apply_result_policy(
-    policy: PolicyClient, response: dict, call_id: str, name: str
+    policy: PolicyClient,
+    response: dict,
+    call_id: str,
+    name: str,
+    detached_parent: str,
 ) -> None:
     decision = await intercept(
-        policy, "after", call_id, name, response_content(response)
+        policy, "after", call_id, name, response_content(response), detached_parent
     )
     if decision["action"] == "allow":
         return
@@ -176,9 +182,9 @@ async def apply_result_policy(
 
 
 async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
-    executions: dict[int, tuple[str, str]] = {}
-    cells: dict[str, tuple[str, str]] = {}
-    continuations: dict[int, str] = {}
+    executions: dict[int, tuple[str, str, str]] = {}
+    cells: set[str] = set()
+    continuations: dict[int, tuple[str, tuple[str, str, str]]] = {}
     send_lock = asyncio.Lock()
     async with connect(
         host_url,
@@ -214,9 +220,11 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                 ):
                     request_id = message["id"]
                     call_id = operation["request"]["tool_call_id"]
-                    decision = await intercept(policy, "before", call_id, "exec", "")
+                    decision = await intercept(
+                        policy, "before", call_id, "exec", "", "exec"
+                    )
                     if decision["action"] == "allow":
-                        executions[request_id] = (call_id, "exec")
+                        executions[request_id] = (call_id, "exec", "exec")
                     else:
                         cell_id = f"vf-blocked-{request_id}"
                         runtime_response = {
@@ -261,10 +269,14 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                     "session/wait",
                     "session/terminate",
                 }:
-                    continuations[message["id"]] = (
+                    cell_id = (
                         operation["request"]["cell_id"]
                         if method == "session/wait"
                         else operation["cellId"]
+                    )
+                    continuations[message["id"]] = (
+                        cell_id,
+                        (f"vf-wait-{message['id']}", "wait", "wait"),
                     )
                 await host.send(pack_frame(message))
 
@@ -289,21 +301,25 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                     and message.get("type") == "operation/response"
                     and result.get("status") == "ok"
                 ):
-                    cell_id = continuations.pop(request_id)
+                    cell_id, continuation = continuations.pop(request_id)
                     outcome = result.get("value", {}).get("outcome")
-                    if isinstance(outcome, dict) and len(outcome) == 1:
+                    if (
+                        cell_id in cells
+                        and isinstance(outcome, dict)
+                        and len(outcome) == 1
+                    ):
                         response = outcome
-                        call = cells.get(cell_id)
+                        call = continuation
                 if response is not None and call is not None:
                     variant, value = next(iter(response.items()))
                     cell_id = value.get("cell_id")
                     if variant == "Yielded":
                         if cell_id:
-                            cells[cell_id] = call
+                            cells.add(cell_id)
                     else:
                         if cell_id:
-                            cells.pop(cell_id, None)
-                        await apply_result_policy(policy, response, *call)
+                            cells.discard(cell_id)
+                    await apply_result_policy(policy, response, *call)
                 await send_client(message)
 
         tasks = [
