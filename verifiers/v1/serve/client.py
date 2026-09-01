@@ -187,8 +187,10 @@ class EnvClient:
             self._receiver = None
         # Let scheduled fire-and-forget cancels reach the socket first, or a
         # run cancelled right before close() leaves its server-side rollout
-        # running. Loop: awaiting one wave can schedule another
-        while self._cancel_tasks:
-            await asyncio.gather(*list(self._cancel_tasks), return_exceptions=True)
+        # running. Loop: awaiting one wave can schedule another. Only the
+        # pending ones: on 3.12+ a gather over finished tasks completes without
+        # yielding, so the done callbacks that empty the set would never run.
+        while pending := [task for task in self._cancel_tasks if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
         self.socket.close()
         self.ctx.term()
