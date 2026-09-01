@@ -177,6 +177,21 @@ def _venv_command(venv: str) -> str:
     return f"uv venv --allow-existing {shlex.quote(venv)}"
 
 
+_LOCKED_COMMAND = """\
+import fcntl
+import subprocess
+import sys
+
+with open(sys.argv[1], "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    raise SystemExit(subprocess.call(sys.argv[2:]))
+"""
+
+
+def _locked_command(lock: str, command: list[str]) -> list[str]:
+    return ["python3", "-c", _LOCKED_COMMAND, lock, *command]
+
+
 async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     source_dir = _source_dir(type(server))
     if source_dir is None:
@@ -216,7 +231,9 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         f"uv pip install --python {venv_q} {vf_source} && "
         f"uv pip install --python {venv_q} {env_source}"
     )
-    result = await runtime.run(["sh", "-c", setup], {})
+    result = await runtime.run(
+        _locked_command(f"{venv}.lock", ["sh", "-c", setup]), {}
+    )
     if result.exit_code != 0:
         raise ToolsetError(
             f"server {server.server_name!r} install failed in runtime: "
