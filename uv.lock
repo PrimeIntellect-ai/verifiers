@@ -2965,7 +2965,7 @@ wheels = [
 [[package]]
 name = "prime-evals"
 version = "0.2.4"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-evals&rev=d1f15d53aaec61755ab53f4dfc029d95991878fc#d1f15d53aaec61755ab53f4dfc029d95991878fc" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-evals&rev=ae27ff8d3379b18364bf02296e8866bb0d36f86e#ae27ff8d3379b18364bf02296e8866bb0d36f86e" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
