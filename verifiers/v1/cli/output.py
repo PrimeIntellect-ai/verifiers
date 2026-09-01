@@ -131,7 +131,7 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
     if not tomls:
         return
     texts = (
-        [text for _, text in tomls]
+        [toml[1] for toml in tomls]
         if len(tomls) == 1
         else [f"# @ {p}\n{text}" for p, text in tomls]
     )
@@ -222,6 +222,15 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     return episodes
 
 
+async def persist_episode(
+    results_dir: Path,
+    episode: Episode[DataT, StateT, AgentConfigT],
+    lock: asyncio.Lock,
+) -> None:
+    async with lock:
+        await asyncio.to_thread(write_episode, results_dir, episode)
+
+
 async def append_episode(
     results_dir: Path,
     episode: Episode[DataT, StateT, AgentConfigT],
@@ -231,13 +240,9 @@ async def append_episode(
     shared lock preserves whole-line ordering, and awaiting the worker preserves
     per-episode durability."""
 
-    async def persist() -> None:
-        async with lock:
-            await asyncio.to_thread(write_episode, results_dir, episode)
-
     # Run lock acquisition and the worker to completion even under cancellation, so
     # finalized episodes are never lost mid-write (`run_shielded` re-raises the cancellation).
-    await run_shielded(persist())
+    await run_shielded(persist_episode(results_dir, episode, lock))
 
 
 async def append_trace(
