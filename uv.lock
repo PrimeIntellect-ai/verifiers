@@ -32,7 +32,7 @@ ruff = "2026-07-28T00:00:00Z"
 name = "nemo-gym"
 version = "0.4.0"
 requires-dist = ["aiohttp>=3.14.1", "fastapi", "gprof2dot", "hydra-core", "itsdangerous", "mcp>=1.27,<2", "omegaconf", "openai>=2.9", "orjson", "pandas", "pydantic", "pydot", "ray>=2.55.1", "requests", "rich", "typing-extensions", "uvicorn", "wandb", "yappi"]
-requires-python = ">=3.11, <3.14"
+requires-python = ">=3.12"
 
 [[package]]
 name = "aiofile"
@@ -3838,7 +3838,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.11"
+version = "0.1.12.dev2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -3849,9 +3849,9 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/37/3441c75b45fc818ad1881d7837ff073f92ce4e3ab3bfd1640ad3062d6bb0/renderers-0.1.11.tar.gz", hash = "sha256:575f02e44200b525dc5c4fac207148d18bacadc083eca783068d4195d21f8960", size = 392707, upload-time = "2026-08-31T17:36:02.706Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/86/4016c7ea6cbc2c3258265b11766d3018b805563f3b7fbcf7edd6df38690d/renderers-0.1.12.dev2.tar.gz", hash = "sha256:7cc764dec4d0c5c48a20a610df52ec3be2de3d4f0c65cb5d709487e0bad761a8", size = 394034, upload-time = "2026-09-01T21:31:06.753Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/bb/4e2d84f717a0266dcb5c26c6cd1f1beae46582de41cf323ee29e57fcb45a/renderers-0.1.11-py3-none-any.whl", hash = "sha256:8fac795d32f8aeacffe6dbb863d60f1b3437a06389c27593ebabe66cec9bdc45", size = 230033, upload-time = "2026-08-31T17:36:00.652Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/89/4be1a4ce35e85ecbcccfd8bc7e869fb23424c7b93696e29149e555bddae1/renderers-0.1.12.dev2-py3-none-any.whl", hash = "sha256:9e4043d87982a9f51ca151071baac7f30053e9c896356957e228fa4791cfd793", size = 231100, upload-time = "2026-09-01T21:31:04.936Z" },
 ]
 
 [package.optional-dependencies]

@@ -35,9 +35,9 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
-    KeptTokens,
     Message,
     Response,
+    SamplingMask,
     TextContentPart,
     Tool,
     ToolMessage,
@@ -141,12 +141,12 @@ class MessageNode(BaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kept_tokens: SkipJsonSchema[KeptTokens | None] = None
-    """Kept-set sampling masks for this node's sampled tokens, decoded: `ids` flat int32
-    in position order, `counts` the per-token kept-set sizes (aligned with `logprobs`;
-    0 = no mask). Assistant nodes only; consumed via `Branch.kept_tokens` for
-    sampling-replay training. Rides the wire as raw-bytes `__nd__` dicts; kept off disk
-    by the dump-site `exclude` in prime-rl."""
+    sampling_mask: SkipJsonSchema[SamplingMask | None] = None
+    """Sampling masks for this node's sampled tokens.
+
+    `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
+    nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -208,27 +208,26 @@ class MessageNode(BaseModel):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("kept_tokens")
-    def serialize_kept_tokens(self, kept: KeptTokens | None) -> dict | None:
-        """`KeptTokens` -> dict of raw-bytes `__nd__` entries so the arrays ride the wire."""
-        if kept is None:
+    @field_serializer("sampling_mask")
+    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
+        if mask is None:
             return None
         return {
-            "ids": _encode_ndarray(kept.ids),
-            "counts": _encode_ndarray(kept.counts),
+            "ids": _encode_ndarray(mask.ids),
+            "counts": _encode_ndarray(mask.counts),
         }
 
-    @field_validator("kept_tokens", mode="before")
+    @field_validator("sampling_mask", mode="before")
     @classmethod
-    def deserialize_kept_tokens(cls, value: Any) -> KeptTokens | None:
-        if value is None or isinstance(value, KeptTokens):
+    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
+        if value is None or isinstance(value, SamplingMask):
             return value
         if isinstance(value, dict):
-            return KeptTokens(
+            return SamplingMask(
                 ids=_decode_ndarray(value["ids"]),
                 counts=_decode_ndarray(value["counts"]),
             )
-        raise TypeError(f"cannot build KeptTokens from {type(value).__name__}")
+        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -612,21 +611,18 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_kept_tokens(
-    trace: Trace, assistant_id: int, payload: KeptTokens | None
+def _attribute_sampling_mask(
+    trace: Trace, assistant_id: int, payload: SamplingMask | None
 ) -> None:
-    """Attach this turn's kept-set sampling masks to the assistant node (the payload
-    covers exactly the turn's completion tokens, so no path arithmetic). A payload
-    that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
+    """Attach a completion-aligned sampling mask to the assistant node."""
     if payload is None:
         return
-    counts = np.frombuffer(binascii.a2b_base64(payload.counts), dtype=np.int32)
-    ids = np.frombuffer(binascii.a2b_base64(payload.ids), dtype=np.int32)
     node = trace.nodes[assistant_id]
-    if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
+    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
+        payload.ids
+    ):
         return
-    # Own the buffers — the payload views reference the turn's response bytes.
-    node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
+    node.sampling_mask = payload
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
@@ -775,9 +771,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
-    # Attribute this turn's kept-set sampling masks onto the assistant node (they are
-    # completion-aligned, so only the sampled node carries them).
-    _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
+    # Sampling masks are completion-aligned, so only the sampled node carries them.
+    _attribute_sampling_mask(
+        trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
 
     return assistant_id
 
