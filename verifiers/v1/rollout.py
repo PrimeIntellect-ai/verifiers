@@ -81,6 +81,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._borrow_lock: asyncio.Lock | None = None
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -204,6 +205,9 @@ class Rollout:
             if self._borrowed_runtime is None:
                 runtime.env = runtime_env
             else:
+                if runtime.network_restricted:
+                    await runtime.borrow_lock.acquire()
+                    self._borrow_lock = runtime.borrow_lock
                 runtime = runtime.with_env(runtime_env)
                 self.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
@@ -424,17 +428,22 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
-        if self._harness_session is not None:
+        try:
+            if self._harness_session is not None:
+                with contextlib.suppress(Exception):
+                    await self._harness_session.close()
             with contextlib.suppress(Exception):
-                await self._harness_session.close()
-        with contextlib.suppress(Exception):
-            await self._stack.aclose()
-        if self.runtime is not None:
-            with contextlib.suppress(Exception):
-                await self.harness.cleanup(self.trace, self.runtime)
-        if self._borrowed_runtime is None and self.runtime is not None:
-            with contextlib.suppress(Exception):
-                await self.runtime.stop()
+                await self._stack.aclose()
+            if self.runtime is not None:
+                with contextlib.suppress(Exception):
+                    await self.harness.cleanup(self.trace, self.runtime)
+            if self._borrowed_runtime is None and self.runtime is not None:
+                with contextlib.suppress(Exception):
+                    await self.runtime.stop()
+        finally:
+            if self._borrow_lock is not None:
+                self._borrow_lock.release()
+                self._borrow_lock = None
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
@@ -523,6 +532,9 @@ class Rollout:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
+            if self._borrow_lock is not None:
+                self._borrow_lock.release()
+                self._borrow_lock = None
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

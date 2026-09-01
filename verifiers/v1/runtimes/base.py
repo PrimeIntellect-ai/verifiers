@@ -153,6 +153,9 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        # Restricted runtimes have one sandbox-wide network policy. Borrowers hold
+        # this lock for their full rollout so setup cannot widen another agent's policy.
+        self.borrow_lock = asyncio.Lock()
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
