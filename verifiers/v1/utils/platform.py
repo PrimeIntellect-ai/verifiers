@@ -10,17 +10,18 @@ saved output directory. Auth + base URL come from `$PRIME_API_KEY` /
 import json
 import logging
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from verifiers.v1.cli.output import read_upload_secret_fingerprints
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
+from verifiers.v1.types import Messages
 from verifiers.v1.utils.preflight import prepare_upload
 from verifiers.v1.utils.prime import load_prime_config
 
@@ -29,14 +30,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
-_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 
-_PROVIDER_STATE_FIELDS = {
+PROVIDER_STATE_FIELDS = {
     "encrypted_content",
     "signature",
     "data",
 }
-_PLATFORM_TRACE_EXCLUDE = {
+PLATFORM_TRACE_EXCLUDE = {
     "upload_secrets": True,
     "agent": {
         "config": {
@@ -60,7 +61,7 @@ _PLATFORM_TRACE_EXCLUDE = {
                     "loss_weights",
                 )
             },
-            "message": {"provider_state": {"__all__": _PROVIDER_STATE_FIELDS}},
+            "message": {"provider_state": {"__all__": PROVIDER_STATE_FIELDS}},
         }
     },
     "mm_token_type_id_map": True,
@@ -78,14 +79,44 @@ def json_bytes(value: Any) -> int:
     )
 
 
-@dataclass
-class PushState:
+class PushState(BaseModel):
     """Mutable upload status shared with the dashboard."""
 
     started: bool = False
     done: bool = False
     url: str | None = None
     error: str | None = None
+
+
+def dump_messages(messages: Messages) -> list[dict[str, Any]]:
+    return [
+        message.model_dump(
+            mode="json",
+            exclude={"provider_state": {"__all__": PROVIDER_STATE_FIELDS}},
+            exclude_none=True,
+        )
+        for message in messages
+    ]
+
+
+def finish_push(
+    state: PushState | None,
+    url: str | None = None,
+    error: str | None = None,
+) -> str | None:
+    if state is not None:
+        state.url = url
+        state.error = error
+        state.done = True
+    return url
+
+
+def post_json(
+    client: httpx.Client, api: str, path: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    response = client.post(f"{api}{path}", json=body)
+    response.raise_for_status()
+    return response.json()
 
 
 def trace_to_sample(
@@ -101,16 +132,6 @@ def trace_to_sample(
     schema. No prompt/completion split (meaningless mid-branch): `completion` is the
     final branch's messages, `trajectory` one message list per branch."""
 
-    def dump(messages):
-        return [
-            message.model_dump(
-                mode="json",
-                exclude={"provider_state": {"__all__": _PROVIDER_STATE_FIELDS}},
-                exclude_none=True,
-            )
-            for message in messages
-        ]
-
     task = trace.task.data.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
     sample = {
@@ -122,7 +143,7 @@ def trace_to_sample(
         "trainable": trace.agent.trainable,
         "task": task,
         "prompt": [],
-        "completion": dump(branches[-1].messages) if branches else [],
+        "completion": dump_messages(branches[-1].messages) if branches else [],
         "answer": task.get("answer"),
         # Keyed `tool_defs` because the v0 sample format already carries it there.
         "tool_defs": [t.model_dump(mode="json", exclude_none=True) for t in trace.tools]
@@ -139,7 +160,7 @@ def trace_to_sample(
         "stop_condition": trace.stop_condition,
         "trajectory": [
             {
-                "messages": dump(branch.messages),
+                "messages": dump_messages(branch.messages),
                 "num_input_tokens": branch.num_input_tokens,
                 "num_output_tokens": branch.num_output_tokens,
             }
@@ -239,12 +260,12 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
             **(sample["info"] or {}),
             "native_wrapper": episode.model_dump(
                 mode="json",
-                exclude={"traces": {"__all__": _PLATFORM_TRACE_EXCLUDE}},
+                exclude={"traces": {"__all__": PLATFORM_TRACE_EXCLUDE}},
                 exclude_none=True,
             ),
             "native_trace_index": summary_trace_index,
         }
-        if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+        if len(b'{"samples":[]}') + json_bytes(sample) <= MAX_SAMPLES_PAYLOAD_BYTES:
             samples.append(sample)
             continue
         logger.warning(
@@ -269,19 +290,12 @@ def push_traces(
     uploads without a prior `prime env push`); when `state` is given, records the
     outcome on it so the dashboard's status line resolves."""
 
-    def finish(url: str | None = None, error: str | None = None) -> str | None:
-        if state is not None:
-            state.url = url
-            state.error = error
-            state.done = True
-        return url
-
     api_key, base, frontend, team_id = credentials()
     if not api_key:
         logger.warning(
             "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
         )
-        return finish(error="no PRIME_API_KEY (run `prime login`)")
+        return finish_push(state, error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = config.env.taskset.id
@@ -360,14 +374,14 @@ def push_traces(
         for i, sample in enumerate(samples):
             sample_bytes = json_bytes(sample)
             sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
-            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+            if sample_payload_bytes > MAX_SAMPLES_PAYLOAD_BYTES:
                 raise ValueError(
                     f"sample {i} is too large to upload "
                     f"({sample_payload_bytes} > "
-                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
+                    f"{MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
                 )
             next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
-            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+            if batch and next_payload_bytes > MAX_SAMPLES_PAYLOAD_BYTES:
                 batches.append(batch)
                 batch = []
                 payload_bytes = len(b'{"samples":[]}')
@@ -378,16 +392,12 @@ def push_traces(
             batches.append(batch)
 
         with httpx.Client(headers=headers, timeout=300.0) as client:
-
-            def post(path: str, body: dict) -> dict:
-                resp = client.post(f"{api}{path}", json=body)
-                resp.raise_for_status()
-                return resp.json()
-
-            env_id = post("/environmentshub/resolve", {"name": env_name, **team})[
-                "data"
-            ]["id"]
-            eval_id = post(
+            env_id = post_json(
+                client, api, "/environmentshub/resolve", {"name": env_name, **team}
+            )["data"]["id"]
+            eval_id = post_json(
+                client,
+                api,
                 "/evaluations/",
                 {
                     "name": name,
@@ -413,11 +423,16 @@ def push_traces(
                     content=body,
                 )
                 resp.raise_for_status()
-            post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
+            post_json(
+                client,
+                api,
+                f"/evaluations/{eval_id}/finalize",
+                {"metrics": metrics},
+            )
     except Exception as e:  # noqa: BLE001 - push is best-effort across the full upload
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
-        return finish(error=f"{type(e).__name__}: {e}")
+        return finish_push(state, error=f"{type(e).__name__}: {e}")
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
     logger.info("--push: uploaded %d samples -> %s", len(samples), url)
-    return finish(url=url)
+    return finish_push(state, url=url)

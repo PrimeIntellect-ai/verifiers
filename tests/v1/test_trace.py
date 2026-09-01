@@ -48,6 +48,33 @@ class FailingSegmentRollout:
     step = Rollout.step
 
 
+class StopInPreflight:
+    def __init__(self, capability: str) -> None:
+        self.capability = capability
+
+    def __call__(
+        self, payload, known_secrets, secret_sources, secret_fingerprints
+    ) -> None:
+        assert payload["samples"]
+        assert self.capability in json.dumps(payload)
+        assert fingerprint_secret(self.capability) in secret_fingerprints
+        assert {
+            "prime-api-key",
+            "agent-api-key-0123456789",
+            "run-api-key-0123456789",
+        }.issubset(known_secrets)
+        sources = {
+            name: value for source in secret_sources for name, value in source.items()
+        }
+        assert sources["RUNTIME_SECRET"] == "runtime-secret-0123456789"
+        assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
+        assert sources["X-Auth"] in {
+            "agent-header-secret-0123456789",
+            "run-header-secret-0123456789",
+        }
+        raise RuntimeError("preflight stopped upload")
+
+
 @pytest.mark.asyncio
 async def test_failed_segment_does_not_reuse_prior_root_reply():
     trace = vf.Trace(
@@ -585,27 +612,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     state = PushState()
 
-    def stop_in_preflight(payload, known_secrets, secret_sources, secret_fingerprints):
-        assert payload["samples"]
-        assert capability in json.dumps(payload)
-        assert fingerprint_secret(capability) in secret_fingerprints
-        assert {
-            "prime-api-key",
-            "agent-api-key-0123456789",
-            "run-api-key-0123456789",
-        }.issubset(known_secrets)
-        sources = {
-            name: value for source in secret_sources for name, value in source.items()
-        }
-        assert sources["RUNTIME_SECRET"] == "runtime-secret-0123456789"
-        assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
-        assert sources["X-Auth"] in {
-            "agent-header-secret-0123456789",
-            "run-header-secret-0123456789",
-        }
-        raise RuntimeError("preflight stopped upload")
-
-    monkeypatch.setattr(platform, "prepare_upload", stop_in_preflight)
+    monkeypatch.setattr(platform, "prepare_upload", StopInPreflight(capability))
     monkeypatch.setattr(
         platform,
         "credentials",
@@ -619,7 +626,7 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     monkeypatch.setattr(
         platform.httpx,
         "Client",
-        lambda **_kwargs: pytest.fail("network opened before upload preflight"),
+        lambda **unused_kwargs: pytest.fail("network opened before upload preflight"),
     )
 
     assert push_traces([episode], config, state, tmp_path) is None
