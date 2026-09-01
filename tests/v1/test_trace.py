@@ -470,11 +470,28 @@ def test_retry_history_keeps_generated_upload_secrets(monkeypatch):
         "final-agent-capability-0123456789",
     ]
 
+    monkeypatch.setenv("DISCARDED_API_KEY", "discarded-api-key-0123456789")
+    discarded_trace = vf.Trace(
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=EvalClientConfig(
+                    api_key_var="DISCARDED_API_KEY",
+                    headers={"X-Auth": "discarded-header-secret-0123456789"},
+                ),
+                harness=HarnessConfig(
+                    env={"RUNTIME_SECRET": "discarded-runtime-secret-0123456789"}
+                ),
+            )
+        ),
+        task=task,
+        errors=[Error(type="ProviderError", message="retry")],
+        upload_secrets=["discarded-agent-capability-0123456789"],
+    )
     first_episode = Episode(
         task=task,
         errors=[Error(type="EnvError", message="retry")],
         upload_secrets=["first-episode-capability-0123456789"],
-        traces=[first_trace],
+        traces=[discarded_trace],
     )
     final_episode = Episode(task=task, ok=True, traces=[final_trace])
     attempts = AsyncMock(side_effect=[first_episode, final_episode])
@@ -483,7 +500,10 @@ def test_retry_history_keeps_generated_upload_secrets(monkeypatch):
 
     assert result.upload_secrets == [
         "first-episode-capability-0123456789",
-        "first-agent-capability-0123456789",
+        "discarded-agent-capability-0123456789",
+        "discarded-api-key-0123456789",
+        "discarded-runtime-secret-0123456789",
+        "discarded-header-secret-0123456789",
     ]
 
 
