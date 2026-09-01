@@ -292,9 +292,12 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                 if (
                     request_id in executions
                     and message.get("type") == "execute/initialResponse"
-                    and result.get("status") == "ok"
                 ):
                     call = executions.pop(request_id)
+                    if result.get("status") != "ok":
+                        raise RuntimeError(
+                            "Code Mode execution failed before returning a tool result"
+                        )
                     response = result["value"]
                 elif (
                     request_id in continuations
