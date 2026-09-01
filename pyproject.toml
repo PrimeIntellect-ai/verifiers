@@ -231,9 +231,6 @@ Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 
 [tool.ruff.lint.isort]
 known-first-party = ["verifiers"]
-# Pip deps that may also exist as same-named checkouts in a dev working tree;
-# without the pin, ruff classifies them first-party locally and CI disagrees.
-known-third-party = ["renderers", "harbor"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
