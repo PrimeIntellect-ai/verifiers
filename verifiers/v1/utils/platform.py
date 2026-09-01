@@ -221,7 +221,10 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
             **(sample["info"] or {}),
             "native_wrapper": episode.model_dump(
                 mode="json",
-                exclude={"traces": {"__all__": PLATFORM_TRACE_EXCLUDE}},
+                exclude={
+                    "upload_secrets": True,
+                    "traces": {"__all__": PLATFORM_TRACE_EXCLUDE},
+                },
                 exclude_none=True,
             ),
             "native_trace_index": summary_trace_index,
@@ -276,7 +279,12 @@ def push_traces(
     # — log and skip the upload instead.
     try:
         clients = [config.client]
-        known_secrets = list(secret_values(api_key))
+        known_secrets = list(
+            secret_values(
+                api_key,
+                *(secret for episode in episodes for secret in episode.upload_secrets),
+            )
+        )
         secret_sources = []
         for trace in traces:
             agent = trace.agent.config

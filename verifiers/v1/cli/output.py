@@ -21,10 +21,10 @@ from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.client import resolve_api_key, resolve_headers
-from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
+from verifiers.v1.episode import EPISODE_EXCLUDE_FIELDS, EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
-from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Trace
+from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
 
 TRACES_FILE = "traces.jsonl"
@@ -162,6 +162,7 @@ def write_episode(
         agent.harness.resolved_env for agent in agents if agent.harness is not None
     ] + [resolve_headers(client) for client in clients]
     secrets = secret_values(
+        *episode.upload_secrets,
         *(secret for trace in episode.traces for secret in trace.upload_secrets),
         *(resolve_api_key(client) for client in clients),
         secret_sources=sources,
@@ -175,7 +176,7 @@ def write_episode(
     # Preserve fields declared by typed Trace subclasses nested in the episode.
     data = type_adapter(type(episode)).dump_json(
         episode,
-        exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+        exclude=EPISODE_EXCLUDE_FIELDS,
         exclude_none=True,
     )
     with (results_dir / TRACES_FILE).open("ab") as f:

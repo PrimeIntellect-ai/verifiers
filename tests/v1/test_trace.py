@@ -3,14 +3,16 @@
 recompute on load), transient `state` never crosses the wire, and the permissive `WireTrace` loads a
 dump without importing the originating taskset."""
 
+import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from prime_evals import fingerprint_secret
 
 import verifiers.v1 as vf
-from verifiers.v1.agent import Interaction
+from verifiers.v1.agent import Agent, Interaction
 from verifiers.v1.cli.output import (
     TRACES_FILE,
     UPLOAD_SECRET_FINGERPRINTS_FILE,
@@ -23,6 +25,7 @@ from verifiers.v1.configs.client import (
     resolve_headers,
 )
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.rlm.harness import (
@@ -41,6 +44,7 @@ from verifiers.v1.trace import Error
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils import platform
 from verifiers.v1.utils.platform import PushState, build_samples, push_traces
+from verifiers.v1.utils.retries import run_episode_with_retry
 
 
 class MyTask(vf.TaskData):
@@ -383,15 +387,22 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     trace.upload_secrets.append(capability)
     episode = Episode(task=trace.task, traces=[trace])
+    episode_capability = "episode-capability-0123456789"
+    episode.upload_secrets.append(episode_capability)
     assert "upload_secrets" not in json.dumps(episode.to_record())
-    assert vf.WireEpisode.model_validate(episode.model_dump()).traces[
-        0
-    ].upload_secrets == ["rollout-capability-0123456789"]
+    wire_episode = vf.WireEpisode.model_validate(episode.model_dump())
+    assert wire_episode.upload_secrets == [episode_capability]
+    assert wire_episode.traces[0].upload_secrets == [capability]
     (tmp_path / TRACES_FILE).touch()
     write_episode(tmp_path, episode)
     assert capability in (tmp_path / TRACES_FILE).read_text()
     assert capability not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
+    assert (
+        episode_capability
+        not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
+    )
     (episode,) = read_episodes(tmp_path, vf.WireTrace)
+    assert episode.upload_secrets == []
     assert episode.traces[0].upload_secrets == []
     monkeypatch.delenv("FORWARDED_RUNTIME_SECRET")
     config = SimpleNamespace(
@@ -411,7 +422,10 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
         "prepare_upload",
         StopInPreflight(
             capability,
-            persisted_secrets=("forwarded-secret-0123456789",),
+            persisted_secrets=(
+                "forwarded-secret-0123456789",
+                episode_capability,
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -431,6 +445,44 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
     )
     assert push_traces([episode], config, state) is None
     assert state.error == "RuntimeError: preflight stopped upload"
+
+
+def test_retry_history_keeps_generated_upload_secrets(monkeypatch):
+    task = vf.TraceTask(type="Task", data=vf.TaskData(idx=0))
+    agent_info = vf.AgentInfo(config=vf.AgentConfig())
+    first_trace = vf.Trace(agent=agent_info, task=task)
+    first_trace.errors.append(Error(type="ProviderError", message="retry"))
+    first_trace.upload_secrets.append("first-agent-capability-0123456789")
+    final_trace = vf.Trace(agent=agent_info, task=task, ok=True)
+    final_trace.upload_secrets.append("final-agent-capability-0123456789")
+    agent = Agent.__new__(Agent)
+    agent._closed = False
+    agent.config = SimpleNamespace(retries=RetryConfig(max_retries=1))
+    agent._run_once = AsyncMock(side_effect=[first_trace, final_trace])
+    monkeypatch.setattr("verifiers.v1.agent.asyncio.sleep", AsyncMock())
+
+    result = asyncio.run(agent.run(SimpleNamespace()))
+
+    assert result.upload_secrets == [
+        "first-agent-capability-0123456789",
+        "final-agent-capability-0123456789",
+    ]
+
+    first_episode = Episode(
+        task=task,
+        errors=[Error(type="EnvError", message="retry")],
+        upload_secrets=["first-episode-capability-0123456789"],
+        traces=[first_trace],
+    )
+    final_episode = Episode(task=task, ok=True, traces=[final_trace])
+    attempts = AsyncMock(side_effect=[first_episode, final_episode])
+
+    result = asyncio.run(run_episode_with_retry(attempts, RetryConfig(max_retries=1)))
+
+    assert result.upload_secrets == [
+        "first-episode-capability-0123456789",
+        "first-agent-capability-0123456789",
+    ]
 
 
 def _semantic_edge_set() -> vf.SemanticEdgeSet:
