@@ -401,6 +401,8 @@ def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_p
         episode_capability
         not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
     )
+    with (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).open("a") as f:
+        f.write('{"episode_id":')
     (episode,) = read_episodes(tmp_path, vf.WireTrace)
     assert episode.upload_secrets == []
     assert episode.traces[0].upload_secrets == []

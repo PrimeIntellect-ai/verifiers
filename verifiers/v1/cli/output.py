@@ -190,7 +190,10 @@ def read_upload_secret_fingerprints(
     records = {}
     with (results_dir / UPLOAD_SECRET_FINGERPRINTS_FILE).open() as f:
         for line in f:
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if record["episode_id"] in episode_ids:
                 records[record["episode_id"]] = record["fingerprints"]
     if missing := episode_ids - records.keys():
