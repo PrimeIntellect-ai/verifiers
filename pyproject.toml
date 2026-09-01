@@ -27,11 +27,10 @@ classifiers = [
 ]
 
 dependencies = [
-    "anthropic>=0.78.0",
-    "datasets>=3.3.0,<6.0.0",
+    "anthropic>=1.0.0",
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
-    "openai>=2.9.0",
+    "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
     "pydantic>=2.12.3",
@@ -43,7 +42,6 @@ dependencies = [
     "httpx>=0.27.0",
     "aiohttp>=3.14.1",
     "prime-pydantic-config[toml]>=0.4.3",
-    "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
     "renderers[multimodal]>=0.1.11",
@@ -86,6 +84,9 @@ examples = [
 ]
 
 [project.optional-dependencies]
+lean = [
+    "datasets>=3.3.0,<6.0.0",
+]
 ta = [
     "textarena==0.7.4",
     "nltk>=3.9.2",
