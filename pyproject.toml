@@ -181,7 +181,7 @@ interception = { path = "environments/interception", editable = true }
 grayscale-interception = { path = "environments/grayscale_interception", editable = true }
 bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
-prime-evals = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-evals", rev = "5b6e61a518f3e949077a6884c26e2b438d67d1a7" }
+prime-evals = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-evals", rev = "7de8b0a1ebb9b6a3c941692415bd9304051899a5" }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
