@@ -32,6 +32,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -81,6 +83,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -466,12 +469,14 @@ class Rollout:
             if not self._failed and self._opened:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
-                    await asyncio.wait_for(
-                        invoke(
+                    async with asyncio.timeout(self._timeouts.finalize):
+                        await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
-                        ),
-                        self._timeouts.finalize,
-                    )
+                        )
+                        if self._collect_artifacts and not trace.state.artifacts:
+                            trace.state.artifacts = await collect(
+                                runtime, self.task.data.artifacts
+                            )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now

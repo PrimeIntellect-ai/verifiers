@@ -121,6 +121,12 @@ class MessageNode(BaseModel):
     reference_logprobs: list[float] | None = None
     """Reference-model logprobs over the sampled tokens, in the same compact layout as
     `logprobs`. None means no reference model scored this node."""
+    trainer_logprobs: list[float] | None = None
+    """Trainer-recomputed logprobs over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no trainer forward annotated this node."""
+    entropies: list[float] | None = None
+    """Trainer policy entropies over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no trainer forward annotated this node."""
     loss_weights: dict[str, list[float]] | None = None
     """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
