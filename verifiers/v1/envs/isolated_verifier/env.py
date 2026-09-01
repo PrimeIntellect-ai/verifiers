@@ -54,9 +54,11 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     def verifier_config(self, task: vf.Task) -> RuntimeConfig:
         base = self.config.verifier_runtime or self.config.agent.runtime
         config = resolve_runtime_config(base, task)
+        image_spec = type(base).model_fields.get("image")
         if (
             self.config.verifier_runtime is not None
-            and "image" in base.model_fields_set
+            and image_spec is not None
+            and base.image != image_spec.default
         ):
             config = config.model_copy(update={"image": base.image})
         if isinstance(config, vf.SubprocessConfig):
@@ -102,7 +104,12 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         await task.score(solution, runtime)
 
     async def grade(
-        self, config: RuntimeConfig, task: vf.Task, solution: vf.Trace
+        self,
+        config: RuntimeConfig,
+        task: vf.Task,
+        solution: vf.Trace,
+        *,
+        attempt_timeout: float | None = None,
     ) -> tuple[Any, vf.Trace]:
         timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
         last: Exception | None = None
@@ -120,7 +127,10 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
             try:
                 # Teardown is outside the stage deadlines: a completed score must
                 # survive a slow cleanup of the verifier runtime.
-                async with AsyncExitStack() as boxes:
+                async with (
+                    AsyncExitStack() as boxes,
+                    asyncio.timeout(attempt_timeout),
+                ):
                     async with asyncio.timeout(timeouts.setup):
                         # Failed setup or scoring must not alter the next attempt.
                         # Only the successful controller and trace leave this scope.

@@ -74,7 +74,10 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             return
         grader = HarborTask(verifier_box_data(task.data))
         scores, solution = await self.grade(
-            self.verifier_config(task), grader, solution
+            self.verifier_config(task),
+            grader,
+            solution,
+            attempt_timeout=grader.data.timeout.scoring,
         )
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
