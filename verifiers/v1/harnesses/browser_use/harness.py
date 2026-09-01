@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Literal
 
@@ -6,13 +5,16 @@ from pydantic import model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils import mcp
+from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+PROGRAM_SOURCE = bundle_program(
+    (Path(__file__).resolve().parent / "program.py").read_text(), mcp
+)
 
 # The helper names and persistence rules the model needs to use the local tool.
 BROWSER_SYSTEM_PROMPT = """You are a browser automation agent. Your `browser` tool executes Python code that controls a real Chromium over CDP through browser-harness; its helpers are pre-imported.
@@ -85,42 +87,23 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         env = {**self.config.resolved_env}
         state = f".vf-browser-{trace.id}"
         args = [
-            f"--base-url={endpoint}",
-            f"--api-key={secret}",
-            f"--model={ctx.model}",
             f"--browser={self.config.browser}",
             # A resumed segment reuses this trace's browser and profile.
             f"--state-dir={state}",
         ]
-        if not replaying_browser_prompt:
-            args.append(f"--system-prompt={system_prompt}")
         if self.config.cdp_url:
             args.append(f"--cdp-url={self.config.cdp_url}")
-        if mcp_urls:
-            # The program connects to the tool servers over HTTP; hand it a standard
-            # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {
-                        "mcpServers": {
-                            name: {"url": url, "timeout": self.config.tool_timeout}
-                            for name, url in mcp_urls.items()
-                        }
-                    }
-                )
-            )
-        if isinstance(prompt, str):
-            args.append(f"--prompt={prompt}")
-        elif prompt is not None:
-            # Base64 images can exceed exec limits, so hand Messages off through a file.
-            path = f".vf-initial-messages-{trace.id}.json"
-            await runtime.write(
-                path,
-                json.dumps([message_to_wire(m) for m in prompt]).encode(),
-            )
-            args.append(f"--initial-messages-file={path}")
-        program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, self.config.resolved_env
+        return await launch_chat_program(
+            PROGRAM_SOURCE,
+            self.config,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            None if replaying_browser_prompt else system_prompt,
+            prompt,
+            extra_args=args,
+            env=env,
         )
-        return await runtime.run_program([*program, *args], env)

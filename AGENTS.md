@@ -20,9 +20,9 @@
 
 ## Skills
 
-- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
+- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), `release` (publish stable versions), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
 
 ## Testing
 
 - **Prefer e2e tests over unit tests**: v1's end-to-end tests are sufficient — extra unit tests clog the repo. Editing existing tests is fine; to check your own work, write a temporary script instead of committing new tests.
-- **Run the contributor checks**: run `uv run pre-commit install` once, then for touched areas `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` (see `docs/legacy/development.md`).
+- **Run the contributor checks**: run `uv run pre-commit install` once, then for touched areas `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files`.

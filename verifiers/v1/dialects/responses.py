@@ -28,7 +28,7 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_allowed_domains,
 )
-from verifiers.v1.errors import OverlongPromptError, model_error
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -322,15 +322,11 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         detail = ": ".join(str(value) for value in (status, code, message) if value)
-        if code == "context_length_exceeded":
-            raise OverlongPromptError(
-                f"upstream Responses request did not complete: {detail}"
-            )
         status_code = (
             429
             if code in ("rate_limit_exceeded", "rate_limit_error")
             else 400
-            if code == "invalid_prompt"
+            if code in ("invalid_prompt", "context_length_exceeded")
             else 502
         )
         raise model_error(

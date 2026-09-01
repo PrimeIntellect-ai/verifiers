@@ -2,7 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.clients import (
     BaseClientConfig,
@@ -81,6 +81,13 @@ from verifiers.v1.runtimes import (
     RuntimeInfo,
     RuntimeProcess,
     SubprocessConfig,
+)
+from verifiers.v1.semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    ACPInfo,
+    ParentLink,
+    SemanticEdge,
+    SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -226,6 +233,11 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
+    "ACPInfo",
+    "ACP_SEMANTIC_EDGES_METADATA_KEY",
+    "ParentLink",
+    "SemanticEdge",
+    "SemanticEdgeSet",
     "PolicyEvent",
     "TrainRunInfo",
     "TrainWorkInfo",
@@ -280,6 +292,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "HarnessConfig",
     "ACPConfig",
     "ACPHarness",
+    "ACPTurn",
     "ModelContext",
     "Runtime",
     "RuntimeProcess",
