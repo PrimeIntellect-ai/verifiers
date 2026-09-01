@@ -142,10 +142,10 @@ class MessageNode(BaseModel):
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
-    """vLLM sampling masks for this node's sampled tokens.
+    """Sampling masks for this node's sampled tokens.
 
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
-    nodes only. The field rides the wire as raw-byte `__nd__` dictionaries.
+    nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

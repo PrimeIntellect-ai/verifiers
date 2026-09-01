@@ -344,7 +344,7 @@ class Branch(BaseModel):
 
     @property
     def sampling_mask(self) -> SamplingMask | None:
-        """vLLM sampling masks aligned to this branch's token ids."""
+        """Sampling masks aligned to this branch's token ids."""
         if all(n.sampling_mask is None for n in self.nodes):
             return None
         # Attribution validates each mask against the node's sampled positions.

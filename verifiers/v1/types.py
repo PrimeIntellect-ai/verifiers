@@ -186,7 +186,7 @@ class RoutedExperts(TypedDict):
 
 @dataclass
 class SamplingMask:
-    """vLLM sampling masks stored as flat int32 `ids` and `counts` arrays.
+    """Sampling masks stored as flat int32 `ids` and `counts` arrays.
 
     Each row contains the token ids that survived sampling filters for one completion
     token. Row boundaries are recovered from `counts`.
@@ -236,7 +236,7 @@ class TurnTokens(BaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): vLLM's per-completion-token sampling masks,
+    # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
 
