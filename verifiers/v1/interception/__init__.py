@@ -34,11 +34,6 @@ InterceptionConfig = Annotated[
 
 DIRECT_TOOL_SOURCE = (Path(__file__).resolve().parent / "direct.py").read_text()
 TOOL_CONTENT_SOURCE = (Path(__file__).resolve().parent / "content.mjs").read_text()
-DIRECT_CHAT_SOURCE = (
-    (Path(__file__).resolve().parent / "chat.py")
-    .read_text()
-    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
-)
 
 
 def prepare_tool_interception(
@@ -134,7 +129,6 @@ async def serve_interception(
 
 
 __all__ = [
-    "DIRECT_CHAT_SOURCE",
     "DIRECT_TOOL_SOURCE",
     "TOOL_CONTENT_SOURCE",
     "BaseInterceptionConfig",

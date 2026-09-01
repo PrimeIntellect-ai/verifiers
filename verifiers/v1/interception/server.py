@@ -410,9 +410,7 @@ class InterceptionServer(Interception):
         try:
             async with session.tool_interception_lock:
                 if session.released:
-                    return web.json_response(
-                        {"error": "rollout concluded"}, status=409
-                    )
+                    return web.json_response({"error": "rollout concluded"}, status=409)
                 if session.stopped:
                     return web.json_response(
                         {"action": "stop", "reason": session.trace.stop_condition}
