@@ -52,16 +52,9 @@ class RunConfig(BaseConfig):
     """The platform's run id once `prime_runs.init()` has opened the run (see
     `adopt_id`); the local uuid until then, and for a run that stays local."""
 
-    _source: str | None = PrivateAttr(default=None)
-    """The `@ file.toml` this run was launched from, recorded by the CLI."""
-
     @property
     def id(self) -> str:
         return self._id
-
-    @property
-    def source(self) -> str | None:
-        return self._source
 
     def adopt_id(self, run_id: str) -> None:
         """Take the platform's run id as this run's id.
@@ -69,11 +62,6 @@ class RunConfig(BaseConfig):
         Called once, before the first rollout, so that every trace is stamped
         with the id the platform knows the run by."""
         self._id = run_id
-
-    def record_source(self, path: str | None) -> None:
-        """Remember the config file the run was launched from, so it can be
-        uploaded verbatim with the run."""
-        self._source = path
 
 
 class EvalConfig(BaseConfig):

@@ -1,13 +1,10 @@
 """The eval's run on the Prime Intellect platform (`--no-push` to keep it local)."""
 
 import asyncio
-import json
 import logging
 import os
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import prime_runs as pr
@@ -19,34 +16,15 @@ from verifiers.v1.episode import Episode
 logger = logging.getLogger(__name__)
 
 FRAMEWORK = "verifiers"
-REDACTED = "<redacted>"
 
 __all__ = [
     "PushState",
     "abort_run",
     "build_samples",
-    "credential_tables",
     "finish_run",
     "open_run",
     "run_config",
-    "scrub_secrets",
 ]
-
-# The two places a config can carry a credential. Neither is found by key
-# name: both are free-form string tables, so everything under them is masked,
-# whatever a value is called. The API key itself never enters the config
-# (`api_key_var` names an environment variable), and the harness table has
-# `forward_env` for exactly this reason.
-#
-# - `headers`: a client's extra request headers (`Authorization`, `x-api-key`
-#   for a proxy or a non-Prime endpoint) — the top-level client and any seat's.
-# - `harness.env`: a seat's program variables (`SERPER_API_KEY`).
-
-
-def _is_credential_table(key: Any, parent: Any, value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    return key == "headers" or (key == "env" and parent == "harness")
 
 
 @dataclass
@@ -148,108 +126,23 @@ def open_run(
 def run_config(
     config: EvalConfig, *, num_examples: int | None = None
 ) -> dict[str, Any]:
-    """What the run was configured with, as the dashboard stores it.
+    """What the run was configured with, as the dashboard stores it: the handful
+    of v0 keys its lists and reproduce command read (`model`, `num_examples`,
+    `rollouts_per_example`) — what the pre-SDK upload sent.
 
-    The fields somebody actually set, with the credential tables masked; the
-    handful of v0 keys the dashboard reads for its lists (`model`,
-    `num_examples`, `rollouts_per_example`); and, when the run was launched
-    from one, the config file itself byte for byte — but only if it sets no
-    credential table, since a file cannot be masked without rewriting it."""
-    values: dict[str, Any] = scrub_secrets(
-        config.model_dump(mode="json", exclude_unset=True)
-    )
-    # `model_dump(exclude_unset=True)` drops defaults; the dashboard reads these
-    # unconditionally (the evals list, the reproduce command).
-    values.setdefault("model", config.model)
-    values["num_examples"] = (
-        num_examples
-        if num_examples is not None
-        else (config.num_tasks if config.num_tasks is not None else -1)
-    )
-    values["rollouts_per_example"] = config.num_rollouts
-
-    source = config.run.source
-    if source is not None:
-        try:
-            tables = credential_tables(source)
-        except pr.ConfigurationError as e:
-            logger.warning("--push: not recording the run's config file (%s)", e)
-        else:
-            if tables:
-                logger.warning(
-                    "--push: not recording the run's config file: it sets %s. Keep "
-                    "credentials in the environment (`api_key_var`, `forward_env`) "
-                    "instead.",
-                    ", ".join(tables),
-                )
-            else:
-                try:
-                    values[pr.CONFIG_SOURCE_KEY] = pr.ConfigSource.from_file(
-                        source
-                    ).to_dict()
-                except pr.ConfigurationError as e:
-                    logger.warning(
-                        "--push: not recording the run's config file (%s)", e
-                    )
-    return values
-
-
-def scrub_secrets(value: Any, _parent: Any = None) -> Any:
-    """A copy of a config dump with every value in a credential table masked."""
-    if isinstance(value, dict):
-        return {
-            key: {name: REDACTED for name in item}
-            if _is_credential_table(key, _parent, item)
-            else scrub_secrets(item, key)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [scrub_secrets(item, _parent) for item in value]
-    return value
-
-
-def credential_tables(path: "str | os.PathLike[str]") -> list[str]:
-    """Dotted paths of the non-empty credential tables in a config file.
-
-    The file is parsed (TOML or JSON, by suffix) rather than scanned: a value's
-    shape is then irrelevant. Raises `ConfigurationError` for a file that cannot
-    be inspected, which the caller treats as "do not upload"."""
-    resolved = Path(path)
-    suffix = resolved.suffix.lower()
-    try:
-        raw = resolved.read_bytes()
-    except OSError as e:
-        raise pr.ConfigurationError(f"{path}: {e}") from e
-    try:
-        if suffix == ".toml":
-            document = tomllib.loads(raw.decode("utf-8"))
-        elif suffix == ".json":
-            document = json.loads(raw.decode("utf-8"))
-        else:
-            raise pr.ConfigurationError(
-                f"{path}: cannot inspect a {suffix or 'suffix-less'} file for credentials"
-            )
-    except (ValueError, UnicodeDecodeError) as e:
-        raise pr.ConfigurationError(f"{path}: could not parse it: {e}") from e
-    found: list[str] = []
-    _collect_credential_tables(document, "", None, found)
-    return found
-
-
-def _collect_credential_tables(
-    value: Any, prefix: str, parent: Any, found: list[str]
-) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            here = f"{prefix}.{key}" if prefix else str(key)
-            if _is_credential_table(key, parent, item):
-                if item:
-                    found.append(here)
-            else:
-                _collect_credential_tables(item, here, key, found)
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _collect_credential_tables(item, f"{prefix}[{index}]", parent, found)
+    The config itself is deliberately not uploaded yet. A dump or the launched
+    file can carry credentials (`client.headers`, `harness.env`), so uploading
+    either needs masking that belongs with the platform's rendering of it;
+    that lands together, as a follow-up."""
+    return {
+        "model": config.model,
+        "num_examples": (
+            num_examples
+            if num_examples is not None
+            else (config.num_tasks if config.num_tasks is not None else -1)
+        ),
+        "rollouts_per_example": config.num_rollouts,
+    }
 
 
 def finish_run(

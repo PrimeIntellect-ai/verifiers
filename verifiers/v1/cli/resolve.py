@@ -46,16 +46,6 @@ def references_config_file(argv: list[str]) -> bool:
     return any(arg.startswith("@") for arg in argv)
 
 
-def config_file_ref(argv: list[str]) -> str | None:
-    """The file a run was launched from — the root-level `@ <path>` or None."""
-    paths = [
-        argv[i + 1]
-        for i, arg in enumerate(argv)
-        if arg == "@" and i + 1 < len(argv) and not (i and argv[i - 1].startswith("--"))
-    ]
-    return paths[0] if len(paths) == 1 else None
-
-
 def extract_id(argv: list[str], field: str) -> str:
     """The chosen `<field>.id` from `--<field>.id <x>` (or `=<x>`) on the CLI, before
     the typed parse (the positional taskset shorthand is applied upstream). Two
