@@ -32,6 +32,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -464,6 +465,7 @@ class Rollout:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
             if not self._failed and self._opened:
+                assert runtime is not None
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
                     await asyncio.wait_for(
@@ -485,6 +487,11 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
+                if self.task.scoring_deferred:
+                    async with boundary(TaskError, "artifact collection"):
+                        trace.state.artifacts = await collect(
+                            runtime, self.task.data.artifacts
+                        )
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:

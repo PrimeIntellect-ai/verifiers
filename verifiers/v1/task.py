@@ -185,9 +185,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """An independent copy whose task signals are deferred to another runtime.
 
         Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
-        the state an environment collects before destroying the solver's runtime.
-        Only task metrics, rewards, and judges are skipped; harness metrics remain
-        attached to the solver trace.
+        state before declared artifacts are collected and the solver runtime is
+        destroyed. Only task metrics, rewards, and judges are skipped; harness
+        metrics remain attached to the solver trace.
         """
         clone = copy.deepcopy(self)
         clone.scoring_deferred = True
