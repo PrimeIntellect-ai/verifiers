@@ -2,11 +2,11 @@
 
 import hashlib
 import logging
-import random
 import shlex
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
@@ -34,30 +34,24 @@ class _SessionSnapshot(BaseModel):
     metrics: dict[str, int | float]
 
 
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the RLM agent loop."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
+
+
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(
-        default="4a6369611c06d3943ac40681f374a464feb706b9", min_length=1
-    )
+    version: str = Field(default="4ef3438", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install."""
     max_depth: int = 0
     """Recursion depth RLM may spawn sub-harnesses to."""
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
-    """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
-    past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
-    threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
-    `None` disables auto-compaction; ints must be positive."""
-
-    @model_validator(mode="after")
-    def validate_range(self) -> "RLMHarnessConfig":
-        value = self.summarize_at_tokens
-        if isinstance(value, tuple) and value[0] > value[1]:
-            raise ValueError(
-                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-            )
-        return self
+    compaction: CompactionConfig | None = None
+    """Context compaction policy. Set an empty config to use automatic thresholds."""
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -105,16 +99,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
-    def summarize_threshold(self, task_idx: int | None) -> int | None:
-        """Resolve a fixed or per-task compaction threshold."""
-        value = self.config.summarize_at_tokens
-        if value is None:
-            return None
-        if isinstance(value, tuple):
-            lo, hi = value
-            return random.Random(task_idx or 0).randint(lo, hi)
-        return value
-
     def _runtime_metadata(
         self,
         ctx: ModelContext,
@@ -122,9 +106,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        data: TaskData,
         system_prompt: str | None,
     ) -> JsonObject:
+        compaction = self.config.compaction
         payload = {
             "session_id": trace.id,
             "model": ctx.model,
@@ -134,7 +118,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             },
             "policy": {
                 "max_depth": self.config.max_depth,
-                "summarize_at_tokens": self.summarize_threshold(data.idx),
+                "compaction": compaction is not None,
+                "summarize_at_tokens": (
+                    compaction.summarize_at_tokens if compaction else None
+                ),
                 "max_concurrent_subagents": max(4, self.config.max_depth),
             },
             "system_prompt_path": None,
@@ -161,7 +148,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, data, system_prompt
+                ctx, trace, runtime, endpoint, secret, system_prompt
             ),
         )
 
