@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from prime_evals import prepare_upload, secret_values
 from pydantic import BaseModel
 
 from verifiers.v1.cli.output import read_upload_secret_fingerprints
@@ -22,7 +23,6 @@ from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.preflight import prepare_upload
 from verifiers.v1.utils.prime import load_prime_config
 
 logger = logging.getLogger(__name__)
@@ -317,7 +317,7 @@ def push_traces(
     # — log and skip the upload instead.
     try:
         clients = [config.client]
-        known_secrets = [api_key]
+        known_secrets = list(secret_values(api_key))
         secret_sources = []
         for trace in traces:
             agent = trace.agent.config
@@ -338,7 +338,7 @@ def push_traces(
         )
 
         samples = build_samples(episodes)
-        payload, redactions = prepare_upload(
+        prepared = prepare_upload(
             {
                 "name": config.run.name,
                 "metadata": metadata,
@@ -349,6 +349,8 @@ def push_traces(
             secret_sources,
             secret_fingerprints,
         )
+        payload = prepared.data
+        redactions = prepared.report.locations
         name = payload["name"]
         metadata = payload["metadata"]
         metrics = payload["metrics"]

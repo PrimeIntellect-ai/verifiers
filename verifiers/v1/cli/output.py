@@ -16,6 +16,7 @@ import os
 from functools import cache
 from pathlib import Path
 
+from prime_evals import SecretFingerprint, fingerprint_secret
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
@@ -24,7 +25,6 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.preflight import SecretFingerprint, fingerprint_secret
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
