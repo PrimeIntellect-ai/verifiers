@@ -29,10 +29,10 @@ from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
-    KeptTokens,
     Message,
     Messages,
     Sampling,
+    SamplingMask,
     Tool,
     ToolMessage,
     Usage,
@@ -48,7 +48,7 @@ EXCLUDE_FIELDS: dict = {
         "__all__": {
             "multi_modal_data",
             "routed_experts",
-            "kept_tokens",
+            "sampling_mask",
         }
     }
 }
@@ -329,28 +329,25 @@ class Branch(BaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
-    def kept_tokens(self) -> KeptTokens | None:
-        """int32 kept-set `counts` aligned 1:1 with `token_ids` plus flat `ids` in
-        position order; partial data scatters as 0 counts, no data returns None."""
-        if all(n.kept_tokens is None for n in self.nodes):
+    def sampling_mask(self) -> SamplingMask | None:
+        """vLLM sampling masks aligned to this branch's token ids."""
+        if all(n.sampling_mask is None for n in self.nodes):
             return None
-        # `_attribute_kept_tokens` validates counts/ids against the node's sampled
-        # tokens before setting the field, so this is a straight scatter+concat
-        # (a corrupted node would fail loudly on the scatter shape mismatch).
+        # Attribution validates each mask against the node's sampled positions.
         ids_parts: list[np.ndarray] = []
         counts_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
-            if node.kept_tokens is not None and len(node.kept_tokens.counts):
-                counts[np.nonzero(node.mask)[0]] = node.kept_tokens.counts
-                ids_parts.append(node.kept_tokens.ids)
+            if node.sampling_mask is not None and len(node.sampling_mask.counts):
+                counts[np.nonzero(node.mask)[0]] = node.sampling_mask.counts
+                ids_parts.append(node.sampling_mask.ids)
             counts_parts.append(counts)
         ids = (
             np.concatenate(ids_parts).astype(np.int32, copy=False)
             if ids_parts
             else np.zeros(0, dtype=np.int32)
         )
-        return KeptTokens(ids=ids, counts=np.concatenate(counts_parts))
+        return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
 
     @property
     def usage(self) -> Usage | None:

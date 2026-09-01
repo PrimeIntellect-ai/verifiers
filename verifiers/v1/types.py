@@ -185,18 +185,18 @@ class RoutedExperts(TypedDict):
 
 
 @dataclass
-class KeptTokens:
-    """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
-    in position order) and `counts` (kept-set size per completion token; 0 = no usable
-    mask) as flat int32 arrays (`len(ids) == sum(counts)`, row boundaries recovered
-    from `counts`). Built from vLLM's native `sampling_mask` payload on the `generate`
-    response (one list of surviving vocab ids per completion token)."""
+class SamplingMask:
+    """vLLM sampling masks stored as flat int32 `ids` and `counts` arrays.
+
+    Each row contains the token ids that survived sampling filters for one completion
+    token. Row boundaries are recovered from `counts`.
+    """
 
     ids: Any
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "KeptTokens":
+    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -236,11 +236,9 @@ class TurnTokens(BaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
-    # surviving top-p/top-k truncation, per completion token), attributed to the assistant
-    # node by the turn's `commit`, then dropped. None unless the engine ran with
-    # `--return-sampling-mask`.
-    kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): vLLM's per-completion-token sampling masks,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
