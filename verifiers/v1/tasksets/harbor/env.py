@@ -65,9 +65,8 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         Provision a fresh box from the task's verifier declaration, restore the
         solver's collected artifacts, stage `tests/`, run the verifier, and record
         its rewards (and any extra reward.json keys as metrics) on the solver's
-        trace. Infrastructure failures retry per `verifier_retries`; the last one
-        fails the episode — a grading box that can't be reached must never read
-        as reward 0."""
+        trace. Setup, restoration, staging, and scoring failures retry per
+        `verifier_retries`; the last one fails the episode."""
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
         solution = episode.traces[0]
