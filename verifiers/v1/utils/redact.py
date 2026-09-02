@@ -9,7 +9,7 @@ ordinary content is never rewritten. The prime CLI carries the same redactor
 import json
 import re
 from collections.abc import Iterator, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 REDACTED = "[REDACTED]"
 MIN_SECRET_LENGTH = 8
@@ -24,8 +24,9 @@ JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
     """The credentials in an environment-like mapping (variables, headers): every value
     under a credential-like name, and the password — or the bare user token — inside a
-    `scheme://user:password@host` value whatever its name (`DATABASE_URL`, `HTTP_PROXY`).
-    A username next to a password is a name, not a secret (`postgres`, the egress proxy's
+    `scheme://user:password@host` value whatever its name (`DATABASE_URL`, `HTTP_PROXY`),
+    as written and percent-decoded the way a client uses it. A username next to a
+    password is a name, not a secret (`postgres`, the egress proxy's
     `verifiers`), so a token placed there beside a dummy password (GitHub's legacy
     `token:x-oauth-basic`) is not recognised."""
     for name, value in mapping.items():
@@ -38,7 +39,7 @@ def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
         except ValueError:
             continue
         if "@" in parts.netloc and (userinfo := parts.password or parts.username):
-            yield userinfo
+            yield from {userinfo, unquote(userinfo)}
 
 
 class Redactor:

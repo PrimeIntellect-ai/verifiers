@@ -517,7 +517,8 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "intercept-token-0001",
         "hooks/abc/def",
         "judge-key-000000001",
-        "db-pass-000001",
+        "db%40pass-000001",
+        "db@pass-000001",  # the URL password as a client echoes it
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -544,7 +545,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                 prompt="q",
                 verifier_env={
                     "JUDGE_API_KEY": "judge-key-000000001",
-                    "DATABASE_URL": "postgres://app:db-pass-000001@db/x",
+                    "DATABASE_URL": "postgres://app:db%40pass-000001@db/x",
                     "MODE": "fast",
                 },
             ),
