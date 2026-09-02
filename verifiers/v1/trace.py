@@ -672,8 +672,21 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
-    def record_judge(self, response: JudgeResponse) -> None:
-        self.info.setdefault("judge", []).append(response.model_dump())
+    def record_judge_call(
+        self,
+        *,
+        name: str,
+        request: Mapping[str, Any],
+        response: JudgeResponse,
+    ) -> None:
+        """Record one complete judge request/response exchange."""
+        self.info.setdefault("judge_calls", []).append(
+            {
+                "name": name,
+                "request": dict(request),
+                "response": response.model_dump(),
+            }
+        )
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
