@@ -17,9 +17,9 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-GITHUB_RELEASE_URL = "https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/pr2002-artifacts/releases"
-PRIME_AGENT_COMMIT: Literal["41985b989f65730b02754dd9fa8da1ce8b129dc3"] = (
-    "41985b989f65730b02754dd9fa8da1ce8b129dc3"
+GITHUB_RELEASE_URL = "https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/1f585903b9bcd7baed8d515ece1b14308b88c00b/releases"
+PRIME_AGENT_COMMIT: Literal["2a4574827e7f2a9b8cff7a8d6130b6f2d9eea923"] = (
+    "2a4574827e7f2a9b8cff7a8d6130b6f2d9eea923"
 )
 PRIME_AGENT_VERSION = "0.9.1"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
@@ -50,7 +50,7 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    'bcf756d6896ce9abd6b8273a6f1b3a0468e7312b6d66f9abe5f1dd17b05385d4' "$agent_tarball" \
+    '143332fd17c98a2112236b556d27caa917a6017d9728c2998b8ac6377bb48dd6' "$agent_tarball" \
     'c1f3b90ab61fcd0a932bd25218de26ee9e7d7b86810f36aaf4b6d32a099adf55' "$ai_tarball" \
     '416956760079596f137fc8e4d27de92b7ce0874896f45a2949000eb48e932543' "$core_tarball" \
     'f84721fea2f5dea721459300ff56e204db908bf52159bfddf79c1acc215db9a6' "$tui_tarball" \
@@ -86,7 +86,7 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["41985b989f65730b02754dd9fa8da1ce8b129dc3"] = PRIME_AGENT_COMMIT
+    commit: Literal["2a4574827e7f2a9b8cff7a8d6130b6f2d9eea923"] = PRIME_AGENT_COMMIT
     """Prime Agent main commit to install."""
 
     autonomous: bool = False
