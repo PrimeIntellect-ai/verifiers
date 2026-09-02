@@ -166,6 +166,7 @@ class ContainerRuntime(Runtime):
             'vf-process "$@"; '
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
+        control = await self._exec({})
         proc = await asyncio.create_subprocess_exec(
             *await self._exec(self.process_env(env), stdin=True),
             "sh",
@@ -178,7 +179,6 @@ class ContainerRuntime(Runtime):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        control = await self._exec({})
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5
         exited = False
