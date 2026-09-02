@@ -515,6 +515,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     )
     monkeypatch.setenv("GITHUB_PAT", "ghp_pat_000000000001")  # PAT, but PATH is not
     monkeypatch.setenv("PYTHONPATH", "/opt/keep/this/path")
+    monkeypatch.setenv(
+        "SSH_AUTH_SOCK", "/tmp/ssh-agent/agent.123"
+    )  # about auth, not auth
     client = EvalClientConfig(
         base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
@@ -558,7 +561,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     }
     echo = (
         " ".join(sorted(secrets))
-        + " debug=1 plain-header production-realm /opt/keep/this/path"
+        + " debug=1 plain-header production-realm /opt/keep/this/path /tmp/ssh-agent/agent.123"
     )
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
     tool_result = (
@@ -656,7 +659,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     assert "upload_secrets" not in native
     messages = payload["samples"][0]["completion"]
     assert messages[1]["content"].endswith(
-        "debug=1 plain-header production-realm /opt/keep/this/path"
+        "debug=1 plain-header production-realm /opt/keep/this/path /tmp/ssh-agent/agent.123"
     )
     assert json.loads(messages[2]["content"]) == {
         "env": {
