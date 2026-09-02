@@ -51,10 +51,10 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    '46c24db1782dd31adc35d5c6cbcc75564faba6ced3bf2ccf03d836ee77134475' "$agent_tarball" \
-    'f6c3bdb6093bc24a327546fe865ef9a4a172c734fcd4c4093e30c19476f0134d' "$ai_tarball" \
-    '0cc3660953545f8ac9a7e704fcb9875f954d58c3085304080ef615c280aa5748' "$core_tarball" \
-    'bd07bccee0ca495565b1d62e9411f3fdebe49e3dfa52870564f08af5e61fde15' "$tui_tarball" \
+    '573bce0cd004fc62052e9a924089941b7f39266ab71e66a94c85a1f9d35835ba' "$agent_tarball" \
+    '11b5b4cf67b6bb2d3420a44fb69181bc9d94d81e69a2b4fde07eb9c99f5faf4f' "$ai_tarball" \
+    'fb6f3a5dcc8b69c5eeb3beff722b5e0f09885c14849db50bc1d7c0f1d064151c' "$core_tarball" \
+    '4f3eaca2814944d3993073e0b88c0bde54a641ddb5132fbe107e392b997e38ec' "$tui_tarball" \
     > "$download_dir/SHA256SUMS"
 (cd "$download_dir" && sha256sum -c SHA256SUMS)
 mkdir "$download_dir/package-root"
