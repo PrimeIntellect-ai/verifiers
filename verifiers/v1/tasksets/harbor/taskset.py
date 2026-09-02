@@ -38,7 +38,7 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import Artifact, collect
+from verifiers.v1.utils.artifacts import Artifact
 from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -247,7 +247,6 @@ class HarborTask(Task[HarborData]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     async def stage_verifier(self, runtime: Runtime) -> None:
         # An artifact under /tests must not replace the task package's verifier.

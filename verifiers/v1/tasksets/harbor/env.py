@@ -4,8 +4,8 @@ grading for tasks that declare ``[verifier].environment_mode = "separate"``.
 The default env for harbor runs (the taskset package exports it). A shared-verifier
 task runs exactly as under the single-agent env: one `agent` trace, graded in the
 box it worked in. A separate-verifier task is graded by `finalize` instead: the
-solver's declared artifacts travel (collected by its task `finalize` while its box
-is alive), a fresh box is provisioned from the task's verifier declaration,
+solver's declared artifacts travel (collected after its task `finalize` while its
+box is alive), a fresh box is provisioned from the task's verifier declaration,
 `tests/` is staged there, and the verifier's rewards land on the solver's trace.
 No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """

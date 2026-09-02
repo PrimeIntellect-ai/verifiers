@@ -468,12 +468,15 @@ class Rollout:
                 assert runtime is not None
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
-                    await asyncio.wait_for(
-                        invoke(
+                    async with asyncio.timeout(self._timeouts.finalize):
+                        await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
-                        ),
-                        self._timeouts.finalize,
-                    )
+                        )
+                        if self.task.scoring_deferred:
+                            async with boundary(TaskError, "artifact collection"):
+                                trace.state.artifacts = await collect(
+                                    runtime, self.task.data.artifacts
+                                )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
@@ -487,11 +490,6 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
-                if self.task.scoring_deferred:
-                    async with boundary(TaskError, "artifact collection"):
-                        trace.state.artifacts = await collect(
-                            runtime, self.task.data.artifacts
-                        )
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
