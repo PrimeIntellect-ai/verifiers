@@ -41,6 +41,8 @@ class EnvTask(vf.TaskData):
     """A nested block with its own `env`, as Harbor's `verifier.env`."""
     db_url: str = ""
     """A connection string outside any environment mapping."""
+    ws_url: str = ""
+    """An endpoint authenticated through its query string."""
 
 
 class FailingSegmentRollout:
@@ -543,6 +545,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
         "pg-pass-000001",
         "task-url-pass-0001",
+        "query-token-0001",
         "seat-key-000001",
         "episode-token-0001",  # only in the episode's own task, not the trace's
     }
@@ -576,6 +579,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                 },
                 verifier={"env": {"GRADER_TOKEN": "grader-token-0001", "N": "1"}},
                 db_url="postgres://svc:task-url-pass-0001@db/y",
+                ws_url="wss://browser.example/devtools?token=query-token-0001&v=2",
             ),
         ),
         nodes=[
@@ -594,7 +598,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         task=vf.TraceTask(
             type="EnvTask",
             data=EnvTask(
-                idx=0, prompt="q", verifier_env={"ROOT_TOKEN": "episode-token-0001"}
+                idx=0,
+                prompt="see ?token=prose-token-0001",
+                verifier_env={"ROOT_TOKEN": "episode-token-0001"},
             ),
         ),
         traces=[trace],
@@ -663,6 +669,14 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "env": {"GRADER_TOKEN": "[REDACTED]", "N": "1"}
     }
     assert payload["samples"][0]["task"]["db_url"] == "postgres://svc:[REDACTED]@db/y"
+    assert (
+        payload["samples"][0]["task"]["ws_url"]
+        == "wss://browser.example/devtools?token=[REDACTED]&v=2"
+    )
+    assert (
+        payload["samples"][0]["info"]["native_wrapper"]["task"]["data"]["prompt"]
+        == "see ?token=prose-token-0001"
+    )
     # The saved record keeps the run reproducible; only the tokens stay off disk.
     record = episode.to_record()["traces"][0]
     assert (

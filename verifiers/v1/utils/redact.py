@@ -27,21 +27,27 @@ JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 def url_credentials(value: str) -> Iterator[str]:
-    """The password — or the bare user token — inside a `scheme://user:password@host`
-    value, as written and percent-decoded the way a client uses it. A username next to a
-    password is a name, not a secret (`postgres`, the egress proxy's `verifiers`), so a
-    token placed there beside a dummy password (GitHub's legacy `token:x-oauth-basic`)
-    is not recognised."""
+    """The credentials inside a URL, as written and percent-decoded the way a client uses
+    them: the password — or the bare user token — of `scheme://user:password@host`, and
+    credential-named query values (`?token=…`). A username next to a password is a name,
+    not a secret (`postgres`), so a token placed there beside a dummy password (GitHub's
+    legacy `token:x-oauth-basic`) is not recognised. Prose is never a URL here: the
+    value must start with `scheme://host`."""
     try:
         parts = urlsplit(value)
     except ValueError:
         return
-    if "@" not in parts.netloc:
+    if not (parts.scheme and parts.netloc):
         return
-    # With a password slot, even an empty one, the username is a name, not a token.
-    userinfo = parts.username if parts.password is None else parts.password
-    if userinfo:
-        yield from {userinfo, unquote(userinfo)}
+    if "@" in parts.netloc:
+        # With a password slot, even an empty one, the username is a name, not a token.
+        userinfo = parts.username if parts.password is None else parts.password
+        if userinfo:
+            yield from {userinfo, unquote(userinfo)}
+    for pair in parts.query.split("&"):
+        name, _, raw = pair.partition("=")
+        if raw and SECRET_NAME.search(name):
+            yield from {raw, unquote(raw)}
 
 
 def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
