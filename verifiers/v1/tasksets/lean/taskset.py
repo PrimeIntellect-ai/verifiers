@@ -126,11 +126,11 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         trace.info["compile_output"] = output[-4000:]
         return 1.0 if compiled else 0.0
 
-    async def validate(self, runtime: Runtime) -> bool:
+    async def validate(self, runtime: Runtime) -> bool | None:
         """Compile the gold proof; rows without one have nothing to preflight."""
         gold = (self.data.formal_proof or "").rstrip()
         if not gold:
-            return True
+            return None
         content = build_starter_file(
             self.data.formal_statement,
             header=self.data.header,
@@ -145,7 +145,12 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
     def load(self) -> Iterator[LeanTask]:
-        from datasets import load_dataset
+        try:
+            from datasets import load_dataset
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "the Lean taskset requires the `lean` extra; install `verifiers[lean]`"
+            ) from e
 
         config = self.config
         ds = config.dataset

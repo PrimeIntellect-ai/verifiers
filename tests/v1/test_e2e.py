@@ -85,6 +85,12 @@ ACP_RESUME_PLACEMENTS = [
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pytest.param(
+        "prime-agent",
+        "prime",
+        marks=[mark.prime],
+        id="prime-agent-acp-in-prime-vm",
+    ),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
@@ -257,6 +263,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
+    assert trace.root_reply == segments[1]["last_reply"]
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
     if harness.id != "kimi-code":
         assert trace.num_branches == 1
@@ -266,6 +273,21 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["tool_outputs"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
+        assert all(call.acp is not None for call in trace.calls)
+        assert all(
+            trace.nodes[parent.node].sampled and node.sampled
+            for node in trace.nodes
+            for parent in node.semantic_parents
+        )
+    if harness.id == "prime-agent":
+        lifecycle = trace.info["acp_lifecycle"]["ai.primeintellect.prime-agent"]
+        assert len(lifecycle) == 2
+        for status in lifecycle:
+            assert status["infrastructure_status"] == "ok"
+            assert status["terminal_quiescence_observed"] is True
+            assert (
+                status["terminal_quiescence"]["quiescence"]["outstandingSubagents"] == 0
+            )
 
 
 @pytest.mark.e2e
@@ -288,10 +310,10 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
-    # The interception server captured the advertised tools onto the trace (for tool-use SFT):
-    # the null harness offered the task's MCP tool as `echo_back`, schema included.
+    # The interception server captured the harness's advertised name and schema. Harnesses
+    # may qualify the same raw MCP tool differently, so the test checks its stable suffix.
     assert trace.tools
-    (echo_tool,) = [t for t in trace.tools if t.name == "echo_back"]
+    (echo_tool,) = [tool for tool in trace.tools if tool.name.endswith("back")]
     assert "message" in echo_tool.parameters.get("properties", {})
 
 
@@ -382,7 +404,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
-    assert trace.info["judge"]  # the call was recorded onto the trace
+    assert trace.info["judge_calls"]  # the call was recorded onto the trace
 
 
 @pytest.mark.e2e
@@ -599,9 +621,9 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
-    # The tool was advertised to the masked chat exactly as to any run.
+    # The tool was advertised to the masked chat, regardless of harness qualification.
     assert assistant.tools
-    assert any(tool.name == "echo_back" for tool in assistant.tools)
+    assert any(tool.name.endswith("back") for tool in assistant.tools)
 
 
 @pytest.mark.e2e
@@ -679,11 +701,29 @@ async def test_replay_round_trip(run_v1, tmp_path):
     assert source.ok
     assert "lcs" in source.rewards
 
+    # Replay must not mix the source run's judge transcript into newly computed
+    # judge calls. Seed a saved call directly because this task scores without a
+    # judge; cleanup happens before task scoring and therefore does not inspect it.
+    import json
+
+    stream = run_dir / "traces.jsonl"
+    record = json.loads(stream.read_text())
+    record["traces"][0]["info"]["judge_calls"] = [
+        {
+            "name": "source-judge",
+            "request": {"model": "source-model", "messages": []},
+            "response": {
+                "message": {"role": "assistant", "content": "stale"},
+                "parsed": None,
+                "usage": None,
+            },
+        }
+    ]
+    stream.write_text(json.dumps(record) + "\n")
+
     async def replay(source_dir: Path, out: Path):
         # The CLI's layering, minus the argv plumbing: the saved run's config is the base
         # (`ReplayConfig` ignores its eval-only keys), the source's output_dir is dropped.
-        import json
-
         data = json.loads(saved_config_path(source_dir).read_text())
         data.pop("output_dir", None)
         config = ReplayConfig(**{**data, "rich": False})
@@ -698,6 +738,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
         # and recomputed the same value.
         assert replayed.rewards.keys() == source.rewards.keys()
         assert replayed.reward == pytest.approx(source.reward)
+        assert "judge_calls" not in replayed.info
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw

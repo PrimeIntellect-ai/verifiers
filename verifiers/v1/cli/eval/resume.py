@@ -4,30 +4,29 @@
 it. `load` keeps the good saved rollouts and re-runs what's owed: missing rollouts
 (never written) and errored ones (dropped and redone).
 
-A saved rollout is matched to a selected task by content: `task_key` hashes the
-task's wire data. Tasks with identical data are interchangeable, a task whose data
-changed since the interrupted run re-runs, and nothing depends on `data.idx`.
+A saved episode is matched to a selected task by its persisted `episode.task.hash`,
+falling back to hashing `episode.task.data` for older rows without one. Tasks with
+identical data are interchangeable, a task whose data changed since the interrupted
+run re-runs, and nothing depends on `data.idx`.
 """
 
-import json
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import TRACES_FILE, sniff_episode
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.cli.output import TRACES_FILE
+from verifiers.v1.episode import WireEpisode
 from verifiers.v1.task import task_key
-from verifiers.v1.trace import WireTrace
 
 
 def load(
     resume_dir: Path,
     selected_keys: list[str],
     num_rollouts: int,
-    complete: Callable[[Episode], bool] | None = None,
-) -> tuple[list[Episode], dict[str, int]]:
+    complete: Callable[[WireEpisode], bool] | None = None,
+) -> tuple[list[WireEpisode], dict[str, int]]:
     """Load the good saved rollouts and diff them against the run's target: returns
     (kept episodes, rollouts owed per task key). `selected_keys` is one key per
     selected task (duplicates allowed — a key selected k times is owed up to
@@ -40,37 +39,33 @@ def load(
         key: count * num_rollouts for key, count in Counter(selected_keys).items()
     }
 
-    def parse(row: dict) -> Episode:
-        if sniff_episode(row):
-            return WireEpisode.model_validate(row)
-        return Episode.of(WireTrace.model_validate(row))
-
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[str, list[tuple[bytes, Episode]]] = defaultdict(list)
+    good: dict[str, list[tuple[bytes, WireEpisode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
                 if not line.strip():
                     continue
                 try:
-                    try:
-                        row = from_json(line)
-                    except ValueError:
-                        row = json.loads(line)
-                    # The task rides each trace; a traceless record (a failure
-                    # before any trace minted) has no task and is owed again.
-                    if sniff_episode(row):
-                        key = task_key(row["traces"][0]["task"]["data"])
-                    else:
-                        key = task_key(row["task"]["data"])
+                    row = from_json(line)
+                    if "traces" not in row:
+                        continue
+                    task = row["task"]
+                    if not isinstance(task, dict):
+                        continue
+                    key = task.get("hash")
+                    if key is None:
+                        key = task_key(task["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
                     continue
+                if not isinstance(key, str):
+                    continue
                 if key not in targets or len(good[key]) >= targets[key]:
                     continue
                 try:
-                    episode = parse(row)
+                    episode = WireEpisode.model_validate(row)
                     if not verdict(episode):
                         continue
                 # A malformed row from any task/episode plugin is owed again.
@@ -80,7 +75,7 @@ def load(
                     (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
-    episodes: list[Episode] = []
+    episodes: list[WireEpisode] = []
     owed: dict[str, int] = {}
     for key, target in targets.items():
         rows = good.get(key, [])
@@ -92,11 +87,3 @@ def load(
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
     return episodes, owed
-
-
-def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    """Shown (before exit 0) when every selected rollout already completed."""
-    return (
-        f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
-        f"already completed without error"
-    )

@@ -2,10 +2,13 @@
 
 import contextlib
 import time
+from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
-from rich.console import Console, Group
+from rich import get_console
+from rich.console import Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
@@ -13,7 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
-from verifiers.v1.cli.output import output_path
+from verifiers.v1.cli.output import attempt_log_file, output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
@@ -24,7 +27,6 @@ from verifiers.v1.utils.format import (
     format_override,
     format_time,
 )
-from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
@@ -32,7 +34,7 @@ if TYPE_CHECKING:
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
-_CONSOLE = Console()
+_CONSOLE = get_console()
 _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
 # The under-bar breakdown pads its label column to the Overview's widest label, so the two
 # `label  value` grids (above and below the progress bar) line their values up.
@@ -187,10 +189,9 @@ def overrides(
     skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """`field=value` segments for the fields the *user* customized, sorted, diffed against each
-    field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
-    `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
-    `model_fields_set` would flag them all. `default` is the reference instance, threaded through
-    recursion so a pinned nested default (`taskset.task.tools`) reads as
+    field's declared default. Not `model_fields_set`: a `--resume` run reloads the full saved
+    JSON config, so `model_fields_set` would flag every field. `default` is the reference instance,
+    threaded through recursion so a pinned nested default (`taskset.task.tools`) reads as
     unchanged. `skip` holds dotted paths (`runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
@@ -240,7 +241,7 @@ def Overview(config: EvalConfig) -> Table:
     taskset = config.env.taskset
     env_label = taskset.name if taskset.id else "no taskset"
     if config.env.id:
-        env_label = f"{env_name(config.env.id)}+{env_label}"
+        env_label = f"{config.env.id}+{env_label}"
     # One seat story when every seat resolves the same way (the common case); one
     # row per seat when they diverge (a judge on its own harness/runtime).
     runtimes = {role: getattr(config.env, role).runtime.type for role in seats}
@@ -500,10 +501,11 @@ def _stage(trace: Trace) -> str:
 
 def _started(slot: RunSlot) -> float:
     # Sort key: when a rollout began (its first trace's boot start; setup for
-    # pre-boot-span traces on resume). A still-pending rollout has no trace yet, so it
-    # sorts last (+inf) — behind everything already in flight, in task order.
+    # pre-boot-span traces on resume; the slot's own dispatch stamp on a served run).
+    # A still-pending rollout has neither, so it sorts last (+inf) — behind everything
+    # already in flight, in task order.
     if not slot.traces:
-        return float("inf")
+        return slot.started if slot.started is not None else float("inf")
     return min(t.timing.boot.start or t.timing.setup.start for t in slot.traces)
 
 
@@ -549,6 +551,13 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                             error.type if error is not None else "error",
                             "",
                         )
+                    )
+                elif slot.started is not None:
+                    # Dispatched to an env server: running, but with no live trace to
+                    # read stages/turns from — detail lands when the episode completes.
+                    elapsed = format_time(now - slot.started)
+                    group_rows.append(
+                        ("running", [f"task {base}", *[""] * 7], "", elapsed)
                     )
                 else:  # queued behind the concurrency cap — only its task is known yet
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
@@ -688,6 +697,55 @@ class Pager:
         return self.page
 
 
+_TAIL_BYTES = 256 * 1024
+"""How far back into a pre-existing log file the tail's first read reaches."""
+
+
+class LogTail:
+    """Incremental tail of the run's log file for `--rich.show-logs`: read only what
+    was appended since the last frame, keep a bounded window of whole lines."""
+
+    def __init__(self, path: Path, max_lines: int = 1000) -> None:
+        self.path = path
+        self.lines: deque[str] = deque(maxlen=max_lines)
+        self._pos: int | None = None
+        self._partial = ""
+
+    def _poll(self) -> None:
+        try:
+            size = self.path.stat().st_size
+        except OSError:  # not written yet — the first record creates it
+            return
+        if (
+            self._pos is not None and size < self._pos
+        ):  # truncated/replaced — start over
+            self._pos, self._partial = None, ""
+        if size == self._pos:
+            return
+        # The first read starts at most _TAIL_BYTES from the end: a pre-existing file
+        # (a reused run dir) must not be read whole on the render path.
+        first = self._pos is None
+        start = max(0, size - _TAIL_BYTES) if first else self._pos
+        with self.path.open("rb") as file:
+            file.seek(start)
+            data = file.read()
+            self._pos = file.tell()
+        chunk = data.decode("utf-8", errors="replace")
+        *complete, self._partial = (self._partial + chunk).split("\n")
+        if first and start:  # landed mid-line — drop the cut first line
+            complete = complete[1:]
+        self.lines.extend(complete)
+
+    def view(self, height: int) -> Group:
+        """The newest lines that fit, one Text per line (no markup parsing — log
+        content stays literal), each cropped to the terminal width."""
+        self._poll()
+        window = list(self.lines)[-height:]
+        return Group(
+            *(Text(line, no_wrap=True, overflow="ellipsis") for line in window)
+        )
+
+
 def _rows_of(group: list[RunSlot]) -> int:
     """How many display rows a task's slots take: one per trace, one for a slot with
     none yet (pending) or none at all (the env's hook failed before any trace)."""
@@ -724,45 +782,43 @@ def _paginate(
 
 def _render(
     slots: list[RunSlot],
-    config: EvalConfig,
     start: float,
     pager: Pager,
+    header: Group | Table,
+    runtime_type: str,
     push: "PushState | None" = None,
+    tail: LogTail | None = None,
 ) -> Group:
     now = time.time()
-    warning = _warning(config)
-    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
     footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
     footer = Group(*footers) if footers else None
-    top = Group(header, Progress(slots, start), Rule(style="dim"))
+    progress = Progress(slots, start)
+    top = Group(header, progress, Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
+    if tail is not None:  # --show-logs: the run's log stream in place of rollout rows
+        parts = [
+            header,
+            progress,
+            Rule(style="dim"),
+            tail.view(rows_per_page),
+        ]
+        if footer is not None:
+            parts.append(footer)
+        return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
-    progress = Progress(
-        slots,
-        start,
-        page=(index + 1, count) if count > 1 else None,
-    )
+    if count > 1:
+        progress = Progress(slots, start, page=(index + 1, count))
     parts = [
         header,
         progress,
         Rule(style="dim"),
-        Rows(
-            page_groups,
-            now,
-            "/".join(
-                dict.fromkeys(
-                    getattr(config.env, role).runtime.type
-                    for role in config.env.agent_harnesses()
-                )
-            )
-            or "subprocess",
-        ),
+        Rows(page_groups, now, runtime_type),
     ]
     if footer is not None:
         parts.append(footer)
@@ -777,8 +833,24 @@ async def dashboard(
     push: "PushState | None" = None,
 ):
     pager = Pager()
+    warning = _warning(config)
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    runtime_type = (
+        "/".join(
+            dict.fromkeys(
+                getattr(config.env, role).runtime.type
+                for role in config.env.agent_harnesses()
+            )
+        )
+        or "subprocess"
+    )
+    tail = (
+        LogTail(attempt_log_file(output_path(config)))
+        if config.rich is not None and config.rich.show_logs
+        else None
+    )
     async with live_view(
-        lambda: _render(slots, config, start, pager, push),
-        on_key=pager.on_key,
+        lambda: _render(slots, start, pager, header, runtime_type, push, tail),
+        on_key=None if tail is not None else pager.on_key,
     ):
         yield

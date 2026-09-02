@@ -92,7 +92,20 @@ def fake_judge_model(monkeypatch):
         if parse is not None:
             response.parsed = parse(response)
         if trace is not None:
-            trace.record_judge(response)
+            from verifiers.v1.dialects.chat import message_to_wire
+
+            wire = (
+                [{"role": "user", "content": messages}]
+                if isinstance(messages, str)
+                else [message_to_wire(message) for message in messages]
+            )
+            kwargs = {"model": self.config.model, "messages": wire}
+            kwargs.update(sampling)
+            trace.record_judge_call(
+                name=self.reward_name,
+                request={"model": kwargs["model"], "messages": kwargs["messages"]},
+                response=response,
+            )
         return response
 
     monkeypatch.setattr(Judge, "complete", fake_complete)
@@ -184,7 +197,7 @@ def test_judges_reject_shared_reward_keys():
 
 
 def test_reward_name_fallback():
-    # name > id's package name > snake-cased class name (code-level judge with neither).
+    # name > id > snake-cased class name (code-level judge with neither).
     class MyQualityJudge(vf.Judge[float]):
         prompt = "{x}"
 
@@ -192,7 +205,7 @@ def test_reward_name_fallback():
         vf.ReferenceJudge().reward_name == "reference"
     )  # class-name fallback (no id set)
     assert (
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="org/my-judge@1.0.0")).reward_name
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="my-judge")).reward_name
         == "my-judge"
     )
     assert vf.ReferenceJudge(vf.ReferenceJudgeConfig(name="gold")).reward_name == "gold"
@@ -225,7 +238,43 @@ async def test_reference_score(fake_judge_model):
     assert (
         "Capital of France?" in fake_judge_model[0]
     )  # the task prompt is in the judge prompt
-    assert len(trace.info["judge"]) == 1  # the call is recorded onto the trace
+    assert len(trace.info["judge_calls"]) == 1  # the call is recorded onto the trace
+    judge_record = trace.info["judge_calls"][0]
+    assert judge_record["name"] == "reference"
+    assert judge_record["request"]["model"] == "openai/gpt-5.4-nano"
+    assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
+    assert judge_record["response"]["message"] == {
+        "role": "assistant",
+        "content": "yes",
+        "reasoning_content": None,
+        "tool_calls": None,
+        "provider_state": None,
+    }
+    assert judge_record["response"]["parsed"] == 1.0
+
+    request_messages = [{"role": "user", "content": "original"}]
+    request = {
+        "model": "openai/gpt-5.4-nano",
+        "messages": request_messages,
+    }
+    trace.record_judge_call(
+        name="snapshot",
+        request=request,
+        response=JudgeResponse(text="yes"),
+    )
+    request_messages[0]["content"] = "mutated"
+    assert (
+        trace.info["judge_calls"][-1]["request"]["messages"][0]["content"] == "original"
+    )
+
+    override_trace = make_trace()
+    await vf.ReferenceJudge().complete(
+        "Judge this response.", trace=override_trace, model="openai/gpt-5.4-mini"
+    )
+    assert (
+        override_trace.info["judge_calls"][0]["request"]["model"]
+        == "openai/gpt-5.4-mini"
+    )
 
     trace = make_trace(reply="It is Rome.")
     assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
@@ -446,7 +495,14 @@ async def test_error_attribution(monkeypatch, tmp_path):
             return response
         finally:
             if trace is not None:
-                trace.record_judge(response)
+                trace.record_judge_call(
+                    name=self.reward_name,
+                    request={
+                        "model": self.config.model,
+                        "messages": [{"role": "user", "content": messages}],
+                    },
+                    response=response,
+                )
 
     monkeypatch.setattr(Judge, "complete", gibberish_judge)
     taskset = JudgedTaskset(
@@ -463,7 +519,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
             trace, runtime=None
         )
     assert trace.rewards["reference"] is None  # seeded: expected but never scored
-    assert len(trace.info["judge"]) == 1  # the billed call is still recorded
+    assert len(trace.info["judge_calls"]) == 1  # the billed call is still recorded
 
 
 # --- rubric --------------------------------------------------------------------------------
@@ -542,7 +598,7 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
-    assert len(trace.info["judge"]) == 1  # one call for the whole rubric
+    assert len(trace.info["judge_calls"]) == 1  # one call for the whole rubric
 
 
 async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
@@ -652,7 +708,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
         trace.rewards["quality"].score == 0.75
     )  # the rubric's aggregate, under its `name`
     assert (
-        len(trace.info["judge"]) == 2
+        len(trace.info["judge_calls"]) == 2
     )  # every judge call recorded (rubric = one call)
 
 

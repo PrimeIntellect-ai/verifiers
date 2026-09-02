@@ -163,14 +163,19 @@ class Task(Generic[DataT, StateT, ConfigT]):
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
         return clone
 
+    def runtime_env(self) -> dict[str, str]:
+        """Live-only process environment; unlike TaskData, it is not traced."""
+        return {}
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
-    async def validate(self, runtime: Runtime) -> bool:
-        return True
+    async def validate(self, runtime: Runtime) -> bool | None:
+        """Check the ground truth, or return None when no model-free check exists."""
+        return None
 
     async def score(
         self,

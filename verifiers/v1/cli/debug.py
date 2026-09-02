@@ -224,6 +224,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         else task.data.timeout.setup
     )
     try:
+        runtime.env = dict(task.runtime_env())
         trace.timing.boot.start = time.time()
         await runtime.start()
         now = time.time()
@@ -239,7 +240,8 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         trace.timing.agent.start = time.time()
         debug.update(await run_action(runtime, config))
         trace.timing.agent.end = time.time()
-        if not debug.get("ok"):
+        trace.ok = bool(debug["ok"])
+        if not trace.ok:
             record_action_failure(trace, debug)
         trace.stop(str(debug["reason"]))
     except asyncio.CancelledError as e:
@@ -281,7 +283,7 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
         )
 
     out = output_path(config)
-    save_config(config, out)
+    save_config(config, out, "debug.json")
     logger.info(
         "debugging %d task(s) from %s on the %s runtime",
         len(tasks),

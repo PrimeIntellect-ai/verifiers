@@ -8,23 +8,27 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 """
 
 import json
+import re
 from collections import deque
-from typing import cast
 
-from openai.types.responses import (
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
     ResponseUsage,
 )
-from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel, ConfigDict
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
-    iter_sse_reverse,
+    parse_sse_event,
+    provider_allowed_domains,
 )
-from verifiers.v1.errors import OverlongPromptError, model_error
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -65,6 +69,7 @@ _CLIENT_TOOL_TYPES = (
     "computer_use_preview",
 )
 _CLIENT_TOOL_CHOICES = (*_CLIENT_TOOL_TYPES, "namespace", "tool_search", "shell")
+_WEB_SEARCH_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
 _SAFE_INPUT_TYPES = (
     "input_text",
     "input_file",
@@ -93,19 +98,17 @@ BLANK_PNG = (
 )
 
 
-class ProviderUsageInputTokensDetails(BaseModel):
+class ProviderUsageInputTokensDetails(InputTokensDetails):
     """Permissive input token details: OpenAI-compatible providers may omit fields
     the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
 
-    model_config = ConfigDict(extra="allow")
     cache_write_tokens: int | None = None
     cached_tokens: int | None = None
 
 
-class ProviderUsageOutputTokensDetails(BaseModel):
+class ProviderUsageOutputTokensDetails(OutputTokensDetails):
     """Permissive output token details: providers may omit ``reasoning_tokens``."""
 
-    model_config = ConfigDict(extra="allow")
     reasoning_tokens: int | None = None
 
 
@@ -142,7 +145,9 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
+def mediate_tools(
+    tools, path: str, policy: NetworkPolicyConfig
+) -> tuple[list[dict], list[str]]:
     if tools is not None and not isinstance(tools, list):
         return [], [path]
     mediated = []
@@ -153,11 +158,27 @@ def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
             capabilities.append(item_path)
             continue
         kind = tool.get("type")
+        if isinstance(kind, str) and _WEB_SEARCH_TOOL_TYPE(kind):
+            raw_filters = tool.get("filters")
+            if raw_filters is None or isinstance(raw_filters, dict):
+                requested = raw_filters.get("allowed_domains") if raw_filters else None
+                domains = provider_allowed_domains(policy, requested)
+            else:
+                domains = []
+            if domains:
+                filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+                filters["allowed_domains"] = domains
+                mediated.append({**tool, "filters": filters})
+                continue
+            capabilities.append(f"{item_path}.type")
+            continue
         if kind in _CLIENT_TOOL_TYPES:
             mediated.append(tool)
             continue
         if kind == "namespace":
-            nested, removed = mediate_tools(tool.get("tools"), f"{item_path}.tools")
+            nested, removed = mediate_tools(
+                tool.get("tools"), f"{item_path}.tools", policy
+            )
             capabilities.extend(removed)
             if nested:
                 mediated.append({**tool, "tools": nested})
@@ -177,10 +198,10 @@ def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
     return mediated, capabilities
 
 
-def blocked_content_path(value, path: str) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
                 return blocked
         return None
     if not isinstance(value, dict):
@@ -196,7 +217,9 @@ def blocked_content_path(value, path: str) -> str | None:
         if value.get("file_id"):
             return f"{path}.file_id"
         if "file_url" in value:
-            if not isinstance(value["file_url"], str) or blocked_url(value["file_url"]):
+            if not isinstance(value["file_url"], str) or blocked_url(
+                value["file_url"], policy
+            ):
                 return f"{path}.file_url"
         elif not isinstance(value.get("file_data"), str):
             return f"{path}.file_data"
@@ -204,7 +227,7 @@ def blocked_content_path(value, path: str) -> str | None:
         if value.get("file_id"):
             return f"{path}.file_id"
         if not isinstance(value.get("image_url"), str) or blocked_url(
-            value["image_url"]
+            value["image_url"], policy
         ):
             return f"{path}.image_url"
 
@@ -222,7 +245,7 @@ def blocked_content_path(value, path: str) -> str | None:
     if kind in ("additional_tools", "tool_search_output"):
         if kind == "tool_search_output" and value.get("execution") != "client":
             return f"{path}.execution"
-        _, removed = mediate_tools(value.get("tools"), f"{path}.tools")
+        _, removed = mediate_tools(value.get("tools"), f"{path}.tools", policy)
         return removed[0] if removed else None
 
     if kind in (
@@ -230,45 +253,47 @@ def blocked_content_path(value, path: str) -> str | None:
         "function_call_output",
         "custom_tool_call_output",
     ):
-        return blocked_content_path(value.get("output"), f"{path}.output")
+        return blocked_content_path(value.get("output"), f"{path}.output", policy)
     if kind in (None, "message") and "role" in value and "content" in value:
-        return blocked_content_path(value["content"], f"{path}.content")
+        return blocked_content_path(value["content"], f"{path}.content", policy)
     return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path)
+        blocked = blocked_content_path(value, path, policy)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
     capabilities = []
     for index, part in enumerate(value):
-        if blocked := blocked_content_path(part, f"{path}[{index}]"):
+        if blocked := blocked_content_path(part, f"{path}[{index}]", policy):
             capabilities.append(blocked)
             continue
         mediated.append(part)
     return mediated, capabilities
 
 
-def fold_assistant(items: list[dict]) -> AssistantMessage:
-    """One run of assistant-side items -> one typed assistant message."""
+def fold_assistant(items: list[dict] | None) -> AssistantMessage:
+    """Assistant-side Responses items -> one typed assistant message."""
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
-    for item in items:
-        if item.get("type") == "reasoning":
+    for item in items or []:
+        kind = item.get("type")
+        if kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif item.get("type") in ("function_call", "custom_tool_call"):
+        elif kind in ("function_call", "custom_tool_call"):
             calls.append(
                 ToolCall(
                     id=item.get("call_id", ""),
+                    type="custom" if kind == "custom_tool_call" else "function",
                     name=item.get("name", ""),
                     arguments=item.get("arguments", item.get("input", "")),
                 )
             )
-        else:  # an assistant message item
+        else:
             raw = item.get("content")
             content += (
                 raw
@@ -297,48 +322,22 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         detail = ": ".join(str(value) for value in (status, code, message) if value)
-        if code == "context_length_exceeded":
-            raise OverlongPromptError(
-                f"upstream Responses request did not complete: {detail}"
-            )
         status_code = (
             429
             if code in ("rate_limit_exceeded", "rate_limit_error")
             else 400
-            if code == "invalid_prompt"
+            if code in ("invalid_prompt", "context_length_exceeded")
             else 502
         )
         raise model_error(
             f"upstream Responses request did not complete: {detail}",
             status_code=status_code,
         )
-    content = ""
-    reasoning: list[str] = []
-    calls: list[ToolCall] = []
-    for item in data.get("output") or []:
-        kind = item.get("type")
-        if kind == "message":
-            content += "".join(
-                p.get("text", "")
-                for p in item.get("content") or []
-                if p.get("type") == "output_text"
-            )
-        elif kind == "reasoning":
-            reasoning += [s.get("text", "") for s in item.get("summary") or []]
-            reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif kind in ("function_call", "custom_tool_call"):
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", item.get("input", "")),
-                )
-            )
-    tool_calls = calls or None
+    message = fold_assistant(data.get("output"))
     finish: FinishReason = (
         "length"
         if data.get("status") == "incomplete"
-        else ("tool_calls" if tool_calls else "stop")
+        else ("tool_calls" if message.tool_calls else "stop")
     )
     usage = None
     if response.usage:
@@ -360,12 +359,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         id=data.get("id", ""),
         created=data.get("created_at", 0),
         model=data.get("model", ""),
-        message=AssistantMessage(
-            content=content or None,
-            reasoning_content="\n".join(r for r in reasoning if r) or None,
-            tool_calls=tool_calls,
-            provider_state=data.get("output"),
-        ),
+        message=message,
         finish_reason=finish,
         usage=usage,
     )
@@ -385,8 +379,9 @@ class ResponsesStreamParser(StreamParser):
 
     def finish(self) -> Response:
         events = self.terminal_events or self.events
-        for event in iter_sse_reverse(b"".join(events)):
-            if event.get("type") in FINAL_EVENTS:
+        for raw in reversed(events):
+            event = parse_sse_event(raw)
+            if event and event.get("type") in FINAL_EVENTS:
                 response = response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
@@ -395,7 +390,7 @@ class ResponsesStreamParser(StreamParser):
         raise ValueError("Responses stream ended without a terminal event")
 
 
-class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
+class ResponsesDialect(Dialect[OpenAIResponse]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -403,6 +398,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             "max_output_tokens",
             "max_tool_calls",
             "reasoning",
+            "service_tier",
             "text",
             "tool_choice",
             "parallel_tool_calls",
@@ -415,8 +411,8 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
     response_type = OpenAIResponse
 
     def mediate_external_capabilities(
-        self, body: ResponseCreateParams
-    ) -> tuple[ResponseCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
@@ -426,7 +422,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
 
         if mediated.pop("prompt", None) is not None:
             capabilities.append("prompt")
-        if cast(dict, mediated).pop("plugins", None) is not None:
+        if mediated.pop("plugins", None) is not None:
             capabilities.append("plugins")
 
         raw_input = mediated.get("input")
@@ -440,12 +436,12 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                 kind = item.get("type")
                 if kind in ("additional_tools", "tool_search_output"):
                     if blocked := blocked_content_path(
-                        {**item, "tools": []}, item_path
+                        {**item, "tools": []}, item_path, policy
                     ):
                         capabilities.append(blocked)
                         continue
                     item["tools"], removed = mediate_tools(
-                        item.get("tools"), f"{item_path}.tools"
+                        item.get("tools"), f"{item_path}.tools", policy
                     )
                     capabilities.extend(removed)
                     if kind == "tool_search_output" or item["tools"]:
@@ -459,14 +455,16 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
 
                 if content_field:
                     content, removed = mediate_content(
-                        item.get(content_field), f"{item_path}.{content_field}"
+                        item.get(content_field),
+                        f"{item_path}.{content_field}",
+                        policy,
                     )
                     capabilities.extend(removed)
                     if removed:
                         item[content_field] = content or ""
 
                 scan = {**item, content_field: []} if content_field else item
-                blocked = blocked_content_path(scan, item_path)
+                blocked = blocked_content_path(scan, item_path, policy)
                 if blocked is None:
                     safe_input.append(item)
                 else:
@@ -480,11 +478,11 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                         }
                         safe_input.append(item)
             mediated["input"] = safe_input
-        elif blocked := blocked_content_path(raw_input, "input"):
+        elif blocked := blocked_content_path(raw_input, "input", policy):
             capabilities.append(blocked)
             mediated["input"] = []
 
-        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools")
+        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools", policy)
         capabilities.extend(tool_capabilities)
         if "tools" in mediated:
             mediated["tools"] = tools
@@ -497,14 +495,18 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         )
         if isinstance(choice, dict):
             kind = choice.get("type")
-            valid_choice = kind in _CLIENT_TOOL_CHOICES and any(
+            valid_choice = (
+                kind in _CLIENT_TOOL_CHOICES
+                or isinstance(kind, str)
+                and _WEB_SEARCH_TOOL_TYPE(kind)
+            ) and any(
                 tool.get("type") == kind
                 and ("name" not in choice or tool.get("name") == choice["name"])
                 for tool in tools
             )
             if kind == "allowed_tools":
                 choice_tools, choice_capabilities = mediate_tools(
-                    choice.get("tools"), "tool_choice.tools"
+                    choice.get("tools"), "tool_choice.tools", policy
                 )
                 valid_choice = not choice_capabilities
                 mediated["tool_choice"] = {**choice, "tools": choice_tools}
@@ -528,7 +530,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
-    def parse_sampling(self, body: ResponseCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
         # (e.g. `summary`) as the wire sent them.
@@ -544,7 +546,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             settings["max_tokens"] = settings.pop("max_output_tokens")
         return Sampling.model_validate(settings)
 
-    def parse_request(self, body: ResponseCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         prompt: Messages = []
         if instructions := body.get("instructions"):
             prompt.append(SystemMessage(content=instructions))
@@ -565,10 +567,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                 run = []
             if assistant:
                 run.append(item)
-            elif item.get("type") in (
-                "function_call_output",
-                "custom_tool_call_output",
-            ):
+            elif item.get("type") in TEXT_TOOL_OUTPUT_TYPES:
                 output = item.get("output")
                 content = (
                     parse_content(output)
@@ -722,36 +721,36 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         return ResponsesStreamParser()
 
     def apply_overrides(
-        self, body: ResponseCreateParams, model: str, sampling: SamplingConfig
-    ) -> ResponseCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
-        s = sampling.model_dump(exclude_none=True)
+        s = sampling.wire_args()
+        max_tokens = s.pop("max_tokens", None)
+        reasoning_effort = s.pop("reasoning_effort", None)
+        sampling_reasoning = s.pop("reasoning", None)
         name = model.rsplit("/", 1)[-1]
         reasoning_model = (
             name.startswith(("gpt-5", "o1", "o3", "o4"))
             and "-chat" not in name
             and ("/" not in model or model.startswith("openai/"))
         )
-        overrides: dict = {"model": model}
+        overrides: dict = {**s, "model": model}
         if reasoning_model:
             # Preserve opaque reasoning state so it can be replayed on the next turn.
-            include = list(body.get("include") or [])
+            include = list(overrides.get("include") or body.get("include") or [])
             if "reasoning.encrypted_content" not in include:
                 include.append("reasoning.encrypted_content")
             overrides["include"] = include
-        if "temperature" in s:
-            overrides["temperature"] = s["temperature"]
-        if "top_p" in s:
-            overrides["top_p"] = s["top_p"]
-        if "max_tokens" in s:
-            overrides["max_output_tokens"] = s["max_tokens"]
-        reasoning = dict(body.get("reasoning") or {})
-        if reasoning_model:
-            # Summaries provide the trace's readable reasoning text.
-            reasoning = {"summary": "auto", **reasoning}
-        if "reasoning_effort" in s:
-            reasoning["effort"] = s["reasoning_effort"]
+        if max_tokens is not None:
+            overrides["max_output_tokens"] = max_tokens
+        reasoning = {
+            **({"summary": "auto"} if reasoning_model else {}),
+            **dict(body.get("reasoning") or {}),
+            **dict(sampling_reasoning or {}),
+        }
+        if reasoning_effort is not None:
+            reasoning["effort"] = reasoning_effort
         if reasoning:
             overrides["reasoning"] = reasoning
         steered = {
@@ -759,4 +758,4 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             for k, v in body.items()
             if k not in _SAMPLING_KEYS and k not in overrides
         }
-        return cast(ResponseCreateParams, {**steered, **overrides})
+        return {**steered, **overrides}

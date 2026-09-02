@@ -95,6 +95,24 @@ class RolloutLimits:
 
 
 @dataclass
+class IdempotentRequest:
+    """One non-streaming model request shared by its original call and retries."""
+
+    binding: tuple[str, bytes]
+    response: "ReplayResponse | None" = None
+    completed_at: float | None = None
+    inflight: "asyncio.Future[ReplayResponse | None] | None" = None
+
+
+@dataclass(frozen=True)
+class ReplayResponse:
+    """The exact HTTP result handed to coalesced in-flight request attempts."""
+
+    status: int
+    body: bytes
+
+
+@dataclass
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
@@ -113,20 +131,15 @@ class RolloutSession:
     `register` (one server-owned client per distinct endpoint config), so every rollout it
     multiplexes shares one keepalive connection pool instead of opening its own."""
     error: "RolloutError | None" = None
-    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
-    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
-    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Reset before each model turn, so a successful retry clears it."""
-    last_request: bytes | None = None
-    """Digest of the most recently served request body. Together with `last_response`, this
-    replays the common SDK retry of the latest completed exchange without re-sampling it."""
-    last_response: dict | None = None
-    """The response returned for `last_request`, replayed verbatim on a retry."""
-    request_generations: dict[bytes, int] = field(default_factory=dict)
-    """Fresh logical request count by body digest. Retry replay is safe only while a digest
-    identifies exactly one request."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
+    """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
+    when its program dies on it the rollout records this original error instead of a secondary
+    `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
+    each model turn, so a successful retry clears it."""
+    request_generations: dict[str, int] = field(default_factory=dict)
+    """Fresh logical request count by body-derived replay key. A marked retry can use the
+    digest cache only while its key identifies exactly one request."""
+    idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
+    """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record

@@ -1,11 +1,14 @@
 """Message-graph trajectory: store each message once, recover branches by walking.
 
 A rollout is a graph of `MessageNode`s — one per distinct message, each linked to its
-predecessor. The conversation is a path from a root to a leaf; branches (compaction,
-subagents) are simply multiple leaves, so branching falls out of the walk. Each node stores
-only the tokens it *adds* to the cumulative sequence, keeping size linear in turns and
-making a branch's training sample a cheap concat of node `token_ids`/`mask`/`logprobs` along
-its path.
+predecessor. A conversation is a path from a root to a leaf; prompt divergence from
+compaction, subagents, or other history rewrites produces multiple leaves, so branching
+falls out of the walk. A branch often corresponds to one harness context window, but it is
+a physical, exact-prefix training view rather than a semantic context identity: a prefix
+break can split one context and prefix reuse can preserve an ancestral path. Each node
+stores only the tokens it *adds* to the cumulative sequence, keeping size linear in turns
+and making a branch's training sample a cheap concat of node
+`token_ids`/`mask`/`logprobs` along its path.
 
 Token attribution (renderer client): the renderer reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new
@@ -29,11 +32,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
+from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
-    KeptTokens,
     Message,
     Response,
+    SamplingMask,
     TextContentPart,
     Tool,
     ToolMessage,
@@ -68,6 +72,14 @@ class MessageNode(BaseModel):
 
     parent: int | None = None
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
+    semantic_parents: list[ParentLink] = Field(default_factory=list)
+    """Additional harness-declared parents in the semantic execution graph.
+
+    Unlike ``parent``, these links do not imply an exact token prefix and therefore do
+    not affect physical branch construction. A list permits multiple parents of the same
+    type, supports incremental appends, and preserves their advertised wire order; edge
+    application prevents duplicate ``(node, type)`` links.
+    """
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
     sampled: bool = False
@@ -106,6 +118,17 @@ class MessageNode(BaseModel):
     consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
     rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
     never scored at all."""
+    reference_logprobs: list[float] | None = None
+    """Reference-model logprobs over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no reference model scored this node."""
+    trainer_logprobs: list[float] | None = None
+    """Trainer-recomputed logprobs over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no trainer forward annotated this node."""
+    entropies: list[float] | None = None
+    """Trainer policy entropies over the sampled tokens, in the same compact layout as
+    `logprobs`. None means no trainer forward annotated this node."""
+    loss_weights: dict[str, list[float]] | None = None
+    """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
@@ -118,12 +141,12 @@ class MessageNode(BaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kept_tokens: SkipJsonSchema[KeptTokens | None] = None
-    """Kept-set sampling masks for this node's sampled tokens, decoded: `ids` flat int32
-    in position order, `counts` the per-token kept-set sizes (aligned with `logprobs`;
-    0 = no mask). Assistant nodes only; consumed via `Branch.kept_tokens` for
-    sampling-replay training. Rides the wire as raw-bytes `__nd__` dicts; kept off disk
-    by the dump-site `exclude` in prime-rl."""
+    sampling_mask: SkipJsonSchema[SamplingMask | None] = None
+    """Sampling masks for this node's sampled tokens.
+
+    `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
+    nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -185,27 +208,26 @@ class MessageNode(BaseModel):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("kept_tokens")
-    def serialize_kept_tokens(self, kept: KeptTokens | None) -> dict | None:
-        """`KeptTokens` -> dict of raw-bytes `__nd__` entries so the arrays ride the wire."""
-        if kept is None:
+    @field_serializer("sampling_mask")
+    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
+        if mask is None:
             return None
         return {
-            "ids": _encode_ndarray(kept.ids),
-            "counts": _encode_ndarray(kept.counts),
+            "ids": _encode_ndarray(mask.ids),
+            "counts": _encode_ndarray(mask.counts),
         }
 
-    @field_validator("kept_tokens", mode="before")
+    @field_validator("sampling_mask", mode="before")
     @classmethod
-    def deserialize_kept_tokens(cls, value: Any) -> KeptTokens | None:
-        if value is None or isinstance(value, KeptTokens):
+    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
+        if value is None or isinstance(value, SamplingMask):
             return value
         if isinstance(value, dict):
-            return KeptTokens(
+            return SamplingMask(
                 ids=_decode_ndarray(value["ids"]),
                 counts=_decode_ndarray(value["counts"]),
             )
-        raise TypeError(f"cannot build KeptTokens from {type(value).__name__}")
+        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -283,9 +305,14 @@ def message_hash(message: Message) -> str:
             add(json.dumps(state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
+            add(tc.type)
             add(tc.id)
             add(tc.name)
-            add(_canonical_tool_arguments(tc.arguments))
+            add(
+                tc.arguments
+                if tc.type == "custom"
+                else _canonical_tool_arguments(tc.arguments)
+            )
     elif isinstance(message, ToolMessage):
         add("tool_call_id")
         add(message.tool_call_id)
@@ -302,13 +329,85 @@ def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
     return trace._head_index
 
 
+def _matching_node(
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    token_ids: list[int] | None = None,
+) -> int | None:
+    """Find an existing child, optionally requiring its exact physical token span.
+
+    The head index deliberately points at only the latest content-equivalent child. Token-level
+    prefix breaks can leave older physical variants under the same key, so a token mismatch falls
+    back to a reverse scan rather than materializing a duplicate of an already-existing variant.
+    """
+    key = (parent, message_hash(message))
+    indexed = _head_index(trace).get(key)
+    if indexed is not None and (
+        token_ids is None or trace.nodes[indexed].token_ids == token_ids
+    ):
+        return indexed
+    if token_ids is None:
+        return indexed
+    for node_id in range(len(trace.nodes) - 1, -1, -1):
+        if node_id == indexed:
+            continue
+        node = trace.nodes[node_id]
+        if (
+            node.parent == parent
+            and node.token_ids == token_ids
+            and message_hash(node.message) == key[1]
+        ):
+            return node_id
+    return None
+
+
+def _matching_prefix_node(
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    prompt_ids: list[int],
+    start: int,
+    stop: int,
+) -> int | None:
+    """Find the longest content-equivalent child matching inside `[start, stop]`.
+
+    Renderers may leave a prompt-supplied assistant unattributed (`message_spans[i] is None`).
+    Its existing sampled node still owns physical tokens, so use those tokens to recover the
+    otherwise-missing message boundary. The next attributed message's start bounds the match:
+    a sampled variant must never consume tokens that the renderer assigned to that message.
+    """
+    key = (parent, message_hash(message))
+    indexed = _head_index(trace).get(key)
+    candidates: list[int] = []
+    if indexed is not None:
+        candidates.append(indexed)
+    candidates.extend(
+        node_id
+        for node_id in range(len(trace.nodes) - 1, -1, -1)
+        if node_id != indexed
+        and trace.nodes[node_id].parent == parent
+        and message_hash(trace.nodes[node_id].message) == key[1]
+    )
+    matches = [
+        node_id
+        for node_id in candidates
+        if start + len(trace.nodes[node_id].token_ids) <= stop
+        and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
+        == trace.nodes[node_id].token_ids
+    ]
+    return max(
+        matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
+    )
+
+
 @dataclass(frozen=True)
 class PendingTurn:
     """A resolved prompt waiting on model inference.
 
-    `prepare_turn` does the one canonical graph prefix walk. Training clients use the resolved
-    prefix for renderer bridging before inference, and `commit` uses the same prefix after
-    inference to add only the prompt tail plus the sampled assistant response.
+    `prepare_turn` resolves the graph prefix used for renderer bridging before inference. `commit`
+    preserves that inference-producing prefix, extends it with any matching nodes committed while
+    inference was in flight, then adds only the remaining prompt tail and sampled response.
     """
 
     trace: Trace
@@ -380,6 +479,10 @@ class PendingTurn:
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
         index = _head_index(self.trace)
         for message in self.tail:
+            existing = _matching_node(self.trace, parent, message)
+            if existing is not None:
+                parent = existing
+                continue
             previous = parent
             self.trace.nodes.append(MessageNode(parent=parent, message=message))
             parent = len(self.trace.nodes) - 1
@@ -508,21 +611,18 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_kept_tokens(
-    trace: Trace, assistant_id: int, payload: KeptTokens | None
+def _attribute_sampling_mask(
+    trace: Trace, assistant_id: int, payload: SamplingMask | None
 ) -> None:
-    """Attach this turn's kept-set sampling masks to the assistant node (the payload
-    covers exactly the turn's completion tokens, so no path arithmetic). A payload
-    that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
+    """Attach a completion-aligned sampling mask to the assistant node."""
     if payload is None:
         return
-    counts = np.frombuffer(binascii.a2b_base64(payload.counts), dtype=np.int32)
-    ids = np.frombuffer(binascii.a2b_base64(payload.ids), dtype=np.int32)
     node = trace.nodes[assistant_id]
-    if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
+    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
+        payload.ids
+    ):
         return
-    # Own the buffers — the payload views reference the turn's response bytes.
-    node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
+    node.sampling_mask = payload
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
@@ -530,6 +630,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     prompt = turn.prompt
     tokens = response.tokens
     multi_modal_data = tokens.multi_modal_data if tokens else None
+    # Constant per renderer, so re-stamping every turn is idempotent.
+    if tokens is not None and tokens.mm_token_type_id_map:
+        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
     is_content = tokens.is_content if tokens else None
@@ -562,6 +665,45 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             keep += 1
         prefix = prefix[:keep]
         path_len = off
+
+    # A parallel request may have committed more of this prompt after `prepare_turn` resolved
+    # the inference prefix. Reconcile that still-uncommitted tail now, one whole message at a
+    # time. Exact token-span equality preserves intentional renderer-level forks; tokenless relay
+    # turns use message identity. Because commit is synchronous, once this loop stops the rest of
+    # the tail can be appended without another request interleaving.
+    prefix = list(prefix)
+    while len(prefix) < len(prompt):
+        i = len(prefix)
+        span = spans[i] if spans and i < len(spans) else None
+        end = span[1] if span else path_len
+        parent = prefix[-1] if prefix else None
+        if tokens is not None and span is None:
+            next_start = next(
+                (
+                    later_span[0]
+                    for later_span in (spans[i + 1 :] if spans else [])
+                    if later_span is not None
+                ),
+                len(prompt_ids),
+            )
+            existing = _matching_prefix_node(
+                trace, parent, prompt[i], prompt_ids, path_len, next_start
+            )
+            if existing is not None:
+                end += len(trace.nodes[existing].token_ids)
+        else:
+            node_tokens = prompt_ids[path_len:end]
+            existing = _matching_node(
+                trace,
+                parent,
+                prompt[i],
+                node_tokens if tokens is not None else None,
+            )
+        if existing is None:
+            break
+        prefix.append(existing)
+        path_len = end
+
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
@@ -629,9 +771,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
-    # Attribute this turn's kept-set sampling masks onto the assistant node (they are
-    # completion-aligned, so only the sampled node carries them).
-    _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
+    # Sampling masks are completion-aligned, so only the sampled node carries them.
+    _attribute_sampling_mask(
+        trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
 
     return assistant_id
 

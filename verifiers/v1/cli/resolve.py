@@ -46,7 +46,7 @@ def references_config_file(argv: list[str]) -> bool:
     return any(arg.startswith("@") for arg in argv)
 
 
-def extract_id(argv: list[str], field: str, default: str = "") -> str:
+def extract_id(argv: list[str], field: str) -> str:
     """The chosen `<field>.id` from `--<field>.id <x>` (or `=<x>`) on the CLI, before
     the typed parse (the positional taskset shorthand is applied upstream). Two
     occurrences naming different ids are refused — narrowing would pin the first
@@ -70,7 +70,7 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
             f"{flag} is set twice, with different ids: {distinct[0]!r} and "
             f"{distinct[1]!r}{hint}; drop one"
         )
-    return found[0] if found else default
+    return found[0] if found else ""
 
 
 def narrow_taskset_config(base: type[ConfigT], taskset_id: str | None) -> type[ConfigT]:

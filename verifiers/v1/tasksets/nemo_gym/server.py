@@ -1,3 +1,33 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["nemo-gym==0.4.0"]
+#
+# [[tool.uv.dependency-metadata]]
+# name = "nemo-gym"
+# version = "0.4.0"
+# requires-python = ">=3.12"
+# requires-dist = [
+#     "aiohttp>=3.14.1",
+#     "fastapi",
+#     "gprof2dot",
+#     "hydra-core",
+#     "itsdangerous",
+#     "mcp>=1.27,<2",
+#     "omegaconf",
+#     "openai>=2.9",
+#     "orjson",
+#     "pandas",
+#     "pydantic",
+#     "pydot",
+#     "ray>=2.55.1",
+#     "requests",
+#     "rich",
+#     "typing-extensions",
+#     "uvicorn",
+#     "wandb",
+#     "yappi",
+# ]
+# ///
 """Serve one resource-server class from the published NeMo Gym package."""
 
 import os

@@ -32,6 +32,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -80,7 +82,8 @@ class Rollout:
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
-        self._owns_runtime = runtime is None
+        self._borrowed_runtime = runtime
+        self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -157,12 +160,12 @@ class Rollout:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
         itself couldn't see, e.g. its user raising between segments."""
-        if not self._owns_runtime and self.runtime is not None and self.runtime.stopped:
+        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
             # misattributed error onto the trace.
             raise ValueError(
-                f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
+                f"borrowed runtime {self._borrowed_runtime.name!r} was torn down by its owner "
                 "mid-run; keep the provisioning context open until every run "
                 "placed into the box has completed"
             ) from error
@@ -179,9 +182,9 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
-        if self._owns_runtime:
+        if self._borrowed_runtime is None:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
-        elif self.runtime.stopped:
+        elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
             raise ValueError(
@@ -200,13 +203,19 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
+            runtime_env = dict(self.task.runtime_env())
+            if self._borrowed_runtime is None:
+                runtime.env = runtime_env
+            else:
+                runtime = runtime.with_env(runtime_env)
+                self.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
-            if self._owns_runtime:
+            if self._borrowed_runtime is None:
                 await runtime.start()
             await runtime.prepare_setup()
             now = time.time()
@@ -349,6 +358,8 @@ class Rollout:
             return False
         trace = self.trace
         turns_before = trace.num_turns
+        root_reply_before = trace.root_reply
+        trace.root_reply = None
         loop = asyncio.get_running_loop()
         segment_start = loop.time()
         self.deadline_at = (
@@ -394,14 +405,17 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            if trace.num_turns == turns_before:
+                trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
                     0.0, self._agent_time_remaining - (loop.time() - segment_start)
                 )
             self.deadline_at = None
-        if self._session.error is not None:
-            self.fail(self._session.error)
-            return False
+        # A harness that completes cleanly after a failed model call handled it (e.g. it
+        # ends its run on context overflow); the failure stays recorded on the call. A
+        # harness that dies on it surfaces the stashed error through the except above.
+        self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
@@ -421,7 +435,7 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
-        if self._owns_runtime and self.runtime is not None:
+        if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
 
@@ -455,12 +469,14 @@ class Rollout:
             if not self._failed and self._opened:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
-                    await asyncio.wait_for(
-                        invoke(
+                    async with asyncio.timeout(self._timeouts.finalize):
+                        await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
-                        ),
-                        self._timeouts.finalize,
-                    )
+                        )
+                        if self._collect_artifacts and not trace.state.artifacts:
+                            trace.state.artifacts = await collect(
+                                runtime, self.task.data.artifacts
+                            )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
@@ -505,7 +521,7 @@ class Rollout:
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
-            if self._owns_runtime and runtime is not None:
+            if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
                 except Exception:

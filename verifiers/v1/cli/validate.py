@@ -43,15 +43,15 @@ logger = logging.getLogger(__name__)
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
 LOG_FILE = "logs/validate.log"
-FINAL_REASONS = frozenset({"valid", "invalid"})
-REASONS = ("valid", "invalid", "error", "timeout")
+FINAL_VALUES = {"valid": True, "invalid": False, "unchecked": None}
+REASONS = ("valid", "invalid", "unchecked", "error", "timeout")
 
 ResultRow = dict[str, Any]
 
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
     "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       uv run validate @ <run-dir>/config.toml --resume   (re-run missing/errored/timed-out tasks)\n"
+    "       uv run validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and setup-only checks per task (no model)"
 )
 
@@ -99,8 +99,8 @@ def _is_final(row: object, key: str, mode: str) -> bool:
     return (
         row.get("task_key") == key
         and row.get("mode") == mode
-        and reason in FINAL_REASONS
-        and row.get("valid") is (reason == "valid")
+        and reason in FINAL_VALUES
+        and row.get("valid") is FINAL_VALUES[reason]
     )
 
 
@@ -119,10 +119,7 @@ def load_results(
                 try:
                     row = from_json(line)
                 except ValueError:
-                    try:
-                        row = json.loads(line)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        continue
+                    continue
                 if not isinstance(row, dict):
                     continue
                 key = row.get("task_key")
@@ -160,7 +157,9 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
     missing = max(0, total - len(rows))
     outcomes = {reason: counts[reason] for reason in REASONS}
     outcomes["missing"] = missing
-    terminal = outcomes["valid"] + outcomes["invalid"]
+    checked = outcomes["valid"] + outcomes["invalid"]
+    rate_total = total - outcomes["unchecked"]
+    terminal = checked + outcomes["unchecked"]
     summary: dict[str, Any] = {
         "mode": mode,
         "total": total,
@@ -168,7 +167,7 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
         "terminal": terminal,
         "owed": missing + outcomes["error"] + outcomes["timeout"],
         "outcomes": outcomes,
-        "valid_rate": round(outcomes["valid"] / total, 6) if total else None,
+        "valid_rate": round(outcomes["valid"] / rate_total, 6) if checked else None,
     }
     if mode == "all":
         checks: dict[str, dict[str, int]] = {}
@@ -197,24 +196,26 @@ def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
     write_summary(results_dir, summarize([], total, validation_mode(config)))
 
 
-def _classify(valid: bool, exc: BaseException | None) -> str:
-    if valid:
+def _classify(valid: bool | None, exc: BaseException | None) -> str:
+    if valid is True:
         return "valid"
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if exc is not None:
         return "error"
+    if valid is None:
+        return "unchecked"
     return "invalid"
 
 
 def _row(
-    task, mode: str, valid: bool, exc: BaseException | None, start: float
+    task, mode: str, valid: bool | None, exc: BaseException | None, start: float
 ) -> ResultRow:
     return {
         "index": task.data.idx,
         "name": task.data.name,
         "mode": mode,
-        "valid": bool(valid),
+        "valid": valid,
         "reason": _classify(valid, exc),
         "elapsed": round(time.time() - start, 2),
         "error": str(exc) if exc is not None else None,
@@ -222,19 +223,21 @@ def _row(
     }
 
 
-async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
+async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow:
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-gold-{task.data.idx}-{uuid4().hex[:8]}",
+        name=f"validate-{mode}-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None
         else task.data.timeout.setup
     )
-    valid, exc = False, None
+    valid: bool | None = False
+    exc = None
     try:
+        runtime.env = dict(task.runtime_env())
         trace = Trace(
             task=TraceTask(
                 type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -252,7 +255,11 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
-        valid = await asyncio.wait_for(task.validate(runtime), config.timeout.total)
+        valid = (
+            await asyncio.wait_for(task.validate(runtime), config.timeout.total)
+            if mode == "gold"
+            else True
+        )
     except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
         exc = e
     finally:
@@ -262,50 +269,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
             logger.warning(
                 "runtime teardown failed (task %s)", task.data.idx, exc_info=True
             )
-    return _row(task, "gold", valid, exc, start)
-
-
-async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
-    start = time.time()
-    runtime = make_runtime(
-        resolve_runtime_config(config.runtime, task),
-        name=f"validate-setup-{task.data.idx}-{uuid4().hex[:8]}",
-    )
-    setup_timeout = (
-        config.timeout.setup
-        if config.timeout.setup is not None
-        else task.data.timeout.setup
-    )
-    valid, exc = False, None
-    try:
-        trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
-            ),
-            state=state_cls(type(task))(),
-            # No agent runs here — the info only records the runtime policy.
-            agent=vf.AgentInfo(
-                config=vf.AgentConfig(runtime=config.runtime),
-                name="validate",
-                trainable=False,
-            ),
-        )
-        await runtime.start()
-        await asyncio.wait_for(
-            invoke(task.setup, {"trace": trace, "runtime": runtime}),
-            setup_timeout,
-        )
-        valid = True
-    except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
-        exc = e
-    finally:
-        try:
-            await runtime.stop()
-        except Exception:
-            logger.warning(
-                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
-            )
-    return _row(task, "setup", valid, exc, start)
+    return _row(task, mode, valid, exc, start)
 
 
 def _all_reason(rows: list[ResultRow]) -> str:
@@ -316,11 +280,13 @@ def _all_reason(rows: list[ResultRow]) -> str:
         return "error"
     if "timeout" in reasons:
         return "timeout"
-    return "invalid"
+    if "invalid" in reasons:
+        return "invalid"
+    return "unchecked"
 
 
 def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
-    failed = [row for row in rows if not row["valid"]]
+    failed = [row for row in rows if row["reason"] not in ("valid", "unchecked")]
     parts = [f"{row['mode']}: {row['error'] or row['reason']}" for row in failed]
     error_types = {str(row["error_type"]) for row in failed if row["error_type"]}
     return ("; ".join(parts) or None, "+".join(sorted(error_types)) or None)
@@ -328,16 +294,17 @@ def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
 
 async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
-    gold = await _run_gold(task, config)
-    setup = await _run_setup(task, config)
+    gold = await _run_check(task, config, "gold")
+    setup = await _run_check(task, config, "setup")
     rows = [gold, setup]
+    reason = _all_reason(rows)
     error, error_type = _all_error(rows)
     return {
         "index": task.data.idx,
         "name": task.data.name,
         "mode": "all",
-        "valid": all(row["valid"] for row in rows),
-        "reason": _all_reason(rows),
+        "valid": None if reason == "unchecked" else reason == "valid",
+        "reason": reason,
         "elapsed": round(time.time() - start, 2),
         "error": error,
         "error_type": error_type,
@@ -347,11 +314,12 @@ async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
 
 
 async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
-    if config.only_gold:
-        return await _run_gold(task, config)
-    if config.only_setup:
-        return await _run_setup(task, config)
-    return await _run_all(task, config)
+    mode = validation_mode(config)
+    return (
+        await _run_all(task, config)
+        if mode == "all"
+        else await _run_check(task, config, mode)
+    )
 
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
@@ -446,9 +414,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     )
     async with display:
         if not plan:
-            logger.info(
-                "nothing to resume: all %d task(s) are valid or invalid", len(tasks)
-            )
+            logger.info("nothing to resume: all %d task(s) are terminal", len(tasks))
             return rows
         await asyncio.gather(
             *(_one(position, task, key) for position, task, key in plan)
@@ -501,8 +467,6 @@ def main(argv: list[str] | None = None) -> None:
         log_file=str(out / LOG_FILE),
         console=not config.rich,
     )
-    if config.rich:
-        logging.lastResort = None  # drop stdlib records that bypass loguru
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
     # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
     install_interrupt()

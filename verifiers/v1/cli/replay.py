@@ -156,7 +156,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             else:
                 st.state = "running"
                 # Clear the recorded scores; only offline-recomputable ones come back.
-                trace.info.pop("judge", None)
+                trace.info.pop("judge_calls", None)
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 # The declared Task for a rebuilt row, the base Task for the
                 # WireTaskData fallback.
@@ -229,11 +229,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     log_file = str(out / "logs" / "replay.log")
-    if config.rich:
-        setup_logging(level, log_file=log_file, console=False)
-        logging.lastResort = None
-    else:
-        setup_logging(level, log_file=log_file, console=True)
+    setup_logging(level, log_file=log_file, console=not config.rich)
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds the scoring teardown `finally`;
     # a second is swallowed so it can't orphan resources mid-cleanup.
     install_interrupt()

@@ -29,23 +29,25 @@ import time
 import traceback
 from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
 from typing import Literal
 
+import httpx
 from aiohttp import web
 from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
-from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1.clients.base import join_url
+from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
-    OverlongPromptError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -58,7 +60,8 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.semantic import ACPInfo, extract_acp_info
+from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
 
@@ -80,6 +83,9 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+IDEMPOTENCY_CACHE_TTL_SECONDS = 600
+IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -109,6 +115,87 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+def _capture_response(response: web.Response) -> ReplayResponse:
+    body = response.body
+    if body is None:
+        data = b""
+    elif isinstance(body, bytes):
+        data = body
+    elif isinstance(body, bytearray):
+        data = bytes(body)
+    else:
+        raise TypeError("coalesced interception responses must have a byte body")
+    return ReplayResponse(status=response.status, body=data)
+
+
+def _replay_response(response: ReplayResponse) -> web.Response:
+    return web.Response(
+        body=response.body,
+        status=response.status,
+        content_type="application/json",
+        charset="utf-8",
+    )
+
+
+@dataclass(frozen=True)
+class _IdempotentAttempt:
+    session: RolloutSession
+    key: str
+    request: IdempotentRequest
+    future: asyncio.Future[ReplayResponse | None]
+
+
+_IDEMPOTENT_ATTEMPT = web.RequestKey("idempotent_attempt", _IdempotentAttempt)
+
+
+def _finish_idempotent_attempt(
+    request: web.Request, response: ReplayResponse | None
+) -> None:
+    attempt = request.get(_IDEMPOTENT_ATTEMPT)
+    if attempt is None:
+        return
+    record = attempt.request
+    if record.inflight is attempt.future:
+        record.inflight = None
+    if (
+        record.response is None
+        and attempt.session.idempotent_requests.get(attempt.key) is record
+    ):
+        attempt.session.idempotent_requests.pop(attempt.key)
+    if not attempt.future.done():
+        attempt.future.set_result(response)
+    if record.response is not None:
+        _prune_idempotent_requests(attempt.session, time.monotonic())
+
+
+def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
+    """Expire and cap completed replays; active attempts are never evicted."""
+    completed = [
+        (key, request)
+        for key, request in session.idempotent_requests.items()
+        if request.response is not None and request.inflight is None
+    ]
+    for key, request in completed:
+        completed_at = request.completed_at or 0.0
+        if (
+            now - completed_at >= IDEMPOTENCY_CACHE_TTL_SECONDS
+            and session.idempotent_requests.get(key) is request
+        ):
+            session.idempotent_requests.pop(key)
+    completed = [
+        (key, request)
+        for key, request in completed
+        if session.idempotent_requests.get(key) is request
+    ]
+    excess = len(completed) - IDEMPOTENCY_CACHE_MAX_COMPLETED
+    if excess > 0:
+        for key, request in sorted(
+            completed, key=lambda item: item[1].completed_at or 0.0
+        )[:excess]:
+            if session.idempotent_requests.get(key) is request:
+                session.idempotent_requests.pop(key)
 
 
 async def _queue_chunks(
@@ -214,7 +301,18 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            return await self.handle_request(request, dialect)
+            try:
+                response = await self.handle_request(request, dialect)
+            except BaseException:
+                _finish_idempotent_attempt(request, None)
+                raise
+            replay = (
+                _capture_response(response)
+                if isinstance(response, web.Response)
+                else None
+            )
+            _finish_idempotent_attempt(request, replay)
+            return response
 
         return handler
 
@@ -231,6 +329,7 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        app.router.add_get("/v1/models", self.handle_models)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
@@ -280,7 +379,9 @@ class InterceptionServer(Interception):
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(body)
+        mediated, capabilities = dialect.mediate_external_capabilities(
+            body, session.network_policy
+        )
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
@@ -324,6 +425,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
+        acp: ACPInfo | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -371,6 +473,7 @@ class InterceptionServer(Interception):
                 )
                 if policy_paths
                 else None,
+                acp=acp,
             )
         )
 
@@ -394,40 +497,77 @@ class InterceptionServer(Interception):
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        try:
+            acp, upstream_headers = extract_acp_info(request.headers)
+        except ValueError as error:
+            return web.json_response(dialect.error_body(str(error)), status=400)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries: sampling a marked SDK retry again would commit a
-        # second turn and fork the graph, so serve it the recorded response (or the
-        # still-computing attempt's result). Only marked retries whose body identifies one
-        # fresh logical request match — compaction can legitimately regenerate an identical
-        # body, and correlating its retries to another request would serve the wrong turn.
+        # Graph atomicity under retries: one logical non-streaming call must commit at most
+        # one turn. An explicit key identifies that call directly. Without one, a marked SDK
+        # retry can use body-digest replay only while that body identifies one fresh logical
+        # request; a repeated body can be a legitimate later turn.
         retried = is_retried_request(request.headers)
-        if retried:
-            # The original attempt may fail before its body reaches this handler, making a
-            # marked retry the first server-visible copy of the logical request.
-            session.request_generations.setdefault(req_hash, 1)
-        else:
-            session.request_generations[req_hash] = (
-                session.request_generations.get(req_hash, 0) + 1
-            )
-        unambiguous_retry = retried and session.request_generations.get(req_hash) == 1
-        if (
-            unambiguous_retry
-            and session.last_request == req_hash
-            and session.last_response is not None
-        ):
-            logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
-        if session.last_request == req_hash:
-            # A fresh attempt supersedes the recorded response for the same body: drop it
-            # so this attempt's own retries coalesce or re-run instead of replaying the
-            # previous turn.
-            session.last_request = None
-            session.last_response = None
+        idempotent: IdempotentRequest | None = None
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        replay_key: str | None = None
+        binding = (request.path, req_hash)
+        if idempotency_key:
+            if streaming and acp is None:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key is not supported for streaming requests"
+                    ),
+                    status=400,
+                )
+            if not streaming:
+                replay_key = f"explicit:{idempotency_key}"
+            # This key identifies the harness-to-interception hop. The server owns its
+            # replay semantics, and the body has since been rewritten with rollout model
+            # and sampling overrides, so never expose the local key to the provider.
+            upstream_headers = {
+                name: value
+                for name, value in upstream_headers.items()
+                if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
+            }
+        elif not streaming:
+            replay_key = f"retry:{request.path}:{req_hash.hex()}"
+
+        if replay_key is not None:
+            now = time.monotonic()
+            _prune_idempotent_requests(session, now)
+            unambiguous_retry = False
+            if not idempotency_key:
+                if retried:
+                    # The original attempt can fail before this handler sees its body, making
+                    # a marked retry the first server-visible copy of the logical request.
+                    session.request_generations.setdefault(replay_key, 1)
+                else:
+                    session.request_generations[replay_key] = (
+                        session.request_generations.get(replay_key, 0) + 1
+                    )
+                unambiguous_retry = (
+                    retried and session.request_generations[replay_key] == 1
+                )
+            if idempotency_key or unambiguous_retry:
+                idempotent = session.idempotent_requests.get(replay_key)
+            if idempotent is not None and idempotent.binding != binding:
+                return web.json_response(
+                    dialect.error_body(
+                        "Idempotency-Key was reused with a different request"
+                    ),
+                    status=400,
+                )
+            if idempotent is not None and idempotent.response is not None:
+                logger.debug(
+                    "intercept replay: id=%s (idempotent request)", session.trace.id
+                )
+                idempotent.completed_at = now
+                return _replay_response(idempotent.response)
 
         try:
             model_request = dialect.parse_request(body)
@@ -442,40 +582,41 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
                 status=400,
             )
+        if replay_key is not None and idempotent is None:
+            idempotent = IdempotentRequest(binding=binding)
+            session.idempotent_requests[replay_key] = idempotent
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[ReplayResponse | None]",
+        ) -> web.Response:
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            completion = await inflight
-            if completion is None:
+            response = await asyncio.shield(inflight)
+            if response is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
-            return _completion_response(completion)
+            return _replay_response(response)
 
-        fut: asyncio.Future[dict | None] | None = None
-        if not streaming:
-            if (
-                unambiguous_retry
-                and (inflight := session.inflight.get(req_hash)) is not None
-            ):
-                return await coalesced(inflight)
-            fut = asyncio.get_running_loop().create_future()
-            session.inflight[req_hash] = fut
-
-        def finish_inflight(completion: dict | None = None) -> None:
-            if fut is None:
-                return
-            if session.inflight.get(req_hash) is fut:
-                session.inflight.pop(req_hash, None)
-            if not fut.done():
-                fut.set_result(completion)
+        if idempotent is not None:
+            if idempotent.inflight is not None:
+                return await coalesced(idempotent.inflight)
+            assert replay_key is not None
+            future: asyncio.Future[ReplayResponse | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            idempotent.inflight = future
+            request[_IDEMPOTENT_ATTEMPT] = _IdempotentAttempt(
+                session=session,
+                key=replay_key,
+                request=idempotent,
+                future=future,
+            )
 
         try:
             refused = await session.refused()
             if refused is not None:
-                finish_inflight()
                 return web.json_response(
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
                 )
@@ -488,10 +629,8 @@ class InterceptionServer(Interception):
                 if stopped is None:
                     dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            finish_inflight()
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            finish_inflight()
             return self._fail(
                 session,
                 dialect,
@@ -500,13 +639,11 @@ class InterceptionServer(Interception):
                 ),
             )
         except BaseException:
-            finish_inflight()
             raise
         if stopped is not None:
             turn = graph.prepare_turn(session.trace, model_request.messages)
             turn.commit_prompt(model_request.tools)
             session.trace.stop(stopped)
-            finish_inflight()
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {stopped}"),
                 status=400,
@@ -517,10 +654,8 @@ class InterceptionServer(Interception):
             model_request = dialect.parse_request(body)
             turn = graph.prepare_turn(session.trace, model_request.messages)
         except ValueError as error:
-            finish_inflight()
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
-            finish_inflight()
             return self._fail(session, dialect, error)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
@@ -534,19 +669,18 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
+                acp=acp,
+                upstream_headers=upstream_headers,
             )
 
         def serve(response: Response) -> web.Response:
-            # Record the served turn and hand it to any coalesced retry, so a retried
-            # byte-identical request replays instead of re-sampling and forking the graph.
-            # `Response.raw` is the full native provider object (or the renderer's synthesized
-            # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
-            finish_inflight(response.raw)
-            return _completion_response(response.raw)
+            served = _completion_response(response.raw)
+            if idempotent is not None:
+                idempotent.response = _capture_response(served)
+                idempotent.completed_at = time.monotonic()
+            return served
 
-        try:
+        async def sample() -> web.Response:
             session.error = None
             call_response: Response | None = None
             node: int | None = None
@@ -560,7 +694,7 @@ class InterceptionServer(Interception):
                         dialect,
                         body,
                         session.ctx.sampling,
-                        headers=request.headers,
+                        headers=upstream_headers,
                         session_id=session.trace.id,
                         turn=turn,
                     )
@@ -607,17 +741,6 @@ class InterceptionServer(Interception):
                             dialect.error_body(f"rollout stopped: {stopped}"),
                             status=400,
                         )
-                except OverlongPromptError as e:
-                    # An overlong prompt is a budget limit, not a crash: end the rollout
-                    # cleanly as a truncation — refuse the call to halt the harness (same
-                    # shape as `refused` above).
-                    error = e
-                    session.trace.stop("context_length")
-                    logger.debug("prompt too long: id=%s", session.trace.id)
-                    return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
-                        status=400,
-                    )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -662,12 +785,11 @@ class InterceptionServer(Interception):
                     usage=call_response.usage if call_response else None,
                     error=error,
                     policy_paths=policy_paths,
+                    acp=acp,
                 )
             return serve(call_response)
-        finally:
-            # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
-            # response" (an error/refuse return above), so the waiter surfaces a retryable error.
-            finish_inflight()
+
+        return await sample()
 
     async def _stream(
         self,
@@ -680,6 +802,8 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
+        acp: ACPInfo | None = None,
+        upstream_headers: Mapping[str, str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -695,15 +819,8 @@ class InterceptionServer(Interception):
                 reply = await session.client.relay(
                     dialect,
                     body,
-                    headers=request.headers,
+                    headers=upstream_headers,
                     session_id=session.trace.id,
-                )
-            except OverlongPromptError as e:
-                error = e
-                session.trace.stop("context_length")
-                logger.debug("prompt too long: id=%s", session.trace.id)
-                return web.json_response(
-                    dialect.error_body("rollout stopped: context_length"), status=400
                 )
             except RolloutError as e:
                 error = e
@@ -903,13 +1020,6 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
-        except OverlongPromptError as e:
-            # A streamed terminal provider failure is discovered only after its response body
-            # was relayed. Context exhaustion remains a clean truncation like earlier failures.
-            error = e
-            session.trace.stop("context_length")
-            logger.debug("prompt too long: id=%s", session.trace.id)
-            return resp
         except RolloutError as e:
             # A streamed terminal provider failure is discovered only after the
             # response body has been relayed. Keep it off the graph and preserve
@@ -938,6 +1048,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
                 policy_paths=policy_paths,
+                acp=acp,
             )
 
     async def handle_aux(
@@ -973,6 +1084,41 @@ class InterceptionServer(Interception):
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
+
+    async def handle_models(self, request: web.Request) -> web.Response:
+        """`GET /v1/models`: relay the upstream model listing so agent loops can read a
+        provider context-window extension (e.g. vLLM's `max_model_len`). The path is shared
+        by every dialect; only the auth carrier differs, so the bearer is tried per dialect.
+        A pure relay from the session's endpoint config — never recorded on the trace, and a
+        failure never fails the rollout."""
+        for dialect in DIALECTS:
+            session = self.sessions.get(dialect.secret(request.headers))
+            if session is not None:
+                break
+        else:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        logger.debug("intercept models: id=%s", session.trace.id)
+        config = session.ctx.client
+        headers = dict(config.headers or {})
+        headers.update(dialect.auth_headers(resolve_api_key(config)))
+        try:
+            # Finite read timeout: a hung provider must not stall threshold discovery
+            # for the rollout's whole outer timeout - the loop falls back to no compaction.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=5.0)
+            ) as client:
+                upstream = await client.get(
+                    join_url(config.base_url, "/v1/models"), headers=headers
+                )
+        except httpx.HTTPError as e:
+            logger.warning("models call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        return web.Response(
+            body=upstream.content,
+            status=upstream.status_code,
+            content_type="application/json",
+        )
 
     def _session_for(
         self, request: web.Request, *, allow_service: bool = False

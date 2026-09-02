@@ -2,7 +2,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
+import numpy as np
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
@@ -65,9 +66,10 @@ class UserMessage(BaseModel):
 
 class ToolCall(BaseModel):
     id: str
+    type: Literal["function", "custom"] = "function"
     name: str
     arguments: str
-    """Raw JSON string of arguments, exactly as the model emitted it."""
+    """Raw function arguments or custom-tool input, exactly as the model emitted it."""
 
 
 class AssistantMessage(BaseModel):
@@ -183,15 +185,29 @@ class RoutedExperts(TypedDict):
 
 
 @dataclass
-class KeptTokens:
-    """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
-    in position order) and `counts` (kept-set size per completion token; 0 = no usable
-    mask). Base64 blobs straight off the `generate` response on the `TurnTokens`
-    carrier; decoded to flat int32 arrays on `MessageNode` (`len(ids) == sum(counts)`,
-    row boundaries recovered from `counts`)."""
+class SamplingMask:
+    """Sampling masks stored as flat int32 `ids` and `counts` arrays.
+
+    Each row contains the token ids that survived sampling filters for one completion
+    token. Row boundaries are recovered from `counts`.
+    """
 
     ids: Any
     counts: Any
+
+    @classmethod
+    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+        counts = np.fromiter(
+            (len(row) for row in sampling_mask),
+            dtype=np.int32,
+            count=len(sampling_mask),
+        )
+        ids = (
+            np.concatenate([np.asarray(row, dtype=np.int32) for row in sampling_mask])
+            if int(counts.sum())
+            else np.empty(0, dtype=np.int32)
+        )
+        return cls(ids=ids, counts=counts)
 
 
 class TurnTokens(BaseModel):
@@ -212,15 +228,17 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
     # attributed per node by the turn's `commit`, then dropped — never persisted.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
+    # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
+    # rendering renderer is multimodal.
+    mm_token_type_id_map: dict[int, int] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
-    # surviving top-p/top-k truncation, per completion token), attributed to the assistant
-    # node by the turn's `commit`, then dropped. None unless the engine ran with
-    # `enable_return_kept_tokens`.
-    kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): per-completion-token sampling masks,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
@@ -246,17 +264,21 @@ class SamplingConfig(BaseModel):
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
 
+    def wire_args(self) -> dict[str, Any]:
+        """Flatten OpenAI-style ``extra_body`` before building a provider request."""
+        args = self.model_dump(exclude_none=True)
+        extra_body = {
+            key: value
+            for key, value in (args.pop("extra_body", None) or {}).items()
+            if value is not None
+        }
+        if "max_tokens" in args:
+            extra_body.pop("max_completion_tokens", None)
+        return {**extra_body, **args}
+
 
 Sampling = SamplingConfig
 
 
-def _validate_id(plugin_id: str) -> str:
-    from verifiers.v1.utils.install_utils import is_hub_env, parse_env_id
-
-    if is_hub_env(plugin_id):
-        parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]
-    return plugin_id
-
-
-ID = Annotated[str, AfterValidator(_validate_id)]
-"""Plugin id: `name`, `org/name`, or `org/name@version`."""
+ID = str
+"""Plugin id: the name of an installed package exporting the plugin."""

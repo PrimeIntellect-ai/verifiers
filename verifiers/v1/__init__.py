@@ -2,7 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.clients import (
     BaseClientConfig,
@@ -33,7 +33,19 @@ from verifiers.v1.configs.task import (
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.episode import (
+    EnvInfo,
+    Episode,
+    EvalRunInfo,
+    EvalWorkInfo,
+    GroupInfo,
+    PolicySpan,
+    RunInfo,
+    TrainRunInfo,
+    TrainWorkInfo,
+    WireEpisode,
+    WorkInfo,
+)
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
@@ -70,6 +82,13 @@ from verifiers.v1.runtimes import (
     RuntimeProcess,
     SubprocessConfig,
 )
+from verifiers.v1.semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    ACPInfo,
+    ParentLink,
+    SemanticEdge,
+    SemanticEdgeSet,
+)
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
@@ -79,18 +98,15 @@ from verifiers.v1.trace import (
     AgentSpan,
     Branch,
     Error,
-    EvalRunInfo,
     InterceptRecord,
     ModelCall,
     PolicyEvent,
     Reward,
-    RunInfo,
     TimeSpan,
     TimeSplit,
     Timing,
     Trace,
     TraceTask,
-    TrainRunInfo,
     VersionInfo,
     WireTrace,
 )
@@ -100,7 +116,6 @@ from verifiers.v1.types import (
     ContentPart,
     ImageUrlContentPart,
     ImageUrlSource,
-    KeptTokens,
     Message,
     MessageContent,
     Messages,
@@ -108,6 +123,7 @@ from verifiers.v1.types import (
     Response,
     Sampling,
     SamplingConfig,
+    SamplingMask,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -207,22 +223,33 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TraceTask",
     "WireTrace",
     "Reward",
+    "EnvInfo",
     "Episode",
     "WireEpisode",
+    "GroupInfo",
     "TRACE_VERSION",
     "AgentInfo",
     "RunInfo",
     "EvalRunInfo",
+    "EvalWorkInfo",
     "ModelCall",
+    "ACPInfo",
+    "ACP_SEMANTIC_EDGES_METADATA_KEY",
+    "ParentLink",
+    "SemanticEdge",
+    "SemanticEdgeSet",
     "PolicyEvent",
     "TrainRunInfo",
+    "TrainWorkInfo",
+    "WorkInfo",
+    "PolicySpan",
     "VersionInfo",
     "State",
     "StateT",
     "MessageNode",
     "Branch",
     "TurnTokens",
-    "KeptTokens",
+    "SamplingMask",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -265,6 +292,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "HarnessConfig",
     "ACPConfig",
     "ACPHarness",
+    "ACPTurn",
     "ModelContext",
     "Runtime",
     "RuntimeProcess",

@@ -200,6 +200,4 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             prompt=prompt,
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
-            # Pi can end after its final tool completes without a text message.
-            allow_empty_tool_reply=True,
         )

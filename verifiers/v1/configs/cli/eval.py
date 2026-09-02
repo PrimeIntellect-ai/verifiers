@@ -12,7 +12,6 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
-from verifiers.v1.utils.install import env_name
 
 
 def default_run_name(env: EnvConfig, model: str) -> str:
@@ -24,13 +23,21 @@ def default_run_name(env: EnvConfig, model: str) -> str:
     if taskset.id and env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
         # not share a name with a plain `gsm8k` one.
-        name = f"{env_name(env.id)}+{name}"
+        name = f"{env.id}+{name}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
     slug = (
         f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
     )
     return slug.lower()
+
+
+class RichConfig(BaseConfig):
+    """The live dashboard."""
+
+    show_logs: bool = False
+    """Replace the dashboard's per-rollout rows with a live tail of the attempt's log
+    file (`logs/latest/eval.log`) — the env's own log lines included."""
 
 
 class RunConfig(BaseConfig):
@@ -53,12 +60,13 @@ class EvalConfig(BaseConfig):
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
-    serve: ServeConfig = ServeConfig()
-    """How the env is hosted under `--server`: the worker pool, each worker's episode
-    bound. Ignored by an in-process run."""
+    serve: ServeConfig | None = Field(default_factory=ServeConfig)
+    """How the env is hosted: the env-server worker pool (elastic by default) and each
+    worker's episode bound — the path prime-rl trains through. `--no-serve` runs the
+    rollouts in-process instead."""
     run: RunConfig = Field(default_factory=RunConfig)
-    """Run identity: `run.name` names the run directory under `output_dir`, `run.id` is
-    stamped on traces."""
+    """Run identity: `run.name` is the display name, `run.dir` names the directory
+    under `output_dir`, and `run.id` is stamped on traces."""
     model: str = Field(
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
@@ -86,22 +94,20 @@ class EvalConfig(BaseConfig):
     )
     """Episodes in flight at once, `None` for no limit. An episode plays its agents one
     at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
-    says otherwise. Under `--server` it seeds each worker's bound, unless
+    says otherwise. Under `[serve]` it also seeds each worker's bound, unless
     `--serve.max-concurrent` pins one."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)
     """Resolve + validate the config and dump it, then exit. Excluded from the saved
-    config so re-running `@ config.toml` (or resuming/replaying the dir) actually runs."""
+    config so re-running `@ configs/eval.json` (or resuming/replaying the dir) actually runs."""
     clean: bool = Field(False, exclude=True)
     """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
     previous run's results. Excluded from the saved config."""
-    rich: bool = True
-    """Show a live dashboard instead of per-rollout logs (in-process only; an unset
-    `rich` defaults off under `--server`)."""
-    server: bool = False
-    """Drive rollouts through the env-server worker pool (sized by `[serve]`) instead of
-    in-process — the path prime-rl trains through. Incompatible with `--rich`."""
+    rich: RichConfig | None = Field(default_factory=RichConfig)
+    """The live dashboard (on by default; `--no-rich` streams logs to the console
+    instead). A served run has no live per-turn view, so its rollout rows fill in as
+    each episode completes; `--rich.show-logs` swaps the rows for the run's logs."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -109,41 +115,13 @@ class EvalConfig(BaseConfig):
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
-    """Directory that groups related runs. The run itself (config.toml + traces.jsonl)
-    writes to `output_dir / run.name`."""
+    """Directory that groups related runs. The run itself (`configs/eval.json` +
+    `traces.jsonl`) writes to `output_dir / run.dir`."""
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
-    run's own config — e.g. `uv run eval @ <run-dir>/config.toml --resume`. Excluded
+    run's own config — e.g. `uv run eval @ <run-dir>/configs/eval.json --resume`. Excluded
     from the saved config."""
-
-    @model_validator(mode="after")
-    def reject_rich_with_server(self):
-        """The dashboard reads live in-process run slots, so it can't ride the
-        worker pool: an unset `rich` defaults off under `--server`; an explicit
-        `--rich --server` is refused."""
-        if self.server and self.rich:
-            if "rich" not in self.model_fields_set:
-                self.rich = False
-                return self
-            raise ValueError(
-                "`--rich` (the live dashboard) runs in-process and can't be combined with "
-                "`--server`; drop `--rich`."
-            )
-        return self
-
-    @property
-    def env_id(self) -> str:
-        return self.env.env_id or ""
-
-    @property
-    def worker_max_concurrent(self) -> int | None:
-        """A served worker's episode bound: its own pin, else the run's `--max-concurrent`."""
-        return (
-            self.serve.max_concurrent
-            if self.serve.max_concurrent is not None
-            else self.max_concurrent
-        )
 
     @model_validator(mode="before")
     @classmethod

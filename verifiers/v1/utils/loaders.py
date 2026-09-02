@@ -1,6 +1,5 @@
 """Resolve taskset, harness, judge, hook, and environment plugins."""
 
-import contextvars
 import functools
 import importlib
 import importlib.util
@@ -25,7 +24,6 @@ from verifiers.v1.judge import Judge, judge_config_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.utils.generic import concrete_type, prefix_validation_error
-from verifiers.v1.utils.install import ensure_installed
 
 
 def builtin_harness_ids() -> list[str]:
@@ -34,12 +32,6 @@ def builtin_harness_ids() -> list[str]:
     from verifiers.v1 import harnesses
 
     return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__))
-
-
-skip_plugin_install: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "skip_plugin_install", default=False
-)
-"""Skip installing envs from the Hub during config parse (for callers that read the config but never run the env)."""
 
 
 def narrow_plugin_field(
@@ -66,10 +58,6 @@ def narrow_plugin_field(
             f"{field}.id needs an id, and none was given (got {ident!r}); "
             f"pass the id right after the flag{hint}"
         )
-    if skip_plugin_install.get():
-        # keep the plugin id-only; don't import/install from the Hub
-        data[field] = {"id": ident}
-        return
     try:
         data[field] = resolve(ident).model_validate({**raw, "id": ident})
     except ValidationError as e:
@@ -80,7 +68,10 @@ def narrow_plugin_field(
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    module = ensure_installed(plugin_id)
+    # Hub ids are `owner/name[@version]` (installed as just `name`); strip both
+    # before normalizing so a hub id imports the same module a bare id would.
+    name = plugin_id.rsplit("/", 1)[-1].split("@", 1)[0]
+    module = name.replace("-", "_").lower()
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
@@ -100,8 +91,8 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). {article} {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself.{hint}"
+            f"ones ship with verifiers in the `{group}` package; any other package "
+            f"must already be installed.{hint}"
         ) from e
 
 
@@ -160,8 +151,7 @@ def judge_class(judge_id: str) -> type[Judge]:
 
 
 def default_harness_id(taskset_id: str) -> str:
-    # In skip mode, don't import the taskset to probe for a bundled harness.
-    if not taskset_id or skip_plugin_install.get():
+    if not taskset_id:
         return "bash"
     try:
         module = import_taskset(taskset_id)

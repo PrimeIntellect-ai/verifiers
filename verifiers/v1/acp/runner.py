@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.11.0"]
+# dependencies = ["agent-client-protocol==0.12.1"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -11,6 +11,7 @@ import signal
 import sys
 import traceback
 from contextlib import AsyncExitStack, suppress
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from acp import (
@@ -30,44 +31,56 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
-    ToolCall,
-    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-LATE_UPDATE_GRACE_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class ACPTurn:
+    reply: str
+    stop_reason: str | None
+    response_metadata: dict[str, Any]
+    update_metadata: list[dict[str, Any]]
 
 
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
-        self.tool_calls: dict[str, str] = {}
-        self.output_changed = asyncio.Condition()
+        self.stop_reason: str | None = None
+        self.response_metadata: dict[str, Any] = {}
+        self.update_metadata: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
-        self.tool_calls = {}
+        self.stop_reason = None
+        self.response_metadata = {}
+        self.update_metadata = []
+
+    def turn_result(self) -> ACPTurn:
+        return ACPTurn(
+            reply=self.visible_reply,
+            stop_reason=self.stop_reason,
+            response_metadata=self.response_metadata,
+            update_metadata=self.update_metadata,
+        )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        async with self.output_changed:
-            if isinstance(update, ToolCall):
-                self.tool_calls[update.tool_call_id] = update.status or "pending"
-            elif isinstance(update, ToolCallUpdate):
-                if update.status:
-                    self.tool_calls[update.tool_call_id] = update.status
-            elif isinstance(update, AgentMessageChunk) and isinstance(
-                update.content, TextContentBlock
-            ):
-                message_id = getattr(update, "message_id", None)
-                if message_id is not None and message_id != self.message_id:
-                    self.visible_reply = ""
-                    self.message_id = message_id
-                self.visible_reply += update.content.text
-            else:
-                return
-            self.output_changed.notify_all()
+        metadata = dict(kwargs)
+        if isinstance(field_meta := getattr(update, "field_meta", None), dict):
+            metadata.update(field_meta)
+        if metadata:
+            self.update_metadata.append(metadata)
+        if isinstance(update, AgentMessageChunk) and isinstance(
+            update.content, TextContentBlock
+        ):
+            message_id = getattr(update, "message_id", None)
+            if message_id is not None and message_id != self.message_id:
+                self.visible_reply = ""
+                self.message_id = message_id
+            self.visible_reply += update.content.text
 
     async def request_permission(
         self,
@@ -132,7 +145,8 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> ACPTurn:
+    client.reset()
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -141,44 +155,14 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
-    client.reset()
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.stop_reason = response.stop_reason
+        client.response_metadata = dict(response.field_meta or {})
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-
-    # ACP 0.11 dispatches notifications in background tasks but resolves a request
-    # response directly in its receive loop. An agent that sends its final
-    # session/update immediately before session/prompt returns can therefore wake
-    # this coroutine before the update handler has run. Wait specifically for text:
-    # a completed tool update may also arrive first and must not hide a later reply.
-    def has_visible_reply() -> bool:
-        return bool(client.visible_reply.strip())
-
-    if not has_visible_reply():
-        async with client.output_changed:
-            try:
-                await asyncio.wait_for(
-                    client.output_changed.wait_for(has_visible_reply),
-                    timeout=LATE_UPDATE_GRACE_SECONDS,
-                )
-            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-                pass
-
-    tool_statuses = list(client.tool_calls.values())
-    completed_tool_turn = (
-        config.get("allow_empty_tool_reply", False)
-        and response.stop_reason == "end_turn"
-        and bool(tool_statuses)
-        and all(status in ("completed", "failed") for status in tool_statuses)
-    )
-    if not has_visible_reply() and not completed_tool_turn:
-        raise RuntimeError(
-            "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
-        )
-    return client.visible_reply
+    return client.turn_result()
 
 
 class ACPSession:
@@ -226,11 +210,11 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> ACPTurn:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
-        reply = await prompt(
+        result = await prompt(
             self.client,
             self.connection,
             self.capabilities,
@@ -239,9 +223,10 @@ class ACPSession:
             is_new=self.is_new,
         )
         self.is_new = False
-        return reply
+        return result
 
-    async def close(self) -> None:
+    async def close(self) -> dict[str, Any]:
+        response_metadata: dict[str, Any] = {}
         try:
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
@@ -249,10 +234,16 @@ class ACPSession:
                 )
                 if session_capabilities and session_capabilities.close is not None:
                     with suppress(Exception):
-                        await self.connection.close_session(session_id=self.session_id)
-            await self.stack.aclose()
+                        response = await self.connection.close_session(
+                            session_id=self.session_id
+                        )
+                        response_metadata = dict(response.field_meta or {})
         finally:
-            self._reset()
+            try:
+                await self.stack.aclose()
+            finally:
+                self._reset()
+        return response_metadata
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
@@ -295,12 +286,14 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        "result": asdict(await session.run(request["config"])),
                     }
                 elif operation == "shutdown":
-                    await session.close()
                     stop = True
-                    response = {"ok": True}
+                    response = {
+                        "ok": True,
+                        "result": {"response_metadata": await session.close()},
+                    }
                 else:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures
@@ -309,6 +302,8 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+                if operation == "prompt":
+                    response["result"] = asdict(session.client.turn_result())
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break

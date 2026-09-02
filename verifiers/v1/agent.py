@@ -116,19 +116,23 @@ class Segment:
     """One harness segment's agent/tool output, as `Interaction.turn` returns it.
 
     `messages` carries every model-sampled assistant message and intervening tool
-    result produced by the segment, in order; `last_reply` is quick sugar for its
-    final assistant text. `terminated` marks the exchange over — the run ended (a
+    result produced by the segment, in order. `root_reply` identifies the root
+    agent's response when the trace also contains descendant branches.
+    `terminated` marks the exchange over — the run ended (a
     limit, a `@stop`, or the harness finishing) instead of producing another
     segment; a terminated `Segment` carries no messages (the last real segment was
     already delivered), and the interaction's `trace` holds the full exchange.
     """
 
     messages: Messages
+    root_reply: str | None = None
     terminated: bool = False
 
     @property
     def last_reply(self) -> str:
-        """The final assistant message's text, matching `Trace.last_reply`."""
+        """The root agent's response, falling back to the final assistant message."""
+        if self.root_reply is not None:
+            return self.root_reply.strip()
         for message in reversed(self.messages):
             if isinstance(message, AssistantMessage):
                 return (message.content or "").strip()
@@ -210,7 +214,10 @@ class Interaction:
                     saw_assistant = True
                 elif saw_assistant and isinstance(node.message, ToolMessage):
                     segment_messages.append(node.message)
-            return Segment(messages=segment_messages)
+            return Segment(
+                messages=segment_messages,
+                root_reply=self.trace.root_reply,
+            )
         self._over = True
         return Segment(messages=[], terminated=True)
 
@@ -355,21 +362,26 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. Retries whole while the trace ends
-        with a retryable error (`config.retries`) — never into a borrowed box;
-        the final trace keeps earlier attempts' errors."""
+        moment it's minted, before any I/O. `collect_artifacts` captures the task's
+        declared artifacts after its finalizer while its container runtime is still
+        alive. Retries whole while the trace ends with a retryable error
+        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
+        attempts' errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(task, runtime, tools, on_trace)
+            trace = await self._run_once(
+                task, runtime, tools, on_trace, collect_artifacts
+            )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None:
@@ -400,9 +412,20 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
+        collect_artifacts: bool,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        run = Rollout(task=task, on_trace=on_trace, **params)
+        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+            raise TypeError(
+                "artifact collection requires a container runtime; subprocess "
+                "artifacts live in a host-only temporary working directory"
+            )
+        run = Rollout(
+            task=task,
+            on_trace=on_trace,
+            collect_artifacts=collect_artifacts,
+            **params,
+        )
         try:
             if await run.open():
                 await run.step()
@@ -548,6 +571,8 @@ class Agent:
             else self.runtime_config
         )
         async with provision_runtime(config) as runtime:
+            # Keep sandbox startup task-neutral: this box may later host another task.
+            runtime.env = dict(task.runtime_env()) if task is not None else {}
             yield runtime
 
 
@@ -617,6 +642,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -624,6 +650,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
+                collect_artifacts=collect_artifacts,
             )
         self._completed.append(trace)
         return trace

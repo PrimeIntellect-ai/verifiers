@@ -232,11 +232,17 @@ class DockerRuntime(Runtime):
                 network += ["--add-host", f"{_PROXY_HOST}:host-gateway"]
         else:
             network = ["--network", "host"]
+        env_args = [
+            arg
+            for key, value in self.env.items()
+            for arg in ("--env", f"{key}={value}")
+        ]
         run = await docker(
             "run",
             "--detach",
             *network,
             *limits,
+            *env_args,
             "--workdir",
             self.config.workdir,
             "--entrypoint",
@@ -255,7 +261,9 @@ class DockerRuntime(Runtime):
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
             self._proxy = EgressProxy(
-                NetworkPolicy(["*"], [], [HOST_ALIAS], allow_non_global=True)
+                NetworkPolicy(
+                    NetworkPolicyConfig(), [HOST_ALIAS], allow_non_global=True
+                )
             )
             if sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
@@ -340,18 +348,14 @@ class DockerRuntime(Runtime):
         assert self._proxy is not None
         if routes is None:
             self._proxy.policy = NetworkPolicy(
-                ["*"], [], [HOST_ALIAS], allow_non_global=True
+                NetworkPolicyConfig(), [HOST_ALIAS], allow_non_global=True
             )
             return
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
         ]
-        self._proxy.policy = NetworkPolicy(
-            self.config.allow,
-            self.config.block,
-            framework,
-        )
+        self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
         script = (
@@ -414,7 +418,7 @@ class DockerRuntime(Runtime):
         await super().teardown()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        env = {**env, **(self._proxy_env() if self._cut else {})}
+        env = {**self.process_env(env), **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
@@ -424,7 +428,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         assert self._container is not None
-        env = {**env, **(self._proxy_env() if self._cut else {})}
+        env = {**self.process_env(env), **(self._proxy_env() if self._cut else {})}
         env_args = [
             arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
         ]
@@ -485,7 +489,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Detached servers survive the cut, so they need the initially permissive proxy.
-        env = {**env, **self._proxy_env()}
+        env = {**self.process_env(env), **self._proxy_env()}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
         run = await docker(

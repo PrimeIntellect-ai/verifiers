@@ -31,7 +31,7 @@ from verifiers.v1.interception import (
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, Trace
+from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -50,17 +50,20 @@ def _as_error(e: Exception) -> Error:
 @dataclass
 class RunSlot:
     """One planned episode, observable while it happens: `traces` collects the
-    current attempt (a retry restarts the list), `episode`/`done` land when final."""
+    current attempt (a retry restarts the list), `episode`/`done` land when final.
+    A runner that can't watch live traces (the env-server path) stamps `started`
+    at dispatch so the slot still reads as running."""
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
+    started: float | None = None
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
         return cls(
-            task=Task(episode.traces[0].task.data),
+            task=Task(episode.task.data),
             traces=list(episode.traces),
             episode=episode,
             done=True,
@@ -252,7 +255,15 @@ class Env(ABC, Generic[ConfigT]):
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
         retry mints a replacement)."""
-        episode = Episode(env=EnvInfo(id=self.config.env_id))
+        episode = Episode(
+            env=EnvInfo(id=self.config.env_id),
+            task=TraceTask(
+                type=type(task).__name__,
+                data=task.data,
+                key=task.key,
+                hash=task.hash,
+            ),
+        )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):

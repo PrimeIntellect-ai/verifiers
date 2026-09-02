@@ -10,18 +10,19 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import cast
 
 from anthropic.types import Message as AnthropicMessage
-from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
+    RawRequest,
     StreamParser,
     append_user_notice,
     blocked_url,
     parse_sse_event,
+    provider_allowed_domains,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -44,7 +45,7 @@ from verifiers.v1.types import (
 )
 
 # Anthropic stop_reason -> vf finish_reason.
-STOP_REASONS = {
+STOP_REASONS: dict[str, FinishReason] = {
     "end_turn": "stop",
     "max_tokens": "length",
     "tool_use": "tool_calls",
@@ -56,6 +57,7 @@ THINKING = ("redacted_thinking", "thinking")
 # at the provider. Anchoring the pattern keeps new versions client-side without treating an
 # arbitrary dated provider tool as safe.
 _CLIENT_TOOL_TYPE = re.compile(r"(?:bash|text_editor|computer|memory)_\d{8}").fullmatch
+_WEB_TOOL_TYPE = re.compile(r"web_(?:search|fetch)_\d{8}").fullmatch
 _CONTENT_WRAPPERS = (
     "tool_result",
     "code_execution_tool_result",
@@ -126,10 +128,10 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def blocked_content_path(value, path: str) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
                 return blocked
         return None
     if not isinstance(value, dict):
@@ -148,10 +150,12 @@ def blocked_content_path(value, path: str) -> str | None:
             return source_path
         source_kind = source.get("type")
         if source_kind == "content":
-            return blocked_content_path(source.get("content"), f"{source_path}.content")
+            return blocked_content_path(
+                source.get("content"), f"{source_path}.content", policy
+            )
         if source_kind == "url":
             url = source.get("url")
-            if not isinstance(url, str) or blocked_url(url):
+            if not isinstance(url, str) or blocked_url(url, policy):
                 return f"{source_path}.url"
         if source_kind == "file":
             return (
@@ -169,13 +173,13 @@ def blocked_content_path(value, path: str) -> str | None:
     ) and value.get("file_id"):
         return f"{path}.file_id"
     if kind in _CONTENT_WRAPPERS:
-        return blocked_content_path(value.get("content"), f"{path}.content")
+        return blocked_content_path(value.get("content"), f"{path}.content", policy)
     return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path)
+        blocked = blocked_content_path(value, path, policy)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
@@ -183,16 +187,18 @@ def mediate_content(value, path: str):
     for index, block in enumerate(value):
         item_path = f"{path}[{index}]"
         if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
-            if blocked := blocked_content_path({**block, "content": []}, item_path):
+            if blocked := blocked_content_path(
+                {**block, "content": []}, item_path, policy
+            ):
                 capabilities.append(blocked)
                 continue
             content, removed = mediate_content(
-                block.get("content"), f"{item_path}.content"
+                block.get("content"), f"{item_path}.content", policy
             )
             if removed:
                 block["content"] = content or ""
                 capabilities.extend(removed)
-        elif blocked := blocked_content_path(block, item_path):
+        elif blocked := blocked_content_path(block, item_path, policy):
             capabilities.append(blocked)
             continue
         mediated.append(block)
@@ -292,30 +298,29 @@ def parse_messages(body: dict) -> Messages:
 def response_from_wire(message: AnthropicMessage) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
-    data = message.model_dump()
-    blocks = data.get("content") or []
-    state = [block for block in blocks if block["type"] in THINKING]
-    state.sort(key=lambda block: THINKING.index(block["type"]))
+    state: list[dict] = []
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
-    for block in blocks:
-        kind = block.get("type")
-        if kind == "text":
-            content.append(block.get("text", ""))
-        elif kind == "thinking":
-            reasoning.append(block.get("thinking", ""))
-        elif kind == "tool_use":
+    for block in message.content:
+        if block.type in THINKING:
+            state.append(block.model_dump())
+        if block.type == "text":
+            content.append(block.text)
+        elif block.type == "thinking":
+            reasoning.append(block.thinking)
+        elif block.type == "tool_use":
             calls.append(
                 ToolCall(
-                    id=block.get("id", ""),
-                    name=block.get("name", ""),
-                    arguments=json.dumps(block.get("input") or {}),
+                    id=block.id,
+                    name=block.name,
+                    arguments=json.dumps(block.input or {}),
                 )
             )
-    finish: FinishReason = STOP_REASONS.get(data.get("stop_reason") or "")
+    state.sort(key=lambda block: THINKING.index(block["type"]))
+    finish = STOP_REASONS.get(message.stop_reason or "")
     provider_usage = message.usage
-    output_details = data.get("usage", {}).get("output_tokens_details")
+    output_details = provider_usage.model_dump().get("output_tokens_details")
     # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
     # cache reads are the reusable subset exposed separately by vf.Usage.
     usage = Usage(
@@ -331,9 +336,9 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         cost=getattr(provider_usage, "cost", None),
     )
     return Response(
-        id=data.get("id", ""),
+        id=message.id,
         created=0,
-        model=data.get("model", ""),
+        model=message.model,
         message=AssistantMessage(
             content="".join(content) or None,
             reasoning_content="".join(reasoning) or None,
@@ -377,21 +382,14 @@ class AnthropicStreamParser(StreamParser):
                 "signature_delta",
             ):
                 field_name = delta_type.removesuffix("_delta")
-                fields = self.block_parts.get(index)
-                if fields is None:
-                    fields = {}
-                    self.block_parts[index] = fields
-                parts = fields.get(field_name)
-                if parts is None:
-                    parts = [block.get(field_name, "")]
-                    fields[field_name] = parts
+                parts = self.block_parts.setdefault(index, {}).setdefault(
+                    field_name, [block.get(field_name, "")]
+                )
                 parts.append(delta.get(field_name, ""))
             elif delta_type == "input_json_delta":
-                parts = self.partial_json.get(index)
-                if parts is None:
-                    parts = []
-                    self.partial_json[index] = parts
-                parts.append(delta.get("partial_json", ""))
+                self.partial_json.setdefault(index, []).append(
+                    delta.get("partial_json", "")
+                )
         elif kind == "message_delta":
             self.message.update(
                 {
@@ -429,13 +427,14 @@ class ModdedAnthropicMessage(AnthropicMessage):
     usage: ModdedUsage  # type: ignore[assignment]
 
 
-class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
+class AnthropicDialect(Dialect[AnthropicMessage]):
     sampling_fields = frozenset(
         {
             "temperature",
             "top_p",
             "top_k",
             "max_tokens",
+            "service_tier",
             "stop_sequences",
             "thinking",
             "tool_choice",
@@ -448,8 +447,8 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     response_type = ModdedAnthropicMessage
 
     def mediate_external_capabilities(
-        self, body: MessageCreateParams
-    ) -> tuple[MessageCreateParams, list[str]]:
+        self, body: RawRequest, policy: NetworkPolicyConfig
+    ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
 
@@ -457,7 +456,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system, removed = mediate_content(mediated.get("system"), "system")
+        system, removed = mediate_content(mediated.get("system"), "system", policy)
         capabilities.extend(removed)
         if removed:
             if system:
@@ -469,7 +468,9 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if not isinstance(message, dict):
                 continue
             content, removed = mediate_content(
-                message.get("content"), f"messages[{message_index}].content"
+                message.get("content"),
+                f"messages[{message_index}].content",
+                policy,
             )
             capabilities.extend(removed)
             if removed:
@@ -482,6 +483,33 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         tools = []
         for index, tool in enumerate(tool_items):
             kind = tool.get("type") if isinstance(tool, dict) else None
+            if (
+                isinstance(tool, dict)
+                and isinstance(kind, str)
+                and _WEB_TOOL_TYPE(kind)
+            ):
+                callers = tool.get("allowed_callers")
+                domains = (
+                    provider_allowed_domains(policy, tool.get("allowed_domains"))
+                    if tool.get("blocked_domains") in (None, [])
+                    and (
+                        callers is None
+                        or isinstance(callers, list)
+                        and "direct" in callers
+                    )
+                    else []
+                )
+                if domains:
+                    web_tool = {
+                        **tool,
+                        "allowed_domains": domains,
+                        "allowed_callers": ["direct"],
+                    }
+                    web_tool.pop("blocked_domains", None)
+                    tools.append(web_tool)
+                    continue
+                capabilities.append(f"tools[{index}].type")
+                continue
             if isinstance(tool, dict) and (
                 (isinstance(kind, str) and _CLIENT_TOOL_TYPE(kind))
                 or (kind in (None, "custom") and "input_schema" in tool)
@@ -533,7 +561,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(self, body: MessageCreateParams) -> Request:
+    def parse_request(self, body: RawRequest) -> Request:
         tools = [
             Tool(
                 name=t["name"],
@@ -644,7 +672,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
-    def parse_sampling(self, body: MessageCreateParams) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `output_config.effort` (where `apply_overrides` puts the eval's
         # reasoning effort) onto the typed knob; keep any other output-config keys.
@@ -659,27 +687,25 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         return Sampling.model_validate(settings)
 
     def apply_overrides(
-        self, body: MessageCreateParams, model: str, sampling: SamplingConfig
-    ) -> MessageCreateParams:
+        self, body: RawRequest, model: str, sampling: SamplingConfig
+    ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
-        s = sampling.model_dump(exclude_none=True)
-        overrides: dict = {"model": model}
-        if "temperature" in s:
-            overrides["temperature"] = s["temperature"]
-        if "top_p" in s:
-            overrides["top_p"] = s["top_p"]
-        if "max_tokens" in s:
-            overrides["max_tokens"] = s["max_tokens"]
-        if "reasoning_effort" in s:
+        s = sampling.wire_args()
+        reasoning_effort = s.pop("reasoning_effort", None)
+        sampling_output_config = s.pop("output_config", None)
+        overrides: dict = {**s, "model": model}
+        if sampling_output_config is not None or reasoning_effort is not None:
             overrides["output_config"] = {
                 **dict(body.get("output_config") or {}),
-                "effort": s["reasoning_effort"],
+                **dict(sampling_output_config or {}),
             }
+            if reasoning_effort is not None:
+                overrides["output_config"]["effort"] = reasoning_effort
         steered = {
             k: v
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return cast(MessageCreateParams, {**steered, **overrides})
+        return {**steered, **overrides}

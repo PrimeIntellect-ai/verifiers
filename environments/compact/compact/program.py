@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp>=1.24.0,<2"]
+# dependencies = ["openai", "mcp==2.0.0", "httpx2"]
 # ///
 """The compacting harness's program: a context-rewrite loop (every turn branches).
 
@@ -70,9 +70,9 @@ async def chat(
 
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
-    """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
-    from mcp import ClientSession
+    """Connect to each MCP server and negotiate the newest mutually supported protocol."""
+    import httpx2
+    from mcp import Client
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
@@ -82,14 +82,14 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
     dispatch: dict[str, tuple] = {}
     for name, spec in config.get("mcpServers", {}).items():
         http_client = await stack.enter_async_context(
-            create_mcp_http_client(headers=spec.get("headers") or None)
+            create_mcp_http_client(
+                headers=spec.get("headers") or None,
+                timeout=httpx2.Timeout(30.0, read=300.0),
+            )
         )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        for tool in (await session.list_tools()).tools:
+        transport = streamable_http_client(spec["url"], http_client=http_client)
+        client = await stack.enter_async_context(Client(transport))
+        for tool in (await client.list_tools()).tools:
             full = f"{name}_{tool.name}"
             tool_schemas.append(
                 {
@@ -97,17 +97,17 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
                     "function": {
                         "name": full,
                         "description": tool.description or "",
-                        "parameters": tool.inputSchema,
+                        "parameters": tool.input_schema,
                     },
                 }
             )
-            dispatch[full] = (session, tool.name)
+            dispatch[full] = (client, tool.name)
     return tool_schemas, dispatch
 
 
 async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str:
-    session, raw = dispatch[name]
-    result = await session.call_tool(raw, arguments)
+    client, raw = dispatch[name]
+    result = await client.call_tool(raw, arguments)
     texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
     return "\n".join(texts) if texts else str(result.content)
 
