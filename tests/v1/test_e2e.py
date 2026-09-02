@@ -52,6 +52,29 @@ AGENTIC_PLACEMENTS = [
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
+# Tool gating: every harness whose program asks the rollout's gate before executing a
+# call (bash is the in-house reference loop). Each must deny a proposed command before it
+# runs and have one real result rewritten before the model sees it.
+TOOL_GATE_PLACEMENTS = [
+    pair("bash", "subprocess", "bash-tool-gate-in-subprocess"),
+    pair("claude-code", "docker", "claude-code-tool-gate-in-docker"),
+    pair("codex", "docker", "codex-tool-gate-in-docker"),
+    # Responses transports replay the sampled reasoning state; chat completions would
+    # fork the graph at every reasoning turn regardless of gating.
+    pytest.param(
+        {"id": "pi", "transport": "responses"},
+        "docker",
+        marks=[mark.pi, mark.docker],
+        id="pi-responses-tool-gate-in-docker",
+    ),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-tool-gate-in-docker",
+    ),
+]
+
 # The scripted user runs in the eval process itself (no placement axis); the harness
 # runtime is the exchange's only axis.
 USER_RUNTIMES = [
@@ -422,6 +445,39 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     assert trace.ok
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness,harness_runtime", TOOL_GATE_PLACEMENTS, indirect=True)
+async def test_tool_gate(run_v1, harness, harness_runtime, tmp_path):
+    """The gate denies a proposed command before it runs, a real result is rewritten
+    before the model sees it, and a failed result is observed."""
+    (trace,) = await run_v1(
+        "tool-interception-v1",
+        harness=harness,
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+        max_turns=6,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    checks = trace.info.get("tool_interception_checks")
+    if harness.id == "codex":
+        # Code Mode wraps the shell in one script call: the gate judges each nested
+        # command before it runs, but the model only ever sees the script's output, so
+        # a result cannot be rewritten per command.
+        assert checks["blocked_before_execution"], checks
+        assert trace.request_rewrites
+        return
+    # The reward pins the calls and results to one path. Branch count is the agent's:
+    # Kimi replays turns without `phase`, and Claude Code re-prompts itself after an
+    # empty completion, both forking the graph without the gate's involvement.
+    assert trace.reward == 1.0, checks
+    assert [record.handler for record in trace.request_rewrites] == [
+        "rewrite_tool_result",
+        "rewrite_tool_result",
+    ]
 
 
 @pytest.mark.e2e

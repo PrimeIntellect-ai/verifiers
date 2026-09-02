@@ -85,6 +85,13 @@ class ACPHarness(Harness[ConfigT]):
         )
         trace.add_semantic_edges(edge_set)
 
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        """Configure the agent to ask before every tool call, so each request reaches the
+        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
+        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
+
     @abstractmethod
     async def prepare_acp(
         self,
@@ -116,6 +123,8 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
+        if tool_interception_url is not None:
+            await self.gate_tools(config, runtime, tool_interception_url, secret)
         return ACPHarnessSession(
             self,
             ctx,
@@ -266,6 +275,12 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "tool_interception": {
+                "url": self.tool_interception_url,
+                "secret": self.secret,
+            }
+            if self.tool_interception_url
+            else None,
         }
         async with self._lock:
             if self._closed:

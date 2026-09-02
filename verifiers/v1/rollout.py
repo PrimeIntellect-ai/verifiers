@@ -126,6 +126,7 @@ class Rollout:
             ],
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
+            gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
         self._stack = AsyncExitStack()
         self._failed = False

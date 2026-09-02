@@ -35,6 +35,10 @@ class Harness(ABC, Generic[ConfigT]):
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether the program asks the rollout's `/tool` gate (handed over as
+    `tool_interception_url`) before executing each tool call, so a request hook can
+    deny a call and the model sees the policy's result in its place. Without the gate
+    a pre-execution rewrite can only end the rollout."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""

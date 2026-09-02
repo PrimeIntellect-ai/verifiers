@@ -194,17 +194,23 @@ async def chat(
     return await client.chat.completions.create(**kwargs)
 
 
-async def run_tool_hook(
-    client: httpx.AsyncClient,
-    url: str,
-    api_key: str,
-    phase: str,
-    message: dict,
+async def gate_tool_call(
+    client: httpx.AsyncClient, url: str, api_key: str, call
 ) -> dict:
+    """Ask the rollout's gate before running `call`. A denial carries the result to record
+    in place of executing; a stopped rollout ends the program."""
+    try:
+        arguments = json.loads(call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        arguments = call.function.arguments
     response = await client.post(
         url,
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"phase": phase, "message": message},
+        json={
+            "tool_call_id": call.id,
+            "name": call.function.name,
+            "arguments": arguments,
+        },
     )
     response.raise_for_status()
     decision = response.json()
@@ -249,18 +255,14 @@ async def run_chat_loop(
             }
             if args.tool_interception_url:
                 assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "before",
-                    tool_message,
+                decision = await gate_tool_call(
+                    tool_client, args.tool_interception_url, args.api_key, call
                 )
-                if decision["action"] == "rewrite":
-                    rewritten = bound_tool_message(decision["message"])
-                    messages.append(rewritten)
+                if decision["action"] == "deny":
+                    denied = bound_tool_message(decision["message"])
+                    messages.append(denied)
                     tool_result_tokens += estimated_tokens(
-                        str(rewritten.get("content", ""))
+                        str(denied.get("content", ""))
                     )
                     continue
             try:
@@ -294,18 +296,8 @@ async def run_chat_loop(
                 else:
                     content = f"error: unknown tool {name!r}"
             tool_message["content"] = content
+            # Results are rewritten at the model boundary, not here.
             tool_message = bound_tool_message(tool_message)
-            if args.tool_interception_url:
-                assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "after",
-                    tool_message,
-                )
-                if decision["action"] == "rewrite":
-                    tool_message = bound_tool_message(decision["message"])
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):

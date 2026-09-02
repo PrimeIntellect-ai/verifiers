@@ -29,6 +29,20 @@ MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 
+# Pi leaves tool permissions to extensions. This one asks before every call; pi-acp relays
+# a confirm dialog to the ACP client as a permission request whose raw input carries the
+# title, so the title names the model's call for the runner's gate.
+GATE_EXTENSION = """export default function (pi) {
+  pi.on("tool_call", async (event, ctx) => {
+    const allowed = await ctx.ui.confirm(
+      event.toolCallId.split("|", 1)[0],
+      JSON.stringify(event.input),
+    );
+    if (!allowed) return { block: true, reason: "Blocked by the rollout's tool policy." };
+  });
+}
+"""
+
 INSTALL = r"""
 set -e
 packages=/var/tmp/vf-pi/mcp
@@ -57,6 +71,7 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
@@ -201,3 +216,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
         )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        agent_dir = config.env["PI_CODING_AGENT_DIR"]
+        await runtime.write(f"{agent_dir}/gate.js", GATE_EXTENSION.encode())
+        gated = f"{agent_dir}/pi-gated"
+        await runtime.write(
+            gated,
+            f"#!/bin/sh\nexec {config.env['PI_ACP_PI_COMMAND']} "
+            f'--extension {agent_dir}/gate.js "$@"\n'.encode(),
+        )
+        await runtime.run(["chmod", "+x", gated], {})
+        config.env["PI_ACP_PI_COMMAND"] = gated
