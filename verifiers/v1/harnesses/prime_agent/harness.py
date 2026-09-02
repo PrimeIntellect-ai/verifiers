@@ -10,6 +10,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -157,26 +158,19 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
-        lock = f"{PRIME_AGENT_DIR}/install.lock"
-        guarded = (
-            f"mkdir -p {PRIME_AGENT_DIR} && "
-            f'"$(command -v flock || command -v lockf)" {lock} '
-            f"sh -c {shlex.quote(INSTALL)}"
-        )
-        result = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=PRIME_AGENT_DIR,
+            install=INSTALL,
+            env={
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
             },
+            label="prime-agent",
         )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent install failed: {result.stderr.strip()[-500:]}"
-            )
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -285,11 +279,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self._root(trace)
-        removed = await runtime.run(["rm", "-rf", root], {})
-        if removed.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent state cleanup failed: {removed.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, root, "prime-agent state")
 
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"

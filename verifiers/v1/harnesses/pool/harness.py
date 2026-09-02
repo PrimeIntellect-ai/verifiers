@@ -3,11 +3,10 @@
 import json
 import shlex
 
-from pydantic import Field
-
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -28,7 +27,7 @@ chmod +x "{dir}/pool"
 
 
 class PoolHarnessConfig(HarnessConfig):
-    version: str = Field(default="1.0.15", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "1.0.15"
     """Pool release to install, pinned for reproducibility."""
 
 
@@ -44,17 +43,15 @@ class PoolHarness(ACPHarness[PoolHarnessConfig]):
         script = INSTALL.replace("{version}", self.config.version).replace(
             "{dir}", directory
         )
-        ensure = shlex.quote(f"[ -x {binary} ] || ({script})")
-        # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
-        guarded = (
-            f"mkdir -p {directory} && "
-            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
-            f"bash -o pipefail -c {ensure}"
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -x {binary} ]",
+            install=script,
+            env=self.config.resolved_env,
+            label="Pool",
+            shell=("bash", "-o", "pipefail", "-c"),
         )
-        result = await runtime.run(["sh", "-c", guarded], self.config.resolved_env)
-        if result.exit_code != 0:
-            detail = (result.stderr or result.stdout).strip()[-500:]
-            raise RuntimeError(f"Pool install failed: {detail}")
         await super().setup(runtime)
 
     async def prepare_acp(

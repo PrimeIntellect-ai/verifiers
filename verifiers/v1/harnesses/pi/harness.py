@@ -5,12 +5,11 @@ import logging
 import shlex
 from typing import Literal
 
-from pydantic import Field
-
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -46,7 +45,7 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.84.1", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "0.84.1"
     """Pi release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
@@ -69,27 +68,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             self.config.version,
             ACP_VERSION,
         )
-        lock = f"{PI_DIR}/install.lock"
-        guarded = (
-            f"mkdir -p {PI_DIR} && "
-            f'until ln -s "$$" {lock} 2>/dev/null; do '
-            f"owner=$(readlink {lock}); "
-            f'if ! kill -0 "$owner" 2>/dev/null; then '
-            f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
-            f"sleep 0.1; done; "
-            f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
-            f"sh -c {shlex.quote(INSTALL)}"
-        )
-        install = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=PI_DIR,
+            install=INSTALL,
+            env={
                 "VF_PI_VERSION": self.config.version,
                 "VF_PI_MCP_VERSION": MCP_VERSION,
                 "VF_PI_ACP_VERSION": ACP_VERSION,
             },
+            label="pi",
         )
-        if install.exit_code != 0:
-            raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
     async def prepare_acp(
