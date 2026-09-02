@@ -158,11 +158,11 @@ class RolloutSession:
         """Run typed request interceptors and stops over one canonical request."""
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
-        turn = graph.prepare_turn(self.trace, request.messages)
+        tail_start = graph.message_prefix_len(self.trace, request.messages)
         prepared_users = self.prepared_users.copy()
         prepared: set[int] = set()
         candidates: set[int] = set()
-        for position in range(turn.tail_start, len(request.messages)):
+        for position in range(tail_start, len(request.messages)):
             message = request.messages[position]
             if isinstance(message, UserMessage):
                 candidates.add(position)
@@ -347,7 +347,7 @@ class RolloutSession:
         request, records, stopped = await self.rewrite_request(
             Request(
                 messages=[*branch.messages, *previous, message],
-                tools=self.trace.tools or None,
+                tools=branch.tools or None,
             )
         )
         candidate = request.messages[-1]
@@ -355,7 +355,7 @@ class RolloutSession:
         self.trace.request_rewrites.extend(records)
         if stopped is not None:
             committed = request.messages if phase == "after" else request.messages[:-1]
-            turn = graph.prepare_turn(self.trace, committed)
+            turn = graph.prepare_turn(self.trace, committed, request.tools)
             turn.commit_prompt()
             self.consume_prepared(turn.tail)
             self.trace.stop(stopped)

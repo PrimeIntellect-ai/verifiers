@@ -209,6 +209,10 @@ class Branch(BaseModel):
         return [n.message for n in self.nodes]
 
     @property
+    def tools(self) -> list[Tool]:
+        return self.nodes[0].tools if self.nodes else []
+
+    @property
     def token_ids(self) -> list[int]:
         """Training input IDs formed by concatenating node token spans."""
         tokens: list[int] = []
@@ -444,7 +448,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder."""
+    """Physical node key -> node id for the graph builder."""
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
