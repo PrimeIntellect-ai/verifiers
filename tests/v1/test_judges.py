@@ -252,6 +252,21 @@ async def test_reference_score(fake_judge_model):
     }
     assert judge_record["response"]["parsed"] == 1.0
 
+    request_messages = [{"role": "user", "content": "original"}]
+    request = {
+        "model": "openai/gpt-5.4-nano",
+        "messages": request_messages,
+    }
+    trace.record_judge_call(
+        name="snapshot",
+        request=request,
+        response=JudgeResponse(text="yes"),
+    )
+    request_messages[0]["content"] = "mutated"
+    assert (
+        trace.info["judge_calls"][-1]["request"]["messages"][0]["content"] == "original"
+    )
+
     override_trace = make_trace()
     await vf.ReferenceJudge().complete(
         "Judge this response.", trace=override_trace, model="openai/gpt-5.4-mini"

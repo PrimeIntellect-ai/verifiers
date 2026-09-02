@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import time
 import traceback
 import uuid
@@ -685,7 +686,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.info.setdefault("judge_calls", []).append(
             {
                 "name": name,
-                "request": dict(request),
+                "request": copy.deepcopy(dict(request)),
                 "response": {
                     "message": message.model_dump(),
                     **response_record,
