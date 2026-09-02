@@ -467,6 +467,7 @@ class Rollout:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
             if not self._failed and self._opened:
+                assert runtime is not None
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
                     async with asyncio.timeout(self._timeouts.finalize):

@@ -11,7 +11,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Self
 
 from verifiers.v1.clients import (
@@ -52,6 +52,27 @@ from verifiers.v1.utils.retries import backoff, trace_should_retry
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
+    """Apply an agent's stage-timeout precedence to one task."""
+    agent_timeout = (
+        timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
+    )
+    return RolloutTimeouts(
+        setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
+        agent=agent_timeout,
+        finalize=(
+            timeout.finalize
+            if timeout.finalize is not None
+            else task.data.timeout.finalize
+        ),
+        scoring=(
+            timeout.scoring
+            if timeout.scoring is not None
+            else task.data.timeout.scoring
+        ),
+    )
 
 
 def _check_borrowed_placement(
@@ -526,34 +547,15 @@ class Agent:
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
-        # Timeout precedence: agent-level wins, else the task's, else no limit.
-        agent_timeout = (
-            self.timeout.rollout
-            if self.timeout.rollout is not None
-            else task.data.timeout.agent
-        )
+        timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
             "agent_config": self.config,
             "harness": self.harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "timeouts": RolloutTimeouts(
-                setup=(
-                    self.timeout.setup
-                    if self.timeout.setup is not None
-                    else task.data.timeout.setup
-                ),
-                agent=cap_remote_agent_timeout(agent_timeout, runtime_config, task),
-                finalize=(
-                    self.timeout.finalize
-                    if self.timeout.finalize is not None
-                    else task.data.timeout.finalize
-                ),
-                scoring=(
-                    self.timeout.scoring
-                    if self.timeout.scoring is not None
-                    else task.data.timeout.scoring
-                ),
+            "timeouts": replace(
+                timeouts,
+                agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
