@@ -47,10 +47,13 @@ class CompactionConfig(BaseConfig):
     summarize_at_tokens: PositiveInt | None = None
     """Compact at this token count. When unset, compact when 16k tokens remain below the
     model context window when the provider advertises it."""
+    max_compactions: PositiveInt | None = None
+    """Compactions per session before the engine stops compacting; `None` =
+    nano-rlm's default."""
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="240090d", min_length=1)
+    version: str = Field(default="dd2c04f", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
@@ -59,8 +62,11 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    compaction: CompactionConfig | None = None
-    """Context compaction policy. Set an empty config to use automatic thresholds."""
+    compaction: CompactionConfig | bool | None = None
+    """Context compaction: a `[compaction]` section (or `true`) enables it with the
+    given settings, `false` disables it (an overflowing session then fails), and
+    unset defers to nano-rlm's default (on, automatic thresholds, bounded by its
+    default 1M tree-token budget)."""
     max_concurrent_subagents: PositiveInt | None = None
     """Sub-agents running at once per session tree; `None` = nano-rlm's default (4).
     nano-rlm requires it to be at least `max_depth`."""
@@ -146,6 +152,19 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         system_prompt: str | None,
     ) -> JsonObject:
         compaction = self.config.compaction
+        policy_knobs: dict[str, Any] = {
+            "max_depth": self.config.max_depth,
+            "max_concurrent_subagents": self.config.max_concurrent_subagents,
+            "max_total_turns": self.config.max_total_turns,
+            "max_total_tokens": self.config.max_total_tokens,
+            "max_tool_output_bytes": self.config.max_tool_output_bytes,
+        }
+        if isinstance(compaction, bool):
+            policy_knobs["compaction"] = compaction
+        elif compaction is not None:
+            policy_knobs["compaction"] = True
+            policy_knobs["summarize_at_tokens"] = compaction.summarize_at_tokens
+            policy_knobs["max_compactions"] = compaction.max_compactions
         appends = [
             text
             for text in (system_prompt, self.config.append_to_system_prompt)
@@ -161,19 +180,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
             "policy": {
-                key: value
-                for key, value in {
-                    "max_depth": self.config.max_depth,
-                    "compaction": compaction is not None,
-                    "summarize_at_tokens": (
-                        compaction.summarize_at_tokens if compaction else None
-                    ),
-                    "max_concurrent_subagents": self.config.max_concurrent_subagents,
-                    "max_total_turns": self.config.max_total_turns,
-                    "max_total_tokens": self.config.max_total_tokens,
-                    "max_tool_output_bytes": self.config.max_tool_output_bytes,
-                }.items()
-                if value is not None
+                key: value for key, value in policy_knobs.items() if value is not None
             },
             "system_prompt_path": None,
             "append_to_system_prompt": "\n\n".join(appends) or None,
