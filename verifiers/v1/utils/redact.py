@@ -9,7 +9,7 @@ ordinary content is never rewritten. The prime CLI carries the same redactor
 import json
 import re
 from collections.abc import Iterator, Mapping
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_plus, urlsplit
 
 REDACTED = "[REDACTED]"
 MIN_SECRET_LENGTH = 8
@@ -47,7 +47,17 @@ def url_credentials(value: str) -> Iterator[str]:
     for pair in parts.query.split("&"):
         name, _, raw = pair.partition("=")
         if raw and SECRET_NAME.search(unquote(name)):
-            yield from {raw, unquote(raw)}
+            yield from {raw, unquote(raw), unquote_plus(raw)}
+
+
+def overlaps_marker(secret: str) -> bool:
+    """Whether replacing with the marker could leave or form `secret`: it sits inside
+    `[REDACTED]`, or begins with the marker's tail (`]bar`) or ends with its head
+    (`foo[`). Such a value is a placeholder or a pathological input, never a credential."""
+    return secret in REDACTED or any(
+        secret.startswith(REDACTED[-n:]) or secret.endswith(REDACTED[:n])
+        for n in range(1, len(REDACTED) + 1)
+    )
 
 
 def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
