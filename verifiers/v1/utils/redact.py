@@ -46,7 +46,7 @@ def url_credentials(value: str) -> Iterator[str]:
             yield from {userinfo, unquote(userinfo)}
     for pair in parts.query.split("&"):
         name, _, raw = pair.partition("=")
-        if raw and SECRET_NAME.search(name):
+        if raw and SECRET_NAME.search(unquote(name)):
             yield from {raw, unquote(raw)}
 
 
