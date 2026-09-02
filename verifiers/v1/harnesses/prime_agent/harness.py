@@ -110,10 +110,11 @@ PRIME_AGENT_ACP = ACP()
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = "0.6.0"
+    version: str = "0.9.0"
     """Prime Agent release to install, pinned for reproducibility.
 
-    0.6.0 is the first release with native ACP mode (`--mode acp`).
+    0.6.0 was the first release with native ACP mode (`--mode acp`). v0.9.0
+    includes MCP tool server support and improved install reliability.
     """
 
     tarball_url: str | None = None
