@@ -9,6 +9,7 @@ ordinary content is never rewritten. The prime CLI carries the same redactor
 import json
 import re
 from collections.abc import Iterator, Mapping
+from typing import Any
 from urllib.parse import unquote, unquote_plus, urlsplit
 
 REDACTED = "[REDACTED]"
@@ -51,7 +52,7 @@ def url_credentials(value: str) -> Iterator[str]:
             yield from {raw, unquote(raw), unquote_plus(raw)}
 
 
-def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
+def env_credentials(mapping: Mapping[Any, Any]) -> Iterator[str]:
     """The credentials in an environment-like mapping (variables, headers): every value
     under a credential-like name, the URL credentials in any value whatever its name
     (`DATABASE_URL`, `HTTP_PROXY`), and the same again inside a value that is a JSON
