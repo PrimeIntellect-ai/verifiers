@@ -38,7 +38,11 @@ def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
             parts = urlsplit(value)
         except ValueError:
             continue
-        if "@" in parts.netloc and (userinfo := parts.password or parts.username):
+        if "@" not in parts.netloc:
+            continue
+        # With a password slot, even an empty one, the username is a name, not a token.
+        userinfo = parts.username if parts.password is None else parts.password
+        if userinfo:
             yield from {userinfo, unquote(userinfo)}
 
 
