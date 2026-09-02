@@ -225,14 +225,9 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
     push_state = PushState()
 
-    # Opened before the first rollout so the platform's id is the run's id; a
-    # local run keeps its uuid.
+    # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
-    if run.mode == "online":
-        config.run.adopt_id(run.id)
-    # Resumed rollouts are part of this run too: re-stamp and upload them.
-    for episode in finished:
-        episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
+    # Resumed rollouts are part of this run too.
     run.log_episodes(finished)
 
     async def on_complete(episode: Episode) -> None:

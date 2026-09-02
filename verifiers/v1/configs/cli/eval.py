@@ -49,15 +49,11 @@ class RunConfig(BaseConfig):
     set it only when the directory should differ from the display name."""
 
     _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
-    """The platform's run id once `adopt_id` has been called; a local uuid until then."""
+    """The run's local id; uploaded records are keyed to the platform's run by the SDK."""
 
     @property
     def id(self) -> str:
         return self._id
-
-    def adopt_id(self, run_id: str) -> None:
-        """Take the platform's run id, before the first rollout, so every trace carries it."""
-        self._id = run_id
 
 
 class EvalConfig(BaseConfig):
