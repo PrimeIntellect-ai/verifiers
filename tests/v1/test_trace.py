@@ -521,7 +521,8 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     )  # about auth, not auth
     monkeypatch.setenv(  # a JSON-valued variable is a mapping too
         "DOCKER_AUTH_CONFIG",
-        json.dumps(
+        " "
+        + json.dumps(  # leading whitespace is valid JSON
             {"auths": {"https://index.docker.io/v1/": {"auth": "dXNlcjpwYXNzd29yZA=="}}}
         ),
     )
