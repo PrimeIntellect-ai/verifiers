@@ -28,7 +28,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FieldSerializationInfo,
+    field_serializer,
+    field_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
@@ -66,10 +73,11 @@ def _decode_ndarray(d: dict) -> np.ndarray:
 
 
 RECORD_FLOAT_DECIMALS = 4
-"""Precision of per-token float streams in JSON records (`to_record`). Full-precision
+"""Default precision of per-token float streams in JSON records (`to_record`). Full-precision
 digits are noise to every record reader and the least compressible bytes of a trace; four
-decimals leave a logprob within 1e-4 of what the trainer saw. The msgpack wire
-(`mode="python"`) keeps full precision — training never reads the record."""
+decimals leave a logprob within 1e-4 of what the trainer saw. `to_record(float_decimals=...)`
+overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="python"`) keeps
+full precision — training never reads the record."""
 
 
 class MessageNode(BaseModel):
@@ -165,10 +173,13 @@ class MessageNode(BaseModel):
         "entropies",
         when_used="json",
     )
-    def serialize_record_floats(self, values: list[float] | None) -> list[float] | None:
-        if values is None:
-            return None
-        return [round(value, RECORD_FLOAT_DECIMALS) for value in values]
+    def serialize_record_floats(
+        self, values: list[float] | None, info: FieldSerializationInfo
+    ) -> list[float] | None:
+        decimals = (info.context or {}).get("float_decimals", RECORD_FLOAT_DECIMALS)
+        if values is None or decimals is None:
+            return values
+        return [round(value, decimals) for value in values]
 
     @field_serializer("multi_modal_data")
     def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
