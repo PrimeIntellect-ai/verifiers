@@ -4,9 +4,6 @@ import shlex
 
 from verifiers.v1.runtimes import Runtime
 
-# Linux has flock, macOS/BSD has lockf; either releases the lock when its holder dies.
-_LOCKER = '"$(command -v flock || command -v lockf)"'
-
 
 async def ensure_installed(
     runtime: Runtime,
@@ -23,12 +20,25 @@ async def ensure_installed(
     install once and the rest wait. `ready` is a shell test that skips the install when it
     already holds. The lock is `directory/install.lock` unless the install replaces
     `directory` itself, in which case pass a `lock` path beside it. `shell` runs the script
-    (e.g. `bash -o pipefail -c` for pipelines)."""
-    lock = lock or f"{directory}/install.lock"
+    (e.g. `bash -o pipefail -c` for pipelines).
+
+    The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
+    dies; an image with neither falls back to a symlink spinlock that reaps a dead owner."""
+    lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
+    run = f"{shlex.join(shell)} {shlex.quote(script)}"
+    # A lock that is not a symlink (left behind by flock/lockf) or whose owner pid is gone
+    # is stale and reaped. `kill -0 ""` succeeds under busybox ash, hence the explicit -z.
+    spinlock = (
+        f'until ln -s "$$" {lock} 2>/dev/null; do owner=$(readlink {lock} 2>/dev/null); '
+        f'if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then '
+        f'[ "$(readlink {lock} 2>/dev/null)" != "$owner" ] || rm -f {lock}; fi; '
+        f"sleep 0.1; done; "
+        f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$$" ] || rm -f {lock}\' EXIT; {run}'
+    )
     guarded = (
-        f"mkdir -p {shlex.quote(directory)} && {_LOCKER} {shlex.quote(lock)} "
-        f"{shlex.join(shell)} {shlex.quote(script)}"
+        f"mkdir -p {shlex.quote(directory)} && "
+        f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
     result = await runtime.run(["sh", "-c", guarded], env)
     if result.exit_code != 0:
