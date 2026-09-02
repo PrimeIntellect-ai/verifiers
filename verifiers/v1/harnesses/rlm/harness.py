@@ -68,8 +68,8 @@ class RLMHarnessConfig(HarnessConfig):
     unset defers to nano-rlm's default (on, automatic thresholds, bounded by its
     default 1M tree-token budget)."""
     max_concurrent_subagents: PositiveInt | None = None
-    """Sub-agents running at once per session tree; `None` = nano-rlm's default (4).
-    nano-rlm requires it to be at least `max_depth`."""
+    """Sub-agents running at once per session tree; `None` = nano-rlm's default (4),
+    raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
@@ -152,9 +152,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         system_prompt: str | None,
     ) -> JsonObject:
         compaction = self.config.compaction
+        max_concurrent_subagents = self.config.max_concurrent_subagents
+        if max_concurrent_subagents is None and self.config.max_depth is not None:
+            max_concurrent_subagents = max(4, self.config.max_depth)
         policy_knobs: dict[str, Any] = {
             "max_depth": self.config.max_depth,
-            "max_concurrent_subagents": self.config.max_concurrent_subagents,
+            "max_concurrent_subagents": max_concurrent_subagents,
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
