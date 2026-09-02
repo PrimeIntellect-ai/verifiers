@@ -509,10 +509,13 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         'he said "hi" 0001',
         "hf_harness_token_0001",
         "intercept-token-0001",
+        "hooks/abc/def",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
-    tool_result = json.dumps(
-        {"env": {"KEY": 'he said "hi" 0001', "ok": "plain-header"}}
+    # A tool result as another encoder would emit it, `/` escaped included.
+    tool_result = (
+        '{"env": {"KEY": "he said \\"hi\\" 0001", "url": "hooks\\/abc\\/def", '
+        '"ok": "plain-header"}}'
     )
     trace = vf.Trace(
         agent=vf.AgentInfo(
@@ -570,7 +573,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     messages = payload["samples"][0]["completion"]
     assert messages[1]["content"].endswith("debug=1 plain-header")
     assert json.loads(messages[2]["content"]) == {
-        "env": {"KEY": "[REDACTED]", "ok": "plain-header"}
+        "env": {"KEY": "[REDACTED]", "url": "[REDACTED]", "ok": "plain-header"}
     }
     # The saved record keeps the run reproducible; only the tokens stay off disk.
     record = episode.to_record()["traces"][0]

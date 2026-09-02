@@ -8,17 +8,17 @@ come from `$PRIME_API_KEY` / `~/.prime/config.json`.
 Credentials stay out of the upload two ways. The config fields that hold them (client
 headers, harness env) are dropped from the projection, and every credential value the
 run knows — the clients' API keys, credential-named header / harness / host environment
-values, the rollouts' interception tokens — is replaced with `[REDACTED]` wherever it
-appears in the serialized samples. Redaction is exact-match only: nothing is guessed
-from the shape of the text, so ordinary content is never rewritten. Saved traces are
-unchanged, so a resumed `--push` redacts everything except the earlier attempt's
-interception tokens, which died with its interception server.
+values, whatever each rollout recorded on `Trace.upload_secrets` — is replaced with
+`[REDACTED]` wherever it appears in the serialized samples. Redaction is exact-match
+only: nothing is guessed from the shape of the text, so ordinary content is never
+rewritten. Saved traces are unchanged, so a resumed `--push` redacts everything except
+what the earlier attempt's rollouts recorded: their interception tokens (dead with that
+run's interception server) and task-resolved runtime credentials.
 """
 
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +29,7 @@ from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
+from verifiers.v1.utils.redact import MIN_SECRET_LENGTH, SECRET_NAME, Redactor
 
 logger = logging.getLogger(__name__)
 
@@ -49,60 +50,18 @@ UPLOAD_EXCLUDE = {
 """The episode projection uploaded: the disk record minus the config fields that carry
 credentials (`harness.forward_env` names variables without their values and stays)."""
 
-REDACTED = "[REDACTED]"
-MIN_SECRET_LENGTH = 8
-SECRET_NAME = re.compile(
-    r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL|COOKIE|AUTHORIZATION|(?:^|[_-])AUTH(?:[_-]|$)",
-    re.IGNORECASE,
-)
-"""Variable and header names whose values are credentials."""
-JSON_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
-
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-
-
-class Redactor:
-    """Replaces every occurrence of the secrets inside JSON strings, counting hits."""
-
-    def __init__(self, secrets: set[str]) -> None:
-        # Inside a JSON string a secret is escaped; inside a JSON document quoted within
-        # a string (a tool result) it is escaped twice. Match every spelling.
-        forms = set(secrets)
-        for _ in range(2):
-            forms |= {
-                json.dumps(form, ensure_ascii=escape)[1:-1]
-                for form in list(forms)
-                for escape in (True, False)
-            }
-        alternatives = "|".join(
-            re.escape(form) for form in sorted(forms, key=len, reverse=True)
-        )
-        self.pattern = re.compile(alternatives) if forms else None
-        self.count = 0
-
-    def json(self, text: str) -> str:
-        """Redact one JSON document given as text; structure and non-string values stay."""
-        pattern = self.pattern
-        if pattern is None:
-            return text
-
-        def string(match: re.Match[str]) -> str:
-            inner, hits = pattern.subn(REDACTED, match.group(1))
-            self.count += hits
-            return f'"{inner}"'
-
-        return JSON_STRING.sub(string, text)
 
 
 def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
     """Every credential this run could have echoed into a trace: the clients' API keys,
-    credential-named client header / harness / host environment values, the rollouts'
-    interception tokens, and `values`. Values shorter than `MIN_SECRET_LENGTH` are
-    dropped — redacting them would rewrite ordinary text."""
+    credential-named client header / harness / host environment values, what each
+    rollout recorded on `Trace.upload_secrets`, and `values`. Values shorter than
+    `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
     agents = [trace.agent.config for trace in traces]
     clients = [config.client, *(a.client for a in agents if a.client is not None)]

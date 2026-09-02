@@ -34,6 +34,7 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.redact import SECRET_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,11 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
+            # A task resolves these at run time and they are not traced, so the upload
+            # redactor can only learn them here.
+            self.trace.upload_secrets += [
+                value for name, value in runtime_env.items() if SECRET_NAME.search(name)
+            ]
             if self._borrowed_runtime is None:
                 runtime.env = runtime_env
             else:

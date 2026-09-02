@@ -445,9 +445,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
     upload_secrets: list[str] = Field(default_factory=list, repr=False)
-    """Credentials minted for this rollout (the interception tokens the harness holds).
-    An agent that prints its environment echoes them into the trace, so the platform
-    upload redacts them; never written to disk."""
+    """Credentials that exist only at rollout time: the interception tokens the harness
+    holds and credential-named variables the task resolves into its runtime. An agent
+    that prints its environment echoes them into the trace, so the platform upload
+    redacts them; never written to disk."""
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
