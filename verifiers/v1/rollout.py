@@ -238,6 +238,9 @@ class Rollout:
                 )
             if self._borrowed_runtime is None:
                 await runtime.start()
+            # Credentials the runtime minted at start (the Docker egress proxy token)
+            # reach every process it runs, the setup hooks included: record them first.
+            self.trace.upload_secrets += runtime.secrets
             await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
@@ -312,7 +315,6 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-            self.trace.upload_secrets += runtime.secrets
             async with boundary(HarnessError, "opening harness session"):
                 harness_data = self.trace.task.data
                 if (
