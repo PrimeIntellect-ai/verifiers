@@ -70,7 +70,7 @@ def env_credentials(mapping: Mapping[Any, Any]) -> Iterator[str]:
         if SECRET_NAME.search(name):
             yield value
         yield from url_credentials(value)
-        if value.startswith("{"):
+        if value.lstrip().startswith("{"):
             try:
                 nested = json.loads(value)
             except ValueError:
