@@ -9,7 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Self
@@ -733,9 +733,3 @@ class Agents:
                 f"{sorted(agents) if agents else []}"
             )
         return agents[name]
-
-    def __iter__(self) -> Iterator[Agent]:
-        return iter(self._agents.values())
-
-    def __len__(self) -> int:
-        return len(self._agents)

@@ -134,9 +134,6 @@ class ServerBase(Generic[ConfigT, StateT]):
     tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
     author's concern."""
 
-    EXTRAS: ClassVar[tuple[str, ...]] = ()
-    """Package extras the server's module needs, applied at sandbox install."""
-
     def __init__(self, config: ConfigT) -> None:
         self.config = config
         self._state_cls = state_cls(type(self))

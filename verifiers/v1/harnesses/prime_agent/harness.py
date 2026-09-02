@@ -97,7 +97,6 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:

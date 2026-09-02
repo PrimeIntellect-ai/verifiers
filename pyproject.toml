@@ -107,33 +107,6 @@ required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
 
-# NeMo Gym declares its full platform stack; this integration only starts resource servers.
-[[tool.uv.dependency-metadata]]
-name = "nemo-gym"
-version = "0.4.0"
-requires-python = ">=3.12"
-requires-dist = [
-    "aiohttp>=3.14.1",
-    "fastapi",
-    "gprof2dot",
-    "hydra-core",
-    "itsdangerous",
-    "mcp>=1.27,<2",
-    "omegaconf",
-    "openai>=2.9",
-    "orjson",
-    "pandas",
-    "pydantic",
-    "pydot",
-    "ray>=2.55.1",
-    "requests",
-    "rich",
-    "typing-extensions",
-    "uvicorn",
-    "wandb",
-    "yappi",
-]
-
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
@@ -244,8 +217,6 @@ addopts = [
 ]
 markers = [
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
-    "integration: marks tests as integration tests",
-    "slow: marks slow-running tests (deselect with -m 'not slow')",
     # v1 e2e matrix axes — select subsets with `-m` (see tests/v1/conftest.py). A mark is applied
     # per axis, so it matches every case touching that value on any axis.
     "subprocess: v1 e2e cases touching the subprocess (host) runtime",
@@ -264,11 +235,7 @@ markers = [
     "pi: v1 e2e cases on the pi harness",
     "pool: v1 e2e cases on the pool harness",
     "codex: v1 e2e cases on the codex harness",
-    "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
-    "parsers: marks tests for parser components",
-    "rubrics: marks tests for rubric components",
-    "environments: marks tests for environment components",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -276,7 +243,6 @@ filterwarnings = [
     "ignore::UserWarning:transformers.*",
     "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
     "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
-    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]
