@@ -70,6 +70,7 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -82,6 +83,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -472,11 +474,10 @@ class Rollout:
                         await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         )
-                        if self.task.scoring_deferred:
-                            async with boundary(TaskError, "artifact collection"):
-                                trace.state.artifacts = await collect(
-                                    runtime, self.task.data.artifacts
-                                )
+                        if self._collect_artifacts and not trace.state.artifacts:
+                            trace.state.artifacts = await collect(
+                                runtime, self.task.data.artifacts
+                            )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now

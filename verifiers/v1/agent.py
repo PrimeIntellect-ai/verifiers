@@ -9,7 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Self
@@ -383,21 +383,26 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. Retries whole while the trace ends
-        with a retryable error (`config.retries`) — never into a borrowed box;
-        the final trace keeps earlier attempts' errors."""
+        moment it's minted, before any I/O. `collect_artifacts` captures the task's
+        declared artifacts after its finalizer while its container runtime is still
+        alive. Retries whole while the trace ends with a retryable error
+        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
+        attempts' errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(task, runtime, tools, on_trace)
+            trace = await self._run_once(
+                task, runtime, tools, on_trace, collect_artifacts
+            )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None:
@@ -428,9 +433,20 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
+        collect_artifacts: bool,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        run = Rollout(task=task, on_trace=on_trace, **params)
+        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+            raise TypeError(
+                "artifact collection requires a container runtime; subprocess "
+                "artifacts live in a host-only temporary working directory"
+            )
+        run = Rollout(
+            task=task,
+            on_trace=on_trace,
+            collect_artifacts=collect_artifacts,
+            **params,
+        )
         try:
             if await run.open():
                 await run.step()
@@ -628,6 +644,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -635,6 +652,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
+                collect_artifacts=collect_artifacts,
             )
         self._completed.append(trace)
         return trace
@@ -717,9 +735,3 @@ class Agents:
                 f"{sorted(agents) if agents else []}"
             )
         return agents[name]
-
-    def __iter__(self) -> Iterator[Agent]:
-        return iter(self._agents.values())
-
-    def __len__(self) -> int:
-        return len(self._agents)

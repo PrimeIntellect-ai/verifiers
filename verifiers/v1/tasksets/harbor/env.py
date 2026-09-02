@@ -40,7 +40,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         # (e.g. a restricted Prime verifier without vm=true) costs nothing
         # rather than a full agent run.
         self.verifier_config(task)
-        await agents.agent.run(task.defer_scoring())
+        await agents.agent.run(task.defer_scoring(), collect_artifacts=True)
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (

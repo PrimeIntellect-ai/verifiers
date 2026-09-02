@@ -67,7 +67,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 "model-backed task judges are not supported"
             )
         self.verifier_config(task)  # Refuse an impossible verifier before solving.
-        await agents.agent.run(task.defer_scoring())
+        await agents.agent.run(task.defer_scoring(), collect_artifacts=True)
 
     def verifier_config(self, task: vf.Task) -> RuntimeConfig:
         base = self.config.verifier.runtime or self.config.agent.runtime

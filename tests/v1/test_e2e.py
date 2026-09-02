@@ -404,7 +404,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
-    assert trace.info["judge"]  # the call was recorded onto the trace
+    assert trace.info["judge_calls"]  # the call was recorded onto the trace
 
 
 @pytest.mark.e2e
@@ -701,11 +701,29 @@ async def test_replay_round_trip(run_v1, tmp_path):
     assert source.ok
     assert "lcs" in source.rewards
 
+    # Replay must not mix the source run's judge transcript into newly computed
+    # judge calls. Seed a saved call directly because this task scores without a
+    # judge; cleanup happens before task scoring and therefore does not inspect it.
+    import json
+
+    stream = run_dir / "traces.jsonl"
+    record = json.loads(stream.read_text())
+    record["traces"][0]["info"]["judge_calls"] = [
+        {
+            "name": "source-judge",
+            "request": {"model": "source-model", "messages": []},
+            "response": {
+                "message": {"role": "assistant", "content": "stale"},
+                "parsed": None,
+                "usage": None,
+            },
+        }
+    ]
+    stream.write_text(json.dumps(record) + "\n")
+
     async def replay(source_dir: Path, out: Path):
         # The CLI's layering, minus the argv plumbing: the saved run's config is the base
         # (`ReplayConfig` ignores its eval-only keys), the source's output_dir is dropped.
-        import json
-
         data = json.loads(saved_config_path(source_dir).read_text())
         data.pop("output_dir", None)
         config = ReplayConfig(**{**data, "rich": False})
@@ -720,6 +738,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
         # and recomputed the same value.
         assert replayed.rewards.keys() == source.rewards.keys()
         assert replayed.reward == pytest.approx(source.reward)
+        assert "judge_calls" not in replayed.info
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw

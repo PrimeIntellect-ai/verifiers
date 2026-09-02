@@ -145,7 +145,12 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
     def load(self) -> Iterator[LeanTask]:
-        from datasets import load_dataset
+        try:
+            from datasets import load_dataset
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "the Lean taskset requires the `lean` extra; install `verifiers[lean]`"
+            ) from e
 
         config = self.config
         ds = config.dataset

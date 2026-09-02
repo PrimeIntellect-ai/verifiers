@@ -156,7 +156,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             else:
                 st.state = "running"
                 # Clear the recorded scores; only offline-recomputable ones come back.
-                trace.info.pop("judge", None)
+                trace.info.pop("judge_calls", None)
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 # The declared Task for a rebuilt row, the base Task for the
                 # WireTaskData fallback.
