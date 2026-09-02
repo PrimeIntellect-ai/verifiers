@@ -510,6 +510,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     monkeypatch.setenv("HOST_HF_TOKEN", "hf_host_token_00000001")
     monkeypatch.setenv("KEYCLOAK_REALM", "production-realm")  # KEYCLOAK is not KEY
     monkeypatch.setenv("PGPASSWORD", "pg-pass-000001")  # but PGPASSWORD is a password
+    monkeypatch.setenv(
+        "SAS_URL", "https://a.blob.core.windows.net/c?sv=2020&sig=sas-sig-000001"
+    )
     client = EvalClientConfig(
         base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
@@ -544,6 +547,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "grader-token-0001",
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
         "pg-pass-000001",
+        "sas-sig-000001",  # a signed URL's signature is its bearer credential
         "task-url-pass-0001",
         "query-token-0001",
         "seat-key-000001",
