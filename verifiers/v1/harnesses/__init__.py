@@ -13,6 +13,7 @@ from verifiers.v1.harnesses.hermes_agent import (
     HermesAgentHarnessConfig,
 )
 from verifiers.v1.harnesses.kimi_code import KimiCodeHarness, KimiCodeHarnessConfig
+from verifiers.v1.harnesses.mcode import MCodeHarness, MCodeHarnessConfig
 from verifiers.v1.harnesses.mini_swe_agent import (
     MiniSWEAgentHarness,
     MiniSWEAgentHarnessConfig,
@@ -41,6 +42,8 @@ __all__ = [
     "HermesAgentHarnessConfig",
     "KimiCodeHarness",
     "KimiCodeHarnessConfig",
+    "MCodeHarness",
+    "MCodeHarnessConfig",
     "MiniSWEAgentHarness",
     "MiniSWEAgentHarnessConfig",
     "NullHarness",
