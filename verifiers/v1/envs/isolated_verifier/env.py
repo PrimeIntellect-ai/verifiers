@@ -109,7 +109,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         task: vf.Task,
         solution: vf.Trace,
         *,
-        attempt_timeout: float | None = None,
+        scoring_timeout_covers_attempt: bool = False,
     ) -> tuple[Any, vf.Trace]:
         timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
         last: Exception | None = None
@@ -129,7 +129,9 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 # survive a slow cleanup of the verifier runtime.
                 async with (
                     AsyncExitStack() as boxes,
-                    asyncio.timeout(attempt_timeout),
+                    asyncio.timeout(
+                        timeouts.scoring if scoring_timeout_covers_attempt else None
+                    ),
                 ):
                     async with asyncio.timeout(timeouts.setup):
                         # Failed setup or scoring must not alter the next attempt.

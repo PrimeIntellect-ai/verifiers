@@ -77,7 +77,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             self.verifier_config(task),
             grader,
             solution,
-            attempt_timeout=grader.data.timeout.scoring,
+            scoring_timeout_covers_attempt=True,
         )
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
