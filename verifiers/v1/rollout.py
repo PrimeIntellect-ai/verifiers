@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlsplit
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -22,6 +23,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.mcp.server import STATE_SIGNATURE_PARAM
 from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
@@ -296,6 +298,15 @@ class Rollout:
                     state_base=base_url,
                 )
             )
+            # A shared tool's URL carries a per-rollout signature derived from its
+            # secret; matching the secret alone would not recognise it.
+            self.trace.upload_secrets += [
+                signature
+                for url in self._urls.values()
+                for signature in parse_qs(urlsplit(url).query).get(
+                    STATE_SIGNATURE_PARAM, []
+                )
+            ]
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
