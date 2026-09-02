@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import fcntl
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -69,19 +70,45 @@ def _template_resources(cpu: float, memory: float) -> tuple[int, int]:
     return cpu_count, int(memory_mb_value)
 
 
-def _validate_egress_rules(rules: list[str]) -> None:
-    """E2B egress selectors accept plain hostnames, IPs, and CIDR blocks — not URL
-    origins, ports, or wildcard patterns — so reject what the platform can't enforce."""
-    for rule in rules:
+def _validate_egress_rules(allow: list[str], block: list[str]) -> None:
+    """Validate the two selector shapes supported by E2B's network API.
+
+    Allow rules accept hostnames (including a leading ``*.``), IPs, and CIDRs. Deny
+    rules only accept IPs and CIDRs; the provider rejects hostnames at request time.
+    """
+    for rule in block:
         try:
-            port = urlsplit(f"//{rule}").port
+            ipaddress.ip_network(rule, strict=False)
         except ValueError:
-            port = -1
-        if "://" in rule or "*" in rule or port is not None:
             raise ValueError(
-                "E2B egress rules must be plain hostnames, IPs, or CIDR blocks "
-                f"(no schemes, ports, or wildcards), got {rule!r}"
+                f"E2B block rules must be IP addresses or CIDR blocks, got {rule!r}"
+            ) from None
+
+    for rule in allow:
+        try:
+            ipaddress.ip_network(rule, strict=False)
+            continue
+        except ValueError:
+            pass
+
+        hostname = rule.removeprefix("*.").removesuffix(".")
+        labels = hostname.split(".")
+        valid_hostname = 0 < len(hostname) <= 253 and all(
+            0 < len(label) <= 63
+            and label[0] != "-"
+            and label[-1] != "-"
+            and all(
+                char.isascii() and (char.isalnum() or char == "-") for char in label
             )
+            for label in labels
+        )
+        if valid_hostname:
+            continue
+
+        raise ValueError(
+            "E2B allow rules must be hostnames, wildcard hostnames, IP addresses, "
+            f"or CIDR blocks (no schemes, ports, or paths), got {rule!r}"
+        )
 
 
 def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
@@ -92,10 +119,14 @@ def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
     `deny_out` one, so an allowlist is expressed as allow + deny-everything."""
     if routes is None:
         return {"allow_internet_access": True}
+    hosts = list(
+        dict.fromkeys(
+            host for route in routes if (host := urlsplit(route).hostname) is not None
+        )
+    )
     if config.allow == ["*"]:
-        return {"deny_out": list(config.block)}
-    hosts = (urlsplit(route).hostname for route in routes)
-    entries = list(dict.fromkeys([*(h for h in hosts if h), *config.allow]))
+        return {"allow_out": hosts, "deny_out": list(config.block)}
+    entries = list(dict.fromkeys([*hosts, *config.allow]))
     if not entries:
         return {"allow_internet_access": False}
     return {"allow_out": entries, "deny_out": ["0.0.0.0/0"]}
@@ -114,9 +145,6 @@ class E2BConfig(NetworkPolicyConfig):
     disk: float = Field(default=5.0, gt=0)
     """Advisory disk request in GB. E2B template builds have no disk-size knob, so this
     is accepted (so a task can declare it without a warning) but not enforced."""
-    timeout: int = Field(default=3600, ge=1, le=24 * 60 * 60)
-    """Maximum sandbox lifetime in seconds — E2B kills the sandbox when it elapses, so
-    raise it above the longest expected rollout (the platform tier caps how high)."""
     creates_per_sec: float | None = 1.0
     """Pace sandbox creation to this many per second, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). The default fits E2B's base tier;
@@ -128,7 +156,8 @@ class E2BConfig(NetworkPolicyConfig):
         _template_resources(self.cpu, self.memory)
         if self.network_restricted:
             _validate_egress_rules(
-                [rule for rule in [*self.allow, *self.block] if rule != "*"]
+                [rule for rule in self.allow if rule != "*"],
+                [rule for rule in self.block if rule != "*"],
             )
         return self
 
@@ -285,7 +314,7 @@ class E2BRuntime(Runtime):
             from e2b import AsyncSandbox
         except ModuleNotFoundError as e:
             raise ModuleNotFoundError(
-                "E2BRuntime requires the E2B SDK; install `e2b>=2.35.0`."
+                "E2BRuntime requires the E2B SDK; install `verifiers[e2b]`."
             ) from e
 
         try:
@@ -301,7 +330,7 @@ class E2BRuntime(Runtime):
                     # egress; `prepare_execution` locks the policy down before the agent.
                     self._sandbox = await AsyncSandbox.create(
                         template,
-                        timeout=self.config.timeout,
+                        timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
                         metadata={"runtime": "verifiers", "name": self.name},
                     )
                     # The atexit backstop kills by id, so record it the moment the sandbox
@@ -343,7 +372,7 @@ class E2BRuntime(Runtime):
     def _command(
         self, argv: list[str], env: dict[str, str]
     ) -> tuple[str, dict[str, str]]:
-        command_env = dict(env)
+        command_env = self.process_env(env)
         command = f"exec {shlex.join(argv)}"
         # E2B commands run through a login shell. Restore a caller-supplied PATH after
         # login-shell initialization so it has the same precedence as other runtimes.
@@ -503,8 +532,10 @@ class E2BRuntime(Runtime):
             return
         from e2b import Sandbox
 
-        with contextlib.suppress(Exception):
+        try:
             Sandbox.kill(self.info.id)
+        except Exception:  # noqa: BLE001 - a later cleanup call may retry
+            return
         self._sandbox = None
 
     async def teardown(self) -> None:
@@ -520,4 +551,5 @@ class E2BRuntime(Runtime):
             await sandbox.kill()
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("e2b: failed to kill sandbox %s: %s", self.info.id, e)
+            return
         self._sandbox = None
