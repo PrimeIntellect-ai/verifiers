@@ -11,8 +11,9 @@ from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace, TraceTask
 from verifiers.v1.types import Usage
 
-EPISODE_EXCLUDE_FIELDS = {"traces": {"__all__": EXCLUDE_FIELDS}}
-"""`EXCLUDE_FIELDS` applied to every trace of an episode dump."""
+EPISODE_EXCLUDE_FIELDS = {"upload_secrets": True, "traces": {"__all__": EXCLUDE_FIELDS}}
+"""Wire-only fields of an episode dump: its own `upload_secrets`, and `EXCLUDE_FIELDS`
+of every trace."""
 
 
 class EnvInfo(BaseModel):
@@ -103,6 +104,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the episode completed successfully."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
+    upload_secrets: list[str] = Field(default_factory=list, repr=False)
+    """Discarded attempts' `Trace.upload_secrets`, kept with the errors they left
+    behind; never written to disk."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
 

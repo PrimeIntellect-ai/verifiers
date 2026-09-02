@@ -84,7 +84,8 @@ def known_secrets(
     """Every credential this run could have put into a trace: the clients' API keys and
     the credentials in their base URLs, the credentials in client headers, harness and
     task-data environments and the host environment as they are now (`env_credentials`),
-    what each rollout recorded on `Trace.upload_secrets` as they were then, and `values`.
+    what each rollout recorded on `Trace.upload_secrets` as they were then (discarded
+    attempts' on `Episode.upload_secrets`), and `values`.
     Values shorter than `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite
     ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
@@ -105,6 +106,7 @@ def known_secrets(
         *(resolve_api_key(client) for client in clients),
         *(c for client in clients for c in url_credentials(client.base_url)),
         *(secret for trace in traces for secret in trace.upload_secrets),
+        *(secret for episode in episodes for secret in episode.upload_secrets),
         *(credential for mapping in named for credential in env_credentials(mapping)),
     }
     return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}

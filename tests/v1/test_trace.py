@@ -523,6 +523,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "db@pass-000001",  # the URL password as a client echoes it
         "url-pass-000001",
         "grader-token-0001",
+        "retry-token-0001",  # a discarded attempt's token, carried with its errors
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -566,7 +567,11 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         upload_secrets=["intercept-token-0001", "hooks/abc/def"],
     )
     episode = Episode[EnvTask, vf.State](
-        env=EnvInfo(id="echo-v1"), task=trace.task, traces=[trace], ok=True
+        env=EnvInfo(id="echo-v1"),
+        task=trace.task,
+        traces=[trace],
+        ok=True,
+        upload_secrets=["retry-token-0001"],
     )
 
     posted: dict[str, bytes] = {}
@@ -633,3 +638,4 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     )
     assert record["agent"]["config"]["client"]["headers"]["X-Trace"] == "plain-header"
     assert "upload_secrets" not in record
+    assert "upload_secrets" not in episode.to_record()
