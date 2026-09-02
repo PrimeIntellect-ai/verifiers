@@ -13,7 +13,7 @@ from contextlib import AsyncExitStack
 from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, SerializationInfo, field_serializer
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import resolve_rollout_timeouts
@@ -36,6 +36,18 @@ class VerifierConfig(vf.BaseConfig):
     retries: int = Field(2, ge=0)
     """Extra fresh-runtime attempts after setup, restoration, staging, or scoring
     failures."""
+
+    @field_serializer("runtime")
+    def serialize_runtime(
+        self, runtime: RuntimeConfig | None, info: SerializationInfo
+    ) -> dict | None:
+        """Keep an omitted image omitted across a resolved-config round trip."""
+        if runtime is None:
+            return None
+        values = runtime.model_dump(mode=info.mode)
+        if "image" not in runtime.model_fields_set:
+            values.pop("image", None)
+        return values
 
 
 class IsolatedVerifierEnvConfig(vf.EnvConfig):
@@ -64,7 +76,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         if (
             self.config.verifier.runtime is not None
             and image_spec is not None
-            and base.image != image_spec.default
+            and "image" in base.model_fields_set
         ):
             config = config.model_copy(update={"image": base.image})
         if isinstance(config, vf.SubprocessConfig):
