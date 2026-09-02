@@ -98,8 +98,8 @@ def known_secrets(
 ) -> set[str]:
     """Every credential this run could have put into a trace: the clients' API keys;
     the credentials in the host environment and in every environment or header mapping
-    of the run's env config, the traced agent configs, and the task data
-    (`env_credentials`); URL credentials anywhere in those configs and task data (a
+    of the run's env config, the traced agent configs, and the trace and episode task
+    data (`env_credentials`); URL credentials anywhere in those configs and task data (a
     client `base_url`, a harness endpoint, a task's connection string); what each
     rollout recorded on
     `Trace.upload_secrets` as it was then (discarded attempts' on
@@ -116,6 +116,7 @@ def known_secrets(
         config.env.model_dump(mode="json"),
         *(trace.agent.config.model_dump(mode="json") for trace in traces),
         *(trace.task.data.model_dump(mode="json") for trace in traces),
+        *(episode.task.data.model_dump(mode="json") for episode in episodes),
     ]
     named = [
         os.environ,

@@ -544,6 +544,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "pg-pass-000001",
         "task-url-pass-0001",
         "seat-key-000001",
+        "episode-token-0001",  # only in the episode's own task, not the trace's
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header production-realm"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -587,9 +588,15 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         ],
         upload_secrets=["intercept-token-0001", "hooks/abc/def"],
     )
+    # A derived-task env: the episode's task differs from the trace's and is uploaded too.
     episode = Episode[EnvTask, vf.State](
         env=EnvInfo(id="echo-v1"),
-        task=trace.task,
+        task=vf.TraceTask(
+            type="EnvTask",
+            data=EnvTask(
+                idx=0, prompt="q", verifier_env={"ROOT_TOKEN": "episode-token-0001"}
+            ),
+        ),
         traces=[trace],
         ok=True,
         upload_secrets=["retry-token-0001"],
@@ -619,6 +626,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         assert secret not in body and secret.replace('"', '\\"') not in body
     payload = json.loads(body)
     assert "upload_secrets" not in payload["samples"][0]["info"]["native_wrapper"]
+    assert payload["samples"][0]["info"]["native_wrapper"]["task"]["data"][
+        "verifier_env"
+    ] == {"ROOT_TOKEN": "[REDACTED]"}
     native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
     assert "headers" not in native["agent"]["config"]["client"]
     assert (
