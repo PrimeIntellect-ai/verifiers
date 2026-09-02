@@ -1,20 +1,17 @@
-"""Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
+"""Platform sample format and credentials for uploading v1 episodes to the Prime
+Intellect platform (`/evaluations/` and the RFT run APIs; prime-rl's monitors do the
+uploading).
 
-Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
-samples -> finalize). Each sample keeps the complete native Episode as its source
-of truth and includes a flat summary for older Platform consumers. Auth + base URL
-come from `$PRIME_API_KEY` / `~/.prime/config.json`.
+Each sample keeps the complete native Episode as its source of truth and includes a
+flat summary for older Platform consumers. Auth + base URL come from `$PRIME_API_KEY`
+/ `~/.prime/config.json`.
 """
 
 import json
 import logging
 import os
-from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
-from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.prime import load_prime_config
@@ -24,7 +21,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
-_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 
 
 def json_bytes(value: Any) -> int:
@@ -36,16 +33,6 @@ def json_bytes(value: Any) -> int:
             allow_nan=False,
         ).encode("utf-8")
     )
-
-
-@dataclass
-class PushState:
-    """Mutable upload status shared with the dashboard."""
-
-    started: bool = False
-    done: bool = False
-    url: str | None = None
-    error: str | None = None
 
 
 def trace_to_sample(
@@ -190,7 +177,7 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
             "native_wrapper": episode.to_record(),
             "native_trace_index": summary_trace_index,
         }
-        if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+        if len(b'{"samples":[]}') + json_bytes(sample) <= MAX_SAMPLES_PAYLOAD_BYTES:
             samples.append(sample)
             continue
         logger.warning(
@@ -202,116 +189,3 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
             for candidate in episode.traces
         )
     return samples
-
-
-def push_traces(
-    episodes: list[Episode],
-    config: EvalConfig,
-    state: "PushState | None" = None,
-) -> str | None:
-    """Upload a finished run to the platform; return the viewer URL (None if
-    skipped/failed). Resolves the env by name (get-or-create, so a local run
-    uploads without a prior `prime env push`); when `state` is given, records the
-    outcome on it so the dashboard's status line resolves."""
-
-    def finish(url: str | None = None, error: str | None = None) -> str | None:
-        if state is not None:
-            state.url = url
-            state.error = error
-            state.done = True
-        return url
-
-    api_key, base, frontend, team_id = credentials()
-    if not api_key:
-        logger.warning(
-            "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
-        )
-        return finish(error="no PRIME_API_KEY (run `prime login`)")
-
-    traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = config.env.taskset.id
-    metrics = run_metrics(episodes, traces)
-    num_examples = len({t.task.data.idx for t in traces})
-    metadata = {
-        "framework": "verifiers",
-        "run_id": config.run.id,
-        "model": config.model,
-        "num_examples": num_examples,
-        "rollouts_per_example": config.num_rollouts,
-        **metrics,
-    }
-
-    team = {"team_id": team_id} if team_id else {}
-    api = f"{base}/api/v1"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    # The run is done and its results saved; a network blip here must not crash it
-    # — log and skip the upload instead.
-    try:
-        samples = build_samples(episodes)
-        batches: list[list[dict[str, Any]]] = []
-        batch: list[dict[str, Any]] = []
-        payload_bytes = len(b'{"samples":[]}')
-        for i, sample in enumerate(samples):
-            sample_bytes = json_bytes(sample)
-            sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
-            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                raise ValueError(
-                    f"sample {i} is too large to upload "
-                    f"({sample_payload_bytes} > "
-                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
-                )
-            next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
-            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                batches.append(batch)
-                batch = []
-                payload_bytes = len(b'{"samples":[]}')
-                next_payload_bytes = payload_bytes + sample_bytes
-            batch.append(sample)
-            payload_bytes = next_payload_bytes
-        if batch or not samples:
-            batches.append(batch)
-
-        with httpx.Client(headers=headers, timeout=300.0) as client:
-
-            def post(path: str, body: dict) -> dict:
-                resp = client.post(f"{api}{path}", json=body)
-                resp.raise_for_status()
-                return resp.json()
-
-            env_id = post("/environmentshub/resolve", {"name": env_name, **team})[
-                "data"
-            ]["id"]
-            eval_id = post(
-                "/evaluations/",
-                {
-                    "name": config.run.name,
-                    "environments": [{"id": env_id}],
-                    "model_name": config.model,
-                    "dataset": env_name,
-                    "framework": "verifiers",
-                    "metadata": metadata,
-                    "metrics": metrics,
-                    "tags": [],
-                    **team,
-                },
-            )["evaluation_id"]
-            for batch in batches:
-                body = json.dumps(
-                    {"samples": batch},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-                resp = client.post(
-                    f"{api}/evaluations/{eval_id}/samples",
-                    content=body,
-                )
-                resp.raise_for_status()
-            post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
-    except Exception as e:  # noqa: BLE001 - push is best-effort across the full upload
-        logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
-        return finish(error=f"{type(e).__name__}: {e}")
-
-    url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
-    return finish(url=url)

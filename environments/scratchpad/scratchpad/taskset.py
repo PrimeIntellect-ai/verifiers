@@ -3,7 +3,7 @@
 Each rollout is assigned a unique word and asked to round-trip it through the shared scratchpad
 server, then report what came back. The reward is 1 iff the model reports its own word. The server
 is taskset-scoped (one instance per environment worker) yet writable, so this
-is a direct test of per-rollout isolation via `self.state`: `uv run eval scratchpad -n 8 -r 1`
+is a direct test of per-rollout isolation via `self.state`: `uv run evals scratchpad -n 8 -r 1`
 scores a mean reward of 1.0 because each rollout's write to `self.state` stays isolated even though
 every rollout handled by that worker shares its server process.
 """

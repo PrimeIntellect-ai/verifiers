@@ -1,4 +1,5 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
+"""On-disk output of the run-directory CLIs (`validate`, `debug`, `replay`, `gepa`):
+traces.jsonl (one rollout episode per line) + configs/<cli>.json.
 
 Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
 next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
@@ -14,10 +15,11 @@ import json
 import os
 from functools import cache
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
-from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.cli.run import RunConfig
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
@@ -61,10 +63,10 @@ def create_attempt_log_dir(run_dir: Path) -> Path:
 
 
 def attempt_log_file(run_dir: Path) -> Path:
-    """The current attempt's `eval.log`. The CLI creates the attempt dir once at
-    startup; everyone after it — the runner's worker spawn, the dashboard's log
-    tail — resolves through `logs/latest`, so the whole invocation shares one file.
-    A direct `run_eval` call (no CLI) creates the first attempt itself."""
+    """The current attempt's `eval.log`. A CLI creates the attempt dir once at startup;
+    everyone after it — a worker spawn, a dashboard's log tail — resolves through
+    `logs/latest`, so the whole invocation shares one file. A caller that skipped the
+    CLI creates the first attempt itself."""
     latest = run_dir / "logs" / "latest"
     if not latest.exists():
         create_attempt_log_dir(run_dir)
@@ -82,17 +84,21 @@ def saved_config_path(run_dir: Path) -> Path | None:
 type_adapter = cache(TypeAdapter)
 
 
-def output_path(config: EvalConfig) -> Path:
+class RunOutput(Protocol):
+    """A config that owns a run directory: `output_dir / run.dir`."""
+
+    output_dir: Path
+    run: RunConfig
+
+
+def output_path(config: RunOutput) -> Path:
     """Where this run writes: `output_dir / run.dir` — the same grouping convention as
-    training. The run directory defaults to the auto-generated run name
-    (`<env>--<model>--<harness>--<short-id>`)."""
+    training. The run directory defaults to the auto-generated run name."""
     assert config.run.dir is not None
     return config.output_dir / config.run.dir
 
 
-def write_config(
-    config: BaseModel, results_dir: Path, filename: str = "eval.json"
-) -> Path:
+def write_config(config: BaseModel, results_dir: Path, filename: str) -> Path:
     """Write the run's resolved config to `configs/resolved/<filename>` (re-readable via
     `@ <path>`); return its path. The full model dump is written, nulls included, so the
     file round-trips exactly."""
@@ -103,7 +109,7 @@ def write_config(
     return config_path
 
 
-def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
+def write_launch_toml(results_dir: Path, name: str) -> None:
     """Copy the launch `@` TOML file(s) verbatim to `configs/<name>.toml`."""
     import sys
 
@@ -131,9 +137,7 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
     (config_dir / f"{name}.toml").write_text("\n".join(texts))
 
 
-def save_config(
-    config: BaseModel, results_dir: Path, filename: str = "eval.json"
-) -> None:
+def save_config(config: BaseModel, results_dir: Path, filename: str) -> None:
     """Set up the run's output dir: write the resolved config, copy the launch TOML,
     and start a fresh (empty) `traces.jsonl`. Call once up front, before episodes start
     landing."""
