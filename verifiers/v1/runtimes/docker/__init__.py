@@ -4,8 +4,9 @@ CLI surface (and aliases `host.docker.internal`), so it reuses the whole impleme
 Containers get the engine's private network, so a task's ports never collide with the
 host's. Host loopback stays reachable from inside at its own port: on Linux through a
 listener planted on the container's loopback and relayed here (a "door"), off Linux
-through the engine's host alias. A service hosted in the container is published the
-other way, to a host loopback port."""
+through the engine's host alias (which a restricted runtime reaches through its egress
+proxy). A service hosted in the container is published the other way, to a host
+loopback port."""
 
 import array
 import asyncio
@@ -23,7 +24,12 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
-from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy, relay
+from verifiers.v1.runtimes.docker.egress import (
+    HOST_ALIAS,
+    EgressProxy,
+    NetworkPolicy,
+    relay,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +50,7 @@ class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
     pass
 
 
-_HOST_ALIAS = "host.docker.internal"
-_NO_PROXY = f"localhost,127.0.0.1,{_HOST_ALIAS}"
+_NO_PROXY = "localhost,127.0.0.1"
 _PLANT_LISTENERS = r"""
 import array, socket, sys
 control = socket.socket(socket.AF_UNIX)
@@ -142,7 +147,7 @@ class DockerRuntime(ContainerRuntime):
                 "net.ipv6.conf.all.disable_ipv6=1",
             ]
         if sys.platform != "linux":
-            options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
+            options += ["--add-host", f"{HOST_ALIAS}:host-gateway"]
         env_args = [
             arg
             for key, value in self.env.items()
@@ -164,9 +169,16 @@ class DockerRuntime(ContainerRuntime):
         if run.exit_code != 0:
             raise SandboxError(f"{self.engine} run failed: {run.stderr.strip()}")
         self.info.id = run.stdout.strip()[:12]  # `run -d` prints the container id
-        # Docker creates a missing `--workdir` for `exec`; Podman refuses one.
+        # Docker creates a missing `--workdir` (as root) for `exec`; Podman refuses one.
         made = await cli(
-            self.engine, "exec", self._container, "mkdir", "-p", self.config.workdir
+            self.engine,
+            "exec",
+            "--user",
+            "0",
+            self._container,
+            "mkdir",
+            "-p",
+            self.config.workdir,
         )
         if made.exit_code != 0:
             raise SandboxError(
@@ -201,9 +213,10 @@ class DockerRuntime(ContainerRuntime):
         if parts.hostname not in ("127.0.0.1", "localhost"):
             return url
         if sys.platform != "linux":
-            return url.replace(parts.hostname, _HOST_ALIAS, 1)
+            return url.replace(parts.hostname, HOST_ALIAS, 1)
         # Same address inside: the next exec opens a door at this port.
-        self._doors.setdefault(parts.port or 80, None)
+        default_port = 443 if parts.scheme == "https" else 80
+        self._doors.setdefault(parts.port or default_port, None)
         return url
 
     async def expose(self, port: int) -> str:
@@ -266,8 +279,8 @@ class DockerRuntime(ContainerRuntime):
         return [socket.socket(fileno=fd) for fd in descriptors]
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Allow the declared framework routes, then leave them and the proxy as the
-        only ways out."""
+        """Allow the declared framework routes, then leave the proxy as the only way out
+        (on Linux besides the loopback doors)."""
         if not self.network_restricted:
             return
         assert self._proxy is not None
@@ -283,8 +296,8 @@ class DockerRuntime(ContainerRuntime):
         self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
-        # Off Linux the host is a real address reached through the engine's gateway,
-        # so the cut keeps a route to it open on the framework and proxy ports only.
+        # Off Linux the host is a real address reached through the engine's gateway, so
+        # the cut keeps a route to it open on the proxy port only.
         host = ""
         if sys.platform != "linux":
             found = await cli(
@@ -293,16 +306,15 @@ class DockerRuntime(ContainerRuntime):
                 self._container,
                 "sh",
                 "-c",
-                f"awk '$2 == \"{_HOST_ALIAS}\" {{ print $1; exit }}' /etc/hosts",
+                f"awk '$2 == \"{HOST_ALIAS}\" {{ print $1; exit }}' /etc/hosts",
             )
             host = found.stdout.strip()
             if found.exit_code != 0 or not host:
                 raise SandboxError(
-                    f"could not resolve {_HOST_ALIAS} in {self.engine}: {found.stderr.strip()}"
+                    f"could not resolve {HOST_ALIAS} in {self.engine}: {found.stderr.strip()}"
                 )
-        ports = {urlsplit(url).port or 80 for url in routes} | {self._proxy.port}
         script = (
-            "set -eu; HOST=$1; shift; "
+            "set -eu; HOST=$1; PORT=$2; "
             'if [ -n "$HOST" ]; then apk add --no-cache iptables >/dev/null; fi; '
             "GW=$(ip route show default | awk '/^default via/{print $3; exit}'); "
             "SUBNET=$(ip route show | awk '/scope link/{print $1; exit}'); "
@@ -316,8 +328,7 @@ class DockerRuntime(ContainerRuntime):
             "ip route add blackhole 127.0.0.11/32 table local; "
             'if [ -n "$HOST" ]; then iptables -F OUTPUT; '
             "iptables -A OUTPUT -o lo -j ACCEPT; "
-            'for PORT in "$@"; do '
-            'iptables -A OUTPUT -d "$HOST" -p tcp --dport "$PORT" -j ACCEPT; done; '
+            'iptables -A OUTPUT -d "$HOST" -p tcp --dport "$PORT" -j ACCEPT; '
             "iptables -A OUTPUT -j REJECT; fi"
         )
         cut = await cli(
@@ -336,7 +347,7 @@ class DockerRuntime(ContainerRuntime):
             script,
             "cut",
             host,
-            *map(str, sorted(ports)),
+            str(self._proxy.port),
         )
         if cut.exit_code != 0:
             raise SandboxError(

@@ -181,13 +181,16 @@ class ContainerRuntime(Runtime):
         control = await self._exec({})
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5
+        exited = False
         try:
             while True:
                 ready = await cli(*control, "cat", pidfile)
                 if ready.exit_code == 0 and ready.stdout.strip().isdigit():
                     return ContainerProcess(proc, control, int(ready.stdout.strip()))
-                if proc.returncode is not None or loop.time() >= deadline:
+                # A target that already exited still left its pidfile: poll once more.
+                if exited or loop.time() >= deadline:
                     break
+                exited = proc.returncode is not None
                 await asyncio.sleep(0.05)
         except BaseException:
             await run_shielded(_abort_process_startup(proc, control, pidfile))

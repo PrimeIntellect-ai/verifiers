@@ -15,6 +15,8 @@ import h11
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
 
+# Off Linux the engine resolves this name to the host; the proxy dials host loopback for it.
+HOST_ALIAS = "host.docker.internal"
 _HEADER_TIMEOUT = 10
 _IO_TIMEOUT = 300
 
@@ -187,9 +189,10 @@ class EgressProxy:
             )
             addresses = []
             if permitted:
+                dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
                 addresses = await asyncio.wait_for(
                     asyncio.get_running_loop().getaddrinfo(
-                        host, port, type=socket.SOCK_STREAM
+                        dial_host, port, type=socket.SOCK_STREAM
                     ),
                     _IO_TIMEOUT,
                 )
