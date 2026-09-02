@@ -61,7 +61,11 @@ credentials (`harness.forward_env` names variables without their values and stay
 
 CREDENTIAL_MAPPING = re.compile(r"(?:^|_)(?:env|headers)$")
 """Config and task-data fields holding an environment or header mapping (a harness
-`env`, Harbor's `verifier_env`, a client's or a task config's `headers`)."""
+`env`, Harbor's `verifier_env`, a client's or a task config's `headers`). Name-based
+discovery stays inside these: applied to every field it would take `api_key_var`'s
+value, the *name* of a variable, for a credential, and keeping it out would need the
+reference-suffix lists this design avoids. A credential stored under a bare task-data
+field (`api_key: ...`) is recognised only through its value's URL shape."""
 
 
 def strings(value: Any) -> Iterator[str]:
