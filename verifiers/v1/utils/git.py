@@ -4,7 +4,7 @@ SWE-style tasksets call `capture_patch` from `Task.finalize` — after the harne
 finishes, while the runtime is live, before scoring mutates the repo (restoring
 test files, switching commits) — so the diff is exactly what the agent produced,
 including edits to test files (intentional: they reveal reward hacking), and
-excluding whatever the caller names in `ignore`.
+excluding whatever `snapshot_untracked` recorded before the agent started.
 
 The diff is taken against `base_commit` when the caller has one — a dataset row
 field, or a SHA recorded with `resolve_head` at setup time and kept in host
@@ -83,6 +83,26 @@ async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
     return (result.stdout or "").strip()
 
 
+async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[str]:
+    """The repo's untracked files, to hand `capture_patch` as `ignore`.
+
+    Call at the end of `setup`, before the agent runs, and keep the result in host
+    memory beside `resolve_head`'s SHA. Whatever it lists came with the image, so the
+    agent cannot be credited with it, and a patch that carries it fails `git apply` in
+    a fresh container of that same image — which is what an isolated grading box is.
+
+    Sandbox snapshotting will make this free: once runtimes can snapshot and diff a
+    filesystem, the pre-agent untracked set falls out of the diff with no setup-side
+    bookkeeping in any taskset. Drop this then.
+    """
+    result = await runtime.run(
+        ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
+    )
+    if result.exit_code != 0:
+        return []
+    return [path for path in (result.stdout or "").split("\0") if path]
+
+
 async def capture_patch(
     trace: Trace,
     runtime: Runtime,
@@ -93,8 +113,8 @@ async def capture_patch(
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
-    `ignore` names paths to leave out — the untracked files the image shipped, recorded
-    at setup — or `git add -A` credits the agent with them. R2E-Gym boxes
+    `ignore` names paths to leave out — pass `snapshot_untracked`'s list from setup, or
+    `git add -A` credits the agent with untracked files the image shipped. R2E-Gym boxes
     ship three (`datasets`, `install.sh`, `run_tests.sh`), and a patch carrying them
     fails `git apply` in a fresh container of that very image — which is what an
     isolated grading box is.
