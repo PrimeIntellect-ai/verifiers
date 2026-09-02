@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["514633727bf26d74f39f3119c2b0e31a5ceb2a9d"] = (
-    "514633727bf26d74f39f3119c2b0e31a5ceb2a9d"
+PRIME_AGENT_COMMIT: Literal["81ae3cb34d27d38ee37f9e205a1e73694993b344"] = (
+    "81ae3cb34d27d38ee37f9e205a1e73694993b344"
 )
-PRIME_AGENT_VERSION = "0.8.1"
+PRIME_AGENT_VERSION = "0.9.1"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 SKILLS_DIR = ".agents/skills"
@@ -87,7 +87,7 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["514633727bf26d74f39f3119c2b0e31a5ceb2a9d"] = PRIME_AGENT_COMMIT
+    commit: Literal["81ae3cb34d27d38ee37f9e205a1e73694993b344"] = PRIME_AGENT_COMMIT
     """Prime Agent main commit to install."""
 
     autonomous: bool = False
