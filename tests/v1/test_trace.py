@@ -505,6 +505,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     monkeypatch.setenv("MODEL_API_KEY", "sk-model-key-000000000001")
     monkeypatch.setenv("HOST_HF_TOKEN", "hf_host_token_00000001")
     monkeypatch.setenv("KEYCLOAK_REALM", "production-realm")  # KEYCLOAK is not KEY
+    monkeypatch.setenv("PGPASSWORD", "pg-pass-000001")  # but PGPASSWORD is a password
     client = EvalClientConfig(
         base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
@@ -525,6 +526,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "url-pass-000001",
         "grader-token-0001",
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
+        "pg-pass-000001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header production-realm"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
