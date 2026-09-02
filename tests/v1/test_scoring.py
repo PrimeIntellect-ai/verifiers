@@ -89,14 +89,14 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
         HookTask(HookData(idx=0, prompt="abc"), config).hooks("reward")
 
 
-async def test_graded_elsewhere_defers_only_task_scoring() -> None:
+async def test_defer_scoring_defers_only_task_scoring() -> None:
     task = HookTask(HookData(idx=0, prompt="abc"))
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="HookTask", data=task.data),
     )
 
-    await task.graded_elsewhere().score(trace)
+    await task.defer_scoring().score(trace)
     assert trace.rewards == {}
     await task.score(trace)
     assert set(trace.rewards) == {"fmt", "lcs"}

@@ -26,17 +26,23 @@ from verifiers.v1.utils.retries import backoff
 logger = logging.getLogger(__name__)
 
 
+class VerifierConfig(vf.BaseConfig):
+    runtime: RuntimeConfig | None = None
+    """Independent verifier placement and policy. None provisions a fresh runtime
+    equivalent to the solver's resolved task runtime."""
+    env: dict[str, str] | None = None
+    """Process environment for verifier setup and scoring. None uses the task's
+    normal runtime environment."""
+    retries: int = Field(2, ge=0)
+    """Extra fresh-runtime attempts after setup, restoration, staging, or scoring
+    failures."""
+
+
 class IsolatedVerifierEnvConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig()
     """The one solver seat."""
-    verifier_runtime: RuntimeConfig | None = None
-    """Independent verifier placement and policy. None provisions a fresh runtime
-    equivalent to the solver's resolved task runtime."""
-    verifier_env: dict[str, str] | None = None
-    """Process environment for verifier setup and scoring. None uses the task's
-    normal runtime environment."""
-    verifier_retries: int = Field(2, ge=0)
-    """Extra fresh-runtime attempts after verifier setup or scoring failures."""
+    verifier: VerifierConfig = VerifierConfig()
+    """The fresh verifier's runtime, process environment, and retry policy."""
 
 
 class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
@@ -49,14 +55,14 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 "model-backed task judges are not supported"
             )
         self.verifier_config(task)  # Refuse an impossible verifier before solving.
-        await agents.agent.run(task.graded_elsewhere())
+        await agents.agent.run(task.defer_scoring())
 
     def verifier_config(self, task: vf.Task) -> RuntimeConfig:
-        base = self.config.verifier_runtime or self.config.agent.runtime
+        base = self.config.verifier.runtime or self.config.agent.runtime
         config = resolve_runtime_config(base, task)
         image_spec = type(base).model_fields.get("image")
         if (
-            self.config.verifier_runtime is not None
+            self.config.verifier.runtime is not None
             and image_spec is not None
             and base.image != image_spec.default
         ):
@@ -113,13 +119,13 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     ) -> tuple[Any, vf.Trace]:
         timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
         last: Exception | None = None
-        for attempt in range(self.config.verifier_retries + 1):
+        for attempt in range(self.config.verifier.retries + 1):
             if attempt:
                 delay = backoff(attempt - 1)
                 logger.warning(
                     "isolated verifier attempt %d/%d failed (%s); retrying in %.1fs",
                     attempt,
-                    self.config.verifier_retries + 1,
+                    self.config.verifier.retries + 1,
                     last,
                     delay,
                 )
@@ -143,8 +149,8 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                                 config,
                                 env=(
                                     verifier_task.runtime_env()
-                                    if self.config.verifier_env is None
-                                    else self.config.verifier_env
+                                    if self.config.verifier.env is None
+                                    else self.config.verifier.env
                                 ),
                             )
                         )

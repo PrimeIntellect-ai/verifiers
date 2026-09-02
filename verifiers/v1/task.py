@@ -181,8 +181,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
-    def graded_elsewhere(self) -> Self:
-        """An independent copy whose task signals are deferred to another runtime.
+    def defer_scoring(self) -> Self:
+        """An independent copy whose task signals are deferred.
 
         Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
         state before declared artifacts are collected and the solver runtime is

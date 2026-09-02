@@ -10,8 +10,6 @@ is alive), a fresh box is provisioned from the task's verifier declaration,
 No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """
 
-import copy
-
 import verifiers.v1 as vf
 from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnv,
@@ -28,11 +26,6 @@ from verifiers.v1.utils.compile import resolve_runtime_config
 class HarborEnvConfig(IsolatedVerifierEnvConfig):
     """The Harbor solver plus its optional independent verifier runtime."""
 
-    verifier_runtime: RuntimeConfig | None = None
-    """Where a separate-verifier task grades. None derives the grading box from
-    the solver runtime; the task's verifier declaration supplies its own image,
-    workdir, resources, environment, and network policy."""
-
 
 class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
@@ -47,14 +40,12 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         # (e.g. a restricted Prime verifier without vm=true) costs nothing
         # rather than a full agent run.
         self.verifier_config(task)
-        solver_task = copy.copy(task)
-        solver_task.verifier_elsewhere = True
-        await agents.agent.run(solver_task)
+        await agents.agent.run(task.defer_scoring())
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
-            self.config.verifier_runtime
-            if self.config.verifier_runtime is not None
+            self.config.verifier.runtime
+            if self.config.verifier.runtime is not None
             else self.config.agent.runtime
         )
         return resolve_runtime_config(base, HarborTask(verifier_box_data(task.data)))
@@ -66,7 +57,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         solver's collected artifacts, stage `tests/`, run the verifier, and record
         its rewards (and any extra reward.json keys as metrics) on the solver's
         trace. Setup, restoration, staging, and scoring failures retry per
-        `verifier_retries`; the last one fails the episode."""
+        `verifier.retries`; the last one fails the episode."""
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
         solution = episode.traces[0]

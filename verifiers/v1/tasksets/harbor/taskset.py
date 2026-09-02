@@ -162,7 +162,6 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
-    verifier_elsewhere: bool = False
     verifier_staged: bool = False
 
     def runtime_env(self) -> dict[str, str]:
@@ -284,8 +283,6 @@ class HarborTask(Task[HarborData]):
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         if self.data.verifier is not None:
-            if self.verifier_elsewhere:
-                return {}
             if not self.verifier_staged:
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
