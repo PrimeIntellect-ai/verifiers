@@ -33,6 +33,7 @@ from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
 from verifiers.v1.utils.redact import (
     MIN_SECRET_LENGTH,
+    REDACTED,
     Redactor,
     env_credentials,
     url_credentials,
@@ -101,7 +102,8 @@ def known_secrets(
     harness endpoint, a task's connection string); what each rollout recorded on
     `Trace.upload_secrets` as it was then (discarded attempts' on
     `Episode.upload_secrets`); and `values`. Values shorter than `MIN_SECRET_LENGTH` are
-    dropped — redacting them would rewrite ordinary text."""
+    dropped — redacting them would rewrite ordinary text — and so are placeholders that
+    sit inside the `[REDACTED]` marker."""
     traces = [trace for episode in episodes for trace in episode.traces]
     clients = [
         config.client,
@@ -130,7 +132,12 @@ def known_secrets(
         *(secret for trace in traces for secret in trace.upload_secrets),
         *(secret for episode in episodes for secret in episode.upload_secrets),
     }
-    return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}
+    # A value inside the marker (`API_TOKEN=REDACTED`) is a sanitized placeholder.
+    return {
+        secret
+        for secret in secrets
+        if len(secret) >= MIN_SECRET_LENGTH and secret not in REDACTED
+    }
 
 
 @dataclass
