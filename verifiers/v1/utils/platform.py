@@ -40,8 +40,9 @@ class PushState:
 
 
 def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.Run:
-    """Open the run this eval streams into, before the first rollout. A run that
-    cannot be opened is logged and replaced by a disabled one; the eval goes on."""
+    """Open the run this eval streams into, before the first rollout, and give the
+    config the run's id. A run that cannot be opened is logged and replaced by a
+    disabled one; the eval goes on."""
     identity: dict[str, Any] = {
         "name": config.run.name,
         # Resolved by name via the hub's get-or-create; no taskset, nothing to attach to.
@@ -62,7 +63,6 @@ def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.R
     elif config.push:
         try:
             state.run = pr.init(mode="online", **identity)
-            return state.run
         except Exception as e:  # noqa: BLE001 - a failed upload must not fail the eval
             logger.warning(
                 "--push: could not open the run (%s: %s); running without it",
@@ -70,7 +70,11 @@ def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.R
                 e,
             )
             state.error = f"{type(e).__name__}: {e}"
-    state.run = pr.init(mode="disabled", **identity)
+    if state.run is None:
+        state.run = pr.init(mode="disabled", **identity)
+    # The run's one id: the platform's when online, the SDK's local one otherwise.
+    # The SDK keys every upload to it regardless; this is for the local records.
+    config.run.assign_id(state.run.id)
     return state.run
 
 

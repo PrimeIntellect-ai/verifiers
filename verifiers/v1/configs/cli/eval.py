@@ -48,12 +48,22 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
-    """The run's local id; uploaded records are keyed to the platform's run by the SDK."""
+    _id: str | None = PrivateAttr(default=None)
 
     @property
     def id(self) -> str:
+        """The run's one id, assigned by `open_run` from the prime-runs handle: the
+        platform's evaluation id online, the SDK's local id otherwise. The run mints
+        none of its own, so the run dir, every trace and the dashboard agree."""
+        if self._id is None:
+            raise RuntimeError("the run has no id until `open_run` has opened it")
         return self._id
+
+    def assign_id(self, run_id: str) -> None:
+        """Called once by `open_run`, before the first rollout."""
+        if self._id is not None and self._id != run_id:
+            raise RuntimeError(f"the run already has id {self._id!r}")
+        self._id = run_id
 
 
 class EvalConfig(BaseConfig):
