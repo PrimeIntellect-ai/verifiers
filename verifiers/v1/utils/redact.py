@@ -15,16 +15,20 @@ from urllib.parse import unquote, unquote_plus, urlsplit
 REDACTED = "[REDACTED]"
 MIN_SECRET_LENGTH = 8
 SECRET_NAME = re.compile(
-    r"(?:(?<![A-Za-z0-9])(?:API_?KEYS?|KEYS?|CREDENTIALS?|COOKIES?|AUTHORIZATION|SIGNATURES?|SIG|PATS?)"
+    r"(?:(?<![A-Za-z0-9])"
+    r"(?:API_?KEYS?|KEYS?|CREDENTIALS?|COOKIES?|AUTHORIZATION|AUTH|SIGNATURES?|SIG|PATS?)"
     r"|TOKENS?|SECRETS?|PASSW(?:OR)?DS?)"
-    r"(?![A-Za-z0-9])"
-    r"|(?<![A-Za-z0-9])AUTH$",
+    r"(?:[_-][0-9]+)?$",
     re.IGNORECASE,
 )
-"""Variable and header names whose values are credentials: a credential word as a whole
-segment (`HF_TOKEN`, `X-Api-Key`, a signed URL's `sig`/`X-Amz-Signature`, `GITHUB_PAT`), so `KEYCLOAK_REALM`, `OAUTH_CLIENT_ID`, or
-`TOKENIZERS_PARALLELISM` is not one. AUTH counts only as the last segment (`BASIC_AUTH`, `X-Auth`): elsewhere it says what a variable is about, not what it holds (`AUTH_TYPE`, `SSH_AUTH_SOCK`). No other word ends in TOKEN, SECRET, or PASSWORD,
-so those may also end a segment (`PGPASSWORD`, `ACCESSTOKEN`)."""
+"""Variable and header names whose values are credentials: the name's last word is a
+credential word (`HF_TOKEN`, `X-Api-Key`, `PGPASSWORD`), optionally numbered
+(`API_KEY_2`). Compound names are head-final, so `TOKEN_URL`, `COOKIE_DOMAIN`,
+`KEY_FILE`, `AUTHORIZATION_URL`, and `SSH_AUTH_SOCK` name metadata about a credential
+rather than one, and `KEYCLOAK_REALM` or `TOKENIZERS_PARALLELISM` never named one. A
+name whose head word is not a credential word (`SECRET_KEY_BASE`) is missed on
+purpose. No other word ends in TOKEN, SECRET, or PASSWORD, so those may also end a
+segment (`PGPASSWORD`, `ACCESSTOKEN`)."""
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
