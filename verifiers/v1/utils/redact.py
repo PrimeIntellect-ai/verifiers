@@ -21,29 +21,34 @@ SECRET_NAME = re.compile(
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
+def url_credentials(value: str) -> Iterator[str]:
+    """The password — or the bare user token — inside a `scheme://user:password@host`
+    value, as written and percent-decoded the way a client uses it. A username next to a
+    password is a name, not a secret (`postgres`, the egress proxy's `verifiers`), so a
+    token placed there beside a dummy password (GitHub's legacy `token:x-oauth-basic`)
+    is not recognised."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return
+    if "@" not in parts.netloc:
+        return
+    # With a password slot, even an empty one, the username is a name, not a token.
+    userinfo = parts.username if parts.password is None else parts.password
+    if userinfo:
+        yield from {userinfo, unquote(userinfo)}
+
+
 def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
     """The credentials in an environment-like mapping (variables, headers): every value
-    under a credential-like name, and the password — or the bare user token — inside a
-    `scheme://user:password@host` value whatever its name (`DATABASE_URL`, `HTTP_PROXY`),
-    as written and percent-decoded the way a client uses it. A username next to a
-    password is a name, not a secret (`postgres`, the egress proxy's
-    `verifiers`), so a token placed there beside a dummy password (GitHub's legacy
-    `token:x-oauth-basic`) is not recognised."""
+    under a credential-like name, and the URL credentials in any value whatever its name
+    (`DATABASE_URL`, `HTTP_PROXY`)."""
     for name, value in mapping.items():
         if not isinstance(value, str):
             continue
         if SECRET_NAME.search(name):
             yield value
-        try:
-            parts = urlsplit(value)
-        except ValueError:
-            continue
-        if "@" not in parts.netloc:
-            continue
-        # With a password slot, even an empty one, the username is a name, not a token.
-        userinfo = parts.username if parts.password is None else parts.password
-        if userinfo:
-            yield from {userinfo, unquote(userinfo)}
+        yield from url_credentials(value)
 
 
 class Redactor:

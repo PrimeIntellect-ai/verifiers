@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,7 +31,12 @@ from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
-from verifiers.v1.utils.redact import MIN_SECRET_LENGTH, Redactor, env_credentials
+from verifiers.v1.utils.redact import (
+    MIN_SECRET_LENGTH,
+    Redactor,
+    env_credentials,
+    url_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,19 @@ ENV_FIELD = re.compile(r"(?:^|_)env$")
 """Task-data fields holding an environment mapping (Harbor's `env`, `verifier_env`)."""
 
 
+def env_mappings(value: Any, name: str = "") -> Iterator[dict]:
+    """Environment mappings anywhere in a task-data dump, nested ones included
+    (Harbor's `verifier.env`)."""
+    if isinstance(value, dict):
+        if ENV_FIELD.search(name):
+            yield value
+        for key, child in value.items():
+            yield from env_mappings(child, key)
+    elif isinstance(value, list):
+        for child in value:
+            yield from env_mappings(child, name)
+
+
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
@@ -62,11 +81,12 @@ def json_text(value: Any) -> str:
 def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
-    """Every credential this run could have put into a trace: the clients' API keys,
-    the credentials in client headers, harness and task-data environments and the host
-    environment as they are now (`env_credentials`), what each rollout recorded on
-    `Trace.upload_secrets` as they were then, and `values`. Values shorter than
-    `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite ordinary text."""
+    """Every credential this run could have put into a trace: the clients' API keys and
+    the credentials in their base URLs, the credentials in client headers, harness and
+    task-data environments and the host environment as they are now (`env_credentials`),
+    what each rollout recorded on `Trace.upload_secrets` as they were then, and `values`.
+    Values shorter than `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite
+    ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
     agents = [trace.agent.config for trace in traces]
     clients = [config.client, *(a.client for a in agents if a.client is not None)]
@@ -75,15 +95,15 @@ def known_secrets(
         *(client.headers for client in clients),
         *(a.harness.resolved_env for a in agents if a.harness is not None),
         *(
-            value
+            mapping
             for trace in traces
-            for name, value in trace.task.data.model_dump(mode="json").items()
-            if ENV_FIELD.search(name) and isinstance(value, dict)
+            for mapping in env_mappings(trace.task.data.model_dump(mode="json"))
         ),
     ]
     secrets = {
         *values,
         *(resolve_api_key(client) for client in clients),
+        *(c for client in clients for c in url_credentials(client.base_url)),
         *(secret for trace in traces for secret in trace.upload_secrets),
         *(credential for mapping in named for credential in env_credentials(mapping)),
     }

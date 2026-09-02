@@ -37,6 +37,8 @@ class MyState(vf.State):
 class EnvTask(vf.TaskData):
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """An environment mapping inside task data, as Harbor's `verifier_env`."""
+    verifier: dict = Field(default_factory=dict)
+    """A nested block with its own `env`, as Harbor's `verifier.env`."""
 
 
 class FailingSegmentRollout:
@@ -503,7 +505,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     monkeypatch.setenv("MODEL_API_KEY", "sk-model-key-000000000001")
     monkeypatch.setenv("HOST_HF_TOKEN", "hf_host_token_00000001")
     client = EvalClientConfig(
-        base_url="https://models.example/v1",
+        base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
         headers={"X-Auth": 'he said "hi" 0001', "X-Trace": "plain-header"},
     )
@@ -519,6 +521,8 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "judge-key-000000001",
         "db%40pass-000001",
         "db@pass-000001",  # the URL password as a client echoes it
+        "url-pass-000001",
+        "grader-token-0001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -548,6 +552,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                     "DATABASE_URL": "postgres://app:db%40pass-000001@db/x",
                     "MODE": "fast",
                 },
+                verifier={"env": {"GRADER_TOKEN": "grader-token-0001", "N": "1"}},
             ),
         ),
         nodes=[
@@ -589,6 +594,10 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     payload = json.loads(body)
     native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
     assert "headers" not in native["agent"]["config"]["client"]
+    assert (
+        native["agent"]["config"]["client"]["base_url"]
+        == "https://svc:[REDACTED]@models.example/v1"
+    )
     assert "env" not in native["agent"]["config"]["harness"]
     assert native["agent"]["config"]["harness"]["forward_env"] == ["HOME"]
     assert "upload_secrets" not in native
@@ -612,6 +621,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "JUDGE_API_KEY": "[REDACTED]",
         "DATABASE_URL": "postgres://app:[REDACTED]@db/x",
         "MODE": "fast",
+    }
+    assert payload["samples"][0]["task"]["verifier"] == {
+        "env": {"GRADER_TOKEN": "[REDACTED]", "N": "1"}
     }
     # The saved record keeps the run reproducible; only the tokens stay off disk.
     record = episode.to_record()["traces"][0]
