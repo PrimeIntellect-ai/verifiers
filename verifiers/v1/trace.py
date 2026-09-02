@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import time
 import traceback
 import uuid
@@ -672,8 +673,26 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
-    def record_judge(self, response: JudgeResponse) -> None:
-        self.info.setdefault("judge", []).append(response.model_dump())
+    def record_judge_call(
+        self,
+        *,
+        name: str,
+        request: Mapping[str, Any],
+        response: JudgeResponse,
+    ) -> None:
+        """Record one complete judge request/response exchange."""
+        response_record = response.model_dump()
+        message = AssistantMessage(content=response_record.pop("text"))
+        self.info.setdefault("judge_calls", []).append(
+            {
+                "name": name,
+                "request": copy.deepcopy(dict(request)),
+                "response": {
+                    "message": message.model_dump(),
+                    **response_record,
+                },
+            }
+        )
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
