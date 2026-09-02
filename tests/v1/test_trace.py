@@ -39,6 +39,8 @@ class EnvTask(vf.TaskData):
     """An environment mapping inside task data, as Harbor's `verifier_env`."""
     verifier: dict = Field(default_factory=dict)
     """A nested block with its own `env`, as Harbor's `verifier.env`."""
+    db_url: str = ""
+    """A connection string outside any environment mapping."""
 
 
 class FailingSegmentRollout:
@@ -527,6 +529,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "grader-token-0001",
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
         "pg-pass-000001",
+        "task-url-pass-0001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header production-realm"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -557,6 +560,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                     "MODE": "fast",
                 },
                 verifier={"env": {"GRADER_TOKEN": "grader-token-0001", "N": "1"}},
+                db_url="postgres://svc:task-url-pass-0001@db/y",
             ),
         ),
         nodes=[
@@ -600,6 +604,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     for secret in secrets:
         assert secret not in body and secret.replace('"', '\\"') not in body
     payload = json.loads(body)
+    assert "upload_secrets" not in payload["samples"][0]["info"]["native_wrapper"]
     native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
     assert "headers" not in native["agent"]["config"]["client"]
     assert (
@@ -633,6 +638,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     assert payload["samples"][0]["task"]["verifier"] == {
         "env": {"GRADER_TOKEN": "[REDACTED]", "N": "1"}
     }
+    assert payload["samples"][0]["task"]["db_url"] == "postgres://svc:[REDACTED]@db/y"
     # The saved record keeps the run reproducible; only the tokens stay off disk.
     record = episode.to_record()["traces"][0]
     assert (

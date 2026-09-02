@@ -28,7 +28,7 @@ import httpx
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.client import resolve_api_key
-from verifiers.v1.episode import Episode
+from verifiers.v1.episode import EPISODE_EXCLUDE_FIELDS, Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
 from verifiers.v1.utils.redact import (
@@ -47,12 +47,13 @@ _MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 _FRAME_BYTES = len('{"samples":[]}')
 
 UPLOAD_EXCLUDE = {
+    **EPISODE_EXCLUDE_FIELDS,
     "traces": {
         "__all__": {
             **EXCLUDE_FIELDS,
             "agent": {"config": {"client": {"headers"}, "harness": {"env"}}},
         }
-    }
+    },
 }
 """The episode projection uploaded: the disk record minus the config fields that carry
 credentials (`harness.forward_env` names variables without their values and stays)."""
@@ -61,9 +62,21 @@ ENV_FIELD = re.compile(r"(?:^|_)env$")
 """Task-data fields holding an environment mapping (Harbor's `env`, `verifier_env`)."""
 
 
+def strings(value: Any) -> Iterator[str]:
+    """Every string in a JSON tree."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from strings(child)
+
+
 def env_mappings(value: Any, name: str = "") -> Iterator[dict]:
-    """Environment mappings anywhere in a task-data dump, nested ones included
-    (Harbor's `verifier.env`)."""
+    """Environment mappings anywhere in a JSON tree, nested ones included (a harness
+    config's `env`, Harbor's `verifier.env`)."""
     if isinstance(value, dict):
         if ENV_FIELD.search(name):
             yield value
@@ -81,33 +94,41 @@ def json_text(value: Any) -> str:
 def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
-    """Every credential this run could have put into a trace: the clients' API keys and
-    the credentials in their base URLs, the credentials in client headers, harness and
-    task-data environments and the host environment as they are now (`env_credentials`),
-    what each rollout recorded on `Trace.upload_secrets` as they were then (discarded
-    attempts' on `Episode.upload_secrets`), and `values`.
-    Values shorter than `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite
-    ordinary text."""
+    """Every credential this run could have put into a trace: the clients' API keys;
+    the credentials in the host environment, the client headers, and every environment
+    mapping in the traced agent configs and task data (`env_credentials`); URL
+    credentials anywhere in those configs and task data (a client `base_url`, a
+    harness endpoint, a task's connection string); what each rollout recorded on
+    `Trace.upload_secrets` as it was then (discarded attempts' on
+    `Episode.upload_secrets`); and `values`. Values shorter than `MIN_SECRET_LENGTH` are
+    dropped — redacting them would rewrite ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
-    agents = [trace.agent.config for trace in traces]
-    clients = [config.client, *(a.client for a in agents if a.client is not None)]
+    clients = [
+        config.client,
+        *(t.agent.config.client for t in traces if t.agent.config.client is not None),
+    ]
+    dumps = [
+        config.client.model_dump(mode="json"),
+        *(trace.agent.config.model_dump(mode="json") for trace in traces),
+        *(trace.task.data.model_dump(mode="json") for trace in traces),
+    ]
     named = [
         os.environ,
         *(client.headers for client in clients),
-        *(a.harness.resolved_env for a in agents if a.harness is not None),
-        *(
-            mapping
-            for trace in traces
-            for mapping in env_mappings(trace.task.data.model_dump(mode="json"))
-        ),
+        *(mapping for dump in dumps for mapping in env_mappings(dump)),
     ]
     secrets = {
         *values,
         *(resolve_api_key(client) for client in clients),
-        *(c for client in clients for c in url_credentials(client.base_url)),
+        *(credential for mapping in named for credential in env_credentials(mapping)),
+        *(
+            credential
+            for dump in dumps
+            for text in strings(dump)
+            for credential in url_credentials(text)
+        ),
         *(secret for trace in traces for secret in trace.upload_secrets),
         *(secret for episode in episodes for secret in episode.upload_secrets),
-        *(credential for mapping in named for credential in env_credentials(mapping)),
     }
     return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}
 

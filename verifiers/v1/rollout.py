@@ -37,7 +37,7 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
-from verifiers.v1.utils.redact import env_credentials
+from verifiers.v1.utils.redact import env_credentials, url_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -298,13 +298,15 @@ class Rollout:
                     state_base=base_url,
                 )
             )
-            # A shared tool's URL carries a per-rollout signature derived from its
-            # secret; matching the secret alone would not recognise it.
+            # Tool URLs are not traced but the harness reads them: a shared tool's URL
+            # carries a per-rollout signature derived from its secret, and an external
+            # tool's URL may carry userinfo credentials.
             self.trace.upload_secrets += [
-                signature
+                secret
                 for url in self._urls.values()
-                for signature in parse_qs(urlsplit(url).query).get(
-                    STATE_SIGNATURE_PARAM, []
+                for secret in (
+                    *parse_qs(urlsplit(url).query).get(STATE_SIGNATURE_PARAM, []),
+                    *url_credentials(url),
                 )
             ]
             # Setup and service provisioning are complete. Apply the runtime's
