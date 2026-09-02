@@ -4,13 +4,11 @@ import asyncio
 import json
 import logging
 import secrets
-import shlex
-
-from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -120,7 +118,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: str = Field(default="2026.8.1", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "2026.8.1"
     """OpenClaw release to install, pinned for reproducibility."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
@@ -143,39 +141,29 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 ready_path = f"{self._staged_skills_dir}/.ready"
                 ready = await runtime.run(["test", "-f", ready_path], {})
                 if ready.exit_code != 0:
-                    cleared = await runtime.run(
-                        ["rm", "-rf", self._staged_skills_dir], {}
+                    await remove_dir(
+                        runtime, self._staged_skills_dir, "OpenClaw skills"
                     )
-                    if cleared.exit_code != 0:
-                        raise RuntimeError(
-                            "failed to clear OpenClaw skills: "
-                            f"{cleared.stderr.strip()[-500:]}"
-                        )
                     await self.install_skills(runtime, self._staged_skills_dir)
                     await runtime.write(ready_path, b"")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
+        logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
         # Borrowed runtimes can share this cache, so one filesystem lock owns both
         # installation and the transcript adjustment.
-        guarded = (
-            f"mkdir -p {shlex.quote(directory)} && "
-            f'"$(command -v flock || command -v lockf)" '
-            f"{shlex.quote(f'{directory}/install.lock')} "
-            f"bash -o pipefail -c {shlex.quote(SETUP)}"
-        )
-        logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
-        result = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            install=SETUP,
+            env={
                 **self.config.resolved_env,
                 "VF_OPENCLAW_BIN": binary,
                 "VF_OPENCLAW_DIR": directory,
                 "VF_OPENCLAW_VERSION": self.config.version,
             },
+            label="OpenClaw",
+            shell=("bash", "-o", "pipefail", "-c"),
         )
-        if result.exit_code != 0:
-            detail = (result.stderr or result.stdout).strip()[-500:]
-            raise RuntimeError(f"OpenClaw setup failed: {detail}")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -277,8 +265,4 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         state_dir = f".vf-openclaw/{trace.id}"
-        result = await runtime.run(["rm", "-rf", state_dir], {})
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"failed to clean up OpenClaw state: {result.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, state_dir, "OpenClaw state")

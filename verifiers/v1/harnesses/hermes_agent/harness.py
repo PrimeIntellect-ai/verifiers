@@ -3,11 +3,10 @@
 import json
 from pathlib import Path
 
-from pydantic import Field
-
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.utils.install import remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -16,7 +15,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.19.0", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "0.19.0"
     """Hermes Agent release to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
@@ -96,8 +95,4 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", f"/tmp/vf-hermes/{trace.id}"], {})
-        if result.exit_code:
-            raise RuntimeError(
-                f"failed to clean up Hermes home: {result.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")

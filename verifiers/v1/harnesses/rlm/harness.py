@@ -18,6 +18,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -130,16 +131,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"touch {ready})"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
-        ensure = shlex.quote(f"[ -f {ready} ] && [ -x {binary} ] || ({install})")
-        guarded = (
-            f"mkdir -p {directory} && flock {directory}/install.lock sh -c {ensure}"
-        )
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
-        result = await runtime.run(["sh", "-c", guarded], env)
-        if result.exit_code != 0:
-            raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            install=install,
+            env=env,
+            label="rlm",
+        )
         await super().setup(runtime)
 
     def _runtime_metadata(
