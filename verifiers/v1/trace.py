@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
-from verifiers.v1.graph import MessageNode
+from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import (
     ACPInfo,
@@ -728,9 +728,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.ok = False
         self.stop("error")
 
-    def to_record(self) -> dict[str, Any]:
-        """JSON record without raw tensors, which remain available on the msgpack wire."""
-        return self.model_dump(mode="json", exclude=EXCLUDE_FIELDS)
+    def to_record(
+        self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
+    ) -> dict[str, Any]:
+        """JSON record without raw tensors, which remain available on the msgpack wire.
+        Per-token float streams are rounded to `float_decimals` (`None` keeps every digit)."""
+        return self.model_dump(
+            mode="json",
+            exclude=EXCLUDE_FIELDS,
+            context={"float_decimals": float_decimals},
+        )
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]
