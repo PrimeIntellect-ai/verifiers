@@ -35,7 +35,7 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
-from verifiers.v1.utils.redact import SECRET_NAME
+from verifiers.v1.utils.redact import env_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -206,22 +206,21 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
-            # Credentials as they are while the harness runs: the client key and the
-            # credential-named client header, harness, and task runtime variables. The
-            # upload redactor also reads the current config, but task runtime values are
-            # never traced, and a key rotated since the run would otherwise be missed.
+            # Credentials as they are while the harness runs: the client key and those
+            # in the client headers, harness, and task runtime variables. The upload
+            # redactor also reads the current config, but task runtime values are never
+            # traced, and a key rotated since the run would otherwise be missed.
             client = self.ctx.client
             self.trace.upload_secrets += [
                 resolve_api_key(client),
                 *(
-                    value
+                    credential
                     for mapping in (
                         client.headers,
                         self.harness.config.resolved_env,
                         runtime_env,
                     )
-                    for name, value in mapping.items()
-                    if SECRET_NAME.search(name)
+                    for credential in env_credentials(mapping)
                 ),
             ]
             if self._borrowed_runtime is None:

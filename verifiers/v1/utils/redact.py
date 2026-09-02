@@ -8,6 +8,8 @@ ordinary content is never rewritten. The prime CLI carries the same redactor
 
 import json
 import re
+from collections.abc import Iterator, Mapping
+from urllib.parse import urlsplit
 
 REDACTED = "[REDACTED]"
 MIN_SECRET_LENGTH = 8
@@ -17,6 +19,23 @@ SECRET_NAME = re.compile(
 )
 """Variable and header names whose values are credentials."""
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
+    """The credentials in an environment-like mapping (variables, headers): every value
+    under a credential-like name, and the password — or the bare user token — inside a
+    `scheme://user:password@host` value whatever its name (`DATABASE_URL`, `HTTP_PROXY`)."""
+    for name, value in mapping.items():
+        if not isinstance(value, str):
+            continue
+        if SECRET_NAME.search(name):
+            yield value
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            continue
+        if "@" in parts.netloc and (userinfo := parts.password or parts.username):
+            yield userinfo
 
 
 class Redactor:

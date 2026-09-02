@@ -30,7 +30,7 @@ from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
-from verifiers.v1.utils.redact import MIN_SECRET_LENGTH, SECRET_NAME, Redactor
+from verifiers.v1.utils.redact import MIN_SECRET_LENGTH, Redactor, env_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,8 @@ def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
     """Every credential this run could have put into a trace: the clients' API keys,
-    credential-named values from client headers, harness and task-data environments and
-    the host environment as they are now, what each rollout recorded on
+    the credentials in client headers, harness and task-data environments and the host
+    environment as they are now (`env_credentials`), what each rollout recorded on
     `Trace.upload_secrets` as they were then, and `values`. Values shorter than
     `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
@@ -85,12 +85,7 @@ def known_secrets(
         *values,
         *(resolve_api_key(client) for client in clients),
         *(secret for trace in traces for secret in trace.upload_secrets),
-        *(
-            value
-            for mapping in named
-            for name, value in mapping.items()
-            if isinstance(value, str) and SECRET_NAME.search(name)
-        ),
+        *(credential for mapping in named for credential in env_credentials(mapping)),
     }
     return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}
 

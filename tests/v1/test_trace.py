@@ -517,6 +517,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "intercept-token-0001",
         "hooks/abc/def",
         "judge-key-000000001",
+        "db-pass-000001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
@@ -541,7 +542,11 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
             data=EnvTask(
                 idx=0,
                 prompt="q",
-                verifier_env={"JUDGE_API_KEY": "judge-key-000000001", "MODE": "fast"},
+                verifier_env={
+                    "JUDGE_API_KEY": "judge-key-000000001",
+                    "DATABASE_URL": "postgres://app:db-pass-000001@db/x",
+                    "MODE": "fast",
+                },
             ),
         ),
         nodes=[
@@ -600,9 +605,11 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "auth": "[REDACTED]",
         "n": 1,
     }
-    # The task's own environment mapping keeps its keys; only credential values go.
+    # The task's own environment mapping keeps its keys and URL shape; only the
+    # credential-named values and the URL password go.
     assert payload["samples"][0]["task"]["verifier_env"] == {
         "JUDGE_API_KEY": "[REDACTED]",
+        "DATABASE_URL": "postgres://app:[REDACTED]@db/x",
         "MODE": "fast",
     }
     # The saved record keeps the run reproducible; only the tokens stay off disk.
