@@ -11,6 +11,9 @@ from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace, TraceTask
 from verifiers.v1.types import Usage
 
+EPISODE_EXCLUDE_FIELDS = {"traces": {"__all__": EXCLUDE_FIELDS}}
+"""`EXCLUDE_FIELDS` applied to every trace of an episode dump."""
+
 
 class EnvInfo(BaseModel):
     """The env that ran the episode, self-describing without the run's config."""
@@ -150,7 +153,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """JSON record without raw trace tensors, which remain on the msgpack wire."""
         return self.model_dump(
             mode="json",
-            exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+            exclude=EPISODE_EXCLUDE_FIELDS,
             exclude_none=True,
         )
 

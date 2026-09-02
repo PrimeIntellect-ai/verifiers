@@ -478,3 +478,105 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+def test_push_traces_uploads_redacted_projection(monkeypatch):
+    """`--push` drops the config fields that carry credentials and replaces every known
+    secret the agent echoed — including one the harness printed inside a quoted JSON
+    tool result — while the saved record keeps its config and the tokens never touch
+    disk. Ordinary text and short or non-credential values stay as they are."""
+    import httpx
+
+    from verifiers.v1.clients import EvalClientConfig
+    from verifiers.v1.configs.cli.eval import EvalConfig
+    from verifiers.v1.configs.harness import HarnessConfig
+    from verifiers.v1.episode import EnvInfo, Episode
+    from verifiers.v1.utils import platform
+
+    monkeypatch.setenv("PRIME_API_KEY", "prime-platform-key-0001")
+    monkeypatch.setenv("MODEL_API_KEY", "sk-model-key-000000000001")
+    monkeypatch.setenv("HOST_HF_TOKEN", "hf_host_token_00000001")
+    client = EvalClientConfig(
+        base_url="https://models.example/v1",
+        api_key_var="MODEL_API_KEY",
+        headers={"X-Auth": 'he said "hi" 0001', "X-Trace": "plain-header"},
+    )
+    config = EvalConfig(env={"taskset": {"id": "echo-v1"}}, model="m", client=client)
+    secrets = {
+        "prime-platform-key-0001",
+        "sk-model-key-000000000001",
+        "hf_host_token_00000001",
+        'he said "hi" 0001',
+        "hf_harness_token_0001",
+        "intercept-token-0001",
+    }
+    echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
+    tool_result = json.dumps(
+        {"env": {"KEY": 'he said "hi" 0001', "ok": "plain-header"}}
+    )
+    trace = vf.Trace(
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=client,
+                harness=HarnessConfig(
+                    id="bash",
+                    env={"HF_TOKEN": "hf_harness_token_0001", "DEBUG": "1"},
+                    forward_env=["HOME"],
+                ),
+            )
+        ),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=AssistantMessage(content=echo), sampled=True),
+            MessageNode(
+                parent=1, message=UserMessage(content=tool_result), sampled=False
+            ),
+        ],
+        upload_secrets=["intercept-token-0001"],
+    )
+    episode = Episode(
+        env=EnvInfo(id="echo-v1"), task=trace.task, traces=[trace], ok=True
+    )
+
+    posted: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted[request.url.path] = request.content
+        if request.url.path.endswith("/environmentshub/resolve"):
+            return httpx.Response(200, json={"data": {"id": "env-1"}})
+        if request.url.path.endswith("/evaluations/"):
+            return httpx.Response(200, json={"evaluation_id": "eval-1"})
+        return httpx.Response(200, json={})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        platform.httpx,
+        "Client",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    url = platform.push_traces([episode], config)
+
+    assert url is not None and url.endswith("/dashboard/evaluations/eval-1")
+    body = posted["/api/v1/evaluations/eval-1/samples"].decode()
+    for secret in secrets:
+        assert secret not in body and secret.replace('"', '\\"') not in body
+    payload = json.loads(body)
+    native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
+    assert "headers" not in native["agent"]["config"]["client"]
+    assert "env" not in native["agent"]["config"]["harness"]
+    assert native["agent"]["config"]["harness"]["forward_env"] == ["HOME"]
+    assert "upload_secrets" not in native
+    messages = payload["samples"][0]["completion"]
+    assert messages[1]["content"].endswith("debug=1 plain-header")
+    assert json.loads(messages[2]["content"]) == {
+        "env": {"KEY": "[REDACTED]", "ok": "plain-header"}
+    }
+    # The saved record keeps the run reproducible; only the tokens stay off disk.
+    record = episode.to_record()["traces"][0]
+    assert (
+        record["agent"]["config"]["harness"]["env"]["HF_TOKEN"]
+        == "hf_harness_token_0001"
+    )
+    assert record["agent"]["config"]["client"]["headers"]["X-Trace"] == "plain-header"
+    assert "upload_secrets" not in record

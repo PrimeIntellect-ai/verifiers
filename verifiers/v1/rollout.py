@@ -258,6 +258,15 @@ class Rollout:
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = model_secret
+            self.trace.upload_secrets += [
+                model_secret,
+                state_secret,
+                *(
+                    t.state_secret
+                    for t in self._shared_tools.values()
+                    if t.state_secret
+                ),
+            ]
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,

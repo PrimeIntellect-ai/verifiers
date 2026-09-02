@@ -4,19 +4,30 @@ Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
 samples -> finalize). Each sample keeps the complete native Episode as its source
 of truth and includes a flat summary for older Platform consumers. Auth + base URL
 come from `$PRIME_API_KEY` / `~/.prime/config.json`.
+
+Credentials stay out of the upload two ways. The config fields that hold them (client
+headers, harness env) are dropped from the projection, and every credential value the
+run knows — the clients' API keys, credential-named header / harness / host environment
+values, the rollouts' interception tokens — is replaced with `[REDACTED]` wherever it
+appears in the serialized samples. Redaction is exact-match only: nothing is guessed
+from the shape of the text, so ordinary content is never rewritten. Saved traces are
+unchanged, so a resumed `--push` redacts everything except the earlier attempt's
+interception tokens, which died with its interception server.
 """
 
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.episode import Episode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.prime import load_prime_config
 
 logger = logging.getLogger(__name__)
@@ -25,17 +36,93 @@ DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
 _MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+_FRAME_BYTES = len('{"samples":[]}')
+
+UPLOAD_EXCLUDE = {
+    "traces": {
+        "__all__": {
+            **EXCLUDE_FIELDS,
+            "agent": {"config": {"client": {"headers"}, "harness": {"env"}}},
+        }
+    }
+}
+"""The episode projection uploaded: the disk record minus the config fields that carry
+credentials (`harness.forward_env` names variables without their values and stays)."""
+
+REDACTED = "[REDACTED]"
+MIN_SECRET_LENGTH = 8
+SECRET_NAME = re.compile(
+    r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL|COOKIE|AUTHORIZATION|(?:^|[_-])AUTH(?:[_-]|$)",
+    re.IGNORECASE,
+)
+"""Variable and header names whose values are credentials."""
+JSON_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
-def json_bytes(value: Any) -> int:
-    return len(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    )
+def json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+class Redactor:
+    """Replaces every occurrence of the secrets inside JSON strings, counting hits."""
+
+    def __init__(self, secrets: set[str]) -> None:
+        # Inside a JSON string a secret is escaped; inside a JSON document quoted within
+        # a string (a tool result) it is escaped twice. Match every spelling.
+        forms = set(secrets)
+        for _ in range(2):
+            forms |= {
+                json.dumps(form, ensure_ascii=escape)[1:-1]
+                for form in list(forms)
+                for escape in (True, False)
+            }
+        alternatives = "|".join(
+            re.escape(form) for form in sorted(forms, key=len, reverse=True)
+        )
+        self.pattern = re.compile(alternatives) if forms else None
+        self.count = 0
+
+    def json(self, text: str) -> str:
+        """Redact one JSON document given as text; structure and non-string values stay."""
+        pattern = self.pattern
+        if pattern is None:
+            return text
+
+        def string(match: re.Match[str]) -> str:
+            inner, hits = pattern.subn(REDACTED, match.group(1))
+            self.count += hits
+            return f'"{inner}"'
+
+        return JSON_STRING.sub(string, text)
+
+
+def known_secrets(
+    episodes: list[Episode], config: EvalConfig, *values: str
+) -> set[str]:
+    """Every credential this run could have echoed into a trace: the clients' API keys,
+    credential-named client header / harness / host environment values, the rollouts'
+    interception tokens, and `values`. Values shorter than `MIN_SECRET_LENGTH` are
+    dropped — redacting them would rewrite ordinary text."""
+    traces = [trace for episode in episodes for trace in episode.traces]
+    agents = [trace.agent.config for trace in traces]
+    clients = [config.client, *(a.client for a in agents if a.client is not None)]
+    named = [
+        os.environ,
+        *(client.headers for client in clients),
+        *(a.harness.resolved_env for a in agents if a.harness is not None),
+    ]
+    secrets = {
+        *values,
+        *(resolve_api_key(client) for client in clients),
+        *(secret for trace in traces for secret in trace.upload_secrets),
+        *(
+            value
+            for mapping in named
+            for name, value in mapping.items()
+            if SECRET_NAME.search(name)
+        ),
+    }
+    return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}
 
 
 @dataclass
@@ -160,15 +247,16 @@ def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
     }
 
 
-def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
-    """One Platform sample per Episode, with a legacy-compatible trace summary.
+def build_samples(episodes: list[Episode], redactor: Redactor) -> list[str]:
+    """One Platform sample per Episode, serialized and redacted, with a
+    legacy-compatible trace summary.
 
-    The native Episode in `info.native_wrapper` is authoritative and contains every
-    trace. One trainable trace (or the first trace) supplies only the flat summary
-    used by older consumers. `native_trace_index` identifies that summary trace.
+    The Episode projection in `info.native_wrapper` is authoritative and contains
+    every trace. One trainable trace (or the first trace) supplies only the flat
+    summary used by older consumers. `native_trace_index` identifies that summary trace.
     """
     counts: dict[int, int] = {}
-    samples = []
+    rows = []
     for episode in episodes:
         if not episode.traces:
             continue
@@ -187,21 +275,24 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
         sample["sample_id"] = episode.id
         sample["info"] = {
             **(sample["info"] or {}),
-            "native_wrapper": episode.to_record(),
+            "native_wrapper": episode.model_dump(
+                mode="json", exclude=UPLOAD_EXCLUDE, exclude_none=True
+            ),
             "native_trace_index": summary_trace_index,
         }
-        if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
-            samples.append(sample)
+        row = redactor.json(json_text(sample))
+        if _FRAME_BYTES + len(row.encode()) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+            rows.append(row)
             continue
         logger.warning(
             "Episode %s exceeds the Platform sample limit; uploading projected traces",
             episode.id,
         )
-        samples.extend(
-            trace_to_sample(candidate, number, episode.id)
+        rows.extend(
+            redactor.json(json_text(trace_to_sample(candidate, number, episode.id)))
             for candidate in episode.traces
         )
-    return samples
+    return rows
 
 
 def push_traces(
@@ -247,29 +338,29 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
-        samples = build_samples(episodes)
-        batches: list[list[dict[str, Any]]] = []
-        batch: list[dict[str, Any]] = []
-        payload_bytes = len(b'{"samples":[]}')
-        for i, sample in enumerate(samples):
-            sample_bytes = json_bytes(sample)
-            sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
-            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+        redactor = Redactor(known_secrets(episodes, config, api_key))
+        rows = build_samples(episodes, redactor)
+        if redactor.count:
+            logger.warning(
+                "--push: redacted %d occurrence(s) of known secrets from the upload; "
+                "saved traces are unchanged",
+                redactor.count,
+            )
+        # Batch by exact request size; each body is `{"samples":[<row>,<row>,...]}`.
+        batches: list[list[str]] = [[]]
+        size = _FRAME_BYTES
+        for i, row in enumerate(rows):
+            row_bytes = len(row.encode())
+            if _FRAME_BYTES + row_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
                 raise ValueError(
                     f"sample {i} is too large to upload "
-                    f"({sample_payload_bytes} > "
-                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
+                    f"({_FRAME_BYTES + row_bytes} > {_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
                 )
-            next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
-            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                batches.append(batch)
-                batch = []
-                payload_bytes = len(b'{"samples":[]}')
-                next_payload_bytes = payload_bytes + sample_bytes
-            batch.append(sample)
-            payload_bytes = next_payload_bytes
-        if batch or not samples:
-            batches.append(batch)
+            if batches[-1] and size + 1 + row_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                batches.append([])
+                size = _FRAME_BYTES
+            size += row_bytes + (1 if batches[-1] else 0)
+            batches[-1].append(row)
 
         with httpx.Client(headers=headers, timeout=300.0) as client:
 
@@ -296,15 +387,9 @@ def push_traces(
                 },
             )["evaluation_id"]
             for batch in batches:
-                body = json.dumps(
-                    {"samples": batch},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
                 resp = client.post(
                     f"{api}/evaluations/{eval_id}/samples",
-                    content=body,
+                    content=f'{{"samples":[{",".join(batch)}]}}'.encode(),
                 )
                 resp.raise_for_status()
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
@@ -313,5 +398,5 @@ def push_traces(
         return finish(error=f"{type(e).__name__}: {e}")
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
+    logger.info("--push: uploaded %d samples -> %s", len(rows), url)
     return finish(url=url)

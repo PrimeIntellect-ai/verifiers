@@ -18,7 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
+from verifiers.v1.episode import EPISODE_EXCLUDE_FIELDS, EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
@@ -152,7 +152,9 @@ def write_episode(
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    data = type_adapter(type(episode)).dump_json(
+        episode, exclude=EPISODE_EXCLUDE_FIELDS, exclude_none=True
+    )
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
