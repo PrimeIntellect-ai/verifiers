@@ -1,5 +1,6 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
+import json
 import shlex
 
 from pydantic import Field
@@ -40,6 +41,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -110,6 +112,17 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             command=[f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
             prompt=prompt or "",
             session_meta=session_meta,
+        )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        # An `ask` rule on every tool makes Claude Code raise a permission request for
+        # each call, read-only tools included; the ACP adapter hands it to the runner.
+        # `CLAUDE_CONFIG_DIR` holds the user settings, which the adapter loads by default.
+        await runtime.write(
+            f"{config.env['CLAUDE_CONFIG_DIR']}/settings.json",
+            json.dumps({"permissions": {"ask": ["*"]}}).encode(),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

@@ -818,3 +818,14 @@ def leaves(trace: Trace) -> list[int]:
     `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
     has_child = {n.parent for n in trace.nodes if n.parent is not None}
     return [i for i in range(len(trace.nodes)) if i not in has_child]
+
+
+def path(trace: Trace, node: int) -> list[Message]:
+    """The conversation ending at `node`: its root-to-node messages."""
+    messages: list[Message] = []
+    current: int | None = node
+    while current is not None:
+        messages.append(trace.nodes[current].message)
+        current = trace.nodes[current].parent
+    messages.reverse()
+    return messages

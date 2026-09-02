@@ -53,7 +53,6 @@ from verifiers.v1.errors import (
     TaskError,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.tool import ToolHookRequest
 from verifiers.v1.interception.tunnel import (
     PrimeTunnelConfig,
     Tunnel,
@@ -392,6 +391,9 @@ class InterceptionServer(Interception):
         return mediated, capabilities
 
     async def handle_tool(self, request: web.Request) -> web.Response:
+        """`POST /tool`: the harness's gate asks whether to run a tool call — its
+        `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
+        out. The model bearer keys it: it never alters what the model already received."""
         session = self.sessions.get(
             request.headers.get("Authorization", "").removeprefix("Bearer ")
         )
@@ -400,14 +402,14 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
-        if session.stopped:
-            return web.json_response(
-                {"action": "stop", "reason": session.trace.stop_condition}
-            )
+        body = from_json(await request.read())
         try:
-            hook = ToolHookRequest.model_validate_json(await request.read())
             return web.json_response(
-                await session.handle_tool(hook.phase, hook.message)
+                await session.decide_tool(
+                    str(body.get("tool_call_id", "")),
+                    body.get("name"),
+                    body.get("arguments"),
+                )
             )
         except RolloutError as error:
             session.error = error
@@ -611,10 +613,10 @@ class InterceptionServer(Interception):
             model_request, request_rewrites, stopped = await session.rewrite_request(
                 model_request
             )
-            if request_rewrites:
-                session.trace.request_rewrites.extend(request_rewrites)
-                if stopped is None:
-                    dialect.rewrite_request(body, original_request, model_request)
+            session.trace.request_rewrites.extend(request_rewrites)
+            # A pinned tool result changes the request without a fresh record.
+            if stopped is None and model_request != original_request:
+                dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -645,7 +647,14 @@ class InterceptionServer(Interception):
         except RolloutError as error:
             return self._fail(session, dialect, error)
 
-        inspect_response = bool(session.response_interceptors or session.response_stops)
+        # Request hooks police the proposed tool calls at commit, before the response is
+        # released, so a stream is buffered for them too.
+        inspect_response = bool(
+            session.response_interceptors
+            or session.response_stops
+            or session.request_interceptors
+            or session.request_stops
+        )
         if streaming:
             return await self._stream(
                 request,
@@ -722,6 +731,8 @@ class InterceptionServer(Interception):
                     node = turn.commit(call_response, model_request.tools)
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
+                    if stopped is None:
+                        stopped = await session.gate_tool_calls(node)
                     if stopped is not None:
                         session.trace.stop(stopped)
                         return web.json_response(
@@ -888,6 +899,12 @@ class InterceptionServer(Interception):
                 node = turn.commit(response, model_request.tools)
                 session.consume_prepared(turn.tail)
                 session.trace.response_rewrites.extend(response_rewrites)
+                if stopped is None:
+                    try:
+                        stopped = await session.gate_tool_calls(node)
+                    except RolloutError as e:
+                        buffered.close()
+                        return self._fail(session, dialect, e)
                 if stopped is not None:
                     buffered.close()
                     session.trace.stop(stopped)

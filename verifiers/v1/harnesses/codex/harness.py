@@ -37,6 +37,51 @@ touch {ready}
 """
 
 
+# The gate hook: Codex runs it before every shell, patch, MCP and local tool call with
+# the call on stdin — including the calls a Code Mode script makes, which the model never
+# issued itself and the gate therefore judges on the spot. A deny decision carries the
+# policy's result as the reason the model sees. Written per rollout so the shared hook
+# definition below carries no credentials.
+GATE_HOOK = """import { readFileSync } from "node:fs";
+
+const deny = (reason) =>
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    }),
+  );
+const hook = JSON.parse(readFileSync(0, "utf8"));
+try {
+  const response = await fetch(__URL__, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + __SECRET__, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tool_call_id: hook.tool_use_id,
+      name: hook.tool_name,
+      arguments: hook.tool_input,
+    }),
+  });
+  if (!response.ok) throw new Error(`tool gate returned ${response.status}`);
+  const decision = await response.json();
+  if (decision.action !== "allow") {
+    const content = decision.action === "stop" ? decision.reason : decision.message?.content;
+    deny(typeof content === "string" ? content : JSON.stringify(content ?? ""));
+  }
+} catch (error) {
+  deny(`tool gate unavailable: ${error}`);
+}
+"""
+# Hooks in the system config layer count as managed: trusted and enabled without the
+# per-definition trust hash a user-layer hooks.json would need.
+GATE_CONFIG = f"""[[hooks.PreToolUse]]
+hooks = [{{ type = "command", command = '{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"', timeout = 120 }}]
+"""
+
+
 class CodexHarnessConfig(HarnessConfig):
     version: str = Field(default="0.147.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Codex release to install, pinned for reproducibility."""
@@ -48,6 +93,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -110,6 +156,19 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             mcp_urls={},
             system_prompt=system_prompt,
         )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        # Codex asks its ACP client only when a command escapes the sandbox, and never in
+        # full access, so the gate is a PreToolUse hook instead.
+        await runtime.write(
+            f"{config.env['CODEX_HOME']}/vf-gate.mjs",
+            GATE_HOOK.replace("__URL__", json.dumps(url))
+            .replace("__SECRET__", json.dumps(secret))
+            .encode(),
+        )
+        await runtime.write("/etc/codex/config.toml", GATE_CONFIG.encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", self.trace_home(trace)], {})
