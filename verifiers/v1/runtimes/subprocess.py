@@ -11,6 +11,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -162,7 +163,12 @@ class SubprocessRuntime(Runtime):
         )  # killed in stop() — a host process won't die on its own
 
     async def _read(self, path: str) -> bytes:
-        return await asyncio.to_thread((self.workdir / path).read_bytes)
+        try:
+            return await asyncio.to_thread((self.workdir / path).read_bytes)
+        except FileNotFoundError as e:
+            raise SandboxFileNotFoundError(f"read {path!r}: no such file") from e
+        except OSError as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path

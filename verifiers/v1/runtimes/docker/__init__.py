@@ -9,20 +9,24 @@ import socket
 import subprocess
 import sys
 import tempfile
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
+    MISSING_PATH_EXIT,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
     RuntimeProcess,
+    kill_pidfile_argv,
+    new_pidfile,
     parse_gpu,
+    reaping,
+    wrap_pid,
 )
 from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, NetworkPolicy
 from verifiers.v1.utils.aio import run_shielded
@@ -127,33 +131,20 @@ async def docker(*args: str) -> ProgramResult:
     )
 
 
+async def _kill_pidfile(container: str, pidfile: str) -> None:
+    """Kill the process group a wrapped command recorded in `pidfile` (best-effort, bounded)."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            docker("exec", container, *kill_pidfile_argv(pidfile)), timeout=2
+        )
+
+
 async def _abort_process_startup(
     proc: asyncio.subprocess.Process, container: str, pidfile: str
 ) -> str:
     """Kill a partially opened container process and reap its local docker client."""
-    # The target normally writes its PID immediately, but cancellation can win
-    # that race. Wait briefly for the file before signalling the process group.
-    cleanup = (
-        'i=0; while [ "$i" -lt 20 ]; do '
-        'if [ -s "$1" ]; then pid=$(cat "$1"); '
-        'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
-        'rm -f "$1"; exit 0; fi; '
-        "i=$((i + 1)); sleep 0.05; done; exit 1"
-    )
     try:
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                docker(
-                    "exec",
-                    container,
-                    "sh",
-                    "-c",
-                    cleanup,
-                    "vf-process-cleanup",
-                    pidfile,
-                ),
-                timeout=2,
-            )
+        await _kill_pidfile(container, pidfile)
     finally:
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
@@ -420,9 +411,16 @@ class DockerRuntime(Runtime):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env = {**self.process_env(env), **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
-        return await docker(
-            "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
-        )
+        pidfile = new_pidfile()
+        async with reaping(lambda: _kill_pidfile(self._container, pidfile)):
+            return await docker(
+                "exec",
+                *env_args,
+                "--workdir",
+                self.config.workdir,
+                self._container,
+                *wrap_pid(pidfile, argv),
+            )
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
@@ -432,17 +430,7 @@ class DockerRuntime(Runtime):
         env_args = [
             arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
         ]
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
-        # Give the target its own process group when `setsid -w` is available so
-        # terminate()/kill() reap its descendants while docker exec remains
-        # attached if setsid needs to fork. The inner shell records the
-        # post-setsid PID before exec preserves it as the target PID.
-        wrapper = (
-            "if setsid -w true >/dev/null 2>&1; then "
-            'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
-            'fi; echo $$ > "$1"; shift; exec "$@"'
-        )
+        pidfile = new_pidfile()
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
@@ -451,12 +439,7 @@ class DockerRuntime(Runtime):
             "--workdir",
             self.config.workdir,
             self._container,
-            "sh",
-            "-c",
-            wrapper,
-            "vf-process",
-            pidfile,
-            *argv,
+            *wrap_pid(pidfile, argv),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -513,12 +496,17 @@ class DockerRuntime(Runtime):
             "--workdir",
             self.config.workdir,
             self._container,
-            "cat",
+            "sh",
+            "-c",
+            f'[ -e "$1" ] || exit {MISSING_PATH_EXIT}; exec cat -- "$1"',
+            "vf-read",
             path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
+        if proc.returncode == MISSING_PATH_EXIT:
+            raise SandboxFileNotFoundError(f"read {path!r}: no such file")
         if proc.returncode != 0:
             raise SandboxError(
                 f"read {path!r}: {stderr.decode(errors='replace').strip()}"

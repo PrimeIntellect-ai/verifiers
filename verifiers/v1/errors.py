@@ -60,6 +60,12 @@ class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
 
+class SandboxFileNotFoundError(SandboxError, FileNotFoundError):
+    """`Runtime.read` of a path the box does not have — the one read failure a caller
+    routinely handles (an optional output file), told apart from transport faults. Also a
+    `FileNotFoundError`, so code written against a local path handles it unchanged."""
+
+
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 

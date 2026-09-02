@@ -18,18 +18,24 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
+import httpx
+from prime_sandboxes import SandboxFileNotFoundError as PrimeFileNotFoundError
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
     RuntimeProcess,
+    kill_pidfile_argv,
+    new_pidfile,
     parse_gpu,
+    reaping,
+    wrap_pid,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
@@ -43,6 +49,18 @@ bounded by idle detection or rollout cancellation; 30 days is above any real run
 
 
 BASE_LABELS: list[str] = []
+
+
+def _missing_path(e: Exception) -> bool:
+    """Whether a failed download means the path does not exist. The SDK types that only on
+    its text `read_file`; the binary `download_file` raises a bare `APIError` chained on the
+    gateway's 404, so the status is read off the cause."""
+    if isinstance(e, PrimeFileNotFoundError):
+        return True
+    cause = e.__cause__
+    return (
+        isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 404
+    )
 
 
 @dataclass
@@ -293,22 +311,24 @@ class PrimeRuntime(Runtime):
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        try:
-            # The shared SDK client coalesces concurrent VM job polls into batches.
-            # Rollout cancellation remains the practical execution timeout; this
-            # long SDK deadline is only a final safety bound.
-            result = await self._client.run_background_job(
-                self.info.id,
-                shlex.join(argv),
-                timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
-                working_dir=self.config.workdir,
-                env=self.process_env(env),
-                poll_interval=1,
-            )
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
+        pidfile = new_pidfile()
+        async with reaping(lambda: self._kill_pidfile(pidfile)):
+            try:
+                # The shared SDK client coalesces concurrent VM job polls into batches.
+                # Rollout cancellation remains the practical execution timeout; this
+                # long SDK deadline is only a final safety bound.
+                result = await self._client.run_background_job(
+                    self.info.id,
+                    shlex.join(wrap_pid(pidfile, argv)),
+                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                    working_dir=self.config.workdir,
+                    env=self.process_env(env),
+                    poll_interval=1,
+                )
+            except (
+                Exception
+            ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+                raise SandboxError(f"prime exec failed: {e}") from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -365,6 +385,17 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
+    async def _kill_pidfile(self, pidfile: str) -> None:
+        """Kill the process group a `run` recorded in `pidfile` (best-effort, bounded). The
+        SDK offers no kill for a background job, so the job's own PID is the handle."""
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(5):
+                await self._client.execute_command(
+                    self.info.id,
+                    shlex.join(kill_pidfile_argv(pidfile)),
+                    working_dir=self.config.workdir,
+                )
+
     async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
@@ -379,6 +410,8 @@ class PrimeRuntime(Runtime):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
+            if _missing_path(e):
+                raise SandboxFileNotFoundError(f"read {path!r}: no such file") from e
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:

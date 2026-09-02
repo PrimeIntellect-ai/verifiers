@@ -11,7 +11,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
@@ -19,7 +19,7 @@ from typing import ClassVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,55 @@ _ENSURE_UV = (
 # hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
 # at the runtime's public URL.
 SERVICE_PORT = 8000
+
+# Not every runtime can signal a command it started: docker, modal and prime hold no PID
+# for an exec. Those runtimes start every `run` command through `PID_WRAPPER`, which
+# records the target's PID in a pidfile (a fresh process group when `setsid -w` exists)
+# and then becomes the target, so `KILL_PIDFILE` can kill the group — falling back to the
+# PID alone — when the awaiting task is cancelled or the transport fails mid-command.
+PID_WRAPPER = (
+    "if setsid -w true >/dev/null 2>&1; then "
+    'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
+    'vf-process "$@"; '
+    'fi; echo $$ > "$1"; shift; exec "$@"'
+)
+# The target normally writes its PID immediately, but a cancellation can win that race:
+# wait briefly for the file before signalling.
+KILL_PIDFILE = (
+    'i=0; while [ "$i" -lt 20 ]; do '
+    'if [ -s "$1" ]; then pid=$(cat "$1"); '
+    'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
+    'rm -f "$1"; exit 0; fi; '
+    "i=$((i + 1)); sleep 0.05; done; exit 1"
+)
+
+MISSING_PATH_EXIT = 44
+"""Exit code the read helpers use for "no such path", distinct from cat/head's own failures."""
+
+
+def new_pidfile() -> str:
+    return f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+
+
+def wrap_pid(pidfile: str, argv: list[str]) -> list[str]:
+    """`argv` behind `PID_WRAPPER`: the target's PID lands in `pidfile` before it starts."""
+    return ["sh", "-c", PID_WRAPPER, "vf-process", pidfile, *argv]
+
+
+def kill_pidfile_argv(pidfile: str) -> list[str]:
+    return ["sh", "-c", KILL_PIDFILE, "vf-process-cleanup", pidfile]
+
+
+@contextlib.asynccontextmanager
+async def reaping(kill: Callable[[], Awaitable[None]]) -> AsyncIterator[None]:
+    """Wrap a command's await: if it is cancelled or fails, run `kill` to completion before
+    the error continues, so nothing the command started outlives the call — a borrowed box
+    would otherwise keep executing a command nobody is waiting for."""
+    try:
+        yield
+    except BaseException:
+        await run_shielded(kill())
+        raise
 
 
 @dataclass(frozen=True)
@@ -193,7 +242,8 @@ class Runtime(ABC):
 
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        pass
+        """Run `argv` to completion in the box. Cancelling the await (a caller's
+        `asyncio.timeout`) kills what it started: nothing outlives a cancelled `run`."""
 
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         """Combine the task's runtime-wide environment with one process's values."""
@@ -328,6 +378,7 @@ class Runtime(ABC):
                 "sh",
                 "-c",
                 (
+                    f'[ -e "$2" ] || exit {MISSING_PATH_EXIT}; '
                     "t=$(mktemp) || exit 1; "
                     'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
                     'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
@@ -338,6 +389,8 @@ class Runtime(ABC):
             ],
             {},
         )
+        if result.exit_code == MISSING_PATH_EXIT:
+            raise SandboxFileNotFoundError(f"read {path!r}: no such file")
         if result.exit_code:
             raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
         data = base64.b64decode(result.stdout)
@@ -347,7 +400,8 @@ class Runtime(ABC):
 
     @abstractmethod
     async def _read(self, path: str) -> bytes:
-        """Read the whole file at `path`; `read` adds the optional transfer cap."""
+        """Read the whole file at `path`, raising `SandboxFileNotFoundError` when the box
+        has no such file; `read` adds the optional transfer cap."""
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

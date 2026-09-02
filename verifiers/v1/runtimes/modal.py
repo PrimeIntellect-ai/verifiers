@@ -18,13 +18,17 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
     RuntimeProcess,
+    kill_pidfile_argv,
+    new_pidfile,
+    reaping,
+    wrap_pid,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -171,19 +175,23 @@ class ModalRuntime(Runtime):
         return str(tunnel.url).rstrip("/") if tunnel else None
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        try:
-            proc = await self._sandbox.exec.aio(
-                *argv, workdir=self.config.workdir, env=self.process_env(env)
-            )
-            # Drain both pipes concurrently so a large stderr can't deadlock stdout.
-            stdout, stderr = await asyncio.gather(
-                proc.stdout.read.aio(), proc.stderr.read.aio()
-            )
-            await proc.wait.aio()
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"modal exec failed: {e}") from e
+        pidfile = new_pidfile()
+        async with reaping(lambda: self._kill_pidfile(pidfile)):
+            try:
+                proc = await self._sandbox.exec.aio(
+                    *wrap_pid(pidfile, argv),
+                    workdir=self.config.workdir,
+                    env=self.process_env(env),
+                )
+                # Drain both pipes concurrently so a large stderr can't deadlock stdout.
+                stdout, stderr = await asyncio.gather(
+                    proc.stdout.read.aio(), proc.stderr.read.aio()
+                )
+                await proc.wait.aio()
+            except (
+                Exception
+            ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+                raise SandboxError(f"modal exec failed: {e}") from e
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout or "",
@@ -265,9 +273,22 @@ class ModalRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
+    async def _kill_pidfile(self, pidfile: str) -> None:
+        """Kill the process group a `run` recorded in `pidfile` (best-effort, bounded)."""
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(5):
+                proc = await self._sandbox.exec.aio(
+                    *kill_pidfile_argv(pidfile), workdir=self.config.workdir
+                )
+                await proc.wait.aio()
+
     async def _read(self, path: str) -> bytes:
+        from modal.exception import SandboxFilesystemNotFoundError
+
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
+        except SandboxFilesystemNotFoundError as e:
+            raise SandboxFileNotFoundError(f"read {path!r}: no such file") from e
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
