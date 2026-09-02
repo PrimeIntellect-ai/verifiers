@@ -243,6 +243,13 @@ async def test_reference_score(fake_judge_model):
     assert judge_record["name"] == "reference"
     assert judge_record["request"]["model"] == "openai/gpt-5.4-nano"
     assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
+    assert judge_record["response"]["message"] == {
+        "role": "assistant",
+        "content": "yes",
+        "reasoning_content": None,
+        "tool_calls": None,
+        "provider_state": None,
+    }
     assert judge_record["response"]["parsed"] == 1.0
 
     override_trace = make_trace()

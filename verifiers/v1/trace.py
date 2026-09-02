@@ -680,11 +680,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         response: JudgeResponse,
     ) -> None:
         """Record one complete judge request/response exchange."""
+        response_record = response.model_dump()
+        message = AssistantMessage(content=response_record.pop("text"))
         self.info.setdefault("judge_calls", []).append(
             {
                 "name": name,
                 "request": dict(request),
-                "response": response.model_dump(),
+                "response": {
+                    "message": message.model_dump(),
+                    **response_record,
+                },
             }
         )
         if response.usage is not None:

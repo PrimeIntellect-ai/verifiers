@@ -712,7 +712,11 @@ async def test_replay_round_trip(run_v1, tmp_path):
         {
             "name": "source-judge",
             "request": {"model": "source-model", "messages": []},
-            "response": {"text": "stale", "parsed": None, "usage": None},
+            "response": {
+                "message": {"role": "assistant", "content": "stale"},
+                "parsed": None,
+                "usage": None,
+            },
         }
     ]
     stream.write_text(json.dumps(record) + "\n")
