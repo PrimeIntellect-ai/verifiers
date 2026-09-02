@@ -14,10 +14,14 @@ from urllib.parse import unquote, urlsplit
 REDACTED = "[REDACTED]"
 MIN_SECRET_LENGTH = 8
 SECRET_NAME = re.compile(
-    r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL|COOKIE|AUTHORIZATION|(?:^|[_-])AUTH(?:[_-]|$)",
+    r"(?<![A-Za-z0-9])"
+    r"(?:API_?KEYS?|KEYS?|TOKENS?|SECRETS?|PASSW(?:OR)?DS?|CREDENTIALS?|COOKIES?|AUTHORIZATION|AUTH)"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-"""Variable and header names whose values are credentials."""
+"""Variable and header names whose values are credentials: a credential word as a whole
+segment (`HF_TOKEN`, `X-Api-Key`), so `KEYCLOAK_REALM` or `TOKENIZERS_PARALLELISM` is
+not one."""
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
