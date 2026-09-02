@@ -1,8 +1,8 @@
 """The interception contract: hand each rollout a slot on a host interception server.
 
-Three shapes, picked by `InterceptionConfig` type (see `make_interception`): a single
-`InterceptionServer`, a fixed `StaticInterceptionPool`, or an on-demand
-`ElasticInterceptionPool`. From the outside they behave the same: start/stop (or the async
+Two shapes, picked by `InterceptionConfig` type (see `make_interception`): a single
+`InterceptionServer` or an on-demand `ElasticInterceptionPool`. From the outside they
+behave the same: start/stop (or the async
 context manager wrapping them) bound the lifecycle — one eval, one topology run, or one
 agent `.run` — and each rollout `acquire`s a slot and frees it. An `Interception` can be
 shared: whoever entered it owns the lifecycle; borrowers only `acquire`.
@@ -22,8 +22,7 @@ if TYPE_CHECKING:
 
 class BaseInterceptionConfig(BaseConfig):
     """Base for the interception types — the discriminated union's common type. Per-type
-    fields live on the subclasses (server's `tunnel`, static's `servers`, elastic's
-    `multiplex`)."""
+    fields live on the subclasses (elastic's `multiplex`)."""
 
 
 # (base_url, model_secret, state_secret): model inference and task state deliberately use

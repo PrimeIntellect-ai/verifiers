@@ -5,11 +5,9 @@ Behind a remote consumer each interception server needs a tunnel, and prime tunn
 is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remote eval (or env
 server) can fan out. Each shared `InterceptionServer` multiplexes rollouts behind one
 tunnel; the harness is unchanged, authenticating with a per-rollout secret the server routes
-by. Two shapes: `ElasticInterceptionPool` warms one server, then grows on demand (`multiplex`
-rollouts each, always prime tunnels — the only kind the framework can mint) and fits both the
-bounded eval runner and the env server's unbounded request load; `StaticInterceptionPool` is a
-fixed set of servers (each with its own tunnel choice, e.g. bring-your-own endpoints), balanced
-least-loaded.
+by. `ElasticInterceptionPool` warms one server, then grows on demand (`multiplex` rollouts
+each, behind prime tunnels) and fits both the bounded eval runner and the env server's
+unbounded request load.
 """
 
 import asyncio
@@ -26,51 +24,9 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
-from verifiers.v1.interception.tunnel import PrimeTunnelConfig
 from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
-
-
-class StaticInterceptionPoolConfig(BaseInterceptionConfig):
-    """A fixed set of interception servers, each configured like a `server` type; rollouts
-    land on the least-loaded one. The shape for multiple bring-your-own endpoints (one
-    `custom` tunnel per server)."""
-
-    type: Literal["static"] = "static"
-    servers: list[InterceptionServerConfig] = Field(min_length=1)
-    """One entry per server, each with its own `tunnel` choice."""
-
-
-class StaticInterceptionPool(Interception):
-    """A fixed set of interception servers, all started up front; `acquire` hands a rollout
-    a slot on the least-loaded one. No capacity cap — sizing the set to the load is the
-    operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
-
-    def __init__(
-        self,
-        config: StaticInterceptionPoolConfig,
-        requires_tunnel: bool = False,
-        state_service_secrets: tuple[str, ...] = (),
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.servers = [
-            InterceptionServer(server, requires_tunnel, state_service_secrets)
-            for server in config.servers
-        ]
-
-    async def start(self) -> None:
-        for server in self.servers:
-            await self.stack.enter_async_context(server)
-
-    @asynccontextmanager
-    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        # server.acquire registers before its first yield, so concurrent acquires see the
-        # updated load before choosing their own least-loaded server.
-        server = min(self.servers, key=lambda s: s.load)
-        async with server.acquire(session) as slot:
-            yield slot
 
 
 class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
@@ -120,9 +76,8 @@ class ElasticInterceptionPool(Interception):
         for server in self.servers:
             if server.load < self.config.multiplex:
                 return server
-        # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
-            InterceptionServerConfig(tunnel=PrimeTunnelConfig()),
+            InterceptionServerConfig(),
             self.requires_tunnel,
             self.state_service_secrets,
         )

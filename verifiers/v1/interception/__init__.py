@@ -9,8 +9,6 @@ from verifiers.v1.interception.base import BaseInterceptionConfig, Interception,
 from verifiers.v1.interception.pool import (
     ElasticInterceptionPool,
     ElasticInterceptionPoolConfig,
-    StaticInterceptionPool,
-    StaticInterceptionPoolConfig,
 )
 from verifiers.v1.interception.server import (
     InterceptionServer,
@@ -22,11 +20,9 @@ from verifiers.v1.session import RolloutSession
 if TYPE_CHECKING:
     from verifiers.v1.mcp import SharedToolServer
 
-# Discriminated on `type` so the CLI selects with `--interception.type server|static|elastic`.
+# Discriminated on `type` so the CLI selects with `--interception.type server|elastic`.
 InterceptionConfig = Annotated[
-    InterceptionServerConfig
-    | StaticInterceptionPoolConfig
-    | ElasticInterceptionPoolConfig,
+    InterceptionServerConfig | ElasticInterceptionPoolConfig,
     Field(discriminator="type"),
 ]
 
@@ -62,12 +58,10 @@ def make_interception(
     state_service_secrets: tuple[str, ...] = (),
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
-    `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
-    tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
+    `make_runtime`). With `requires_tunnel`, each server is exposed through a prime tunnel;
+    otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel, state_service_secrets)
-    if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(config, requires_tunnel, state_service_secrets)
     return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
 
 
@@ -110,8 +104,6 @@ __all__ = [
     "InterceptionServer",
     "InterceptionServerConfig",
     "Slot",
-    "StaticInterceptionPool",
-    "StaticInterceptionPoolConfig",
     "make_interception",
     "requires_tunnel",
     "serve_interception",

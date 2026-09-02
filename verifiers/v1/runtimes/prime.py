@@ -3,7 +3,7 @@
 `expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
 host-side harness/framework can reach a tool server hosted in the sandbox. The reverse
 direction (a program in the sandbox reaching a host service) is the shared host-side
-`Tunnel` (interception.tunnel), not the runtime's concern.
+`PrimeTunnel` (interception.tunnel), not the runtime's concern.
 """
 
 import asyncio
@@ -98,7 +98,7 @@ class PrimeConfig(NetworkPolicyConfig):
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced user-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+    and globally — see interception.tunnel.TUNNEL_LIMITER.)"""
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":

@@ -390,6 +390,6 @@ class Runtime(ABC):
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
         or None when local. A remote runtime overrides this with the provider's native port
         exposure (modal `tunnels()`, prime `client.expose`), torn down with the sandbox in
-        `stop()`. The reverse of a host `Tunnel` (interception.tunnel, which reaches a host
+        `stop()`. The reverse of the host `PrimeTunnel` (interception.tunnel, which reaches a host
         port from inside a runtime)."""
         return None

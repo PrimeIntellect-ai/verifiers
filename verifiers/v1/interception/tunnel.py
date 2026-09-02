@@ -1,14 +1,16 @@
-"""Prime tunnel: expose the host interception port via prime_tunnel (frpc). The default;
-works from any host with prime credentials, for consumers in prime *or* modal sandboxes
-alike — and the only tunnel the framework can mint on demand, so it's what the elastic
-pool scales with."""
+"""Expose a host interception port to a remote consumer via prime_tunnel (frpc).
+
+The interception server runs on the host. Local runtimes reach it at a host-local URL
+directly or through their runtime translation; remote runtimes need the port published
+outward. `PrimeTunnel` does that — it works from any host with prime credentials, for
+consumers in prime *or* modal sandboxes alike — and is the host-side counterpart to
+`Runtime.expose`, which publishes a port inside a sandbox.
+"""
 
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from typing import Literal
 
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
@@ -20,17 +22,12 @@ _TUNNELS_PER_MIN = 512
 TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60, "prime-tunnel")
 
 
-class PrimeTunnelConfig(BaseTunnelConfig):
-    """Expose the host interception port via `prime_tunnel` (frpc). No fields — the tunnel
-    service mints a fresh public URL per exposed port."""
+class PrimeTunnel:
+    """Exposes a host interception port via `prime_tunnel` (frpc); the tunnel service mints
+    a fresh public URL per exposed port."""
 
-    type: Literal["prime"] = "prime"
-
-
-class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
-    def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
+    def __init__(self) -> None:
         ensure_prime_auth()
-        super().__init__(config)
 
     @contextlib.asynccontextmanager
     async def expose(self, port: int) -> AsyncIterator[str]:
@@ -59,3 +56,6 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
             # re-raises the cancellation after); tunnel-stop failures are best-effort.
             with contextlib.suppress(Exception):
                 await run_shielded(asyncio.to_thread(client.sync_stop))
+
+
+__all__ = ["TUNNEL_LIMITER", "PrimeTunnel"]

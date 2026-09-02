@@ -54,12 +54,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tool import ToolHookRequest
-from verifiers.v1.interception.tunnel import (
-    PrimeTunnelConfig,
-    Tunnel,
-    TunnelConfig,
-    make_tunnel,
-)
+from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
@@ -214,20 +209,16 @@ async def _queue_chunks(
 
 class InterceptionServerConfig(BaseInterceptionConfig):
     """A single interception server shared by every rollout, reached (when any consumer is
-    remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
-    (`tunnel.type custom`)."""
+    remote) through a prime tunnel."""
 
     type: Literal["server"] = "server"
-    tunnel: TunnelConfig = PrimeTunnelConfig()
-    """How remote consumers reach the server: `prime` (a framework-minted prime_tunnel) or
-    `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
 
 
 class InterceptionServer(Interception):
     """A server that proxies model calls for one or more rollouts — and is itself the
-    single-server `Interception` (the pools compose several of these). When a consumer
-    needs a public URL, it mints the configured tunnel and binds where that tunnel says;
-    otherwise it stays on host loopback."""
+    single-server `Interception` (the pool composes several of these). When a consumer
+    needs a public URL, it exposes its loopback port through a prime tunnel; otherwise it
+    stays on host loopback."""
 
     def __init__(
         self,
@@ -242,9 +233,7 @@ class InterceptionServer(Interception):
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
-        self.tunnel: Tunnel | None = (
-            make_tunnel(self.config.tunnel) if requires_tunnel else None
-        )
+        self.tunnel: PrimeTunnel | None = PrimeTunnel() if requires_tunnel else None
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -340,13 +329,9 @@ class InterceptionServer(Interception):
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
-        # Without a tunnel, local URL translation reaches an ephemeral loopback port.
-        # Otherwise the tunnel determines the bind address and publishes it.
-        if self.tunnel is None:
-            self.host, bind_port = "127.0.0.1", 0
-        else:
-            self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
-        site = web.TCPSite(self.runner, self.host, bind_port)
+        # An ephemeral loopback port: local URL translation reaches it directly, and the
+        # tunnel (when a consumer is remote) publishes it.
+        site = web.TCPSite(self.runner, self.host, 0)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
         logger.info("interception up: url=http://%s:%d", self.host, self.port)
