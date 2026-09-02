@@ -536,7 +536,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                 parent=1, message=UserMessage(content=tool_result), sampled=False
             ),
         ],
-        upload_secrets=["intercept-token-0001"],
+        upload_secrets=["intercept-token-0001", "hooks/abc/def"],
     )
     episode = Episode(
         env=EnvInfo(id="echo-v1"), task=trace.task, traces=[trace], ok=True
