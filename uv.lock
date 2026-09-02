@@ -4539,7 +4539,9 @@ dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
     { name = "gepa" },
+    { name = "h11" },
     { name = "httpx" },
+    { name = "httpx2" },
     { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp" },
@@ -4557,6 +4559,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tomli-w" },
     { name = "typing-extensions" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
