@@ -97,19 +97,24 @@ def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def redactable(secrets: Iterator[str] | list[str] | set[str]) -> set[str]:
+    """Drop what cannot be redacted safely: a value shorter than `MIN_SECRET_LENGTH` would
+    rewrite ordinary text, and one inside the `[REDACTED]` marker (`API_TOKEN=REDACTED`)
+    is a sanitized placeholder."""
+    return {s for s in secrets if len(s) >= MIN_SECRET_LENGTH and s not in REDACTED}
+
+
 def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
-    """Every credential this run could have put into a trace: the clients' API keys;
+    """Every run-wide credential that could have reached a trace: the clients' API keys;
     the credentials in the host environment and in every environment or header mapping
     of the run's env config, the traced agent configs, and the trace and episode task
     data (`env_credentials`); URL credentials anywhere in those configs and task data (a
-    client `base_url`, a harness endpoint, a task's connection string); what each
-    rollout recorded on
-    `Trace.upload_secrets` as it was then (discarded attempts' on
-    `Episode.upload_secrets`); and `values`. Values shorter than `MIN_SECRET_LENGTH` are
-    dropped — redacting them would rewrite ordinary text — and so are placeholders that
-    sit inside the `[REDACTED]` marker."""
+    client `base_url`, a harness endpoint, a task's connection string); and `values`.
+    What a rollout recorded on `upload_secrets` is added per episode by `build_samples`,
+    so the pattern every string is searched with stays small however many rollouts a run
+    has."""
     traces = [trace for episode in episodes for trace in episode.traces]
     clients = [
         config.client,
@@ -136,16 +141,8 @@ def known_secrets(
             for text in strings(dump)
             for credential in url_credentials(text)
         ),
-        *(secret for trace in traces for secret in trace.upload_secrets),
-        *(secret for episode in episodes for secret in episode.upload_secrets),
     }
-    # A value inside the marker (`API_TOKEN=REDACTED`) is a sanitized placeholder; one
-    # that merely contains or borders the marker is a credential and stays.
-    return {
-        secret
-        for secret in secrets
-        if len(secret) >= MIN_SECRET_LENGTH and secret not in REDACTED
-    }
+    return redactable(secrets)
 
 
 @dataclass
@@ -270,19 +267,31 @@ def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
     }
 
 
-def build_samples(episodes: list[Episode], redactor: Redactor) -> list[str]:
+def build_samples(episodes: list[Episode], secrets: set[str]) -> tuple[list[str], int]:
     """One Platform sample per Episode, serialized and redacted, with a
-    legacy-compatible trace summary.
+    legacy-compatible trace summary; also the number of redactions made.
 
     The Episode projection in `info.native_wrapper` is authoritative and contains
     every trace. One trainable trace (or the first trace) supplies only the flat
     summary used by older consumers. `native_trace_index` identifies that summary trace.
+    Each sample is redacted with the run-wide `secrets` plus what its own rollouts
+    recorded (`upload_secrets`): a rollout's tokens can appear only in its own episode.
     """
     counts: dict[int, int] = {}
     rows = []
+    redacted = 0
     for episode in episodes:
         if not episode.traces:
             continue
+        redactor = Redactor(
+            secrets
+            | redactable(
+                [
+                    *episode.upload_secrets,
+                    *(s for trace in episode.traces for s in trace.upload_secrets),
+                ]
+            )
+        )
         summary_trace_index = next(
             (
                 index
@@ -306,16 +315,17 @@ def build_samples(episodes: list[Episode], redactor: Redactor) -> list[str]:
         row = redactor.json(json_text(sample))
         if _FRAME_BYTES + len(row.encode()) <= _MAX_SAMPLES_PAYLOAD_BYTES:
             rows.append(row)
-            continue
-        logger.warning(
-            "Episode %s exceeds the Platform sample limit; uploading projected traces",
-            episode.id,
-        )
-        rows.extend(
-            redactor.json(json_text(trace_to_sample(candidate, number, episode.id)))
-            for candidate in episode.traces
-        )
-    return rows
+        else:
+            logger.warning(
+                "Episode %s exceeds the Platform sample limit; uploading projected traces",
+                episode.id,
+            )
+            rows.extend(
+                redactor.json(json_text(trace_to_sample(candidate, number, episode.id)))
+                for candidate in episode.traces
+            )
+        redacted += redactor.count
+    return rows, redacted
 
 
 def push_traces(
@@ -361,13 +371,14 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
-        redactor = Redactor(known_secrets(episodes, config, api_key))
-        rows = build_samples(episodes, redactor)
-        if redactor.count:
+        secrets = known_secrets(episodes, config, api_key)
+        redactor = Redactor(secrets)  # for the request bodies below
+        rows, redacted = build_samples(episodes, secrets)
+        if redacted:
             logger.warning(
                 "--push: redacted %d occurrence(s) of known secrets from the upload; "
                 "saved traces are unchanged",
-                redactor.count,
+                redacted,
             )
         # Batch by exact request size; each body is `{"samples":[<row>,<row>,...]}`.
         batches: list[list[str]] = [[]]

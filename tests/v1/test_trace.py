@@ -513,6 +513,8 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     monkeypatch.setenv(
         "SAS_URL", "https://a.blob.core.windows.net/c?sv=2020&sig=sas-sig-000001"
     )
+    monkeypatch.setenv("GITHUB_PAT", "ghp_pat_000000000001")  # PAT, but PATH is not
+    monkeypatch.setenv("PYTHONPATH", "/opt/keep/this/path")
     client = EvalClientConfig(
         base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
@@ -548,12 +550,16 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
         "pg-pass-000001",
         "sas-sig-000001",  # a signed URL's signature is its bearer credential
+        "ghp_pat_000000000001",
         "task-url-pass-0001",
         "query-token-0001",
         "seat-key-000001",
         "episode-token-0001",  # only in the episode's own task, not the trace's
     }
-    echo = " ".join(sorted(secrets)) + " debug=1 plain-header production-realm"
+    echo = (
+        " ".join(sorted(secrets))
+        + " debug=1 plain-header production-realm /opt/keep/this/path"
+    )
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
     tool_result = (
         '{"env": {"KEY": "he said \\"hi\\" 0001", "url": "hooks\\/abc\\/def", '
@@ -649,7 +655,9 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     assert native["agent"]["config"]["harness"]["forward_env"] == ["HOME"]
     assert "upload_secrets" not in native
     messages = payload["samples"][0]["completion"]
-    assert messages[1]["content"].endswith("debug=1 plain-header production-realm")
+    assert messages[1]["content"].endswith(
+        "debug=1 plain-header production-realm /opt/keep/this/path"
+    )
     assert json.loads(messages[2]["content"]) == {
         "env": {
             "KEY": "[REDACTED]",
