@@ -518,6 +518,12 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     monkeypatch.setenv(
         "SSH_AUTH_SOCK", "/tmp/ssh-agent/agent.123"
     )  # about auth, not auth
+    monkeypatch.setenv(  # a JSON-valued variable is a mapping too
+        "DOCKER_AUTH_CONFIG",
+        json.dumps(
+            {"auths": {"https://index.docker.io/v1/": {"auth": "dXNlcjpwYXNzd29yZA=="}}}
+        ),
+    )
     client = EvalClientConfig(
         base_url="https://svc:url-pass-000001@models.example/v1",
         api_key_var="MODEL_API_KEY",
@@ -554,6 +560,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "pg-pass-000001",
         "sas-sig-000001",  # a signed URL's signature is its bearer credential
         "ghp_pat_000000000001",
+        "dXNlcjpwYXNzd29yZA==",  # Docker's registry auth, inside a JSON-valued variable
         "task-url-pass-0001",
         "query-token-0001",
         "seat-key-000001",
