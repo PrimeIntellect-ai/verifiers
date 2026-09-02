@@ -53,14 +53,25 @@ def url_credentials(value: str) -> Iterator[str]:
 
 def env_credentials(mapping: Mapping[str, object]) -> Iterator[str]:
     """The credentials in an environment-like mapping (variables, headers): every value
-    under a credential-like name, and the URL credentials in any value whatever its name
-    (`DATABASE_URL`, `HTTP_PROXY`)."""
+    under a credential-like name, the URL credentials in any value whatever its name
+    (`DATABASE_URL`, `HTTP_PROXY`), and the same again inside a value that is a JSON
+    object (`DOCKER_AUTH_CONFIG`, a service-account blob), which is a mapping too."""
     for name, value in mapping.items():
+        if isinstance(value, Mapping):
+            yield from env_credentials(value)
+            continue
         if not isinstance(value, str):
             continue
         if SECRET_NAME.search(name):
             yield value
         yield from url_credentials(value)
+        if value.startswith("{"):
+            try:
+                nested = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(nested, Mapping):
+                yield from env_credentials(nested)
 
 
 class Redactor:
