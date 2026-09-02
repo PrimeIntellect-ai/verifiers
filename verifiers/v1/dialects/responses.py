@@ -24,9 +24,12 @@ from verifiers.v1.dialects.base import (
     RawRequest,
     StreamParser,
     append_user_notice,
+    blocked_path,
     blocked_url,
+    mediate_parts,
     parse_sse_event,
     provider_allowed_domains,
+    user_and_tool_messages,
 )
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
@@ -145,6 +148,18 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
+def _content_to_input(content) -> str | list[dict]:
+    """Typed text/image content in Responses' native input shape."""
+    if isinstance(content, str):
+        return content
+    return [
+        {"type": "input_text", "text": part.text}
+        if isinstance(part, TextContentPart)
+        else {"type": "input_image", "image_url": part.image_url.url}
+        for part in content
+    ]
+
+
 def mediate_tools(
     tools, path: str, policy: NetworkPolicyConfig
 ) -> tuple[list[dict], list[str]]:
@@ -199,20 +214,11 @@ def mediate_tools(
 
 
 def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
-                return blocked
-        return None
-    if not isinstance(value, dict):
-        return None
+    return blocked_path(value, path, policy, _blocked_item)
 
+
+def _blocked_item(value: dict, path: str, policy: NetworkPolicyConfig) -> str | None:
     kind = value.get("type")
-    caller = value.get("caller")
-    if caller is not None and not (
-        isinstance(caller, dict) and caller.get("type") == "direct"
-    ):
-        return f"{path}.caller.type"
     if kind == "input_file":
         if value.get("file_id"):
             return f"{path}.file_id"
@@ -260,18 +266,7 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
 
 
 def mediate_content(value, path: str, policy: NetworkPolicyConfig):
-    if not isinstance(value, list):
-        blocked = blocked_content_path(value, path, policy)
-        return ("", [blocked]) if blocked else (value, [])
-
-    mediated = []
-    capabilities = []
-    for index, part in enumerate(value):
-        if blocked := blocked_content_path(part, f"{path}[{index}]", policy):
-            capabilities.append(blocked)
-            continue
-        mediated.append(part)
-    return mediated, capabilities
+    return mediate_parts(value, path, policy, blocked_content_path)
 
 
 def fold_assistant(items: list[dict] | None) -> AssistantMessage:
@@ -602,29 +597,12 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         return response_from_wire(response)
 
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        original = [
-            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        rewritten = [
-            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
+        original = user_and_tool_messages(before)
+        rewritten = user_and_tool_messages(after)
         items = body.get("input")
         if isinstance(items, str):
             if original != rewritten:
-                message = rewritten[0]
-                content = (
-                    message.content
-                    if isinstance(message.content, str)
-                    else [
-                        {"type": "input_text", "text": part.text}
-                        if isinstance(part, TextContentPart)
-                        else {
-                            "type": "input_image",
-                            "image_url": part.image_url.url,
-                        }
-                        for part in message.content
-                    ]
-                )
+                content = _content_to_input(rewritten[0].content)
                 body["input"] = (
                     content
                     if isinstance(content, str)
@@ -645,19 +623,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         for item, old, new in zip(targets, original, rewritten, strict=True):
             if old == new:
                 continue
-            content = (
-                new.content
-                if isinstance(new.content, str)
-                else [
-                    {"type": "input_text", "text": part.text}
-                    if isinstance(part, TextContentPart)
-                    else {
-                        "type": "input_image",
-                        "image_url": part.image_url.url,
-                    }
-                    for part in new.content
-                ]
-            )
+            content = _content_to_input(new.content)
             item["output" if isinstance(new, ToolMessage) else "content"] = content
 
     def rewrite_response(self, raw: dict, text: str) -> None:

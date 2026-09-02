@@ -159,6 +159,20 @@ def _content_to_wire(content):
     return [part.model_dump() for part in content]
 
 
+def tool_calls_to_wire(tool_calls: list[ToolCall]) -> list[dict]:
+    return [
+        {
+            "id": call.id,
+            "type": call.type,
+            call.type: {
+                "name": call.name,
+                "input" if call.type == "custom" else "arguments": call.arguments,
+            },
+        }
+        for call in tool_calls
+    ]
+
+
 def message_to_wire(message: Message) -> dict:
     if message.role == "assistant":
         # Strict providers reject `content: null` without tool calls.
@@ -171,19 +185,7 @@ def message_to_wire(message: Message) -> dict:
         elif message.reasoning_content is not None:
             wire["reasoning_content"] = message.reasoning_content
         if message.tool_calls:
-            wire["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": call.type,
-                    call.type: {
-                        "name": call.name,
-                        "input"
-                        if call.type == "custom"
-                        else "arguments": call.arguments,
-                    },
-                }
-                for call in message.tool_calls
-            ]
+            wire["tool_calls"] = tool_calls_to_wire(message.tool_calls)
         return wire
     if message.role == "tool":
         wire = {
