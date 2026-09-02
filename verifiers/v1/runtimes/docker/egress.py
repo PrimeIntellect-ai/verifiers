@@ -15,13 +15,14 @@ import h11
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_matches
 
-HOST_ALIAS = "vf.host.internal"
 _HEADER_TIMEOUT = 10
 _IO_TIMEOUT = 300
 
 
-async def _read(reader: asyncio.StreamReader) -> bytes:
-    return await asyncio.wait_for(reader.read(1 << 16), _IO_TIMEOUT)
+async def _read(
+    reader: asyncio.StreamReader, timeout: float | None = _IO_TIMEOUT
+) -> bytes:
+    return await asyncio.wait_for(reader.read(1 << 16), timeout)
 
 
 async def _drain(writer: asyncio.StreamWriter) -> None:
@@ -115,13 +116,8 @@ class EgressProxy:
         self.server: asyncio.Server | None = None
         self.port = 0
 
-    async def start(
-        self, bind_host: str | None = None, *, listener: socket.socket | None = None
-    ) -> None:
-        if listener is None:
-            self.server = await asyncio.start_server(self._handle, bind_host, 0)
-        else:
-            self.server = await asyncio.start_server(self._handle, sock=listener)
+    async def start(self, bind_host: str) -> None:
+        self.server = await asyncio.start_server(self._handle, bind_host, 0)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
@@ -191,10 +187,9 @@ class EgressProxy:
             )
             addresses = []
             if permitted:
-                dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
                 addresses = await asyncio.wait_for(
                     asyncio.get_running_loop().getaddrinfo(
-                        dial_host, port, type=socket.SOCK_STREAM
+                        host, port, type=socket.SOCK_STREAM
                     ),
                     _IO_TIMEOUT,
                 )
@@ -246,7 +241,7 @@ class EgressProxy:
                         return
                     upstream_writer.write(client_hello)
                     await _drain(upstream_writer)
-                await _relay(reader, writer, upstream_reader, upstream_writer)
+                await relay(reader, writer, upstream_reader, upstream_writer)
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
                 authority = f"[{host}]" if ":" in host else host
@@ -334,15 +329,19 @@ class EgressProxy:
             writer.close()
 
 
-async def _relay(
+async def relay(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     upstream_reader: asyncio.StreamReader,
     upstream_writer: asyncio.StreamWriter,
+    *,
+    timeout: float | None = _IO_TIMEOUT,
 ) -> None:
+    """Pipe bytes both ways until either side closes; `timeout` bounds idle reads."""
+
     async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            while chunk := await _read(reader):
+            while chunk := await _read(reader, timeout):
                 writer.write(chunk)
                 await _drain(writer)
         finally:
