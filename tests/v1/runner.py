@@ -1,5 +1,5 @@
 """Run a v1 env over a taskset for the e2e tests: in-process, or through a spawned
-env-server worker pool. Evaluation as a product lives in prime-rl (`uv run evals`);
+env-server worker pool. Evaluation as a product lives in prime-rl (`uv run eval`);
 this keeps the suite's coverage of both execution paths, with the same on-disk output
 (`configs/resolved/*.json` + `traces.jsonl`) the `replay` CLI reads."""
 

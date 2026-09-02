@@ -38,10 +38,10 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 Results go under `outputs/<env>--<model>--<harness>--<short-id>/`.
 The best system prompt is printed when the run finishes and written to `best_system_prompt.txt` in that folder.
 
-Hand it back to evaluation or training via the config-layer taskset system prompt (prime-rl's `uv run evals`, or an `[[orchestrator.train.source]]`):
+Hand it back to evaluation or training via the config-layer taskset system prompt (prime-rl's `uv run eval`, or an `[[orchestrator.train.source]]`):
 
 ```bash
-uv run evals reverse-text \
+uv run eval reverse-text \
   --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
 ```
 

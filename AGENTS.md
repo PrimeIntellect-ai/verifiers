@@ -9,7 +9,7 @@
 ## Running code
 
 - **Always use uv**: run code and commands with `uv run`, never raw `python`. Make sure `uv` is installed ([docs](https://docs.astral.sh/uv/getting-started/installation/)).
-- **Scaffold environments**: create a new taskset/environment with `uv run init <name>` (`uv run init -h` lists options like `-T`/`-H`), validate them model-free with `uv run validate <taskset>`, and evaluate them with prime-rl's `uv run evals <taskset>`.
+- **Scaffold environments**: create a new taskset/environment with `uv run init <name>` (`uv run init -h` lists options like `-T`/`-H`), validate them model-free with `uv run validate <taskset>`, and evaluate them with prime-rl's `uv run eval <taskset>`.
 - **Validate TOML first**: validate config `.toml` files before running them.
 - **Don't add dependencies**: never add dependencies or optional extras to the top-level `pyproject.toml`.
 

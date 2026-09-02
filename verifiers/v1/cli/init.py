@@ -192,7 +192,7 @@ A v1 verifiers environment, scaffolded with `init`.
 ```bash
 uv pip install -e .        # install this package (or register it in your project)
 uv run validate {dash}     # model-free gold checks
-uv run evals {dash} -n 3   # evaluate a few tasks (prime-rl)
+uv run eval {dash} -n 3   # evaluate a few tasks (prime-rl)
 ```
 
 ## Layout

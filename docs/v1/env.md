@@ -27,7 +27,7 @@ solver's sandbox. It is still a one-agent run: the environment records one solve
 trace and starts no verifier agent, model, or harness.
 
 ```bash
-uv run evals my-task --env.id isolated-verifier --env.agent.runtime.type docker
+uv run eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
 ```
 
 Task authors use the existing task API. Declare every solver output the verifier
