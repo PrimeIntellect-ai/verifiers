@@ -51,12 +51,17 @@ def url_credentials(value: str) -> Iterator[str]:
 
 
 def overlaps_marker(secret: str) -> bool:
-    """Whether replacing with the marker could leave or form `secret`: it sits inside
-    `[REDACTED]`, or begins with the marker's tail (`]bar`) or ends with its head
-    (`foo[`). Such a value is a placeholder or a pathological input, never a credential."""
-    return secret in REDACTED or any(
-        secret.startswith(REDACTED[-n:]) or secret.endswith(REDACTED[:n])
-        for n in range(1, len(REDACTED) + 1)
+    """Whether replacing with the marker could leave or form `secret`: one sits inside the
+    other (`REDACTED`, `foo[REDACTED]bar`), or `secret` begins with the marker's tail
+    (`]bar`) or ends with its head (`foo[`). Such a value is a placeholder or a
+    pathological input, never a credential."""
+    return (
+        secret in REDACTED
+        or REDACTED in secret
+        or any(
+            secret.startswith(REDACTED[-n:]) or secret.endswith(REDACTED[:n])
+            for n in range(1, len(REDACTED) + 1)
+        )
     )
 
 
