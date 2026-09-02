@@ -65,6 +65,13 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
+RECORD_FLOAT_DECIMALS = 4
+"""Precision of per-token float streams in JSON records (`to_record`). Full-precision
+digits are noise to every record reader and the least compressible bytes of a trace; four
+decimals leave a logprob within 1e-4 of what the trainer saw. The msgpack wire
+(`mode="python"`) keeps full precision — training never reads the record."""
+
+
 class MessageNode(BaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -149,6 +156,19 @@ class MessageNode(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_serializer(
+        "logprobs",
+        "advantages",
+        "reference_logprobs",
+        "trainer_logprobs",
+        "entropies",
+        when_used="json",
+    )
+    def serialize_record_floats(self, values: list[float] | None) -> list[float] | None:
+        if values is None:
+            return None
+        return [round(value, RECORD_FLOAT_DECIMALS) for value in values]
 
     @field_serializer("multi_modal_data")
     def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
