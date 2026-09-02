@@ -23,18 +23,28 @@ async def ensure_installed(
     (e.g. `bash -o pipefail -c` for pipelines).
 
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
-    dies; an image with neither falls back to a symlink spinlock that reaps a dead owner."""
+    dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
+    `pid:starttime` so a dead holder is reaped even if its pid was reused."""
     lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
-    # A lock that is not a symlink (left behind by flock/lockf) or whose owner pid is gone
-    # is stale and reaped. `kill -0 ""` succeeds under busybox ash, hence the explicit -z.
+    # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
+    # does not pass as the live holder. A lock that is not a symlink (left behind by
+    # flock/lockf) or whose owner is gone is stale and reaped; `kill -0 ""` succeeds under
+    # busybox ash, hence the explicit -z.
+    ident = (
+        'ident() { if [ -r "/proc/$1/stat" ] && s=$(sed "s/^.*) //" "/proc/$1/stat" '
+        '| cut -d" " -f20) && [ -n "$s" ]; then echo "$1:$s"; else echo "$1"; fi; }; '
+        "me=$(ident $$); "
+    )
     spinlock = (
-        f'until ln -s "$$" {lock} 2>/dev/null; do owner=$(readlink {lock} 2>/dev/null); '
-        f'if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then '
+        f"{ident}"
+        f'until ln -s "$me" {lock} 2>/dev/null; do owner=$(readlink {lock} 2>/dev/null); '
+        f'pid=${{owner%%:*}}; if [ -z "$owner" ] || ! kill -0 "$pid" 2>/dev/null '
+        f'|| [ "$(ident "$pid")" != "$owner" ]; then '
         f'[ "$(readlink {lock} 2>/dev/null)" != "$owner" ] || rm -f {lock}; fi; '
         f"sleep 0.1; done; "
-        f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$$" ] || rm -f {lock}\' EXIT; {run}'
+        f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}\' EXIT; {run}'
     )
     guarded = (
         f"mkdir -p {shlex.quote(directory)} && "
@@ -42,7 +52,7 @@ async def ensure_installed(
     )
     result = await runtime.run(["sh", "-c", guarded], env)
     if result.exit_code != 0:
-        detail = (result.stderr or result.stdout).strip()[-500:]
+        detail = (result.stderr.strip() or result.stdout.strip())[-500:]
         raise RuntimeError(f"{label} install failed: {detail}")
 
 
