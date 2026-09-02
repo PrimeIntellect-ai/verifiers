@@ -7,18 +7,19 @@ come from `$PRIME_API_KEY` / `~/.prime/config.json`.
 
 Credentials stay out of the upload two ways. The config fields that hold them (client
 headers, harness env) are dropped from the projection, and every credential value the
-run knows — the clients' API keys, credential-named header / harness / host environment
-values, whatever each rollout recorded on `Trace.upload_secrets` — is replaced with
-`[REDACTED]` wherever it appears in the serialized samples. Redaction is exact-match
-only: nothing is guessed from the shape of the text, so ordinary content is never
-rewritten. Saved traces are unchanged, so a resumed `--push` redacts everything except
-what the earlier attempt's rollouts recorded: their interception tokens (dead with that
-run's interception server) and task-resolved runtime credentials.
+run knows — the clients' API keys, credential-named values from client headers, harness
+and task environments and the host environment, whatever each rollout recorded on
+`Trace.upload_secrets` — is replaced with `[REDACTED]` in every outbound request body.
+Redaction is exact-match only: nothing is guessed from the shape of the text, so
+ordinary content is never rewritten. Saved traces are unchanged, so a resumed `--push`
+redacts everything except the values only the earlier attempt's rollouts knew: their
+interception and runtime tokens (dead with that run) and credentials rotated since.
 """
 
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,6 +51,9 @@ UPLOAD_EXCLUDE = {
 """The episode projection uploaded: the disk record minus the config fields that carry
 credentials (`harness.forward_env` names variables without their values and stays)."""
 
+ENV_FIELD = re.compile(r"(?:^|_)env$")
+"""Task-data fields holding an environment mapping (Harbor's `env`, `verifier_env`)."""
+
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -58,9 +62,10 @@ def json_text(value: Any) -> str:
 def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
-    """Every credential this run could have echoed into a trace: the clients' API keys,
-    credential-named client header / harness / host environment values, what each
-    rollout recorded on `Trace.upload_secrets`, and `values`. Values shorter than
+    """Every credential this run could have put into a trace: the clients' API keys,
+    credential-named values from client headers, harness and task-data environments and
+    the host environment as they are now, what each rollout recorded on
+    `Trace.upload_secrets` as they were then, and `values`. Values shorter than
     `MIN_SECRET_LENGTH` are dropped — redacting them would rewrite ordinary text."""
     traces = [trace for episode in episodes for trace in episode.traces]
     agents = [trace.agent.config for trace in traces]
@@ -69,6 +74,12 @@ def known_secrets(
         os.environ,
         *(client.headers for client in clients),
         *(a.harness.resolved_env for a in agents if a.harness is not None),
+        *(
+            value
+            for trace in traces
+            for name, value in trace.task.data.model_dump(mode="json").items()
+            if ENV_FIELD.search(name) and isinstance(value, dict)
+        ),
     ]
     secrets = {
         *values,
@@ -78,7 +89,7 @@ def known_secrets(
             value
             for mapping in named
             for name, value in mapping.items()
-            if SECRET_NAME.search(name)
+            if isinstance(value, str) and SECRET_NAME.search(name)
         ),
     }
     return {secret for secret in secrets if len(secret) >= MIN_SECRET_LENGTH}
@@ -324,7 +335,9 @@ def push_traces(
         with httpx.Client(headers=headers, timeout=300.0) as client:
 
             def post(path: str, body: dict) -> dict:
-                resp = client.post(f"{api}{path}", json=body)
+                resp = client.post(
+                    f"{api}{path}", content=redactor.json(json_text(body)).encode()
+                )
                 resp.raise_for_status()
                 return resp.json()
 

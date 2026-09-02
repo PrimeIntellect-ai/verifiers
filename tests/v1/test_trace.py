@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
@@ -31,6 +32,11 @@ class MyTask(vf.TaskData):
 
 class MyState(vf.State):
     score: int = 0
+
+
+class EnvTask(vf.TaskData):
+    verifier_env: dict[str, str] = Field(default_factory=dict)
+    """An environment mapping inside task data, as Harbor's `verifier_env`."""
 
 
 class FailingSegmentRollout:
@@ -510,14 +516,16 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "hf_harness_token_0001",
         "intercept-token-0001",
         "hooks/abc/def",
+        "judge-key-000000001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header"
-    # A tool result as another encoder would emit it, `/` escaped included.
+    # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
     tool_result = (
         '{"env": {"KEY": "he said \\"hi\\" 0001", "url": "hooks\\/abc\\/def", '
-        '"ok": "plain-header"}}'
+        '"ok": "plain-header", "u": "\\u00FCn\\u00EFcode"}}'
     )
-    trace = vf.Trace(
+    deep = json.dumps({"log": json.dumps({"auth": "hooks/abc/def", "n": 1})})
+    trace = vf.Trace[EnvTask, vf.State](
         agent=vf.AgentInfo(
             config=vf.AgentConfig(
                 client=client,
@@ -528,17 +536,25 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
                 ),
             )
         ),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        task=vf.TraceTask(
+            type="EnvTask",
+            data=EnvTask(
+                idx=0,
+                prompt="q",
+                verifier_env={"JUDGE_API_KEY": "judge-key-000000001", "MODE": "fast"},
+            ),
+        ),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content=echo), sampled=True),
             MessageNode(
                 parent=1, message=UserMessage(content=tool_result), sampled=False
             ),
+            MessageNode(parent=2, message=UserMessage(content=deep), sampled=False),
         ],
         upload_secrets=["intercept-token-0001", "hooks/abc/def"],
     )
-    episode = Episode(
+    episode = Episode[EnvTask, vf.State](
         env=EnvInfo(id="echo-v1"), task=trace.task, traces=[trace], ok=True
     )
 
@@ -573,7 +589,21 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
     messages = payload["samples"][0]["completion"]
     assert messages[1]["content"].endswith("debug=1 plain-header")
     assert json.loads(messages[2]["content"]) == {
-        "env": {"KEY": "[REDACTED]", "url": "[REDACTED]", "ok": "plain-header"}
+        "env": {
+            "KEY": "[REDACTED]",
+            "url": "[REDACTED]",
+            "ok": "plain-header",
+            "u": "ünïcode",
+        }
+    }
+    assert json.loads(json.loads(messages[3]["content"])["log"]) == {
+        "auth": "[REDACTED]",
+        "n": 1,
+    }
+    # The task's own environment mapping keeps its keys; only credential values go.
+    assert payload["samples"][0]["task"]["verifier_env"] == {
+        "JUDGE_API_KEY": "[REDACTED]",
+        "MODE": "fast",
     }
     # The saved record keeps the run reproducible; only the tokens stay off disk.
     record = episode.to_record()["traces"][0]

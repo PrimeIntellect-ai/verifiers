@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -205,10 +206,23 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
-            # A task resolves these at run time and they are not traced, so the upload
-            # redactor can only learn them here.
+            # Credentials as they are while the harness runs: the client key and the
+            # credential-named client header, harness, and task runtime variables. The
+            # upload redactor also reads the current config, but task runtime values are
+            # never traced, and a key rotated since the run would otherwise be missed.
+            client = self.ctx.client
             self.trace.upload_secrets += [
-                value for name, value in runtime_env.items() if SECRET_NAME.search(name)
+                resolve_api_key(client),
+                *(
+                    value
+                    for mapping in (
+                        client.headers,
+                        self.harness.config.resolved_env,
+                        runtime_env,
+                    )
+                    for name, value in mapping.items()
+                    if SECRET_NAME.search(name)
+                ),
             ]
             if self._borrowed_runtime is None:
                 runtime.env = runtime_env
@@ -286,6 +300,7 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            self.trace.upload_secrets += runtime.secrets
             async with boundary(HarnessError, "opening harness session"):
                 harness_data = self.trace.task.data
                 if (

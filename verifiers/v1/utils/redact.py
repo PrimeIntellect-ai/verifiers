@@ -23,34 +23,29 @@ class Redactor:
     """Replaces every occurrence of the secrets inside JSON strings, counting hits."""
 
     def __init__(self, secrets: set[str]) -> None:
-        # The string itself is decoded before matching. A JSON document quoted inside it
-        # (a tool result) is escaped once per nesting level, by an encoder that may also
-        # escape `/`: match those spellings too.
-        forms = set(secrets)
-        forms |= {form.replace("/", r"\/") for form in forms}
-        for _ in range(2):
-            forms |= {
-                json.dumps(form, ensure_ascii=escape)[1:-1]
-                for form in list(forms)
-                for escape in (True, False)
-            }
         alternatives = "|".join(
-            re.escape(form) for form in sorted(forms, key=len, reverse=True)
+            re.escape(secret) for secret in sorted(secrets, key=len, reverse=True)
         )
-        self.pattern = re.compile(alternatives) if forms else None
+        self.pattern = re.compile(alternatives) if secrets else None
         self.count = 0
 
     def json(self, text: str) -> str:
         """Redact one JSON document given as text; structure and non-string values stay,
-        and so do the bytes of every string without a hit."""
+        and so do the bytes of every string without a hit. Each string is decoded before
+        matching and searched again for quoted JSON inside it (a tool result), so every
+        escape spelling at every nesting depth is matched."""
         pattern = self.pattern
         if pattern is None:
             return text
 
         def string(match: re.Match[str]) -> str:
             token = match.group(0)
-            redacted, hits = pattern.subn(REDACTED, json.loads(token))
-            if not hits:
+            try:
+                value = json.loads(token)
+            except ValueError:  # quotes in prose, not a JSON string
+                return token
+            redacted, hits = pattern.subn(REDACTED, self.json(value))
+            if redacted == value:
                 return token
             self.count += hits
             return json.dumps(redacted, ensure_ascii=token.isascii())
