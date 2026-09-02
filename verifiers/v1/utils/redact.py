@@ -16,16 +16,16 @@ SECRET_NAME = re.compile(
     re.IGNORECASE,
 )
 """Variable and header names whose values are credentials."""
-JSON_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 class Redactor:
     """Replaces every occurrence of the secrets inside JSON strings, counting hits."""
 
     def __init__(self, secrets: set[str]) -> None:
-        # Inside a JSON string a secret is escaped; inside a JSON document quoted within
-        # a string (a tool result) it is escaped twice. Encoders other than Python's
-        # also escape `/`. Match every spelling.
+        # The string itself is decoded before matching. A JSON document quoted inside it
+        # (a tool result) is escaped once per nesting level, by an encoder that may also
+        # escape `/`: match those spellings too.
         forms = set(secrets)
         forms |= {form.replace("/", r"\/") for form in forms}
         for _ in range(2):
@@ -41,14 +41,18 @@ class Redactor:
         self.count = 0
 
     def json(self, text: str) -> str:
-        """Redact one JSON document given as text; structure and non-string values stay."""
+        """Redact one JSON document given as text; structure and non-string values stay,
+        and so do the bytes of every string without a hit."""
         pattern = self.pattern
         if pattern is None:
             return text
 
         def string(match: re.Match[str]) -> str:
-            inner, hits = pattern.subn(REDACTED, match.group(1))
+            token = match.group(0)
+            redacted, hits = pattern.subn(REDACTED, json.loads(token))
+            if not hits:
+                return token
             self.count += hits
-            return f'"{inner}"'
+            return json.dumps(redacted, ensure_ascii=token.isascii())
 
         return JSON_STRING.sub(string, text)
