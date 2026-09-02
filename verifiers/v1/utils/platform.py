@@ -59,8 +59,9 @@ UPLOAD_EXCLUDE = {
 """The episode projection uploaded: the disk record minus the config fields that carry
 credentials (`harness.forward_env` names variables without their values and stays)."""
 
-ENV_FIELD = re.compile(r"(?:^|_)env$")
-"""Task-data fields holding an environment mapping (Harbor's `env`, `verifier_env`)."""
+CREDENTIAL_MAPPING = re.compile(r"(?:^|_)(?:env|headers)$")
+"""Config and task-data fields holding an environment or header mapping (a harness
+`env`, Harbor's `verifier_env`, a client's or a task config's `headers`)."""
 
 
 def strings(value: Any) -> Iterator[str]:
@@ -75,17 +76,17 @@ def strings(value: Any) -> Iterator[str]:
             yield from strings(child)
 
 
-def env_mappings(value: Any, name: str = "") -> Iterator[dict]:
-    """Environment mappings anywhere in a JSON tree, nested ones included (a harness
-    config's `env`, Harbor's `verifier.env`)."""
+def credential_mappings(value: Any, name: str = "") -> Iterator[dict]:
+    """Environment and header mappings anywhere in a JSON tree, nested ones included
+    (a harness config's `env`, Harbor's `verifier.env`, a task config's `headers`)."""
     if isinstance(value, dict):
-        if ENV_FIELD.search(name):
+        if CREDENTIAL_MAPPING.search(name):
             yield value
         for key, child in value.items():
-            yield from env_mappings(child, key)
+            yield from credential_mappings(child, key)
     elif isinstance(value, list):
         for child in value:
-            yield from env_mappings(child, name)
+            yield from credential_mappings(child, name)
 
 
 def json_text(value: Any) -> str:
@@ -96,10 +97,11 @@ def known_secrets(
     episodes: list[Episode], config: EvalConfig, *values: str
 ) -> set[str]:
     """Every credential this run could have put into a trace: the clients' API keys;
-    the credentials in the host environment, the client headers, and every environment
-    mapping in the traced agent configs and task data (`env_credentials`); URL
-    credentials anywhere in those configs and task data (a client `base_url`, a
-    harness endpoint, a task's connection string); what each rollout recorded on
+    the credentials in the host environment and in every environment or header mapping
+    of the run's env config, the traced agent configs, and the task data
+    (`env_credentials`); URL credentials anywhere in those configs and task data (a
+    client `base_url`, a harness endpoint, a task's connection string); what each
+    rollout recorded on
     `Trace.upload_secrets` as it was then (discarded attempts' on
     `Episode.upload_secrets`); and `values`. Values shorter than `MIN_SECRET_LENGTH` are
     dropped — redacting them would rewrite ordinary text — and so are placeholders that
@@ -111,13 +113,13 @@ def known_secrets(
     ]
     dumps = [
         config.client.model_dump(mode="json"),
+        config.env.model_dump(mode="json"),
         *(trace.agent.config.model_dump(mode="json") for trace in traces),
         *(trace.task.data.model_dump(mode="json") for trace in traces),
     ]
     named = [
         os.environ,
-        *(client.headers for client in clients),
-        *(mapping for dump in dumps for mapping in env_mappings(dump)),
+        *(mapping for dump in dumps for mapping in credential_mappings(dump)),
     ]
     secrets = {
         *values,

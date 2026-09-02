@@ -513,7 +513,20 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         api_key_var="MODEL_API_KEY",
         headers={"X-Auth": 'he said "hi" 0001', "X-Trace": "plain-header"},
     )
-    config = EvalConfig(env={"taskset": {"id": "echo-v1"}}, model="m", client=client)
+    # The run's env config is known too: a seat's client headers, a task config's headers.
+    config = EvalConfig(
+        env={
+            "taskset": {"id": "echo-v1"},
+            "agent": {
+                "client": {
+                    **client.model_dump(),
+                    "headers": {"X-Api-Key": "seat-key-000001"},
+                }
+            },
+        },
+        model="m",
+        client=client,
+    )
     secrets = {
         "prime-platform-key-0001",
         "sk-model-key-000000000001",
@@ -530,6 +543,7 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "retry-token-0001",  # a discarded attempt's token, carried with its errors
         "pg-pass-000001",
         "task-url-pass-0001",
+        "seat-key-000001",
     }
     echo = " ".join(sorted(secrets)) + " debug=1 plain-header production-realm"
     # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
