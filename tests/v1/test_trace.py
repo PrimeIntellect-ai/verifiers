@@ -20,7 +20,6 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
-    ACP_TRAINING_EXCLUSIONS_METADATA_KEY,
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -435,7 +434,7 @@ def test_acp_semantic_edge_metadata_is_optional():
     assert all(not node.semantic_parents for node in trace.nodes)
 
 
-def test_acp_excludes_rejected_compaction_attempt_but_trains_accepted_summary():
+def test_acp_derives_compaction_attempt_branch_trainability():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
@@ -499,6 +498,30 @@ def test_acp_excludes_rejected_compaction_attempt_but_trains_accepted_summary():
                         "target_request_id": "accepted",
                         "type": "compaction_attempt",
                     },
+                ]
+            },
+        },
+    )
+
+    attempts = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert attempts["bad tool call"].trainable is False
+    assert attempts["accepted summary"].trainable is False
+
+    harness._consume_protocol_metadata(
+        trace,
+        {
+            ACP_SEMANTIC_EDGES_METADATA_KEY: {
+                "edges": [
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "rejected",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "accepted",
+                        "type": "compaction_attempt",
+                    },
                     {
                         "source_request_id": "accepted",
                         "target_request_id": "resumed",
@@ -506,12 +529,11 @@ def test_acp_excludes_rejected_compaction_attempt_but_trains_accepted_summary():
                     },
                 ]
             },
-            ACP_TRAINING_EXCLUSIONS_METADATA_KEY: {"request_ids": ["rejected"]},
         },
     )
 
     assert trace.nodes[3].sampled is True
-    assert trace.nodes[3].mask == [False, False]
+    assert trace.nodes[3].mask == [True, True]
     assert trace.nodes[4].mask == [True, True]
     assert trace.nodes[6].mask == [True]
     assert trace.nodes[3].semantic_parents == [
@@ -522,11 +544,22 @@ def test_acp_excludes_rejected_compaction_attempt_but_trains_accepted_summary():
     ]
     assert trace.nodes[6].semantic_parents == [vf.ParentLink(node=4, type="compaction")]
     assert trace.num_branches == 3
+    branches = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert branches["bad tool call"].trainable is False
+    assert branches["accepted summary"].trainable is True
+    assert branches["answer"].trainable is True
+    assert branches["bad tool call"].nodes[-2] is trace.nodes[2]
+    assert branches["accepted summary"].nodes[-2] is trace.nodes[2]
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.nodes[3].sampled is True
-    assert restored.nodes[3].mask == [False, False]
+    assert restored.nodes[3].mask == [True, True]
     assert restored.nodes[4].mask == [True, True]
+    restored_branches = {
+        branch.nodes[-1].message.content: branch for branch in restored.branches
+    }
+    assert restored_branches["bad tool call"].trainable is False
+    assert restored_branches["accepted summary"].trainable is True
 
 
 def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():

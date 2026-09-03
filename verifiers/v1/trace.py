@@ -20,12 +20,7 @@ from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
-from verifiers.v1.semantic import (
-    ACPInfo,
-    ParentLink,
-    SemanticEdgeSet,
-    TrainingExclusionSet,
-)
+from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
@@ -202,6 +197,8 @@ class Branch(BaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
+    trainable: bool = True
+    """Whether this physical path contributes a training sample."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
@@ -493,8 +490,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def branches(self) -> list[Branch]:
-        """One root-to-leaf path per graph leaf, its calls attached in path order."""
+        """One root-to-leaf view per graph leaf, with no duplicated node storage.
+
+        A compaction attempt is a dangling physical leaf. It is trainable only when
+        the final semantic graph shows that the harness resumed from it.
+        """
         by_node = {c.node: c for c in self.calls if c.node is not None}
+        accepted_compaction_attempts = {
+            link.node
+            for node in self.nodes
+            for link in node.semantic_parents
+            if link.type == "compaction"
+        }
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -503,11 +510,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
+            is_compaction_attempt = any(
+                link.type == "compaction_attempt"
+                for link in self.nodes[leaf].semantic_parents
+            )
             branches.append(
                 Branch(
                     index=i,
                     nodes=[self.nodes[n] for n in path],
                     calls=[by_node[n] for n in path if n in by_node],
+                    trainable=(
+                        not is_compaction_attempt
+                        or leaf in accepted_compaction_attempts
+                    ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
                 )
             )
@@ -578,32 +593,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
         for target, link in additions:
             self.nodes[target].semantic_parents.append(link)
-
-    def apply_training_exclusions(self, exclusions: TrainingExclusionSet) -> None:
-        """Mask committed responses identified by a cumulative ACP exclusion set."""
-        requested = set(exclusions.request_ids)
-        nodes: set[int] = set()
-        resolved: set[str] = set()
-        for call in self.calls:
-            if call.acp is None or call.acp.request_id not in requested:
-                continue
-            if call.node is None:
-                continue
-            if not 0 <= call.node < len(self.nodes):
-                raise ValueError(f"model call has invalid message node {call.node}")
-            if not self.nodes[call.node].sampled:
-                raise ValueError(f"model call node {call.node} is not sampled")
-            nodes.add(call.node)
-            resolved.add(call.acp.request_id)
-
-        if missing := requested - resolved:
-            raise ValueError(
-                f"excluded model requests have no committed message nodes: {sorted(missing)!r}"
-            )
-        for node_id in nodes:
-            node = self.nodes[node_id]
-            node.mask = [False] * len(node.mask)
-            node.sampling_mask = None
 
     @property
     def messages(self) -> Messages:

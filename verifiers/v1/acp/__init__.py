@@ -18,9 +18,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
-    ACP_TRAINING_EXCLUSIONS_METADATA_KEY,
     SemanticEdgeSet,
-    TrainingExclusionSet,
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -85,11 +83,6 @@ class ACPHarness(Harness[ConfigT]):
                 response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
             )
             trace.add_semantic_edges(edge_set)
-        if ACP_TRAINING_EXCLUSIONS_METADATA_KEY in response_metadata:
-            exclusions = TrainingExclusionSet.model_validate(
-                response_metadata[ACP_TRAINING_EXCLUSIONS_METADATA_KEY]
-            )
-            trace.apply_training_exclusions(exclusions)
 
     @abstractmethod
     async def prepare_acp(

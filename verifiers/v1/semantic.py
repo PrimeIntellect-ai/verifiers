@@ -12,7 +12,6 @@ EDGE_TYPE_PATTERN = r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 """Semantic label syntax, for example ``subagent_return`` or ``vendor:review``."""
 
 ACP_SEMANTIC_EDGES_METADATA_KEY = "ai.prime.acp/semantic-edges-v1"
-ACP_TRAINING_EXCLUSIONS_METADATA_KEY = "ai.prime.acp/training-exclusions-v1"
 ACP_MODEL_REQUEST_ID_HEADER = "X-ACP-Model-Request-ID"
 
 ACP_EXTENSION_HEADERS = frozenset({ACP_MODEL_REQUEST_ID_HEADER.lower()})
@@ -107,23 +106,6 @@ class SemanticEdgeSet(BaseModel):
                     stack.append(child)
         if visited != len(nodes):
             raise ValueError("semantic edge cycle detected")
-        return self
-
-
-class TrainingExclusionSet(BaseModel):
-    """Logical model requests whose sampled tokens must remain out of training."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    request_ids: list[str]
-
-    @model_validator(mode="after")
-    def reject_duplicates(self) -> TrainingExclusionSet:
-        if len(set(self.request_ids)) != len(self.request_ids):
-            raise ValueError("duplicate excluded model request ID")
-        for request_id in self.request_ids:
-            if re.fullmatch(ACP_REQUEST_ID_PATTERN, request_id) is None:
-                raise ValueError(f"invalid excluded model request ID: {request_id!r}")
         return self
 
 
