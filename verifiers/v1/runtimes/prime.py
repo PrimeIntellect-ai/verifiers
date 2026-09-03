@@ -410,9 +410,21 @@ class PrimeRuntime(Runtime):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
-            if _missing_path(e):
+            # the gateway answers 404 for a missing file and for a sandbox that is gone: only a
+            # box that still runs a command has a missing file
+            if _missing_path(e) and await self._alive():
                 raise SandboxFileNotFoundError(f"read {path!r}: no such file") from e
             raise SandboxError(f"read {path!r}: {e}") from e
+
+    async def _alive(self) -> bool:
+        try:
+            async with asyncio.timeout(30):
+                await self._client.execute_command(
+                    self.info.id, "true", working_dir=self.config.workdir
+                )
+        except Exception:  # noqa: BLE001 - a box that cannot run `true` has no file to be missing
+            return False
+        return True
 
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line

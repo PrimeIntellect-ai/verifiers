@@ -61,16 +61,32 @@ PID_WRAPPER = (
 )
 # The target normally writes its PID immediately, but a cancellation can win that race:
 # wait briefly for the file before signalling.
+# Where the target leads its own process group (the `setsid -w` path), the group is killed;
+# where it does not (BusyBox has no `setsid -w`), its descendants are found through /proc and
+# killed leaves-first, then the target, so a background child does not outlive the command.
 KILL_PIDFILE = (
+    'kt() { for c in $(awk -v p="$1" \'/^PPid:/ && $2 == p { split(FILENAME, a, "/"); print a[3] }\' '
+    '/proc/[0-9]*/status 2>/dev/null); do kt "$c"; done; kill -KILL "$1" 2>/dev/null; }; '
     'i=0; while [ "$i" -lt 20 ]; do '
     'if [ -s "$1" ]; then pid=$(cat "$1"); '
-    'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
+    'kill -KILL "-$pid" 2>/dev/null || kt "$pid"; '
     'rm -f "$1"; exit 0; fi; '
     "i=$((i + 1)); sleep 0.05; done; exit 1"
 )
 
 MISSING_PATH_EXIT = 44
 """Exit code the read helpers use for "no such path", distinct from cat/head's own failures."""
+
+
+def missing_path_probe(var: str) -> str:
+    """Shell that exits MISSING_PATH_EXIT when the path in `var` (a positional, e.g. `$1`) does
+    not exist, exits 1 when its existence cannot be told (an ancestor the caller may not search),
+    and continues otherwise. `test -e` alone reports both cases as false."""
+    return (
+        f'if ! [ -e "{var}" ]; then p="{var}"; while :; do p=$(dirname -- "$p"); '
+        f'if [ -e "$p" ]; then if [ -x "$p" ]; then exit {MISSING_PATH_EXIT}; else exit 1; fi; fi; '
+        f'if [ "$p" = / ]; then exit {MISSING_PATH_EXIT}; fi; done; fi; '
+    )
 
 
 def new_pidfile() -> str:
@@ -377,8 +393,8 @@ class Runtime(ABC):
             [
                 "sh",
                 "-c",
-                (
-                    f'[ -e "$2" ] || exit {MISSING_PATH_EXIT}; '
+                missing_path_probe("$2")
+                + (
                     "t=$(mktemp) || exit 1; "
                     'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
                     'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
