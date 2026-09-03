@@ -232,9 +232,10 @@ class Summary(BaseModel):
     episodes: int
     failed: int
     errors: dict[str, int]
-    """Failed episodes by the type of the error that failed them: an errored trace's
-    last error (the traces are the final attempt's), else the episode's own last
-    error (a hook's). A failed episode that recorded no error is counted nowhere here."""
+    """Failed episodes by the type of the error that failed them: a failed trace's
+    last error, else the episode's own last error (a hook's) — the live errors
+    `episode_should_retry` reads, since an ok trace's errors are history its per-agent
+    retry recovered from. A failed episode that recorded no error is counted nowhere here."""
     reward: float | None
     """Mean reward over the run's scored rollouts; None when none was scored."""
     tasks: dict[str, TaskSummary]
@@ -249,7 +250,8 @@ def _task_key(episode: Episode) -> str:
 def _cause(episode: Episode) -> Error | None:
     """The error that failed `episode` (see `Summary.errors`)."""
     return next(
-        (t.last_error for t in episode.traces if t.last_error), episode.last_error
+        (t.last_error for t in episode.traces if not t.ok and t.last_error),
+        episode.last_error,
     )
 
 
