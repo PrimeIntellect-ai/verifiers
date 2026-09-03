@@ -16,7 +16,7 @@ from renderers.base import ToolCallParseStatus, is_multimodal
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
-from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
+from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
@@ -343,10 +343,9 @@ class TrainClient(Client):
                 f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
                 f"renderer support for it."
             )
-        # Intercepted turns already own the typed prompt, so only their tools need parsing here.
         if turn is not None:
             prompt = turn.prompt
-            tools = parse_tools(body.get("tools"))
+            tools = turn.tools
         else:
             request = dialect.parse_request(body)
             prompt = request.messages

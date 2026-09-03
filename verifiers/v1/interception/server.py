@@ -628,8 +628,10 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
-            turn = graph.prepare_turn(session.trace, model_request.messages)
-            turn.commit_prompt(model_request.tools)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
+            turn.commit_prompt()
             session.trace.stop(stopped)
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {stopped}"),
@@ -639,7 +641,9 @@ class InterceptionServer(Interception):
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
             model_request = dialect.parse_request(body)
-            turn = graph.prepare_turn(session.trace, model_request.messages)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
@@ -719,7 +723,7 @@ class InterceptionServer(Interception):
                             ),
                             status=400,
                         )
-                    node = turn.commit(call_response, model_request.tools)
+                    node = turn.commit(call_response)
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
@@ -885,7 +889,7 @@ class InterceptionServer(Interception):
                         ),
                         status=409 if session.released else 400,
                     )
-                node = turn.commit(response, model_request.tools)
+                node = turn.commit(response)
                 session.consume_prepared(turn.tail)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if stopped is not None:
@@ -993,7 +997,7 @@ class InterceptionServer(Interception):
                     raise parser_error
                 response = parser.finish()
                 if not session.released and not session.stopped:
-                    node = turn.commit(response, model_request.tools)
+                    node = turn.commit(response)
                     session.consume_prepared(turn.tail)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
                 elif session.stopped:
