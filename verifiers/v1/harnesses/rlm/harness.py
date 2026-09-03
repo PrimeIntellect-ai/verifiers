@@ -57,7 +57,7 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="728caa9", min_length=1)
+    version: str = Field(default="e384006", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
