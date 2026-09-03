@@ -1,8 +1,8 @@
-"""Smoke-eval every example taskset in `environments/` through the `eval` CLI.
+"""Smoke-eval the example tasksets in `environments/` through the `eval` CLI.
 
 Each taskset runs with its required harness for one short, capped rollout, so a broken
-example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
-SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
+example taskset fails CI. `compact` is excluded (it's a harness, not a taskset), and so
+are the tasksets tests/v1/test_e2e.py already runs end to end (`E2E_COVERED`).
 """
 
 import os
@@ -20,6 +20,13 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
 
+# Tasksets tests/v1/test_e2e.py already runs end to end and asserts on: kuhn_poker
+# (test_kuhn_poker_self_play), reverse_text (test_replay_round_trip), scratchpad
+# (test_shared_tool_isolation, through the env-server pool). Their rewards read the
+# trace alone, so the CLI's default harness path adds nothing the remaining smokes
+# don't already cover.
+E2E_COVERED = {"kuhn_poker", "reverse_text", "scratchpad"}
+
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
     "code_golf": ("golfer",),
@@ -36,7 +43,10 @@ def v1_tasksets() -> list[str]:
     return sorted(
         d.name
         for d in ENVIRONMENTS.iterdir()
-        if d.is_dir() and d.name != "compact" and (d / "pyproject.toml").exists()
+        if d.is_dir()
+        and d.name != "compact"
+        and d.name not in E2E_COVERED
+        and (d / "pyproject.toml").exists()
     )
 
 
