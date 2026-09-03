@@ -1,4 +1,4 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
+"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json + summary.json.
 
 Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
 next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
@@ -6,12 +6,15 @@ whole episode owed on resume, and a failure before any trace minted still leaves
 its errors on disk. The JSON file is the run's resolved config in the format the
 CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
 append as episodes complete, so results are durable mid-run. Files written
-by this surface contain episodes only.
+by this surface contain episodes only. `summary.json` is how the completed run went,
+read off those episodes once (`summarize`) so no consumer re-derives it.
 """
 
 import asyncio
 import json
 import os
+from collections import Counter
+from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
 
@@ -20,12 +23,15 @@ from pydantic import BaseModel, TypeAdapter
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
-from verifiers.v1.task import DataT
-from verifiers.v1.trace import AgentConfigT, Trace
+from verifiers.v1.task import DataT, Task
+from verifiers.v1.trace import AgentConfigT, Error, Trace
 from verifiers.v1.utils.aio import run_shielded
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
+
+SUMMARY_FILE = "summary.json"
+"""Filename a completed run's `Summary` is written to, beside `traces.jsonl`."""
 
 CONFIG_DIR = "configs"
 """Directory inside a run dir holding its configs: the launch TOML copied verbatim to
@@ -203,3 +209,90 @@ async def append_trace(
         ok=trace.ok,
     )
     await append_episode(results_dir, episode, lock)
+
+
+class TaskSummary(BaseModel):
+    """One task's rollouts, counted as `Summary` counts the run's."""
+
+    name: str | None
+    """The task's `TaskData.name`, when it has one."""
+    rollouts: int
+    failed: int
+    reward: float | None
+    """Mean reward over the task's scored rollouts; None when none was scored."""
+
+
+class Summary(BaseModel):
+    """How a run went, read off its finished episodes. An episode failed iff it ended
+    not ok. A rollout's reward is the mean `Trace.reward` over its scored policy
+    traces — the `trainable` ones, or every trace when no seat is — where a trace is
+    scored once any of its rewards landed (all None: scoring never ran); a rollout
+    with no scored trace is unscored and sits outside every mean."""
+
+    episodes: int
+    failed: int
+    errors: dict[str, int]
+    """Failed episodes by the type of the error that failed them: an errored trace's
+    last error (the traces are the final attempt's), else the episode's own last
+    error (a hook's). A failed episode that recorded no error is counted nowhere here."""
+    reward: float | None
+    """Mean reward over the run's scored rollouts; None when none was scored."""
+    tasks: dict[str, TaskSummary]
+    """Per task, keyed by `task.key` (its `hash` when unset), in first-seen order."""
+
+
+def _task_key(episode: Episode) -> str:
+    # Rows written before the key and hash were recorded hash their data, as resume does.
+    return episode.task.key or episode.task.hash or Task(episode.task.data).hash
+
+
+def _cause(episode: Episode) -> Error | None:
+    """The error that failed `episode` (see `Summary.errors`)."""
+    return next(
+        (t.last_error for t in episode.traces if t.last_error), episode.last_error
+    )
+
+
+def _rollout_reward(episode: Episode) -> float | None:
+    """The episode's reward as one rollout (see `Summary`); None when unscored."""
+    policy = [t for t in episode.traces if t.agent.trainable] or episode.traces
+    rewards = [
+        t.reward for t in policy if any(r is not None for r in t.rewards.values())
+    ]
+    return sum(rewards) / len(rewards) if rewards else None
+
+
+def _mean_reward(episodes: Sequence[Episode]) -> float | None:
+    rewards = [r for e in episodes if (r := _rollout_reward(e)) is not None]
+    return sum(rewards) / len(rewards) if rewards else None
+
+
+def summarize(episodes: Sequence[Episode]) -> Summary:
+    """The run's `Summary` over its finished episodes."""
+    by_task: dict[str, list[Episode]] = {}
+    for episode in episodes:
+        by_task.setdefault(_task_key(episode), []).append(episode)
+    causes = [c for e in episodes if not e.ok and (c := _cause(e)) is not None]
+    return Summary(
+        episodes=len(episodes),
+        failed=sum(not e.ok for e in episodes),
+        errors=dict(Counter(c.type for c in causes)),
+        reward=_mean_reward(episodes),
+        tasks={
+            key: TaskSummary(
+                name=group[0].task.data.name,
+                rollouts=len(group),
+                failed=sum(not e.ok for e in group),
+                reward=_mean_reward(group),
+            )
+            for key, group in by_task.items()
+        },
+    )
+
+
+def write_summary(results_dir: Path, summary: Summary) -> Path:
+    """Write the completed run's `summary.json` beside its traces; return its path. Nulls
+    included: an unscored reward reads as `null`, never as a missing key."""
+    path = results_dir / SUMMARY_FILE
+    path.write_text(summary.model_dump_json(indent=2))
+    return path
