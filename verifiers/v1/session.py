@@ -147,15 +147,58 @@ class RolloutSession:
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
     prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
+    rewritten_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
+    """Tool results request interceptors rewrote on their way to the model, by tool-call id.
+    The harness keeps its original, so later turns replay that; the rewrite is restored."""
+    rewritten_users: dict[str, list[UserMessage]] = field(default_factory=dict)
+    """User messages request interceptors rewrote, keyed by the original's hash, in order of
+    application (a repeated original maps to its rewrites in sequence)."""
 
     @property
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
+    def restore_rewrites(self, request: Request) -> Request:
+        """`request` with earlier interceptor rewrites put back where the harness replays the
+        originals it stored, so the model sees the same history it saw before. Providers that
+        bind reasoning to the preceding context (Anthropic's preserved thinking) reject a
+        replay whose earlier messages changed."""
+        if not self.rewritten_tool_results and not self.rewritten_users:
+            return request
+        seen: Counter[str] = Counter()
+        messages = list(request.messages)
+        changed = False
+        for position, message in enumerate(messages):
+            if isinstance(message, ToolMessage):
+                rewritten = self.rewritten_tool_results.get(message.tool_call_id)
+                if rewritten is not None and rewritten != message:
+                    messages[position] = rewritten
+                    changed = True
+            elif isinstance(message, UserMessage):
+                key = graph.message_hash(message)
+                rewrites = self.rewritten_users.get(key)
+                if rewrites and seen[key] < len(rewrites):
+                    messages[position] = rewrites[seen[key]]
+                    changed = True
+                seen[key] += 1
+        return request.model_copy(update={"messages": messages}) if changed else request
+
+    def _record_rewrites(self, before: Request, after: Request) -> None:
+        for original, rewritten in zip(before.messages, after.messages, strict=True):
+            if original == rewritten:
+                continue
+            if isinstance(rewritten, ToolMessage):
+                self.rewritten_tool_results[rewritten.tool_call_id] = rewritten
+            elif isinstance(rewritten, UserMessage):
+                key = graph.message_hash(original)
+                self.rewritten_users.setdefault(key, []).append(rewritten)
+
     async def rewrite_request(
         self, request: Request, *, run_stops: bool = True
     ) -> tuple[Request, list[InterceptRecord], str | None]:
-        """Run typed request interceptors and stops over one canonical request."""
+        """Run typed request interceptors and stops over one canonical request, with earlier
+        rewrites restored first (see `restore_rewrites`)."""
+        request = self.restore_rewrites(request)
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
         turn = graph.prepare_turn(self.trace, request.messages)
@@ -218,6 +261,7 @@ class RolloutSession:
                 if result != current:
                     current = result
                     records.append(InterceptRecord(handler=handler.__name__))
+            self._record_rewrites(request, current)
 
             stops = self.request_stops if run_stops else []
             for stop in stops:
