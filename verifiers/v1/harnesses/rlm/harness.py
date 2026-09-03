@@ -51,10 +51,13 @@ class CompactionConfig(BaseConfig):
     max_compactions: PositiveInt | None = None
     """Compactions per session before the engine stops compacting; `None` =
     nano-rlm's default."""
+    max_attempts: PositiveInt | None = None
+    """Summary-generation attempts within one compaction cycle; `None` =
+    nano-rlm's default (5)."""
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="dd2c04f", min_length=1)
+    version: str = Field(default="e384006", min_length=1)
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
@@ -170,6 +173,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             policy_knobs["compaction"] = True
             policy_knobs["summarize_at_tokens"] = compaction.summarize_at_tokens
             policy_knobs["max_compactions"] = compaction.max_compactions
+            policy_knobs["max_compaction_attempts"] = compaction.max_attempts
         appends = [
             text
             for text in (system_prompt, self.config.append_to_system_prompt)
