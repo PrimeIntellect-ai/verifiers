@@ -72,13 +72,10 @@ def attempt_log_file(run_dir: Path) -> Path:
 
 
 def saved_config_path(run_dir: Path) -> Path | None:
-    """The run's saved resolved config (`configs/resolved/<cli>.json`; legacy runs
-    kept it at `configs/<cli>.json`), None if absent."""
-    for config_dir in (run_dir / CONFIG_DIR / RESOLVED_DIR, run_dir / CONFIG_DIR):
-        candidates = sorted(config_dir.glob("*.json")) if config_dir.is_dir() else []
-        if candidates:
-            return candidates[0]
-    return None
+    """The run's saved resolved config (`configs/resolved/<cli>.json`), None if absent."""
+    config_dir = run_dir / CONFIG_DIR / RESOLVED_DIR
+    candidates = sorted(config_dir.glob("*.json")) if config_dir.is_dir() else []
+    return candidates[0] if candidates else None
 
 
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.

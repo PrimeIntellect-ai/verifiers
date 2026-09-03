@@ -35,7 +35,7 @@ from openai import AsyncOpenAI
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.mcp.client import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout."""

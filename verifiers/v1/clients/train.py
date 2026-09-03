@@ -23,9 +23,9 @@ from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
-    KeptTokens,
     Response,
     SamplingConfig,
+    SamplingMask,
     Tool,
     ToolCall,
     TurnTokens,
@@ -173,8 +173,8 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            kept_tokens=KeptTokens(**kept)
-            if (kept := result.get("kept_tokens"))
+            sampling_mask=SamplingMask.from_sampling_mask(mask)
+            if (mask := result.get("sampling_mask"))
             else None,
         ),
     )

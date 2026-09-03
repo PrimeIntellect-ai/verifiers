@@ -46,11 +46,9 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    # An env-block flag (or a since-moved flat axis) skips the usage gate so the
-    # typed parse renders its did-you-mean instead of a bare usage line.
-    typed_axis = any(
-        a.startswith(("--env.", "--taskset.", "--harness.", "--serve.")) for a in argv
-    )
+    # An env-block flag skips the usage gate so the typed parse renders its
+    # did-you-mean instead of a bare usage line.
+    typed_axis = any(a.startswith(("--env.", "--serve.")) for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)
