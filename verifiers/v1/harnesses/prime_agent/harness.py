@@ -39,7 +39,7 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 [ -x "$prefix/bin/prime-agent" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
-export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
+export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
 ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
