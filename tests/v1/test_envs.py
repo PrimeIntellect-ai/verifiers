@@ -27,6 +27,12 @@ SKIP_EVAL = {"nemo_gym_weather"}
 # don't already cover.
 E2E_COVERED = {"kuhn_poker", "reverse_text", "scratchpad"}
 
+# Smoke-sized env knobs: the fewest turns/attempts that still score an episode.
+SMOKE_FLAGS: dict[str, tuple[str, ...]] = {
+    "alphabet_sort": ("--env.taskset.max-turns", "1"),
+    "code_golf": ("--env.attempts", "1"),
+}
+
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
     "code_golf": ("golfer",),
@@ -78,7 +84,7 @@ def test_eval(taskset: str):
     cmd = [
         "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        "-n", "1", "-r", "1", *caps,
+        "-n", "1", "-r", "1", *caps, *SMOKE_FLAGS.get(taskset, ()),
         "--sampling.max-tokens", "512", "--no-rich", "--no-push",
     ]  # fmt: skip
     try:
