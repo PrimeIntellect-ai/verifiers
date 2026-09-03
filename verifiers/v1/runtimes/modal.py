@@ -27,6 +27,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -128,25 +129,7 @@ class ModalRuntime(Runtime):
                 creation_limiter(self.config.creates_per_sec, "modal-sandbox")
                 or contextlib.nullcontext()
             ):
-                self._sandbox = await modal.Sandbox.create.aio(
-                    "sleep",
-                    "infinity",  # keep-alive entrypoint; the harness runs via `exec`
-                    app=app,
-                    name=self.name,
-                    # Clear the image's ENTRYPOINT so `sleep infinity` runs as the command
-                    # rather than as args to it — otherwise an image with its own entrypoint
-                    # (e.g. SWE task images) never starts the keep-alive and the sandbox dies.
-                    image=modal.Image.from_registry(self.config.image).entrypoint([]),
-                    workdir=self.config.workdir,
-                    env=self.env,
-                    cpu=self.config.cpu,
-                    memory=int(self.config.memory * 1024),  # Modal memory is MB
-                    gpu=self.config.gpu,
-                    region=self.config.region,
-                    block_network=not self.config.network_access,
-                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
-                    encrypted_ports=[SERVICE_PORT],
-                )
+                await run_shielded(self._create_sandbox(app))
             self.info.id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
@@ -155,32 +138,38 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            await self._adopt_orphan()
             raise SandboxError(f"modal sandbox provisioning failed: {e}") from e
-        except BaseException:  # cancellation, which is not an Exception
-            await self._adopt_orphan()
-            raise
 
-    async def _adopt_orphan(self) -> None:
-        """Reclaim a sandbox whose `create` did not live long enough to hand back a handle.
+    async def _create_sandbox(self, app) -> None:
+        """Create the sandbox and take ownership of the handle, as one shielded step.
 
-        Modal commits the sandbox and schedules it before `Sandbox.create` responds, so a
-        create that does not return — Ctrl-C, a cancelled rollout, a connection dropped on
-        the reply — still boots and bills a sandbox, about a second after the caller stopped
-        waiting for it. `_sandbox` was never assigned, so neither `teardown` nor the atexit
-        backstop can see it and it runs to its 24h maximum lifetime. The name is ours and
-        unique per rollout, so the sandbox is still addressable: claim it here and the
-        owner's `stop` disposes of it like any other. Best effort — this runs while `start`
-        is already unwinding, usually from a cancellation, hence the shield.
+        Modal schedules the sandbox before `Sandbox.create` returns, so a cancellation
+        landing between those two points leaves a sandbox that boots and bills with
+        `_sandbox` still unset — invisible to both `teardown` and the atexit backstop, and
+        alive until its 24h maximum lifetime. Assigning inside the coroutine that
+        `run_shielded` owns keeps the cancellation pending until the handle is ours.
         """
-        if self._sandbox is not None:
-            return
         import modal
 
-        with contextlib.suppress(Exception):
-            self._sandbox = await asyncio.shield(
-                modal.Sandbox.from_name.aio(_APP_NAME, self.name)
-            )
+        self._sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",  # keep-alive entrypoint; the harness runs via `exec`
+            app=app,
+            name=self.name,
+            # Clear the image's ENTRYPOINT so `sleep infinity` runs as the command rather
+            # than as args to it — otherwise an image with its own entrypoint (e.g. SWE
+            # task images) never starts the keep-alive and the sandbox dies.
+            image=modal.Image.from_registry(self.config.image).entrypoint([]),
+            workdir=self.config.workdir,
+            env=self.env,
+            cpu=self.config.cpu,
+            memory=int(self.config.memory * 1024),  # Modal memory is MB
+            gpu=self.config.gpu,
+            region=self.config.region,
+            block_network=not self.config.network_access,
+            timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+            encrypted_ports=[SERVICE_PORT],
+        )
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox: Modal forwards `port` (named via
