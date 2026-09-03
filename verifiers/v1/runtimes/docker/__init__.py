@@ -4,6 +4,7 @@ import array
 import asyncio
 import contextlib
 import logging
+import posixpath
 import shlex
 import socket
 import subprocess
@@ -11,7 +12,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -28,6 +29,9 @@ from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, Network
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
+
+_SNAPSHOT_PREFIX = "docker-workspace:v1:"
+_snapshot_store: tempfile.TemporaryDirectory[str] | None = None
 
 
 class DockerConfig(NetworkPolicyConfig):
@@ -125,6 +129,98 @@ async def docker(*args: str) -> ProgramResult:
         stdout=stdout.decode(errors="replace"),
         stderr=stderr.decode(errors="replace"),
     )
+
+
+def _snapshot_id(ref: str) -> str:
+    if not ref.startswith(_SNAPSHOT_PREFIX):
+        raise SandboxError(f"invalid Docker workspace snapshot reference: {ref!r}")
+    raw = ref.removeprefix(_SNAPSHOT_PREFIX)
+    try:
+        snapshot_id = uuid.UUID(raw)
+    except ValueError as e:
+        raise SandboxError(
+            f"invalid Docker workspace snapshot reference: {ref!r}"
+        ) from e
+    if snapshot_id.hex != raw:
+        raise SandboxError(f"invalid Docker workspace snapshot reference: {ref!r}")
+    return snapshot_id.hex
+
+
+def _snapshot_path(ref: str, *, create: bool = False) -> Path:
+    snapshot_id = _snapshot_id(ref)
+
+    global _snapshot_store
+    if _snapshot_store is None:
+        if not create:
+            raise SandboxError(f"Docker workspace snapshot is unavailable: {ref}")
+        _snapshot_store = tempfile.TemporaryDirectory(prefix="vf-docker-snapshots-")
+    return Path(_snapshot_store.name) / f"{snapshot_id}.tar"
+
+
+async def _archive_workspace(container: str, workdir: str, path: Path) -> None:
+    with path.open("wb") as archive:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "--user",
+            "0",
+            "--workdir",
+            "/",
+            container,
+            "tar",
+            "-C",
+            workdir,
+            "-cf",
+            "-",
+            ".",
+            stdout=archive,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await proc.communicate()
+        except BaseException:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            await run_shielded(proc.communicate())
+            raise
+    if proc.returncode != 0:
+        raise SandboxError(
+            f"docker workspace snapshot failed: {stderr.decode(errors='replace').strip()}"
+        )
+
+
+async def _extract_workspace(container: str, workdir: str, path: Path) -> None:
+    with path.open("rb") as archive:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            "--user",
+            "0",
+            "--workdir",
+            "/",
+            container,
+            "tar",
+            "-C",
+            workdir,
+            "-xf",
+            "-",
+            stdin=archive,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await proc.communicate()
+        except BaseException:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            await run_shielded(proc.communicate())
+            raise
+    if proc.returncode != 0:
+        detail = (stderr or stdout).decode(errors="replace").strip()
+        raise SandboxError(f"docker workspace restore failed: {detail}")
 
 
 async def _abort_process_startup(
@@ -505,6 +601,129 @@ class DockerRuntime(Runtime):
         )  # detached → lives in the container until it's removed in stop()
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
+
+    def _snapshot_workdir(self) -> str:
+        workdir = posixpath.normpath(self.config.workdir)
+        if not workdir.startswith("/") or not workdir.lstrip("/"):
+            raise SandboxError(
+                "Docker workspace snapshots require an absolute, non-root workdir"
+            )
+        return workdir
+
+    async def snapshot(self) -> str:
+        """Stream the complete workspace into process-local host storage."""
+        if self._container is None or self._stopped:
+            raise SandboxError("cannot snapshot a Docker container that is not running")
+        snapshot_id = uuid.uuid4().hex
+        ref = f"{_SNAPSHOT_PREFIX}{snapshot_id}"
+        path = _snapshot_path(ref, create=True)
+        pending = path.with_suffix(".tmp")
+        try:
+            await _archive_workspace(
+                self._container,
+                self._snapshot_workdir(),
+                pending,
+            )
+            pending.replace(path)
+        except BaseException:
+            pending.unlink(missing_ok=True)
+            raise
+        logger.info("docker: snapshotted workspace %s -> %s", self._container, ref)
+        return ref
+
+    async def restore(self, ref: str) -> None:
+        """Replace the workspace with a compatible Docker snapshot."""
+        if self._container is None or self._stopped:
+            raise SandboxError("cannot restore a Docker container that is not running")
+        path = _snapshot_path(ref)
+        if not path.is_file():
+            raise SandboxError(f"Docker workspace snapshot is unavailable: {ref}")
+        workdir = self._snapshot_workdir()
+        nonce = uuid.uuid4().hex
+        staging = f"{workdir}.vf-restore-{nonce}"
+        backup = f"{workdir}.vf-backup-{nonce}"
+        prepare = await docker(
+            "exec",
+            "--user",
+            "0",
+            "--workdir",
+            "/",
+            self._container,
+            "mkdir",
+            "--",
+            staging,
+        )
+        if prepare.exit_code != 0:
+            raise SandboxError(
+                "docker workspace restore failed to create staging directory: "
+                f"{(prepare.stderr or prepare.stdout).strip()}"
+            )
+        try:
+            await _extract_workspace(self._container, staging, path)
+        except BaseException:
+            await run_shielded(self._remove_restore_staging(staging))
+            raise
+
+        swap = await run_shielded(
+            docker(
+                "exec",
+                "--user",
+                "0",
+                "--workdir",
+                "/",
+                self._container,
+                "sh",
+                "-c",
+                (
+                    "work=$1 staging=$2 backup=$3; "
+                    'if ! mv -- "$work" "$backup"; then '
+                    'echo "failed to preserve existing workspace" >&2; exit 1; fi; '
+                    'mv -- "$staging" "$work"; rc=$?; '
+                    'if [ "$rc" -eq 0 ]; then rm -rf -- "$backup" || true; exit 0; fi; '
+                    'if mv -- "$backup" "$work"; then '
+                    'echo "failed to install snapshot; original workspace restored" >&2; '
+                    'else echo "failed to install snapshot; original workspace retained at $backup" >&2; fi; '
+                    'exit "$rc"'
+                ),
+                "vf-restore",
+                workdir,
+                staging,
+                backup,
+            )
+        )
+        if swap.exit_code != 0:
+            await self._remove_restore_staging(staging)
+            raise SandboxError(
+                f"docker workspace restore failed to swap {workdir}: "
+                f"{(swap.stderr or swap.stdout).strip()}"
+            )
+        logger.info("docker: restored workspace %s <- %s", self._container, ref)
+
+    async def _remove_restore_staging(self, staging: str) -> None:
+        cleanup = await docker(
+            "exec",
+            "--user",
+            "0",
+            "--workdir",
+            "/",
+            self._container,
+            "rm",
+            "-rf",
+            "--",
+            staging,
+        )
+        if cleanup.exit_code != 0:
+            logger.warning(
+                "docker: failed to remove restore staging %s: %s",
+                staging,
+                (cleanup.stderr or cleanup.stdout).strip(),
+            )
+
+    async def delete_snapshot(self, ref: str) -> None:
+        """Delete a process-local Docker workspace snapshot, idempotently."""
+        snapshot_id = _snapshot_id(ref)
+        if _snapshot_store is not None:
+            (Path(_snapshot_store.name) / f"{snapshot_id}.tar").unlink(missing_ok=True)
 
     async def _read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(

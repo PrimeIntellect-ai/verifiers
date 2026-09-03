@@ -10,6 +10,7 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 import asyncio
 import contextlib
 import logging
+import posixpath
 import shlex
 import uuid
 from collections.abc import AsyncIterator
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
+_SNAPSHOT_PREFIX = "modal-workspace:v1:"
+
+
+def _snapshot_image_id(ref: str) -> str:
+    """Validate a Modal workspace snapshot reference and return its Image ID."""
+    if not ref.startswith(_SNAPSHOT_PREFIX):
+        raise SandboxError(f"invalid Modal workspace snapshot reference: {ref!r}")
+    image_id = ref.removeprefix(_SNAPSHOT_PREFIX)
+    if not image_id.startswith("im-") or not image_id.removeprefix("im-"):
+        raise SandboxError(f"invalid Modal workspace snapshot reference: {ref!r}")
+    return image_id
 
 
 class ModalConfig(BaseConfig):
@@ -271,6 +283,61 @@ class ModalRuntime(Runtime):
             raise SandboxError(
                 f"modal background launch failed: {result.stderr.strip()}"
             )
+
+    def _snapshot_workdir(self) -> str:
+        workdir = posixpath.normpath(self.config.workdir)
+        if not workdir.startswith("/") or not workdir.lstrip("/"):
+            raise SandboxError(
+                "Modal workspace snapshots require an absolute, non-root workdir"
+            )
+        return workdir
+
+    async def snapshot(self) -> str:
+        """Capture the workspace as a provider-hosted Modal directory snapshot."""
+        if self._sandbox is None or self.stopped:
+            raise SandboxError("cannot snapshot a Modal sandbox that is not running")
+        try:
+            image = await self._sandbox.snapshot_directory.aio(self._snapshot_workdir())
+        except Exception as e:
+            raise SandboxError(f"Modal workspace snapshot failed: {e}") from e
+        ref = f"{_SNAPSHOT_PREFIX}{image.object_id}"
+        logger.info("modal: snapshotted workspace %s -> %s", self.info.id, ref)
+        return ref
+
+    async def restore(self, ref: str) -> None:
+        """Replace the workspace with a provider-hosted Modal snapshot."""
+        if self._sandbox is None or self.stopped:
+            raise SandboxError("cannot restore a Modal sandbox that is not running")
+        image_id = _snapshot_image_id(ref)
+        try:
+            import modal
+
+            image = modal.Image.from_id(image_id)
+            await self._sandbox.mount_image.aio(self._snapshot_workdir(), image)
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
+            ) from e
+        except Exception as e:
+            raise SandboxError(f"Modal workspace restore failed for {ref}: {e}") from e
+        logger.info("modal: restored workspace %s <- %s", self.info.id, ref)
+
+    async def delete_snapshot(self, ref: str) -> None:
+        """Delete a provider-hosted Modal snapshot, idempotently."""
+        image_id = _snapshot_image_id(ref)
+        try:
+            import modal
+            import modal.experimental
+
+            await modal.experimental.image_delete.aio(image_id)
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
+            ) from e
+        except modal.exception.NotFoundError:
+            return
+        except Exception as e:
+            raise SandboxError(f"Modal workspace snapshot deletion failed: {e}") from e
 
     def _abs(self, path: str) -> str:
         # Modal's filesystem API only accepts absolute remote paths; resolve a relative
