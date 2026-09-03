@@ -40,7 +40,7 @@ class GEPAAdapter:
     semaphore: asyncio.Semaphore | None = None
     on_complete: Callable[[Episode], Awaitable[None]] | None = None
     """Called with each rollout's episode as it finalizes — the runner's persist hook that
-    streams episodes to `traces.jsonl`, exactly as `run_eval` does."""
+    streams episodes to `traces.jsonl`."""
     reflection_columns: list[str] = field(default_factory=list)
     propose_new_texts: Callable[..., Candidate] | None = None
     """Part of GEPA's adapter protocol — its proposer reads this attribute on every reflection

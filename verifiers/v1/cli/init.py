@@ -191,7 +191,8 @@ A v1 verifiers environment, scaffolded with `init`.
 
 ```bash
 uv pip install -e .        # install this package (or register it in your project)
-uv run eval {dash} -n 3    # evaluate a few tasks with the bash harness
+uv run validate {dash}     # model-free gold checks
+uv run eval {dash} -n 3   # evaluate a few tasks (prime-rl)
 ```
 
 ## Layout
@@ -228,7 +229,7 @@ def scaffold(config: InitConfig) -> Path:
         _write(pkg_dir / "servers" / "__init__.py", "")
         _write(pkg_dir / "servers" / "tool.py", _tool_py(stem, prefix))
 
-    print(f"\ndone. next:\n  uv pip install -e {env_dir}\n  uv run eval {dash} -n 3")
+    print(f"\ndone. next:\n  uv pip install -e {env_dir}\n  uv run validate {dash}")
     return env_dir
 
 

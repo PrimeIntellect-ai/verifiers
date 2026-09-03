@@ -52,12 +52,12 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     if run_dir is not None:
         save_config(
             config, run_dir, "gepa.json"
-        )  # resolved config + a fresh traces.jsonl (like run_eval)
+        )  # resolved config + a fresh traces.jsonl
         logger.info("results: %s", run_dir)
 
     # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
     # own one event loop: `env.serving()` (shared tool servers + interception pool, built once
-    # like run_eval) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
+    # once) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
     # (GEPAAdapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
     # main thread means a Ctrl-C raises straight through it into this teardown.
     loop = asyncio.new_event_loop()
@@ -65,7 +65,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     # Stream every rollout's episode to traces.jsonl as it finalizes — the same persist hook
-    # run_eval passes to `env.run_slot` (each trace records its candidate prompt).
+    # `env.run_slot` takes (each trace records its candidate prompt).
     write_lock = asyncio.Lock()
 
     async def on_complete(episode: Episode) -> None:

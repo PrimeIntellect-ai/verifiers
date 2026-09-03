@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.cli.eval import RunConfig
+from verifiers.v1.configs.cli.run import RunConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
