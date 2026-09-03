@@ -20,6 +20,7 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
+    ACP_TRAINING_EXCLUSIONS_METADATA_KEY,
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -432,6 +433,100 @@ def test_acp_semantic_edge_metadata_is_optional():
     )
 
     assert all(not node.semantic_parents for node in trace.nodes)
+
+
+def test_acp_excludes_rejected_compaction_attempt_but_trains_accepted_summary():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="work")),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="working"),
+                sampled=True,
+                token_ids=[1],
+                mask=[True],
+                logprobs=[-0.1],
+            ),
+            MessageNode(parent=1, message=UserMessage(content="summarize")),
+            MessageNode(
+                parent=2,
+                message=AssistantMessage(content="bad tool call"),
+                sampled=True,
+                token_ids=[2, 3],
+                mask=[True, True],
+                logprobs=[-0.2, -0.3],
+            ),
+            MessageNode(
+                parent=2,
+                message=AssistantMessage(content="accepted summary"),
+                sampled=True,
+                token_ids=[4, 5],
+                mask=[True, True],
+                logprobs=[-0.4, -0.5],
+            ),
+            MessageNode(parent=0, message=UserMessage(content="compacted context")),
+            MessageNode(
+                parent=5,
+                message=AssistantMessage(content="answer"),
+                sampled=True,
+                token_ids=[6],
+                mask=[True],
+                logprobs=[-0.6],
+            ),
+        ],
+        calls=[
+            vf.ModelCall(node=1, acp=vf.ACPInfo(request_id="work")),
+            vf.ModelCall(node=3, acp=vf.ACPInfo(request_id="rejected")),
+            vf.ModelCall(node=4, acp=vf.ACPInfo(request_id="accepted")),
+            vf.ModelCall(node=6, acp=vf.ACPInfo(request_id="resumed")),
+        ],
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness._consume_protocol_metadata(
+        trace,
+        {
+            ACP_SEMANTIC_EDGES_METADATA_KEY: {
+                "edges": [
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "rejected",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "accepted",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "accepted",
+                        "target_request_id": "resumed",
+                        "type": "compaction",
+                    },
+                ]
+            },
+            ACP_TRAINING_EXCLUSIONS_METADATA_KEY: {"request_ids": ["rejected"]},
+        },
+    )
+
+    assert trace.nodes[3].sampled is True
+    assert trace.nodes[3].mask == [False, False]
+    assert trace.nodes[4].mask == [True, True]
+    assert trace.nodes[6].mask == [True]
+    assert trace.nodes[3].semantic_parents == [
+        vf.ParentLink(node=1, type="compaction_attempt")
+    ]
+    assert trace.nodes[4].semantic_parents == [
+        vf.ParentLink(node=1, type="compaction_attempt")
+    ]
+    assert trace.nodes[6].semantic_parents == [vf.ParentLink(node=4, type="compaction")]
+    assert trace.num_branches == 3
+
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.nodes[3].sampled is True
+    assert restored.nodes[3].mask == [False, False]
+    assert restored.nodes[4].mask == [True, True]
 
 
 def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():

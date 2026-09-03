@@ -24,6 +24,7 @@ from verifiers.v1.semantic import (
     ACPInfo,
     ParentLink,
     SemanticEdgeSet,
+    TrainingExclusionSet,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -577,6 +578,32 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
         for target, link in additions:
             self.nodes[target].semantic_parents.append(link)
+
+    def apply_training_exclusions(self, exclusions: TrainingExclusionSet) -> None:
+        """Mask committed responses identified by a cumulative ACP exclusion set."""
+        requested = set(exclusions.request_ids)
+        nodes: set[int] = set()
+        resolved: set[str] = set()
+        for call in self.calls:
+            if call.acp is None or call.acp.request_id not in requested:
+                continue
+            if call.node is None:
+                continue
+            if not 0 <= call.node < len(self.nodes):
+                raise ValueError(f"model call has invalid message node {call.node}")
+            if not self.nodes[call.node].sampled:
+                raise ValueError(f"model call node {call.node} is not sampled")
+            nodes.add(call.node)
+            resolved.add(call.acp.request_id)
+
+        if missing := requested - resolved:
+            raise ValueError(
+                f"excluded model requests have no committed message nodes: {sorted(missing)!r}"
+            )
+        for node_id in nodes:
+            node = self.nodes[node_id]
+            node.mask = [False] * len(node.mask)
+            node.sampling_mask = None
 
     @property
     def messages(self) -> Messages:
