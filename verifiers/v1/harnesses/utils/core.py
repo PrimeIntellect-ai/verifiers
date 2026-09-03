@@ -345,7 +345,7 @@ async def main() -> None:
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
-        timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        timeout=httpx.Timeout(None, connect=5.0),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))

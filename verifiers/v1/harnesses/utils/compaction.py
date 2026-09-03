@@ -2,7 +2,13 @@
 
 from typing import TYPE_CHECKING
 
-from openai import APIError, APIStatusError, AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+)
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -10,6 +16,11 @@ if TYPE_CHECKING:
 
 RESERVE_TOKENS = 16_384
 """Compact when this many tokens remain below the model context window."""
+
+COMPACTION_TIMEOUT_SECONDS = 1800.0
+"""Read timeout for one checkpoint-summary request. Summarizing a near-window context is
+a single huge, uncached prefill that can wait behind thousands of other turns on a loaded
+fleet, so it gets its own budget instead of the client's per-turn default."""
 
 COMPACTION_ATTEMPTS = 3
 """Checkpoint attempts before compaction fails: a rejected request falls back to the
@@ -229,7 +240,7 @@ class Compactor:
             ]
             try:
                 completion = await chat(
-                    self.client,
+                    self.client.with_options(timeout=COMPACTION_TIMEOUT_SECONDS),
                     self.model,
                     checkpoint,
                     self.tools,
@@ -238,6 +249,12 @@ class Compactor:
             except APIStatusError as error:
                 if not is_context_overflow(error):
                     raise
+                base = messages[: self.last_good]
+                continue
+            except (APITimeoutError, APIConnectionError):
+                # A transport failure on the summary request is a retryable attempt,
+                # not a reason to kill an episode that has the most work invested:
+                # fall back to the last good snapshot like a rejected checkpoint.
                 base = messages[: self.last_good]
                 continue
             message = completion.choices[0].message
