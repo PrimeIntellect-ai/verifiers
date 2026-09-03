@@ -37,7 +37,7 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && exit 0
+[ -x "$prefix/bin/prime-agent" ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
@@ -84,6 +84,7 @@ repacked="$(npm pack "$download_dir/package-root/package" \
 PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
     --no-fund --no-audit --loglevel=error --progress=false \
     "$download_dir/repacked/$repacked"
+[ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
 """
 
 
