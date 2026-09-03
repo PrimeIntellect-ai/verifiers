@@ -4,12 +4,17 @@ rewards. Judge model calls are faked at `Judge.complete` — no network."""
 
 import json
 import re
+from typing import cast
 
 import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge import ScoreConfig
+from verifiers.v1.envs.agentic_judge import (
+    AgenticJudgeEnvConfig,
+    IsolatedAgenticJudgeEnv,
+    ScoreConfig,
+)
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -589,6 +594,34 @@ def test_judge_composition_weights_are_finite(weight):
     for field in ("task_weight", "judge_weight"):
         with pytest.raises(ValueError, match="finite number"):
             ScoreConfig.model_validate({field: weight})
+
+
+@pytest.mark.parametrize("task_weight", [0.0, 0.25, 1.0])
+async def test_failed_isolated_agentic_judge_scales_task_rewards(
+    task_weight: float,
+) -> None:
+    solution = make_trace()
+    solution.record_reward("partial", 0.5, weight=0.5)
+    solution.rewards["unscored"] = None
+
+    class FailedSolver:
+        async def run(self, task: vf.Task, *, collect_artifacts: bool) -> vf.Trace:
+            assert collect_artifacts
+            return solution
+
+    class FailedAgents:
+        solver = FailedSolver()
+
+    env = object.__new__(IsolatedAgenticJudgeEnv)
+    env.config = AgenticJudgeEnvConfig(score=ScoreConfig(task_weight=task_weight))
+
+    with pytest.raises(RuntimeError, match="the judge never ran"):
+        await env.run(vf.Task(solution.task.data), cast(vf.Agents, FailedAgents()))
+
+    assert solution.rewards["partial"] is not None
+    assert solution.rewards["partial"].weight == 0.5 * task_weight
+    assert solution.rewards["unscored"] is None
+    assert "judge" not in solution.rewards
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):

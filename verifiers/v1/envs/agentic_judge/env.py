@@ -307,6 +307,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
+    def _scale_task_rewards(self, solution: vf.Trace) -> None:
+        if self.config.score.task_weight == 1.0:
+            return
+        for reward in solution.rewards.values():
+            if reward is not None:
+                reward.weight *= self.config.score.task_weight
+
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
         solution, verdict = by_agent["solver"], by_agent["judge"]
@@ -315,10 +322,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         scores = score_verdicts(verdicts, criteria, "the rubric's")
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
-        if self.config.score.task_weight != 1.0:
-            for reward in solution.rewards.values():
-                if reward is not None:
-                    reward.weight *= self.config.score.task_weight
+        self._scale_task_rewards(solution)
         total = sum(criterion.weight for criterion in criteria)
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
@@ -344,6 +348,7 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task, collect_artifacts=True)
         if not solution.ok:
+            self._scale_task_rewards(solution)
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
