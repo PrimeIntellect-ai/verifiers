@@ -665,7 +665,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             off += len(node.token_ids)
             renderer_off += len(node_renderer_ids)
             keep += 1
-        if tokens.renderer_prompt_ids is not None and keep != len(prefix):
+        if tokens.bridged and keep != len(prefix):
             raise ValueError(
                 "vLLM prompt tokens do not exactly extend the stored rollout prefix"
             )

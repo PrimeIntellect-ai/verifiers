@@ -201,6 +201,8 @@ class TurnTokens(BaseModel):
 
     prompt_ids: list[int] = Field(default_factory=list)
     renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    bridged: bool = Field(default=False, exclude=True)
+    """Whether the renderer constructed this prompt by extending a stored prefix."""
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 

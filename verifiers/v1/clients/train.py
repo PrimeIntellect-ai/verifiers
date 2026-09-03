@@ -165,6 +165,7 @@ def response_from_generate(
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
             renderer_prompt_ids=result.get("renderer_prompt_ids"),
+            bridged=bridged_turn is not None,
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,

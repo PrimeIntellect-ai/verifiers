@@ -478,6 +478,7 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
                 tokens=TurnTokens(
                     prompt_ids=[1, 9, 8, 3, 4, 5],
                     renderer_prompt_ids=[1, 9, 3, 4, 5],
+                    bridged=True,
                     completion_ids=[6],
                     message_spans=[None, None, (4, 5)],
                 ),
@@ -495,6 +496,7 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
             tokens=TurnTokens(
                 prompt_ids=[1, 9, 9, 3, 4, 5, 6, 7],
                 renderer_prompt_ids=[1, 9, 3, 4, 5, 6, 7],
+                bridged=True,
                 completion_ids=[8],
                 message_spans=[None, None, (4, 6)],
                 is_content=[False, True, False, True, False, True, False],
