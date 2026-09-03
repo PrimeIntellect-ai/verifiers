@@ -474,6 +474,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
 async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
     """The shared agentic judge provisions one restricted solver-owned box and
     safely reuses it for the judge's empirical verification."""
@@ -517,6 +518,7 @@ async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
 async def test_env_id_agentic_judge(run_v1, tmp_path):
     """The isolated agentic judge destroys the restricted solver box, transfers
     its declared artifact, and restores it in a fresh box with the same policy."""
