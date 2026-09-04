@@ -43,9 +43,9 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
-# The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
-# hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
-# at the runtime's public URL.
+# The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
+# modal/prime, a host loopback port on the local container engines. A server placed in such
+# a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
 SERVICE_PORT = 8000
 
 
@@ -134,8 +134,8 @@ class Runtime(ABC):
 
     is_local: ClassVar[bool] = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
-    subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
-    override to False and use a host `Tunnel` inward plus `expose` outward."""
+    subprocess and the local container runtimes; remote runtimes override to False and
+    use a host `Tunnel` inward plus `expose` outward."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
@@ -383,13 +383,14 @@ class Runtime(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for local runtimes (subprocess/docker), which pick a free port."""
+        `None` for runtimes whose services already sit on host loopback (subprocess,
+        apptainer), which pick a free port."""
         return None
 
-    async def expose(self, port: int) -> str | None:
-        """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when local. A remote runtime overrides this with the provider's native port
-        exposure (modal `tunnels()`, prime `client.expose`), torn down with the sandbox in
-        `stop()`. The reverse of a host `Tunnel` (interception.tunnel, which reaches a host
-        port from inside a runtime)."""
-        return None
+    async def expose(self, port: int) -> str:
+        """Publish a port running *inside this runtime* to a URL reachable from the host/outside.
+        A runtime on the host network is reached at host loopback as is; a sandbox overrides
+        this with its port exposure (modal `tunnels()`, prime `client.expose`, a container
+        engine's published port), torn down with the sandbox in `stop()`. The reverse of a
+        host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
+        return f"http://127.0.0.1:{port}"
