@@ -7,7 +7,7 @@ import hmac
 import secrets
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -116,6 +116,7 @@ async def _read_client_hello(
 
 @dataclass(frozen=True)
 class _Callback:
+    scheme: str
     host: str
     port: int
     authority: str
@@ -131,7 +132,8 @@ class EgressProxy:
             f"verifiers:{self.token}".encode()
         )
         self._callbacks: dict[str, _Callback] = {}
-        self._callback_tokens: dict[tuple[str, int, str, str, bool], str] = {}
+        self._callback_tokens: dict[_Callback, str] = {}
+        self._handlers: set[asyncio.Task] = set()
         self.server: asyncio.Server | None = None
         self.port = 0
 
@@ -142,25 +144,21 @@ class EgressProxy:
         *,
         forward_authorization: bool = True,
     ) -> str:
-        """Route one framework-owned host-loopback HTTP origin through this proxy."""
+        """Route one framework-owned host-loopback HTTP(S) origin through this proxy."""
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
-        if parsed.scheme != "http" or not is_loopback_host(host):
+        if parsed.scheme not in ("http", "https") or not is_loopback_host(host):
             raise ValueError(f"unsupported Docker host callback URL: {url}")
-        port = parsed.port if parsed.port is not None else 80
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
-        key = (host, port, authority, host_alias, forward_authorization)
-        token = self._callback_tokens.get(key)
+        callback = _Callback(
+            parsed.scheme, host, port, authority, host_alias, forward_authorization
+        )
+        token = self._callback_tokens.get(callback)
         if token is None:
             token = secrets.token_urlsafe(32)
-            self._callback_tokens[key] = token
-            self._callbacks[token] = _Callback(
-                host=host,
-                port=port,
-                authority=authority,
-                host_alias=host_alias,
-                forward_authorization=forward_authorization,
-            )
+            self._callback_tokens[callback] = token
+            self._callbacks[token] = callback
         userinfo, separator, _ = parsed.netloc.rpartition("@")
         netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
         path = f"{_CALLBACK_PREFIX}{token}{parsed.path}"
@@ -178,13 +176,24 @@ class EgressProxy:
     async def stop(self) -> None:
         if self.server is None:
             return
-        self.server.close()
-        await self.server.wait_closed()
-        self.server = None
+        server, self.server = self.server, None
+        server.close()
+        # Accepted streams can outlive the listener, especially long-lived callbacks.
+        handlers = list(self._handlers)
+        for handler in handlers:
+            handler.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+        await server.wait_closed()
 
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if self.server is None:
+            writer.close()
+            return
+        handler = asyncio.current_task()
+        assert handler is not None
+        self._handlers.add(handler)
         upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
@@ -229,7 +238,7 @@ class EgressProxy:
                 return
             connect = method == "CONNECT"
             if callback is not None:
-                scheme, host, port = "http", callback.host, callback.port
+                scheme, host, port = callback.scheme, callback.host, callback.port
             elif connect:
                 parsed = urlsplit(f"//{target}")
                 host, port = parsed.hostname or "", parsed.port or 443
@@ -287,6 +296,7 @@ class EgressProxy:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await _drain(writer)
                 return
+            tls = callback is not None and scheme == "https"
             for family, _, _, _, address in addresses:
                 try:
                     upstream_reader, upstream_writer = await asyncio.wait_for(
@@ -295,6 +305,8 @@ class EgressProxy:
                             address[1],
                             family=family,
                             flags=socket.AI_NUMERICHOST,
+                            ssl=True if tls else None,
+                            server_hostname=host if tls else None,
                         ),
                         _HEADER_TIMEOUT,
                     )
@@ -352,7 +364,7 @@ class EgressProxy:
                     excluded.add(b"authorization")
                 origin_rewrites = (
                     {
-                        f"http://{callback.host_alias}:{self.port}".lower().encode(): f"http://{callback.authority}".encode()
+                        f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
                     }
                     if callback is not None
                     else {}
@@ -396,7 +408,7 @@ class EgressProxy:
                 while True:
                     event = client.next_event()
                     if event is h11.NEED_DATA:
-                        client.receive_data(await _read(reader, read_timeout))
+                        client.receive_data(await _read(reader, _IO_TIMEOUT))
                     elif isinstance(event, h11.Data):
                         upstream_writer.write(upstream.send(event))
                         await _drain(upstream_writer)
@@ -423,51 +435,41 @@ class EgressProxy:
                         for name, value in response.headers:
                             if name.lower() == b"location":
                                 destination = urljoin(
-                                    f"http://{callback.authority}{path}",
+                                    f"{scheme}://{callback.authority}{path}",
                                     value.decode("latin-1"),
                                 )
                                 redirected = urlsplit(destination)
                                 redirect_host = (
                                     (redirected.hostname or "").lower().rstrip(".")
                                 )
-                                if redirected.scheme == "http" and is_loopback_host(
-                                    redirect_host
-                                ):
-                                    redirect_port = (
-                                        redirected.port
-                                        if redirected.port is not None
-                                        else 80
+                                if redirected.scheme in (
+                                    "http",
+                                    "https",
+                                ) and is_loopback_host(redirect_host):
+                                    redirect_port = redirected.port or (
+                                        443 if redirected.scheme == "https" else 80
                                     )
                                     value = self.callback_url(
                                         destination,
                                         callback.host_alias,
                                         forward_authorization=(
                                             callback.forward_authorization
+                                            and redirected.scheme == scheme
                                             and redirect_host == callback.host
                                             and redirect_port == callback.port
                                         ),
                                     ).encode("latin-1")
                             headers.append((name, value))
-                        response = type(response)(
-                            status_code=response.status_code,
-                            headers=headers,
-                            http_version=response.http_version,
-                            reason=response.reason,
-                        )
+                        response = replace(response, headers=headers)
                         response_started = True
                         writer.write(client.send(response))
                         await _drain(writer)
                         if isinstance(response, h11.Response):
                             break
-                    while chunk := await _read(upstream_reader, read_timeout):
-                        response_started = True
-                        writer.write(chunk)
-                        await _drain(writer)
-                else:
-                    while chunk := await _read(upstream_reader):
-                        response_started = True
-                        writer.write(chunk)
-                        await _drain(writer)
+                while chunk := await _read(upstream_reader, read_timeout):
+                    response_started = True
+                    writer.write(chunk)
+                    await _drain(writer)
         except Exception:  # noqa: BLE001 - proxy failures become a generic 502
             if not response_started:
                 with contextlib.suppress(Exception):
@@ -479,6 +481,7 @@ class EgressProxy:
             if upstream_writer is not None:
                 upstream_writer.close()
             writer.close()
+            self._handlers.discard(handler)
 
 
 async def _relay(
@@ -499,7 +502,9 @@ async def _relay(
         asyncio.create_task(pipe(client_reader, upstream_writer)),
         asyncio.create_task(pipe(upstream_reader, client_writer)),
     }
-    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
