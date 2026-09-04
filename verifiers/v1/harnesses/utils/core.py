@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -361,35 +362,37 @@ async def main() -> None:
     if args.search:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
-    if config.get("mcpServers"):
-        mcp_tools, dispatch, servers = await asyncio.wait_for(
-            connect_mcp(config, reserved), timeout=None if args.bash else 60
+    async with AsyncExitStack() as mcp_stack:
+        if config.get("mcpServers"):
+            mcp_tools, dispatch, servers = await asyncio.wait_for(
+                connect_mcp(config, mcp_stack, reserved),
+                timeout=None if args.bash else 60,
+            )
+        else:
+            mcp_tools, dispatch, servers = [], {}, {}
+        tools += mcp_tools
+        messages = (
+            [{"role": "system", "content": args.system_prompt}]
+            if args.system_prompt
+            else []
         )
-    else:
-        mcp_tools, dispatch, servers = [], {}, {}
-    tools += mcp_tools
-    messages = (
-        [{"role": "system", "content": args.system_prompt}]
-        if args.system_prompt
-        else []
-    )
-    if initial:
-        messages.extend(initial)
-    elif args.prompt:
-        messages.append({"role": "user", "content": args.prompt})
-    compactor = Compactor(
-        client,
-        args.model,
-        tools,
-        args.compaction,
-        args.summarize_at_tokens,
-    )
-    if compactor.enabled and compactor.threshold is None:
-        compactor.threshold = await discover_threshold(client, args.model)
-    # The initial conversation is the floor for checkpoint fallbacks: a first-turn
-    # checkpoint must never retry from an empty base.
-    compactor.note_good(messages)
-    await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
+        if initial:
+            messages.extend(initial)
+        elif args.prompt:
+            messages.append({"role": "user", "content": args.prompt})
+        compactor = Compactor(
+            client,
+            args.model,
+            tools,
+            args.compaction,
+            args.summarize_at_tokens,
+        )
+        if compactor.enabled and compactor.threshold is None:
+            compactor.threshold = await discover_threshold(client, args.model)
+        # The initial conversation is the floor for checkpoint fallbacks: a first-turn
+        # checkpoint must never retry from an empty base.
+        compactor.note_good(messages)
+        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
     if tool_client is not None:
         await tool_client.aclose()
 
