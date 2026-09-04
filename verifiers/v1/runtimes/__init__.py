@@ -5,6 +5,11 @@ from typing import Annotated
 from pydantic import Field
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.runtimes.apptainer import (
+    ApptainerConfig,
+    ApptainerRuntime,
+    ApptainerRuntimeInfo,
+)
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -12,7 +17,14 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     register,
 )
-from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.docker import (
+    DockerConfig,
+    DockerRuntime,
+    DockerRuntimeInfo,
+    PodmanConfig,
+    PodmanRuntime,
+    PodmanRuntimeInfo,
+)
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -27,24 +39,35 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig
+    | DockerConfig
+    | PodmanConfig
+    | ApptainerConfig
+    | PrimeConfig
+    | ModalConfig,
     Field(discriminator="type"),
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    SubprocessRuntimeInfo
+    | DockerRuntimeInfo
+    | PodmanRuntimeInfo
+    | ApptainerRuntimeInfo
+    | PrimeRuntimeInfo
+    | ModalRuntimeInfo,
     Field(discriminator="type"),
 ]
 
 
 def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
-    if isinstance(config, PrimeConfig):
-        return PrimeRuntime
-    if isinstance(config, ModalConfig):
-        return ModalRuntime
-    if isinstance(config, DockerConfig):
-        return DockerRuntime
-    return SubprocessRuntime
+    return {
+        "subprocess": SubprocessRuntime,
+        "docker": DockerRuntime,
+        "podman": PodmanRuntime,
+        "apptainer": ApptainerRuntime,
+        "prime": PrimeRuntime,
+        "modal": ModalRuntime,
+    }[config.type]
 
 
 def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
@@ -79,6 +102,9 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 
 __all__ = [
+    "ApptainerConfig",
+    "ApptainerRuntime",
+    "ApptainerRuntimeInfo",
     "BaseRuntimeInfo",
     "DockerConfig",
     "DockerRuntime",
@@ -87,6 +113,9 @@ __all__ = [
     "ModalRuntime",
     "ModalRuntimeInfo",
     "NetworkPolicyConfig",
+    "PodmanConfig",
+    "PodmanRuntime",
+    "PodmanRuntimeInfo",
     "PrimeConfig",
     "PrimeRuntime",
     "PrimeRuntimeInfo",
