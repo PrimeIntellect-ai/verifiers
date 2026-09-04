@@ -295,9 +295,22 @@ def _push_footer(push: "PushState | None") -> Group | None:
     return Group(Rule(style="dim"), line)
 
 
+class TraceStats:
+    """Resource totals for a dashboard frame, retained once the episode is final."""
+
+    def __init__(self, trace: Trace) -> None:
+        self.num_input_tokens = trace.num_input_tokens
+        self.num_output_tokens = trace.num_output_tokens
+        self.num_turns = trace.num_turns
+        self.num_branches = trace.num_branches
+        self.usage = trace.usage
+        self.judge_usage = Usage.aggregate(trace.extra_usage)
+
+
 def Progress(
     slots: list[RunSlot],
     start: float,
+    completed: dict[str, TraceStats],
     page: tuple[int, int] | None = None,
 ) -> Group:
     # On resume, `slots` includes the previous session's kept rollouts (as finished slots), so
@@ -332,7 +345,7 @@ def Progress(
         ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
-    breakdown = _breakdown(scored, done_traces)
+    breakdown = _breakdown(scored, done_traces, completed)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
@@ -362,7 +375,9 @@ def _score(trace: Trace, source: str, name: str) -> float:
     return value if value is not None else 0.0
 
 
-def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
+def _breakdown(
+    scored: list[Trace], done: list[Trace], completed: dict[str, TraceStats]
+) -> Table | None:
     """Score rows read the policy view (`scored` — trainable traces); with several
     roles in play they split per role, each role averaging over its OWN traces (no
     dilution, so the split covers every role — an untrainable seat's received
@@ -401,9 +416,10 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     phase_count: dict[str, int] = {}
     model_secs = harness_secs = 0.0
     for trace in done:
-        total_in += trace.num_input_tokens
-        total_out += trace.num_output_tokens
-        usage = trace.usage
+        stats = completed[trace.id]
+        total_in += stats.num_input_tokens
+        total_out += stats.num_output_tokens
+        usage = stats.usage
         if usage is not None:
             if usage.cached_input_tokens is not None:
                 total_cached += usage.cached_input_tokens
@@ -415,7 +431,7 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
                 total_cost += usage.cost
                 have_cost = True
         # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
-        judge = Usage.aggregate(trace.extra_usage)
+        judge = stats.judge_usage
         if judge is not None:
             total_judge_in += judge.input_tokens
             total_judge_out += judge.completion_tokens
@@ -530,7 +546,12 @@ def _brace(i: int, size: int) -> str:
     return "╭" if i == 0 else "╰" if i == size - 1 else "│"
 
 
-def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
+def Rows(
+    groups: list[list[RunSlot]],
+    now: float,
+    runtime_type: str,
+    completed: dict[str, TraceStats],
+) -> Table:
     # (brace, state, left sections, result, time); a slot contributes one row per live
     # trace (a multi-agent episode shows each role's trace), braced per task.
     rows: list[tuple[str, str, list[str], str, str]] = []
@@ -596,7 +617,8 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     runtime = f"{rt.type}({rt.id})" if rt.id else rt.type
                 else:
                     runtime = runtime_type
-                turns = t.num_turns
+                stats = completed[t.id] if slot.done else TraceStats(t)
+                turns = stats.num_turns
                 start = t.timing.boot.start or t.timing.setup.start
                 end = (
                     t.timing.scoring.end
@@ -611,9 +633,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     )
                     or now
                 )
-                prompt, completion = t.num_input_tokens, t.num_output_tokens
-                nbranches = t.num_branches
-                usage = t.usage
+                prompt, completion = stats.num_input_tokens, stats.num_output_tokens
+                nbranches = stats.num_branches
+                usage = stats.usage
                 cached = usage.cached_input_tokens if usage else None
                 reasoning = usage.reasoning_tokens if usage else None
                 cost = usage.cost if usage else None
@@ -786,16 +808,24 @@ def _render(
     pager: Pager,
     header: Group | Table,
     runtime_type: str,
+    completed: dict[str, TraceStats],
     push: "PushState | None" = None,
     tail: LogTail | None = None,
 ) -> Group:
     now = time.time()
+    # A trace can finish before other agents and env scoring update the episode.
+    # Only done slots are final; resumed episodes enter the view already done.
+    for slot in slots:
+        if slot.done:
+            for trace in slot.traces:
+                if trace.id not in completed:
+                    completed[trace.id] = TraceStats(trace)
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
     footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
     footer = Group(*footers) if footers else None
-    progress = Progress(slots, start)
+    progress = Progress(slots, start, completed)
     top = Group(header, progress, Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
@@ -813,12 +843,12 @@ def _render(
         return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     if count > 1:
-        progress = Progress(slots, start, page=(index + 1, count))
+        progress = Progress(slots, start, completed, page=(index + 1, count))
     parts = [
         header,
         progress,
         Rule(style="dim"),
-        Rows(page_groups, now, runtime_type),
+        Rows(page_groups, now, runtime_type, completed),
     ]
     if footer is not None:
         parts.append(footer)
@@ -833,6 +863,7 @@ async def dashboard(
     push: "PushState | None" = None,
 ):
     pager = Pager()
+    completed: dict[str, TraceStats] = {}
     warning = _warning(config)
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     runtime_type = (
@@ -850,7 +881,9 @@ async def dashboard(
         else None
     )
     async with live_view(
-        lambda: _render(slots, start, pager, header, runtime_type, push, tail),
+        lambda: _render(
+            slots, start, pager, header, runtime_type, completed, push, tail
+        ),
         on_key=None if tail is not None else pager.on_key,
     ):
         yield
