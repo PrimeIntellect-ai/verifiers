@@ -31,6 +31,12 @@ _BACKGROUND_STOP_TIMEOUT = 5
 
 class SubprocessConfig(BaseConfig):
     type: Literal["subprocess"] = "subprocess"
+    ignore_task_network_policy: bool = False
+    """Run with inherited host networking when a task requests network restrictions.
+
+    Subprocesses cannot enforce framework-aware network policies. Keep this disabled
+    unless unrestricted host networking is an explicit, acceptable tradeoff.
+    """
 
 
 class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
