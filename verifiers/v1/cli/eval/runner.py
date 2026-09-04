@@ -30,6 +30,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.platform import (
     PushState,
     abort_run,
@@ -247,11 +248,6 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         else _server(config, config.serve, semaphore, on_complete)
     )
     # The run is closed out whatever breaks, backend setup and teardown included.
-    # Once `finish_run` has started, the outcome is its: a Ctrl-C then cancels only
-    # this task's await, not the worker, which completes the run regardless (the
-    # SDK serialises `finish()` calls and the first one reports the status). So an
-    # interrupt from that point on is not an abort.
-    closing = False
     try:
         async with backend as run_slot:
             # The display slots: in-process ones are the env's own (it fills their live
@@ -275,10 +271,14 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
                 results = await gather_rollouts(run_slot(slot) for slot in planned)
                 episodes = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
-                closing = True
-                await asyncio.to_thread(finish_run, run, episodes, push_state)
+                # Shielded: a Ctrl-C here must not cancel the close-out before the
+                # worker picks it up (a cancelled executor item never runs), so it
+                # runs to completion first and the interrupt is re-raised after —
+                # by which point the run is finished and `abort_run` has nothing to do.
+                await run_shielded(
+                    asyncio.to_thread(finish_run, run, episodes, push_state)
+                )
     except BaseException as e:
-        if not closing:
-            await asyncio.to_thread(abort_run, run, e, push_state)
+        await asyncio.to_thread(abort_run, run, e, push_state)
         raise
     return episodes

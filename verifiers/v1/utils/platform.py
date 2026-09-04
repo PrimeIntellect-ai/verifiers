@@ -115,8 +115,9 @@ def finish_run(run: pr.Run, episodes: list[Episode], state: PushState) -> None:
 def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
     """Close the run out after the eval broke, so it doesn't sit at running. Not
     for a break during `finish_run`: that close-out completes on its own thread
-    and the SDK lets the first `finish()` decide the status."""
-    if run.finished:
+    and the SDK lets the first `finish()` decide the status — it sets `run.status`
+    as it starts, so an in-flight one is visible here before it is `finished`."""
+    if run.finished or run.status is not pr.RunStatus.RUNNING:
         return
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
         status, message = pr.RunStatus.CANCELLED, "interrupted"
