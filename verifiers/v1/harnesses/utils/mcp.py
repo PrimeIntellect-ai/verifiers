@@ -65,7 +65,7 @@ class MCPConnection:
         self.ready: asyncio.Future[Client] | None = None
         self.lock = asyncio.Lock()
 
-    async def serve(self, ready: asyncio.Future[Client]) -> None:
+    async def serve(self, ready: asyncio.Future["Client"]) -> None:
         try:
             async with mcp_client(self.spec) as client:
                 ready.set_result(client)
@@ -80,7 +80,7 @@ class MCPConnection:
             if not ready.done():
                 ready.cancel()
 
-    async def run(self, operation: Callable[[Client], Awaitable[T]]) -> T:
+    async def run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
         async def attempt():
             async with self.lock:
                 if self.task is None or self.task.done():
