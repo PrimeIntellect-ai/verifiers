@@ -31,7 +31,14 @@ from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
-from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Request,
+    Response,
+    SystemMessage,
+    UserMessage,
+)
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -103,6 +110,11 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        request_interceptors = [
+            fn for boundary, fn in interceptors if boundary is Request
+        ]
+        request_stops = [fn for boundary, fn in stops if boundary is Request]
+        intercept_tools = bool(request_interceptors or request_stops)
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
@@ -118,14 +130,17 @@ class Rollout:
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,
-            request_interceptors=[
-                fn for boundary, fn in interceptors if boundary is Request
-            ],
+            request_interceptors=request_interceptors,
             response_interceptors=[
                 fn for boundary, fn in interceptors if boundary is Response
             ],
-            request_stops=[fn for boundary, fn in stops if boundary is Request],
+            request_stops=request_stops,
             response_stops=[fn for boundary, fn in stops if boundary is Response],
+            pre_tool_interception=harness.SUPPORTS_PRE_TOOL_INTERCEPTION
+            and intercept_tools,
+            post_tool_interception=harness.SUPPORTS_POST_TOOL_INTERCEPTION
+            and intercept_tools,
+            tool_interception_exemptions=harness.TOOL_INTERCEPTION_EXEMPTIONS,
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -247,6 +262,7 @@ class Rollout:
                 base_url,
                 model_secret,
                 state_secret,
+                tool_secret,
             ) = await self._stack.enter_async_context(
                 serve_interception(
                     self._interception,
@@ -271,7 +287,10 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-            async with boundary(HarnessError, "opening harness session"):
+            async with (
+                boundary(HarnessError, "opening harness session"),
+                asyncio.timeout_at(setup_deadline),
+            ):
                 harness_data = self.trace.task.data
                 if (
                     self._session.request_interceptors
@@ -283,7 +302,8 @@ class Rollout:
                         system_prompt, prompt = self.harness.resolve_prompt(
                             harness_data
                         )
-                    messages = (
+                    assert prompt is not None
+                    messages = self.harness.prepare_messages(
                         [UserMessage(content=prompt)]
                         if isinstance(prompt, str)
                         else list(prompt)
@@ -313,14 +333,9 @@ class Rollout:
                         }
                     )
                 if not self._session.stopped:
-                    session_kwargs = (
-                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
-                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                        and (
-                            self._session.request_interceptors
-                            or self._session.request_stops
-                        )
-                        else {}
+                    tool_interception = (
+                        f"{runtime.host_url(base_url)}/tool",
+                        tool_secret,
                     )
                     self._harness_session = await self.harness.session(
                         self.ctx,
@@ -330,7 +345,12 @@ class Rollout:
                         self._secret,
                         self._urls,
                         harness_data,
-                        **session_kwargs,
+                        tool_interception=(
+                            tool_interception
+                            if self._session.pre_tool_interception
+                            or self._session.post_tool_interception
+                            else None
+                        ),
                     )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
@@ -373,13 +393,49 @@ class Rollout:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
-                        Request(messages=messages)
+                        Request(messages=self.harness.prepare_messages(messages))
                     )
                     messages = prepared.messages
                     self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
                 await self._harness_session.turn(messages)
+                if (
+                    (
+                        self._session.pre_tool_interception
+                        or self._session.post_tool_interception
+                    )
+                    and not self._session.stopped
+                    and trace.nodes
+                ):
+                    if (
+                        self._session.post_tool_interception
+                        and self._session.detached_tools
+                    ):
+                        raise HarnessError(
+                            "native tool interception did not observe approved results "
+                            f"for nested calls {sorted(self._session.detached_tools)}"
+                        )
+                    leaf = len(trace.nodes) - 1
+                    assistant = trace.nodes[leaf].message
+                    if isinstance(assistant, AssistantMessage):
+                        missing = []
+                        for call in assistant.tool_calls or []:
+                            if call.name in self._session.tool_interception_exemptions:
+                                continue
+                            tool_key = (leaf, call.id)
+                            observed = (
+                                self._session.prepared_tools.get(tool_key) is not None
+                                if self._session.post_tool_interception
+                                else tool_key in self._session.prepared_tools
+                            )
+                            if not observed:
+                                missing.append(call.id)
+                        if missing:
+                            raise HarnessError(
+                                "native tool interception did not observe approved "
+                                f"results for terminal calls {missing}"
+                            )
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget —
             # an agent failure, never a clean stop. A TimeoutError from the
@@ -397,7 +453,7 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
                 return False
-            real = self._session.error
+            real = getattr(self._session, "fatal_error", None) or self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)
@@ -415,6 +471,9 @@ class Rollout:
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
+        if self._session.fatal_error is not None:
+            self.fail(self._session.fatal_error)
+            return False
         self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that

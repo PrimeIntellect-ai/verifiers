@@ -1,4 +1,4 @@
-"""Run Poolside's native ACP server against interception."""
+"""Run Poolside's native ACP server."""
 
 import json
 import shlex

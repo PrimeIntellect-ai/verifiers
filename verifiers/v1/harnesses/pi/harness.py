@@ -3,6 +3,7 @@
 import json
 import logging
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -10,6 +11,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE, TOOL_SOCKET_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -24,9 +26,18 @@ PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.25.0"
 ACP_VERSION = "0.0.33"
+PI_VERSION = "0.84.1"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+TOOL_HOOK_SOURCE = (
+    Path(__file__)
+    .with_name("tool_hook.mjs")
+    .read_text()
+    .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+    .replace("// {tool_socket}", TOOL_SOCKET_SOURCE)
+    .encode()
+)
 
 INSTALL = r"""
 set -e
@@ -45,7 +56,7 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.84.1"
+    version: PinnedVersion = PI_VERSION
     """Pi release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
@@ -59,6 +70,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = PI_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -190,3 +204,20 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+    ) -> None:
+        config.tool_interception_socket = True
+        agent_dir = config.env["PI_CODING_AGENT_DIR"]
+        hook_path = f"{agent_dir}/extensions/tool-hook.js"
+        await runtime.write(hook_path, TOOL_HOOK_SOURCE)
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        result = await runtime.run(["rm", "-rf", f".vf-pi-agent-{trace.id}"], {})
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"failed to clean up Pi agent directory: {result.stderr.strip()[-500:]}"
+            )

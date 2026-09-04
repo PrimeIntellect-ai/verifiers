@@ -144,8 +144,8 @@ class ElasticInterceptionPool(Interception):
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
             server = await self._server()
-            model_secret, state_secret = server.register(session)
+            model_secret, state_secret, tool_secret = server.register(session)
         try:
-            yield server.base_url, model_secret, state_secret
+            yield server.base_url, model_secret, state_secret, tool_secret
         finally:
-            server.unregister(model_secret, state_secret)
+            server.unregister(model_secret, state_secret, tool_secret)

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import shlex
 from collections import Counter
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -19,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "1.2.0"
+ACP_VERSION = "1.4.0"
+CODEX_VERSION = "0.149.1"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
@@ -36,7 +38,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.147.0"
+    version: PinnedVersion = CODEX_VERSION
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -46,6 +48,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec", "wait"})
+    TOOL_INTERCEPTION_VERSION = CODEX_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -98,7 +104,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
-            # Codex reads MCP servers from the config written by build_env().
+            # Codex reads MCP servers from CODEX_CONFIG.
             mcp_urls={},
             system_prompt=system_prompt,
         )
@@ -125,20 +131,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(
                 f"failed to create Codex home: {created.stderr.strip()[-500:]}"
             )
-
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
-                for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
 
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
@@ -175,6 +167,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         config = {
             "model": ctx.model,
             "features": features,
+            "mcp_servers": {
+                name: {
+                    "url": url,
+                    "required": True,
+                    "startup_timeout_sec": 60,
+                    "tool_timeout_sec": self.config.tool_timeout,
+                }
+                for name, url in mcp_urls.items()
+            },
         }
         return {
             **self.config.resolved_env,
@@ -195,3 +196,39 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+    ) -> None:
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        home = config.env["CODEX_HOME"]
+
+        codex_config = json.loads(config.env["CODEX_CONFIG"])
+        features = codex_config.setdefault("features", {})
+        features.setdefault("code_mode", True)
+        features["code_mode_only"] = True
+        codex_config.setdefault("tools", {})["experimental_request_user_input"] = {
+            "enabled": False
+        }
+        config.env["CODEX_CONFIG"] = json.dumps(codex_config)
+        real_codex = CODEX_BIN.format(**versions)
+        launcher = f"{home}/codex"
+        await runtime.write(
+            launcher,
+            (
+                "#!/bin/sh\n"
+                f"export PATH={shlex.quote(NODE_BIN_DIR)}:$PATH\n"
+                f"exec {shlex.quote(NODE_BIN_DIR + '/node')} "
+                f'{shlex.quote(real_codex)} "$@" '
+                '--code-mode-host "$VF_CODE_MODE_HOST_URL"\n'
+            ).encode(),
+        )
+        executable = await runtime.run(["chmod", "+x", launcher], {})
+        if executable.exit_code != 0:
+            raise RuntimeError(
+                f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
+            )
+        config.env["CODEX_PATH"] = launcher
+        config.code_mode_host = real_codex

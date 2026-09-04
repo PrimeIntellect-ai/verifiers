@@ -1,10 +1,13 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
+from pathlib import Path
+
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -12,10 +15,23 @@ from verifiers.v1.trace import Trace
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.67.0"
+CLAUDE_VERSION = "2.1.232"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
+ACP_LIB = (
+    f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/lib.js"
+)
+ACP_INDEX = (
+    f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+)
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
+WRAPPER_SOURCE = (
+    Path(__file__)
+    .with_name("wrapper.mjs")
+    .read_text()
+    .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+)
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -29,7 +45,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.1.232"
+    version: PinnedVersion = CLAUDE_VERSION
     """Claude Code release to install, pinned for reproducibility."""
 
 
@@ -37,6 +53,9 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = CLAUDE_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -101,6 +120,28 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             prompt=prompt or "",
             session_meta=session_meta,
         )
+
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+    ) -> None:
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        config.command = [
+            f"{NODE_BIN_DIR}/node",
+            "--input-type=module",
+            "--eval",
+            WRAPPER_SOURCE,
+            ACP_LIB.format(**versions),
+            ACP_INDEX.format(**versions),
+        ]
+        assert config.session_meta is not None
+        claude_code = config.session_meta["claudeCode"]
+        assert isinstance(claude_code, dict)
+        options = claude_code["options"]
+        assert isinstance(options, dict)
+        options["settingSources"] = ["user"]
+        await self.install_skills(runtime, f"{config.env['CLAUDE_CONFIG_DIR']}/skills")
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, self.config_dir(trace), "Claude config")

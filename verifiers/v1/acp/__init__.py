@@ -15,6 +15,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.interception import DIRECT_TOOL_SOURCE
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -22,10 +23,20 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import ContentPart, Messages, TextContentPart, UserMessage
 from verifiers.v1.utils.aio import run_shielded
 
-ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
+ACP_SOURCE = (
+    (Path(__file__).resolve().parent / "runner.py")
+    .read_text()
+    .replace("# {tool_interception}", DIRECT_TOOL_SOURCE)
+    .replace(
+        "# {codex_proxy}",
+        (
+            Path(__file__).resolve().parent.parent / "harnesses/codex/proxy.py"
+        ).read_text(),
+    )
+)
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 __all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
@@ -58,10 +69,41 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
+    tool_interception: tuple[str, str] | None = None
+    tool_interception_socket: bool = False
+    code_mode_host: str | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    TOOL_INTERCEPTION_VERSION: str | None = None
+
+    def prepare_messages(self, messages: Messages) -> Messages:
+        # ACP delivers one user message per prompt. Monitor that same message,
+        # so approvals still match when the agent sends it to the model.
+        if not messages or any(message.role != "user" for message in messages):
+            raise ValueError("an ACP turn must contain user messages only")
+        if len(messages) == 1:
+            return messages
+        parts: list[ContentPart] = []
+        for index, message in enumerate(cast(list[UserMessage], messages)):
+            if index:
+                parts.append(TextContentPart(text="\n\n"))
+            parts.extend(
+                [TextContentPart(text=message.content)]
+                if isinstance(message.content, str)
+                else message.content
+            )
+        return [
+            UserMessage(
+                content="".join(
+                    part.text for part in parts if isinstance(part, TextContentPart)
+                )
+                if all(isinstance(part, TextContentPart) for part in parts)
+                else parts
+            )
+        ]
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -97,6 +139,13 @@ class ACPHarness(Harness[ConfigT]):
     ) -> ACPConfig:
         pass
 
+    async def configure_tool_interception(
+        self,
+        config: ACPConfig,
+        runtime: Runtime,
+    ) -> None:
+        """Install an adapter bridge when the agent cannot use the ACP capability directly."""
+
     async def session(
         self,
         ctx: ModelContext,
@@ -106,7 +155,7 @@ class ACPHarness(Harness[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             raise HarnessError(
@@ -115,6 +164,18 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
+        if tool_interception is not None:
+            if (
+                self.TOOL_INTERCEPTION_VERSION is not None
+                and getattr(self.config, "version", None)
+                != self.TOOL_INTERCEPTION_VERSION
+            ):
+                raise HarnessError(
+                    f"{self.config.id} tool interception is verified only for version "
+                    f"{self.TOOL_INTERCEPTION_VERSION}"
+                )
+            config.tool_interception = tool_interception
+            await self.configure_tool_interception(config, runtime)
         return ACPHarnessSession(
             self,
             ctx,
@@ -125,7 +186,7 @@ class ACPHarness(Harness[ConfigT]):
             mcp_urls if config.mcp_urls is None else config.mcp_urls,
             data,
             config,
-            tool_interception_url,
+            tool_interception,
         )
 
     async def launch(
@@ -202,7 +263,7 @@ class ACPHarnessSession(HarnessSession):
         mcp_urls: dict[str, str],
         data: TaskData,
         config: ACPConfig,
-        tool_interception_url: str | None = None,
+        tool_interception: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(
             harness,
@@ -213,7 +274,7 @@ class ACPHarnessSession(HarnessSession):
             secret,
             mcp_urls,
             data,
-            tool_interception_url,
+            tool_interception,
         )
         self.config = config
         self._process: RuntimeProcess | None = None
@@ -247,24 +308,25 @@ class ACPHarnessSession(HarnessSession):
         prompt = self.config.prompt if messages is None else messages
         if prompt is None:
             raise ValueError("ACP requires a prompt")
-        if not isinstance(prompt, str) and (
-            not prompt or any(message.role != "user" for message in prompt)
-        ):
-            raise ValueError("an ACP turn must contain user messages only")
-        user_contents = (
-            [prompt]
-            if isinstance(prompt, str)
-            else [
-                message.model_dump(mode="json", include={"content"})["content"]
-                for message in prompt
-            ]
+        messages = self.harness.prepare_messages(
+            [UserMessage(content=prompt)] if isinstance(prompt, str) else prompt
         )
         config = {
             "command": self.config.command,
-            "user_contents": user_contents,
+            "user_content": messages[0].model_dump(mode="json")["content"],
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "toolInterception": (
+                {
+                    "url": self.config.tool_interception[0],
+                    "secret": self.config.tool_interception[1],
+                }
+                if self.config.tool_interception is not None
+                else None
+            ),
+            "toolInterceptionSocket": self.config.tool_interception_socket,
+            "codeModeHost": self.config.code_mode_host,
         }
         async with self._lock:
             if self._closed:

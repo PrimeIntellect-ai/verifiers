@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx", "websockets==15.0.1"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -10,8 +10,11 @@ import os
 import signal
 import sys
 import traceback
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
+from functools import partial
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from acp import (
@@ -31,9 +34,15 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCall,
+    ToolCallUpdate,
 )
 
+# {tool_interception}
+# {codex_proxy}
+
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+TOOL_INTERCEPTION_METHOD = "verifiers/tool_interception"
 
 
 @dataclass(frozen=True)
@@ -44,13 +53,18 @@ class ACPTurn:
     update_metadata: list[dict[str, Any]]
 
 
-class VerifiersACPClient(Client):
+class LiveACPClient(Client):
+    """ACP client with a private awaited extension for native tool policy."""
+
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.tool_calls: dict[str, str] = {}
+        self.tool_interceptor: ToolInterceptionClient | None = None  # noqa: F821
+        self.prompt_error: Exception | None = None
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -58,6 +72,8 @@ class VerifiersACPClient(Client):
         self.stop_reason = None
         self.response_metadata = {}
         self.update_metadata = []
+        self.tool_calls = {}
+        self.prompt_error = None
 
     def turn_result(self) -> ACPTurn:
         return ACPTurn(
@@ -73,7 +89,12 @@ class VerifiersACPClient(Client):
             metadata.update(field_meta)
         if metadata:
             self.update_metadata.append(metadata)
-        if isinstance(update, AgentMessageChunk) and isinstance(
+        if isinstance(update, ToolCall):
+            self.tool_calls[update.tool_call_id] = update.status or "pending"
+        elif isinstance(update, ToolCallUpdate):
+            if update.status:
+                self.tool_calls[update.tool_call_id] = update.status
+        elif isinstance(update, AgentMessageChunk) and isinstance(
             update.content, TextContentBlock
         ):
             message_id = getattr(update, "message_id", None)
@@ -100,33 +121,93 @@ class VerifiersACPClient(Client):
         )
         return RequestPermissionResponse(outcome=outcome)
 
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method != TOOL_INTERCEPTION_METHOD:
+            raise RequestError.method_not_found(method)
+        try:
+            if self.tool_interceptor is None:
+                raise RuntimeError("Tool interception is not configured")
+            # Bound the whole policy call, including connection and server queueing.
+            async with asyncio.timeout(35):
+                return await asyncio.to_thread(self.tool_interceptor.request, params)
+        except Exception as error:
+            self.prompt_error = RuntimeError(
+                f"Tool interception is unavailable: {error}"
+            )
+            raise RequestError.internal_error({"details": str(error)}) from error
 
-def user_content_blocks(contents: list, supports_images: bool) -> list:
+
+@asynccontextmanager
+async def tool_policy_socket(client: LiveACPClient):
+    # Claim the socket once, then unlink it before any tool can execute.
+    # Only the runner holds the remote policy credential.
+    connection: asyncio.Task | None = None
+    with TemporaryDirectory(prefix="vf-tool-", dir="/tmp") as directory:
+        path = Path(directory) / "policy.sock"
+
+        async def accept(reader, writer) -> None:
+            nonlocal connection
+            if connection is not None:
+                writer.close()
+                return
+            connection = asyncio.current_task()
+            path.unlink()
+            server.close()
+
+            async def respond(request: dict) -> None:
+                try:
+                    decision = await client.ext_method(
+                        TOOL_INTERCEPTION_METHOD, request["body"]
+                    )
+                    response = {"id": request["id"], "decision": decision}
+                except RequestError as error:
+                    response = {"id": request["id"], "error": str(error)}
+                writer.write((json.dumps(response) + "\n").encode())
+                await writer.drain()
+
+            try:
+                # Start each deadline on receipt; native hooks may run concurrently.
+                async with asyncio.TaskGroup() as requests:
+                    while line := await reader.readline():
+                        requests.create_task(respond(json.loads(line)))
+            except Exception as error:  # noqa: BLE001 - retain transport failures for prompt()
+                client.prompt_error = error
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_unix_server(
+            accept, path, limit=MAX_PACKET_BYTES
+        ) as server:
+            try:
+                yield str(path)
+            finally:
+                if connection is not None:
+                    connection.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await connection
+
+
+def user_content_blocks(content: str | list, supports_images: bool) -> list:
     """Render one user turn's ordered VF contents as ACP prompt blocks."""
     blocks = []
-    for index, content in enumerate(contents):
-        if index:
-            blocks.append(text_block("\n\n"))
-        content = content or ""
-        parts = (
-            [{"type": "text", "text": content}] if isinstance(content, str) else content
-        )
-        for part in parts:
-            if part["type"] == "text":
-                blocks.append(text_block(part["text"]))
-                continue
-            if not supports_images:
-                raise ValueError("ACP agent does not support image prompts")
-            url = part["image_url"]["url"]
-            metadata, separator, data = url.partition(",")
-            media_type, *parameters = metadata.removeprefix("data:").split(";")
-            if (
-                not separator
-                or not metadata.startswith("data:image/")
-                or not any(value.lower() == "base64" for value in parameters)
-            ):
-                raise ValueError("ACP image prompts require base64 data:image URLs")
-            blocks.append(image_block(data, media_type))
+    parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    for part in parts:
+        if part["type"] == "text":
+            blocks.append(text_block(part["text"]))
+            continue
+        if not supports_images:
+            raise ValueError("ACP agent does not support image prompts")
+        url = part["image_url"]["url"]
+        metadata, separator, data = url.partition(",")
+        media_type, *parameters = metadata.removeprefix("data:").split(";")
+        if (
+            not separator
+            or not metadata.startswith("data:image/")
+            or not any(value.lower() == "base64" for value in parameters)
+        ):
+            raise ValueError("ACP image prompts require base64 data:image URLs")
+        blocks.append(image_block(data, media_type))
     return blocks
 
 
@@ -138,7 +219,7 @@ def mcp_servers(config: dict) -> list[HttpMcpServer]:
 
 
 async def prompt(
-    client: VerifiersACPClient,
+    client: LiveACPClient,
     connection: Any,
     capabilities: Any,
     session_id: str,
@@ -152,7 +233,7 @@ async def prompt(
     blocks = []
     if is_new and config["system_prompt"]:
         blocks.append(text_block(f"(system)\n{config['system_prompt']}\n\n[user]\n"))
-    blocks.extend(user_content_blocks(config["user_contents"], supports_images))
+    blocks.extend(user_content_blocks(config["user_content"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
     try:
@@ -160,8 +241,23 @@ async def prompt(
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
     except RequestError as error:
+        if client.prompt_error is not None:
+            raise client.prompt_error from error
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+    if client.prompt_error is not None:
+        raise client.prompt_error
+
+    tool_statuses = list(client.tool_calls.values())
+    tools_finished = all(status in ("completed", "failed") for status in tool_statuses)
+    completed_tool_turn = (
+        response.stop_reason == "end_turn" and bool(tool_statuses) and tools_finished
+    )
+    if not client.visible_reply.strip() and not completed_tool_turn:
+        raise RuntimeError(
+            "ACP agent produced no visible reply "
+            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+        )
     return client.turn_result()
 
 
@@ -169,7 +265,7 @@ class ACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
     def __init__(self) -> None:
-        self.client = VerifiersACPClient()
+        self.client = LiveACPClient()
         self._reset()
 
     def _reset(self) -> None:
@@ -181,20 +277,45 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
+        interception = config.get("toolInterception")
+        self.client.tool_interceptor = None
         try:
+            agent_env = os.environ.copy()
+            if interception is not None:
+                self.client.tool_interceptor = ToolInterceptionClient(  # noqa: F821
+                    interception["url"], interception["secret"]
+                )
+            if config.get("toolInterceptionSocket"):
+                agent_env[
+                    "VF_TOOL_INTERCEPTION_SOCKET"
+                ] = await self.stack.enter_async_context(
+                    tool_policy_socket(self.client)
+                )
+            if codex_path := config.get("codeModeHost"):
+                if self.client.tool_interceptor is None:
+                    raise RuntimeError("Tool interception is not configured")
+                agent_env[
+                    "VF_CODE_MODE_HOST_URL"
+                ] = await self.stack.enter_async_context(
+                    running_codex_proxy(  # noqa: F821
+                        codex_path,
+                        partial(self.client.ext_method, TOOL_INTERCEPTION_METHOD),
+                    )
+                )
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=agent_env,
                     transport_kwargs={"stderr": None},
                 )
             )
             self.connection = agent_process[0]
+            client_capabilities = ClientCapabilities()
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
-                client_capabilities=ClientCapabilities(),
+                client_capabilities=client_capabilities,
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
@@ -205,6 +326,9 @@ class ACPSession:
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
+            if self.client.tool_interceptor is not None:
+                self.client.tool_interceptor.close()
+                self.client.tool_interceptor = None
             self._reset()
             raise
         self.session_id = session.session_id
@@ -242,6 +366,9 @@ class ACPSession:
             try:
                 await self.stack.aclose()
             finally:
+                if self.client.tool_interceptor is not None:
+                    self.client.tool_interceptor.close()
+                    self.client.tool_interceptor = None
                 self._reset()
         return response_metadata
 

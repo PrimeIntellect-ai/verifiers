@@ -217,13 +217,72 @@ class Runtime(ABC):
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run_program(
+        self, argv: list[str], env: dict[str, str], stdin: bytes | None = None
+    ) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
         provisioning) that go through `run`. No framework layer may replay this argv: doing so
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
+        if stdin is not None:
+            return await self.run_with_input(argv, env, stdin)
         return await self.run(argv, env)
+
+    async def run_with_input(
+        self, argv: list[str], env: dict[str, str], data: bytes
+    ) -> ProgramResult:
+        """Run a process once and deliver its bootstrap payload over stdin."""
+        if not self.supports_live_processes:
+            raise SandboxError(
+                f"runtime {self.type!r} cannot securely bootstrap a live program"
+            )
+        process = await self.open_process(
+            [
+                "sh",
+                "-c",
+                'size=$1; shift; head -c "$size" | "$@"',
+                "stdin-pipe",
+                str(len(data)),
+                *argv,
+            ],
+            env,
+        )
+
+        async def read(stream: AsyncIterator[bytes]) -> bytes:
+            chunks = bytearray()
+            async for chunk in stream:
+                chunks.extend(chunk)
+            return bytes(chunks)
+
+        async def write() -> None:
+            # A program may exit without consuming its bootstrap payload; its exit and
+            # captured output remain the authoritative result.
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await process.write(data)
+
+        try:
+            _, stdout, stderr, exit_code = await asyncio.gather(
+                write(),
+                read(process.stdout),
+                read(process.stderr),
+                process.wait(),
+            )
+        except BaseException:
+
+            async def abort() -> None:
+                with contextlib.suppress(BaseException):
+                    await process.kill()
+                with contextlib.suppress(BaseException):
+                    await process.wait()
+
+            await run_shielded(abort())
+            raise
+        return ProgramResult(
+            exit_code=exit_code,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
