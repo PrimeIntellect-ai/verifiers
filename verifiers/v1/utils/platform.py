@@ -78,6 +78,23 @@ def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.R
     return state.run
 
 
+def log_episodes(run: pr.Run, episodes: list[Episode]) -> None:
+    """Hand finished episodes to the run, best effort: the SDK already keeps upload
+    failures on its own thread, so this only guards the hand-off itself. A problem
+    here is the platform's, never the eval's."""
+    if not episodes:
+        return
+    try:
+        run.log_episodes(episodes)
+    except Exception as e:  # noqa: BLE001 - the rollouts are on disk; report, don't raise
+        logger.warning(
+            "--push: could not queue %d episode(s) (%s: %s)",
+            len(episodes),
+            type(e).__name__,
+            e,
+        )
+
+
 def finish_run(run: pr.Run, episodes: list[Episode], state: PushState) -> None:
     """Drain, write the run's aggregates, close it out. Blocking: call it off the loop."""
     try:
@@ -97,7 +114,7 @@ def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
     if run.finished:
         return
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
-        status, message = pr.RunStatus.CRASHED, "interrupted"
+        status, message = pr.RunStatus.CANCELLED, "interrupted"
     else:
         status, message = pr.RunStatus.FAILED, f"{type(error).__name__}: {error}"
     _close(run, state, status=status, error=message)

@@ -30,7 +30,13 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
-from verifiers.v1.utils.platform import PushState, abort_run, finish_run, open_run
+from verifiers.v1.utils.platform import (
+    PushState,
+    abort_run,
+    finish_run,
+    log_episodes,
+    open_run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,12 +234,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
     # Resumed rollouts are part of this run too.
-    run.log_episodes(finished)
+    log_episodes(run, finished)
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
-        await asyncio.to_thread(run.log_episodes, [episode])
+        await asyncio.to_thread(log_episodes, run, [episode])
 
     backend = (
         _in_process(env, config, semaphore, on_complete)
