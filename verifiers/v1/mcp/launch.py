@@ -32,6 +32,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
+from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
@@ -188,35 +189,36 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
-    vf, env = _verifiers_root(), Path(source_dir)
-    vf_name, vf_data = await _cached_sdist(vf)
-    if env == vf:
-        env_name, env_data = vf_name, vf_data
-    else:
-        env_name, env_data = await _cached_sdist(env)
-    vf_remote = f"{root}/{vf_name}"
-    env_remote = f"{root}/{env_name}"
-    await runtime.write(vf_remote, vf_data)
-    if env_remote != vf_remote:
-        await runtime.write(env_remote, env_data)
     venv = str(PurePosixPath(workdir) / ".vf-venv")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
-    vf_source = shlex.quote(vf_remote)
-    env_source = shlex.quote(env_remote)
-    setup = (
-        f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-        f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-        f"{_ENSURE_UV}; "
-        f"uv venv {venv_q} && "
-        f"uv pip install --python {venv_q} {vf_source} && "
-        f"uv pip install --python {venv_q} {env_source}"
-    )
-    result = await runtime.run(["sh", "-c", setup], {})
-    if result.exit_code != 0:
-        raise ToolsetError(
-            f"server {server.server_name!r} install failed in runtime: "
-            f"{(result.stderr or result.stdout).strip()[-2000:]}"
+    # Colocated servers and borrowed views install into one physical environment.
+    # Serialize its mutations and only remember sources after a successful install.
+    async with runtime._mcp_install_lock:
+        sources = dict.fromkeys((str(_verifiers_root()), source_dir))
+        pending = [source for source in sources if source not in runtime._mcp_sources]
+        if not pending:
+            return f"{venv}/bin/python"
+        setup = (
+            f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+            f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+            'export PATH="$HOME/.local/bin:$PATH"; '
         )
+        if not runtime._mcp_sources:
+            # Failed installs can leave the venv behind; retain it when retrying.
+            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+        for source in pending:
+            name, data = await _cached_sdist(Path(source))
+            remote = f"{root}/{name}"
+            await runtime.write(remote, data)
+            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+        # A cancelled caller must not let another installer overlap its remote command.
+        result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+        if result.exit_code != 0:
+            raise ToolsetError(
+                f"server {server.server_name!r} install failed in runtime: "
+                f"{(result.stderr or result.stdout).strip()[-2000:]}"
+            )
+        runtime._mcp_sources.update(pending)
     return f"{venv}/bin/python"
 
 
