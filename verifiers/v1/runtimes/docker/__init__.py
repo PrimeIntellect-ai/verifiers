@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
@@ -43,6 +44,7 @@ class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
 
 
 _PROXY_HOST = "host.docker.internal"
+_NETWORK_IMAGE = "localhost/verifiers-network:1"
 _PASS_LISTENER = r"""
 import array, socket
 control = socket.socket(socket.AF_UNIX)
@@ -95,7 +97,28 @@ class DockerRuntime(ContainerRuntime):
             raise RuntimeError(
                 f"{self.engine} runtime selected but the engine is not reachable: {detail}{hint}"
             )
-        self._container = self.name
+        restricted = self.network_restricted
+        if restricted:
+            # Cache the tools with the image, so execution never needs package mirrors.
+            cached = await cli(self.engine, "image", "inspect", _NETWORK_IMAGE)
+            if cached.exit_code != 0:
+                with tempfile.TemporaryDirectory(prefix="vf-network-") as directory:
+                    built = await cli(
+                        self.engine,
+                        "build",
+                        "--tag",
+                        _NETWORK_IMAGE,
+                        "--file",
+                        "-",
+                        directory,
+                        input=b"FROM docker.io/library/alpine:3.22\nRUN apk add --no-cache iptables\n",
+                    )
+                if built.exit_code != 0:
+                    raise SandboxError(
+                        f"{self.engine} network image build failed: {built.stderr.strip()}"
+                    )
+        # Engine names are global; cleanup must never target a caller's existing container.
+        self._container = f"vf-{uuid.uuid4().hex}"
         # Both engines manage the bridge; rootless Podman's default is otherwise pasta.
         options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
         if self.config.cpu is not None:
@@ -114,7 +137,6 @@ class DockerRuntime(ContainerRuntime):
                 ]
         if self.engine == "podman":
             options += ["--http-proxy=false"]
-        restricted = self.network_restricted
         if restricted:
             options += [
                 "--cap-drop",
@@ -295,18 +317,8 @@ class DockerRuntime(ContainerRuntime):
                 )
         script = (
             "set -eu; HOST=$1; PORT=$2; "
-            "apk add --no-cache iptables >/dev/null; "
-            "ROUTE=$(ip -4 route show default); "
-            "DEV=$(printf '%s\\n' \"$ROUTE\" | awk '{ for (i = 1; i <= NF; i++) "
-            'if ($i == "dev") { print $(i + 1); exit } }\'); '
-            "GW=$(printf '%s\\n' \"$ROUTE\" | awk '{ for (i = 1; i <= NF; i++) "
-            'if ($i == "via") { print $(i + 1); exit } }\'); '
-            "ip -4 route flush table main; ip -6 route flush table main || true; "
+            # Docker's embedded DNS otherwise forwards requests outside the namespace.
             "ip route add blackhole 127.0.0.11/32 table local; "
-            'if [ -n "$GW" ]; then '
-            'ip -4 route add "$GW/32" dev "$DEV"; '
-            'ip -4 route add default via "$GW" dev "$DEV"; '
-            'else ip -4 route add default dev "$DEV"; fi; '
             "iptables -F OUTPUT; iptables -A OUTPUT -o lo -j ACCEPT; "
             "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED "
             "--ctdir REPLY -j ACCEPT; "
@@ -324,7 +336,7 @@ class DockerRuntime(ContainerRuntime):
             "ALL",
             "--cap-add",
             "NET_ADMIN",
-            "docker.io/library/alpine:3.22",
+            _NETWORK_IMAGE,
             "sh",
             "-c",
             script,
@@ -361,9 +373,9 @@ class DockerRuntime(ContainerRuntime):
         if self.network_restricted and self._cut:
             env = {**env, **self._proxy_env()}
         else:
+            values = {**self._image_env, **env}
             exclusions = dict.fromkeys(
                 entry.strip()
-                for values in (self._image_env, env)
                 for key in ("NO_PROXY", "no_proxy")
                 for entry in values.get(key, "").split(",")
                 if entry.strip()
