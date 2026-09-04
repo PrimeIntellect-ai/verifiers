@@ -8,7 +8,6 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
-    MCP_CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -122,7 +121,6 @@ class BashHarness(Harness[BashHarnessConfig]):
             mcp_urls,
             system_prompt,
             prompt,
-            source_with_mcp=MCP_CHAT_PROGRAM_SOURCE,
             extra_args=args,
             env=env,
             activate=False,

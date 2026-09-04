@@ -1,11 +1,9 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-import httpx2
-from mcp import Client
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+if TYPE_CHECKING:
+    from mcp import Client
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
@@ -14,13 +12,21 @@ T = TypeVar("T")
 
 
 @asynccontextmanager
-async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
+async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
     """Open one fresh MCP client in the caller's task.
 
     The client negotiates the newest protocol and falls back for older servers.
     Teardown failures after the body completes are suppressed so closing noise cannot
     fail or replay a call whose result is already available.
     """
+    # Bundled chat programs also run without tools; load MCP only when it is used.
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
+
     stack = AsyncExitStack()
     try:
         http_client = await stack.enter_async_context(
@@ -41,6 +47,8 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
 
 async def with_retry(call: Callable[[], Awaitable[T]]) -> T:
     """Run one client operation with the existing at-least-once retries."""
+    from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
         wait=wait_exponential_jitter(initial=0.5, max=30),
