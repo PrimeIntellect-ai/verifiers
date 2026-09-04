@@ -57,7 +57,9 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = Field(default="e384006", min_length=1)
+    version: str = Field(
+        default="bc3ab4d033d1978ad942f032700577eda8950163", min_length=1
+    )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
@@ -83,6 +85,9 @@ class RLMHarnessConfig(HarnessConfig):
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
+    exec_timeout: PositiveInt | None = None
+    """Active execution budget for one IPython cell; `None` = nano-rlm's default.
+    Direct sub-agent waits and gathers made only of sub-agent calls do not consume it."""
     append_to_system_prompt: str | None = None
     """Appended to the root engine's system prompt, after the taskset's system prompt."""
     subagent_append_to_system_prompt: str | None = None
@@ -166,6 +171,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
+            "exec_timeout": self.config.exec_timeout,
         }
         if isinstance(compaction, bool):
             policy_knobs["compaction"] = compaction
