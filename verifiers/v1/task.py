@@ -173,15 +173,36 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        """Prepare trusted verifier-only inputs after artifacts are restored."""
+        return
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None
+
+    def defer_scoring(self) -> Self:
+        """An independent copy whose task signals are deferred.
+
+        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
+        state before declared artifacts are collected and the solver runtime is
+        destroyed. Only task metrics, rewards, and judges are skipped; harness
+        metrics remain attached to the solver trace.
+        """
+        clone = copy.deepcopy(self)
+        clone.scoring_deferred = True
+        return clone
+
+    scoring_deferred: bool = False
 
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        if self.scoring_deferred:
+            return
+
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
             # A defaulted runtime parameter can still be called offline with None.
