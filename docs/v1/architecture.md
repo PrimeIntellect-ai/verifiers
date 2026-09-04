@@ -14,6 +14,8 @@ The **rollout** is the executable combination of one loaded task, the harness, a
 - The `apptainer` runtime runs the rollouts in unprivileged Apptainer instances on the host network, as on HPC clusters. It has no egress policy.
 - Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
 
+For offline Docker/Podman use on Linux, cache the task image and, if it lacks Python 3, `docker.io/library/python:3.11-alpine` for host callbacks. Restricted execution also needs the cached `localhost/verifiers-network:1` image, built during the first online startup.
+
 The harness runs inside the rollout runtime to interact with the taskset. The harness does _not_ call the provider endpoint directly. Instead, model traffic goes through an **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
 
 The interception server receives all these requests and then sends them over to the actual API, e.g. the OpenAI responses endpoint. It uses the endpoint that the harness expects, so Codex will use OpenAI Responses, while Claude Code will use the Anthropic Messages API.
