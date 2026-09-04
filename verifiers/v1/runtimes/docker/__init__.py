@@ -243,6 +243,22 @@ class DockerRuntime(ContainerRuntime):
 
     async def _container_listener(self) -> socket.socket:
         """Create the proxy listener inside the container netns, serviced here."""
+        # Reuse the task image offline; only images without Python need the shared helper.
+        python = await cli(
+            self.engine,
+            "exec",
+            self._container,
+            "python3",
+            "-I",
+            "-S",
+            "-c",
+            "import array, socket",
+        )
+        image = (
+            self.config.image
+            if python.exit_code == 0
+            else "docker.io/library/python:3.11-alpine"
+        )
         with (
             tempfile.TemporaryDirectory(prefix="vf-proxy-") as directory,
             socket.socket(socket.AF_UNIX) as control,
@@ -253,6 +269,8 @@ class DockerRuntime(ContainerRuntime):
                 self.engine,
                 "run",
                 "--rm",
+                "--user",
+                "0",
                 "--network",
                 f"container:{self._container}",
                 "--cap-drop",
@@ -263,8 +281,11 @@ class DockerRuntime(ContainerRuntime):
                 "no-new-privileges",
                 "--volume",
                 f"{directory}:/run/vf:Z",
-                "docker.io/library/python:3.11-alpine",
+                "--entrypoint",
                 "python3",
+                image,
+                "-I",
+                "-S",
                 "-c",
                 _PASS_LISTENER,
             )
