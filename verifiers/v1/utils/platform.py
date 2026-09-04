@@ -113,7 +113,9 @@ def finish_run(run: pr.Run, episodes: list[Episode], state: PushState) -> None:
 
 
 def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
-    """Close the run out after the eval broke, so it doesn't sit at running."""
+    """Close the run out after the eval broke, so it doesn't sit at running. Not
+    for a break during `finish_run`: that close-out completes on its own thread
+    and the SDK lets the first `finish()` decide the status."""
     if run.finished:
         return
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
@@ -144,7 +146,8 @@ def _close(
         if state.incomplete:
             logger.warning("--push: %s, but %s", status.value, state.incomplete)
         if run.url:
-            logger.info("--push: %s -> %s", status.value, run.url)
+            # The run's own status: `finish()` is a no-op once another caller closed it.
+            logger.info("--push: %s -> %s", run.status.value, run.url)
 
 
 def _losses(run: pr.Run) -> str | None:

@@ -247,6 +247,11 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         else _server(config, config.serve, semaphore, on_complete)
     )
     # The run is closed out whatever breaks, backend setup and teardown included.
+    # Once `finish_run` has started, the outcome is its: a Ctrl-C then cancels only
+    # this task's await, not the worker, which completes the run regardless (the
+    # SDK serialises `finish()` calls and the first one reports the status). So an
+    # interrupt from that point on is not an abort.
+    closing = False
     try:
         async with backend as run_slot:
             # The display slots: in-process ones are the env's own (it fills their live
@@ -270,8 +275,10 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
                 results = await gather_rollouts(run_slot(slot) for slot in planned)
                 episodes = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
+                closing = True
                 await asyncio.to_thread(finish_run, run, episodes, push_state)
     except BaseException as e:
-        await asyncio.to_thread(abort_run, run, e, push_state)
+        if not closing:
+            await asyncio.to_thread(abort_run, run, e, push_state)
         raise
     return episodes
