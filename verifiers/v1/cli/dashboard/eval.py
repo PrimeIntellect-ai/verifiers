@@ -815,11 +815,13 @@ def _render(
     now = time.time()
     # A trace can finish before other agents and env scoring update the episode.
     # Only done slots are final; resumed episodes enter the view already done.
-    for slot in slots:
-        if slot.done:
-            for trace in slot.traces:
-                if trace.id not in completed:
-                    completed[trace.id] = TraceStats(trace)
+    completed.update(
+        (trace.id, TraceStats(trace))
+        for slot in slots
+        if slot.done
+        for trace in slot.traces
+        if trace.id not in completed
+    )
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
