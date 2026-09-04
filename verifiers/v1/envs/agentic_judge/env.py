@@ -5,7 +5,9 @@ a fresh box from the solver's runtime policy and restores only the task's collec
 artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
 solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
 criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
-full trace record uploaded at `/tmp/trace.json`. `finalize()` validates them
+observable trace record uploaded at `/tmp/trace.json`. Hidden reasoning and opaque
+provider state are omitted by default and may be explicitly included through the
+judge task config. `finalize()` validates the verdicts
 strictly onto the solver's trace — `judge/<name>` metrics plus a weighted-mean
 `judge` reward, composed with the taskset's own rewards via `[env.score]`
 (judge-only by default).
@@ -82,15 +84,16 @@ def _render(template: str, **fields: str) -> str:
 
 
 _RECORD_NOTE = f"""\
-The agent's raw trace record (JSON: messages, tool calls, and its `info`
+The agent's observable trace record (JSON: messages, tool calls, and its `info`
 artifacts) is written by the harness — not the agent — at `{TRACE_FILE}`. The
 record can be very large — never dump it whole; peek selectively (list its
 keys, then slice out specific fields with python or jq) and pull only what you
-need. It is complete — it may also carry the task's own scores/metrics and
-reference material (a gold answer, a reference solution, held-out tests). Those
-are context, not your standard: recorded scores can be wrong and references can
-be narrower than the task; do not over-index on how a reference solves it. Your
-verdict is what YOU verified by execution."""
+need. Hidden reasoning and opaque provider state are not included unless the run
+explicitly opts in. The record may also carry the task's own scores/metrics and
+reference material (a gold answer, a reference solution, held-out tests). Those are
+context, not your standard: recorded scores can be wrong and references can be
+narrower than the task; do not over-index on how a reference solves it. Your verdict
+is what YOU verified by execution."""
 
 SHARED_WORKSPACE_NOTE = f"""\
 ## Your workspace
@@ -146,7 +149,13 @@ class JudgeTask(vf.Task):
         paths they had.
         """
         solved = solution.task.data
-        files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
+        record = solution.to_record()
+        if not config.include_hidden_reasoning:
+            for node in record["nodes"]:
+                message = node["message"]
+                message.pop("reasoning_content", None)
+                message.pop("provider_state", None)
+        files = {TRACE_FILE: json.dumps(record).encode()}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
         if "{prompt}" not in template:
@@ -224,6 +233,9 @@ class JudgeTaskConfig(vf.BaseConfig):
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
+    include_hidden_reasoning: bool = False
+    """Include assistant reasoning and opaque provider state in `/tmp/trace.json`.
+    Disabled by default so the judge grades only observable agent behavior."""
 
     @staticmethod
     def _resolve(value: TextSource) -> str:
