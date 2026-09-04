@@ -97,6 +97,10 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return system, prompt
 
+    def prepare_messages(self, messages: Messages) -> Messages:
+        """Shape a caller's turn before interception and delivery to the harness."""
+        return messages
+
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 

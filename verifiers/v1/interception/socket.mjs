@@ -58,10 +58,11 @@ async function requestToolPolicy(body) {
   const response = new Promise((resolve, reject) => {
     state.pending.set(id, { resolve, reject });
   });
+  // The runner bounds policy calls at 35s; leave time to deliver its decision.
   const timeout = setTimeout(() => {
     failConnection(new Error("LiveACPClient timed out"));
     socket.destroy();
-  }, 30_000);
+  }, 40_000);
   socket.write(`${JSON.stringify({ id, body })}\n`);
   try {
     return await response;

@@ -70,7 +70,8 @@ export default definePluginEntry({
               : decision.reason || "Rollout terminated by interception.",
         };
       },
-      { timeoutMs: 35_000 },
+      // The socket fails closed at 40s, before the native hook times out.
+      { timeoutMs: 45_000 },
     );
 
     api.registerAgentToolResultMiddleware(

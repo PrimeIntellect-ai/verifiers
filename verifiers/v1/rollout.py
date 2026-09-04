@@ -302,7 +302,8 @@ class Rollout:
                         system_prompt, prompt = self.harness.resolve_prompt(
                             harness_data
                         )
-                    messages = (
+                    assert prompt is not None
+                    messages = self.harness.prepare_messages(
                         [UserMessage(content=prompt)]
                         if isinstance(prompt, str)
                         else list(prompt)
@@ -392,7 +393,7 @@ class Rollout:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
-                        Request(messages=messages)
+                        Request(messages=self.harness.prepare_messages(messages))
                     )
                     messages = prepared.messages
                     self.trace.request_rewrites.extend(rewrites)

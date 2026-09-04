@@ -23,7 +23,7 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import ContentPart, Messages, TextContentPart, UserMessage
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (
@@ -78,6 +78,32 @@ class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
     TOOL_INTERCEPTION_VERSION: str | None = None
+
+    def prepare_messages(self, messages: Messages) -> Messages:
+        # ACP delivers one user message per prompt. Monitor that same message,
+        # so approvals still match when the agent sends it to the model.
+        if not messages or any(message.role != "user" for message in messages):
+            raise ValueError("an ACP turn must contain user messages only")
+        if len(messages) == 1:
+            return messages
+        parts: list[ContentPart] = []
+        for index, message in enumerate(cast(list[UserMessage], messages)):
+            if index:
+                parts.append(TextContentPart(text="\n\n"))
+            parts.extend(
+                [TextContentPart(text=message.content)]
+                if isinstance(message.content, str)
+                else message.content
+            )
+        return [
+            UserMessage(
+                content="".join(
+                    part.text for part in parts if isinstance(part, TextContentPart)
+                )
+                if all(isinstance(part, TextContentPart) for part in parts)
+                else parts
+            )
+        ]
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -282,21 +308,12 @@ class ACPHarnessSession(HarnessSession):
         prompt = self.config.prompt if messages is None else messages
         if prompt is None:
             raise ValueError("ACP requires a prompt")
-        if not isinstance(prompt, str) and (
-            not prompt or any(message.role != "user" for message in prompt)
-        ):
-            raise ValueError("an ACP turn must contain user messages only")
-        user_contents = (
-            [prompt]
-            if isinstance(prompt, str)
-            else [
-                message.model_dump(mode="json", include={"content"})["content"]
-                for message in prompt
-            ]
+        messages = self.harness.prepare_messages(
+            [UserMessage(content=prompt)] if isinstance(prompt, str) else prompt
         )
         config = {
             "command": self.config.command,
-            "user_contents": user_contents,
+            "user_content": messages[0].model_dump(mode="json")["content"],
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},

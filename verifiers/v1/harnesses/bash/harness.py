@@ -128,6 +128,6 @@ class BashHarness(Harness[BashHarnessConfig]):
             source_with_mcp=MCP_CHAT_PROGRAM_SOURCE,
             extra_args=args,
             env=env,
-            activate=tool_interception_secret is None,
+            activate=False,
             stdin=tool_interception_secret,
         )

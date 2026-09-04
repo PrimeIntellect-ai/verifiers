@@ -127,7 +127,9 @@ class LiveACPClient(Client):
         try:
             if self.tool_interceptor is None:
                 raise RuntimeError("Tool interception is not configured")
-            return await asyncio.to_thread(self.tool_interceptor.request, params)
+            # Bound the whole policy call, including connection and server queueing.
+            async with asyncio.timeout(35):
+                return await asyncio.to_thread(self.tool_interceptor.request, params)
         except Exception as error:
             self.prompt_error = RuntimeError(
                 f"Tool interception is unavailable: {error}"
@@ -151,18 +153,23 @@ async def tool_policy_socket(client: LiveACPClient):
             connection = asyncio.current_task()
             path.unlink()
             server.close()
+
+            async def respond(request: dict) -> None:
+                try:
+                    decision = await client.ext_method(
+                        TOOL_INTERCEPTION_METHOD, request["body"]
+                    )
+                    response = {"id": request["id"], "decision": decision}
+                except RequestError as error:
+                    response = {"id": request["id"], "error": str(error)}
+                writer.write((json.dumps(response) + "\n").encode())
+                await writer.drain()
+
             try:
-                while line := await reader.readline():
-                    request = json.loads(line)
-                    try:
-                        decision = await client.ext_method(
-                            TOOL_INTERCEPTION_METHOD, request["body"]
-                        )
-                        response = {"id": request["id"], "decision": decision}
-                    except RequestError as error:
-                        response = {"id": request["id"], "error": str(error)}
-                    writer.write((json.dumps(response) + "\n").encode())
-                    await writer.drain()
+                # Start each deadline on receipt; native hooks may run concurrently.
+                async with asyncio.TaskGroup() as requests:
+                    while line := await reader.readline():
+                        requests.create_task(respond(json.loads(line)))
             except Exception as error:  # noqa: BLE001 - retain transport failures for prompt()
                 client.prompt_error = error
             finally:
@@ -181,32 +188,26 @@ async def tool_policy_socket(client: LiveACPClient):
                         await connection
 
 
-def user_content_blocks(contents: list, supports_images: bool) -> list:
+def user_content_blocks(content: str | list, supports_images: bool) -> list:
     """Render one user turn's ordered VF contents as ACP prompt blocks."""
     blocks = []
-    for index, content in enumerate(contents):
-        if index:
-            blocks.append(text_block("\n\n"))
-        content = content or ""
-        parts = (
-            [{"type": "text", "text": content}] if isinstance(content, str) else content
-        )
-        for part in parts:
-            if part["type"] == "text":
-                blocks.append(text_block(part["text"]))
-                continue
-            if not supports_images:
-                raise ValueError("ACP agent does not support image prompts")
-            url = part["image_url"]["url"]
-            metadata, separator, data = url.partition(",")
-            media_type, *parameters = metadata.removeprefix("data:").split(";")
-            if (
-                not separator
-                or not metadata.startswith("data:image/")
-                or not any(value.lower() == "base64" for value in parameters)
-            ):
-                raise ValueError("ACP image prompts require base64 data:image URLs")
-            blocks.append(image_block(data, media_type))
+    parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    for part in parts:
+        if part["type"] == "text":
+            blocks.append(text_block(part["text"]))
+            continue
+        if not supports_images:
+            raise ValueError("ACP agent does not support image prompts")
+        url = part["image_url"]["url"]
+        metadata, separator, data = url.partition(",")
+        media_type, *parameters = metadata.removeprefix("data:").split(";")
+        if (
+            not separator
+            or not metadata.startswith("data:image/")
+            or not any(value.lower() == "base64" for value in parameters)
+        ):
+            raise ValueError("ACP image prompts require base64 data:image URLs")
+        blocks.append(image_block(data, media_type))
     return blocks
 
 
@@ -232,7 +233,7 @@ async def prompt(
     blocks = []
     if is_new and config["system_prompt"]:
         blocks.append(text_block(f"(system)\n{config['system_prompt']}\n\n[user]\n"))
-    blocks.extend(user_content_blocks(config["user_contents"], supports_images))
+    blocks.extend(user_content_blocks(config["user_content"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
     try:

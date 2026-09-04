@@ -149,8 +149,7 @@ async def apply_result_policy(
 
 async def run_connection(client, host_url: str, policy) -> None:
     executions: dict[int, tuple[str, str, str]] = {}
-    cells: set[str] = set()
-    continuations: dict[int, tuple[str, tuple[str, str, str]]] = {}
+    continuations: dict[int, tuple[str, str, str]] = {}
     send_lock = asyncio.Lock()
     async with connect(
         host_url,
@@ -235,14 +234,10 @@ async def run_connection(client, host_url: str, policy) -> None:
                     "session/wait",
                     "session/terminate",
                 }:
-                    cell_id = (
-                        operation["request"]["cell_id"]
-                        if method == "session/wait"
-                        else operation["cellId"]
-                    )
                     continuations[message["id"]] = (
-                        cell_id,
-                        (f"vf-wait-{message['id']}", "wait", "wait"),
+                        f"vf-wait-{message['id']}",
+                        "wait",
+                        "wait",
                     )
                 await host.send(pack_frame(message))
 
@@ -268,27 +263,25 @@ async def run_connection(client, host_url: str, policy) -> None:
                 elif (
                     request_id in continuations
                     and message.get("type") == "operation/response"
-                    and result.get("status") == "ok"
                 ):
-                    cell_id, continuation = continuations.pop(request_id)
+                    call = continuations.pop(request_id)
+                    if result.get("status") != "ok":
+                        raise RuntimeError(
+                            "Code Mode continuation failed before returning a tool result"
+                        )
                     outcome = result.get("value", {}).get("outcome")
-                    if (
-                        cell_id in cells
-                        and isinstance(outcome, dict)
-                        and len(outcome) == 1
+                    if not isinstance(outcome, dict) or set(outcome) not in (
+                        {"LiveCell"},
+                        {"MissingCell"},
                     ):
-                        # Wait outcomes wrap the same runtime result as an initial reply.
-                        response = next(iter(outcome.values()))
-                        call = continuation
-                if response is not None and call is not None:
-                    variant, value = next(iter(response.items()))
-                    cell_id = value.get("cell_id")
-                    if variant == "Yielded":
-                        if cell_id:
-                            cells.add(cell_id)
-                    else:
-                        if cell_id:
-                            cells.discard(cell_id)
+                        raise RuntimeError(
+                            "Code Mode continuation omitted its tool result"
+                        )
+                    # Both live and missing cells wrap a runtime result.
+                    response = next(iter(outcome.values()))
+                if call is not None:
+                    if not isinstance(response, dict):
+                        raise RuntimeError("Code Mode omitted its runtime result")
                     await apply_result_policy(policy, response, *call)
                 await send_client(message)
 
