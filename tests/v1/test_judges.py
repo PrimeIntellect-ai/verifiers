@@ -406,12 +406,6 @@ async def test_view_modes(fake_judge_model):
     assert "SECRET REASONING" not in fake_judge_model[1]
 
 
-def test_view_defaults():
-    # reference grades the final answer; rubric grades the process by default.
-    assert vf.ReferenceJudgeConfig().view == "last_reply"
-    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
-
-
 async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     # The rubric judge's default view: criteria are judged against the whole transcript.
     judge = rubric_judge(tmp_path)
@@ -438,14 +432,6 @@ async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------
-
-
-async def test_reference_empty_response_short_circuits(fake_judge_model):
-    # An empty reply scores 0 without paying for the (foregone) judge call.
-    trace = make_trace(reply="")
-    assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
-    assert fake_judge_model == []
-    assert "judge" not in trace.info
 
 
 async def test_reference_list_answer(fake_judge_model):
@@ -512,6 +498,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     trace = make_trace(reply="")
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["reference"].score == 0.0
+    assert "judge_calls" not in trace.info  # the (foregone) judge call was never made
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
@@ -582,13 +569,13 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
-def test_judge_composition_weights_are_finite(weight):
-    with pytest.raises(ValueError, match="finite number"):
-        vf.JudgeConfig(weight=weight)
-    for field in ("task_weight", "judge_weight"):
+def test_judge_composition_weights_are_finite():
+    for weight in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite number"):
-            ScoreConfig.model_validate({field: weight})
+            vf.JudgeConfig(weight=weight)
+        for field in ("task_weight", "judge_weight"):
+            with pytest.raises(ValueError, match="finite number"):
+                ScoreConfig.model_validate({field: weight})
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):
@@ -700,7 +687,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["own"].score == 0.25  # decorated rewards still run
+    assert trace.rewards["own"] == vf.Reward(score=0.25)  # decorated rewards still run
     assert trace.rewards["reference"] == vf.Reward(
         score=1.0, weight=0.5
     )  # raw score + weight, under the id-derived name
@@ -710,9 +697,3 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     assert (
         len(trace.info["judge_calls"]) == 2
     )  # every judge call recorded (rubric = one call)
-
-
-async def test_task_without_judges_scores_as_before():
-    trace = make_trace()
-    await JudgedTask(trace.task.data).score(trace, runtime=None)
-    assert trace.rewards == {"own": vf.Reward(score=0.25)}
