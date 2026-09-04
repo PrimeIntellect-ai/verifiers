@@ -58,7 +58,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="082963af9c532caa0dc7afe44e7afe92959d4af9", min_length=1
+        default="b436832d5a1eafbcbcff8c96f0f248f9336ebec9", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -87,7 +87,7 @@ class RLMHarnessConfig(HarnessConfig):
     overrides rlm's built-in 20KB default in either direction."""
     exec_timeout: PositiveInt | None = None
     """Active execution budget for one IPython cell; `None` = nano-rlm's default.
-    Responsive waits on supervisor-owned sub-agents and skills do not consume it."""
+    Direct broker waits and gathers made only of broker calls do not consume it."""
     append_to_system_prompt: str | None = None
     """Appended to the root engine's system prompt, after the taskset's system prompt."""
     subagent_append_to_system_prompt: str | None = None
