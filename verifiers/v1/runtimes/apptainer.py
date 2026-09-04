@@ -88,10 +88,54 @@ class ApptainerRuntime(ContainerRuntime):
         self._dir = Path(tempfile.mkdtemp(prefix="vf-apptainer-"))
         (self._dir / "workspace").mkdir()
         (self._dir / "session").mkdir()
+        # Bind targets below a contained directory must also exist in its backing tree.
+        workdir = Path(self.config.workdir)
+        for parent, backing in (
+            (Path("/tmp"), "tmp"),
+            (Path("/var/tmp"), "var_tmp"),
+            (Path.home(), "home"),
+        ):
+            if workdir.is_relative_to(parent):
+                (self._dir / "session" / backing / workdir.relative_to(parent)).mkdir(
+                    parents=True, exist_ok=True
+                )
         image = await self._image()
         inspected = await cli("apptainer", "inspect", "--startscript", image)
-        if inspected.exit_code or inspected.stdout.strip():
+        # Apptainer's default startscript contains only a shebang and comments.
+        if inspected.exit_code or any(
+            line.strip() and not line.lstrip().startswith("#")
+            for line in inspected.stdout.splitlines()
+        ):
             raise SandboxError("Apptainer requires an image without a startscript")
+        containment = [
+            "--cleanenv",
+            "--containall",
+            "--no-mount",
+            "cwd,hostfs,bind-paths",
+            "--no-eval",
+        ]
+        # Seed the writable bind from the image before it hides the original workdir.
+        destination = f"/{self._instance}"
+        copied = await cli(
+            "apptainer",
+            "exec",
+            *containment,
+            "--no-mount",
+            "home,tmp",
+            "--bind",
+            f"{self._dir / 'workspace'}:{destination}",
+            image,
+            "sh",
+            "-c",
+            'if [ -d "$1" ]; then cp -R -P "$1"/. "$2"/; fi',
+            "vf-workspace",
+            self.config.workdir,
+            destination,
+        )
+        if copied.exit_code != 0:
+            raise SandboxError(
+                f"apptainer workdir copy failed: {copied.stderr.strip()}"
+            )
         limits: list[str] = []
         if self.config.cpu is not None:
             limits += ["--cpus", str(self.config.cpu)]
@@ -103,11 +147,7 @@ class ApptainerRuntime(ContainerRuntime):
             "apptainer",
             "instance",
             "start",
-            "--cleanenv",
-            "--containall",
-            "--no-mount",
-            "cwd,hostfs,bind-paths",
-            "--no-eval",
+            *containment,
             # A contained /tmp and $HOME live in tmpfs unless a workdir backs them.
             "--workdir",
             str(self._dir / "session"),
