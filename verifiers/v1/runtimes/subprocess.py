@@ -11,6 +11,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -161,8 +162,20 @@ class SubprocessRuntime(Runtime):
             proc
         )  # killed in stop() — a host process won't die on its own
 
-    async def _read(self, path: str) -> bytes:
-        return await asyncio.to_thread((self.workdir / path).read_bytes)
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is None:
+            return await asyncio.to_thread((self.workdir / path).read_bytes)
+
+        # Keep the handle in the worker: cancellation must not close a file on
+        # the event loop while that worker still holds its buffered-read lock.
+        def read() -> bytes:
+            with (self.workdir / path).open("rb") as file:
+                return file.read(max_bytes)
+
+        try:
+            return await asyncio.to_thread(read)
+        except OSError as exc:
+            raise SandboxError(f"read {path!r}: {exc}") from exc
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path

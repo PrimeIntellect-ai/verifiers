@@ -365,7 +365,9 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None:
+            return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (

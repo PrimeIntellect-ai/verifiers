@@ -316,13 +316,28 @@ class Runtime(ABC):
         """Read `path` into host memory. `max_bytes` caps the transfer, raising past
         the cap — for a file written by something we don't control, whose size we
         can't assume. The cap is enforced inside the box rather than after the
-        transfer, and base64 because `run` returns decoded text. Framework method —
-        override `_read`, not this."""
+        transfer. Framework method — override `_read`, not this."""
         if max_bytes is None:
             return await self._read(path)
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        # One extra byte distinguishes an exact fit from a truncated file.
+        data = await self._read(path, max_bytes=max_bytes + 1)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
+        return data
+
+    @abstractmethod
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read at most `max_bytes` bytes at the source, or the whole file if None.
+
+        Runtimes without bounded binary reads delegate capped reads here, using
+        base64 because `run` returns decoded text.
+        """
+        assert max_bytes is not None
         # Through a temp file, not a pipe: `head | base64` exits with base64's 0
         # even when the path is missing, and a missing file must raise here just
-        # as it does from `_read`.
+        # as it does from a native binary read.
         result = await self.run(
             [
                 "sh",
@@ -333,21 +348,14 @@ class Runtime(ABC):
                     'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
                 ),
                 "sh",
-                str(max_bytes + 1),
+                str(max_bytes),
                 path,
             ],
             {},
         )
         if result.exit_code:
             raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
-        data = base64.b64decode(result.stdout)
-        if len(data) > max_bytes:
-            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
-        return data
-
-    @abstractmethod
-    async def _read(self, path: str) -> bytes:
-        """Read the whole file at `path`; `read` adds the optional transfer cap."""
+        return base64.b64decode(result.stdout)
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
