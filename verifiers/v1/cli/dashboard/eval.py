@@ -16,7 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
-from verifiers.v1.cli.output import attempt_log_file, output_path
+from verifiers.v1.cli.output import attempt_log_file, output_path, summarize
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
@@ -304,21 +304,17 @@ def Progress(
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
     done = [s for s in slots if s.done]  # fully scored episodes
     done_traces = [t for s in done for t in s.traces]
-    # Score aggregates read the policy's traces: auxiliary roles (a judge's verdict
-    # run, a modeled user) are `trainable=False` and carry no rewards, so counting
+    # The breakdown's score rows read the policy's traces: auxiliary roles (a judge's
+    # verdict run, a modeled user) are `trainable=False` and carry no rewards, so counting
     # them dilutes every mean with structural zeros. An all-untrainable run (every
     # role frozen) falls back to all traces rather than showing nothing.
     scored = [t for t in done_traces if t.agent.trainable] or done_traces
     total = len(slots)
-    # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
-    # the global avg (errored count as 0) in parens. `err` is the share of episodes that
-    # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
-    reward = format_mean(scored, lambda t: t.reward)
-    err = (
-        f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
-        if done
-        else "—"
-    )
+    # The headline is the run summary's own reading (`summary.json`): mean reward over
+    # scored rollouts, and `err` the share of episodes that ended not-ok.
+    summary = summarize([s.episode for s in done if s.episode is not None])
+    reward = "—" if summary.reward is None else f"{summary.reward:.2f}"
+    err = f"{summary.failed / summary.episodes:.2f}" if summary.episodes else "—"
     stats = (
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"

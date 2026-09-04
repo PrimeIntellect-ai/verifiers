@@ -40,6 +40,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.loaders import harness_config_type
@@ -133,11 +134,12 @@ def _eval_config(
     pool: dict | None = None,
     reasoning_effort: str | None = None,
     server: bool = False,
+    client: EvalClientConfig | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
-    harness one).
+    harness one); `client` swaps the default endpoint (the local `stub_model`).
 
     `harness=None` leaves every seat on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
@@ -188,6 +190,7 @@ def _eval_config(
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
+        client=client or EvalClientConfig(),
     )
 
 
@@ -235,3 +238,67 @@ async def live_ctx():
         client=EvalClientConfig(),
         sampling=SamplingConfig(max_tokens=2048),
     )
+
+
+@pytest.fixture
+def stub_model():
+    """A local OpenAI-compatible endpoint standing in for the model, so an eval runs
+    with no key and no network — the model-free counterpart of `live_ctx`. Every chat
+    completion answers "hello world" (echo-v1 scores that 1.0 on the matching phrase,
+    0.0 on any other), and a request whose prompt mentions "fail" errors upstream (a
+    500), so one run lands scored, unscored and failed rollouts. Yields the endpoint's
+    client config."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args) -> None:
+            pass  # no access log in the test output
+
+        def do_POST(self) -> None:
+            request = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            prompt = " ".join(
+                str(m["content"]) for m in request["messages"] if m["role"] == "user"
+            )
+            if "fail" in prompt:
+                status = 500
+                reply = {"error": {"message": "stub failure", "type": "server_error"}}
+            else:
+                status = 200
+                reply = {
+                    "id": "chatcmpl-stub",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": request["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "hello world"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            body = json.dumps(reply).encode()
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield EvalClientConfig(
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key_var="VF_STUB_KEY",  # unset: the client sends "EMPTY", the stub ignores it
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
