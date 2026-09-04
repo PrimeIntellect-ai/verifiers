@@ -48,6 +48,11 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
+    block_git: bool = True
+    """Refuse `git` invocations in the `bash` tool (matching nano-rlm and mini_swe_agent_plus),
+    so e.g. SWE tasks can't recover fixes from repo history. Set
+    `--env.agent.harness.block-git false` to allow git."""
+
     compaction: CompactionConfig | None = None
     """Context compaction policy. Set an empty config to use automatic thresholds."""
 
@@ -84,6 +89,8 @@ class BashHarness(Harness[BashHarnessConfig]):
         )
         env = {**self.config.resolved_env}
         args = ["--bash"]
+        if self.config.block_git:
+            args.append("--block-git")
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction is not None:
