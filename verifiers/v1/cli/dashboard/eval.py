@@ -183,6 +183,15 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
+def _display_override(value: object) -> str:
+    """Bound overview values without changing the config or its serialized form."""
+    formatted = format_override(value)
+    compact = " ".join(formatted.split())
+    if len(compact) > 60:
+        return f"{compact[:40]}… ({len(formatted)} chars)"
+    return compact
+
+
 def overrides(
     config: BaseModel,
     default: BaseModel | None = None,
@@ -217,7 +226,7 @@ def overrides(
                 and "type" not in child_skip
                 and (discriminator := getattr(value, "type", None)) is not None
             ):
-                segments.append(f"{field}.type={format_override(discriminator)}")
+                segments.append(f"{field}.type={_display_override(discriminator)}")
             # A switched class is a new shape, so diff against its own defaults, not the instance.
             segments.extend(
                 f"{field}.{seg}"
@@ -226,7 +235,7 @@ def overrides(
                 )
             )
         elif value != field_def:
-            segments.append(f"{field}={format_override(value)}")
+            segments.append(f"{field}={_display_override(value)}")
     return segments
 
 
