@@ -117,8 +117,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-# TEMPORARY: prime-runs is not on PyPI yet
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", branch = "feature/prime-runs-sdk" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }

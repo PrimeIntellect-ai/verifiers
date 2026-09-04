@@ -2939,10 +2939,14 @@ toml = [
 [[package]]
 name = "prime-runs"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-sdk#34faa4aaf4e45ed4b0fe387089585ddb698423fd" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/fd/3634c5ae7175e921a9eb86c368c9e24ba975e3503dd51091e6541109e626/prime_runs-0.1.0.tar.gz", hash = "sha256:221074752f9a97dd70a6d12434757a522a175c246262f407d142c6522af131e5", size = 58934, upload-time = "2026-09-04T02:49:29.231Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/b8/0b449078add7256381fbb2c1a31a7e28f35734f7fff1f832f86246d69d92/prime_runs-0.1.0-py3-none-any.whl", hash = "sha256:676758fabeb63b45f9f6d61e62a96c024b7004596ecdf454e24353565ab40f09", size = 41680, upload-time = "2026-09-04T02:49:27.917Z" },
 ]
 
 [[package]]
@@ -2966,11 +2970,15 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.2"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-sdk#34faa4aaf4e45ed4b0fe387089585ddb698423fd" }
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/77/13fa99c0fb71909f2f35d048d9724efb9ae432484e47f12386b1542815e8/prime_traces-0.0.3.tar.gz", hash = "sha256:4071833db77a606ccbb718e5c73f2dfaf63982fe801aa096daed0bc605da554f", size = 50874, upload-time = "2026-08-27T19:46:44.672Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/9a/5a917de29a3a839c0ba36d445e3af562f744d9716b509571be643a01476c/prime_traces-0.0.3-py3-none-any.whl", hash = "sha256:0838f60651f1ed38371e383bd88b954e461d20ac424874e694bc83358934f5f3", size = 38345, upload-time = "2026-08-27T19:46:43.396Z" },
 ]
 
 [[package]]
