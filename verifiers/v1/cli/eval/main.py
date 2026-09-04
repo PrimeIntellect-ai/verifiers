@@ -134,10 +134,6 @@ def main(argv: list[str] | None = None) -> None:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if config.push and config.rich is None:
-        from verifiers.v1.utils.platform import push_traces
-
-        push_traces(episodes, config)
     if (
         config.rich is None
     ):  # --rich is the whole output; otherwise dump each trace as JSON

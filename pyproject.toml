@@ -34,6 +34,7 @@ dependencies = [
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
+    "prime-runs>=0.1.1",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -146,6 +147,7 @@ ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
+prime-runs = false
 prime-pydantic-config = false
 renderers = false
 
