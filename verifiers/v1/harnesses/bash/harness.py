@@ -28,6 +28,15 @@ SEARCH_PROMPT = (
     "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
+# nano-rlm's GIT_HISTORY_GUARD_PROMPT verbatim, appended when the git history guard is active.
+GIT_HISTORY_GUARD_PROMPT = (
+    "Do not cheat by using online solutions or hints specific to this task, or "
+    "by copying or inferring solutions from other branches, tags, remotes, "
+    "reflogs, or broad git history in the project. Broad-history `git log` "
+    "options such as `--all`, `-all`, `--branches`, `--remotes`, `--tags`, "
+    "`--glob`, `--alternate-refs`, `--reflog`, `--walk-reflogs`, or `-g` will "
+    "be refused."
+)
 
 
 class CompactionConfig(BaseConfig):
@@ -47,6 +56,11 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
+
+    allow_git: bool = False
+    """Allow unrestricted git history access in the `bash` tool. Off by default: broad-history
+    `git log` options (`--all`, `--branches`, ...) are refused and the system prompt warns the
+    model, matching nano-rlm's git history guard. Ordinary git commands are always allowed."""
 
     compaction: CompactionConfig | None = None
     """Context compaction policy. Set an empty config to use automatic thresholds."""
@@ -79,11 +93,15 @@ class BashHarness(Harness[BashHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
+        if not self.config.allow_git:
+            fragments.append(GIT_HISTORY_GUARD_PROMPT)
         system_prompt = "\n\n".join(
             p for p in (" ".join(fragments), system_prompt) if p
         )
         env = {**self.config.resolved_env}
         args = ["--bash"]
+        if self.config.allow_git:
+            args.append("--allow-git")
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction is not None:

@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import json
+import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -136,7 +138,96 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+# Ports nano-rlm's git history guard: ordinary git commands stay available, but `git log`
+# invocations that read beyond current-branch history (`--all`, `--branches`, ...) are
+# refused. The refusal string is reused verbatim so agent-visible logs stay consistent
+# across the harnesses.
+GIT_REFUSAL = (
+    "Git history option '{cmd}' is not allowed. Use current-branch history only."
+)
+_BASH_SEPARATORS = re.compile(r"&&|\|\||;|\|")
+_RESTRICTED_LOG_OPTIONS = {
+    "--all",
+    "-all",
+    "--alternate-refs",
+    "--reflog",
+    "--walk-reflogs",
+    "-g",
+}
+_RESTRICTED_LOG_OPTION_PREFIXES = ("--branches", "--glob", "--remotes", "--tags")
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+}
+
+
+def _split_segment(segment: str) -> list:
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.strip().split()
+
+
+def _is_git_binary(token: str) -> bool:
+    return token == "git" or token.rsplit("/", 1)[-1] == "git"
+
+
+def _skip_git_global_options(argv: list, index: int) -> int:
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return index + 1
+        if not token.startswith("-"):
+            return index
+        option = token.split("=", 1)[0]
+        if option in _GIT_GLOBAL_OPTIONS_WITH_VALUE and "=" not in token:
+            index += 2
+        else:
+            index += 1
+    return index
+
+
+def _is_restricted_log_option(token: str) -> bool:
+    if token in _RESTRICTED_LOG_OPTIONS:
+        return True
+    return any(
+        token == option or token.startswith(f"{option}=")
+        for option in _RESTRICTED_LOG_OPTION_PREFIXES
+    )
+
+
+def find_blocked_git_log_option(argv: list) -> "str | None":
+    if not argv or not _is_git_binary(argv[0]):
+        return None
+    subcommand_index = _skip_git_global_options(argv, 1)
+    if subcommand_index >= len(argv) or argv[subcommand_index] != "log":
+        return None
+    for token in argv[subcommand_index + 1 :]:
+        if token == "--":
+            return None
+        if _is_restricted_log_option(token):
+            return token
+    return None
+
+
+def find_blocked_command(command: str) -> "str | None":
+    for segment in _BASH_SEPARATORS.split(command):
+        blocked = find_blocked_git_log_option(_split_segment(segment))
+        if blocked is not None:
+            return blocked
+    return None
+
+
+def run_bash(command: str, allow_git: bool = True) -> str:
+    if not allow_git:
+        blocked = find_blocked_command(command)
+        if blocked is not None:
+            return GIT_REFUSAL.format(cmd=blocked)
     try:
         result = subprocess.run(
             ["bash", "-c", command],
@@ -275,7 +366,7 @@ async def run_chat_loop(
                     content = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
+                        run_bash, tool_args.get("command", ""), args.allow_git
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -326,6 +417,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
+    parser.add_argument("--allow-git", action="store_true")
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
