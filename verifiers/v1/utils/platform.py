@@ -24,6 +24,9 @@ class PushState:
 
     run: pr.Run | None = None
     error: str | None = None
+    incomplete: str | None = None
+    """Set when the run closed out but the uploader lost records on the way: the run
+    exists and holds what did land, so the footer says so rather than "failed"."""
 
     @property
     def url(self) -> str | None:
@@ -137,5 +140,21 @@ def _close(
         if state.error is None:
             state.error = f"{type(e).__name__}: {e}"
     else:
+        state.incomplete = _losses(run)
+        if state.incomplete:
+            logger.warning("--push: %s, but %s", status.value, state.incomplete)
         if run.url:
             logger.info("--push: %s -> %s", status.value, run.url)
+
+
+def _losses(run: pr.Run) -> str | None:
+    """What the uploader could not store, or `None`. A sink that switched itself off
+    quietly (Prime Traces outside the beta) is not a loss and is not counted here."""
+    parts = [
+        f"{count} record(s) not stored by the {sink} sink"
+        for sink, count in sorted(run.failed_records.items())
+        if count
+    ]
+    if run.dropped_records:
+        parts.append(f"{run.dropped_records} record(s) never queued (uploader overrun)")
+    return "; ".join(parts) or None
