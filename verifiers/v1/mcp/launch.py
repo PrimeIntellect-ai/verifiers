@@ -201,9 +201,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         await runtime.write(env_remote, env_data)
     venv = str(PurePosixPath(workdir) / ".vf-venv")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
-    extras = ",".join(type(server).EXTRAS)
     vf_source = shlex.quote(vf_remote)
-    env_source = shlex.quote(env_remote + (f"[{extras}]" if extras else ""))
+    env_source = shlex.quote(env_remote)
     setup = (
         f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
         f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
@@ -279,12 +278,7 @@ async def serve_in_runtime(
         env["MCP_PORT_FILE"] = port_file
     python = sys.executable
     if runtime.type != "subprocess":
-        # Prebuilt runtime images may already contain the server and its Python
-        # environment. Let those servers bypass redundant per-launch source
-        # uploads and installation while preserving the existing default.
-        python = getattr(type(server), "RUNTIME_PYTHON", None)
-        if python is None:
-            python = await _install_in_sandbox(server, runtime)
+        python = await _install_in_sandbox(server, runtime)
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.

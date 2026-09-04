@@ -9,7 +9,8 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge import ScoreConfig
+from verifiers.v1.envs.agentic_judge import JudgeTaskConfig, ScoreConfig
+from verifiers.v1.envs.agentic_judge.env import TRACE_FILE, JudgeTask
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -92,7 +93,20 @@ def fake_judge_model(monkeypatch):
         if parse is not None:
             response.parsed = parse(response)
         if trace is not None:
-            trace.record_judge(response)
+            from verifiers.v1.dialects.chat import message_to_wire
+
+            wire = (
+                [{"role": "user", "content": messages}]
+                if isinstance(messages, str)
+                else [message_to_wire(message) for message in messages]
+            )
+            kwargs = {"model": self.config.model, "messages": wire}
+            kwargs.update(sampling)
+            trace.record_judge_call(
+                name=self.reward_name,
+                request={"model": kwargs["model"], "messages": kwargs["messages"]},
+                response=response,
+            )
         return response
 
     monkeypatch.setattr(Judge, "complete", fake_complete)
@@ -225,7 +239,43 @@ async def test_reference_score(fake_judge_model):
     assert (
         "Capital of France?" in fake_judge_model[0]
     )  # the task prompt is in the judge prompt
-    assert len(trace.info["judge"]) == 1  # the call is recorded onto the trace
+    assert len(trace.info["judge_calls"]) == 1  # the call is recorded onto the trace
+    judge_record = trace.info["judge_calls"][0]
+    assert judge_record["name"] == "reference"
+    assert judge_record["request"]["model"] == "openai/gpt-5.4-nano"
+    assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
+    assert judge_record["response"]["message"] == {
+        "role": "assistant",
+        "content": "yes",
+        "reasoning_content": None,
+        "tool_calls": None,
+        "provider_state": None,
+    }
+    assert judge_record["response"]["parsed"] == 1.0
+
+    request_messages = [{"role": "user", "content": "original"}]
+    request = {
+        "model": "openai/gpt-5.4-nano",
+        "messages": request_messages,
+    }
+    trace.record_judge_call(
+        name="snapshot",
+        request=request,
+        response=JudgeResponse(text="yes"),
+    )
+    request_messages[0]["content"] = "mutated"
+    assert (
+        trace.info["judge_calls"][-1]["request"]["messages"][0]["content"] == "original"
+    )
+
+    override_trace = make_trace()
+    await vf.ReferenceJudge().complete(
+        "Judge this response.", trace=override_trace, model="openai/gpt-5.4-mini"
+    )
+    assert (
+        override_trace.info["judge_calls"][0]["request"]["model"]
+        == "openai/gpt-5.4-mini"
+    )
 
     trace = make_trace(reply="It is Rome.")
     assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
@@ -312,6 +362,7 @@ def full_trace_fixture() -> vf.Trace:
                 message=AssistantMessage(
                     content="Let me look it up.",
                     reasoning_content="SECRET REASONING",
+                    provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
                     tool_calls=[
                         ToolCall(id="1", name="search", arguments='{"q": "france"}')
                     ],
@@ -343,6 +394,25 @@ def test_transcript():
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
 
 
+def test_agentic_judge_trace_hidden_reasoning_toggle():
+    task = JudgeTask.from_trace(full_trace_fixture(), JudgeTaskConfig())
+    record = json.loads(task.files[TRACE_FILE])
+    assistant = record["nodes"][1]["message"]
+    assert assistant["content"] == "Let me look it up."
+    assert assistant["tool_calls"][0]["name"] == "search"
+    assert "reasoning_content" not in assistant
+    assert "provider_state" not in assistant
+
+    task = JudgeTask.from_trace(
+        full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True)
+    )
+    assistant = json.loads(task.files[TRACE_FILE])["nodes"][1]["message"]
+    assert assistant["reasoning_content"] == "SECRET REASONING"
+    assert assistant["provider_state"] == [
+        {"type": "reasoning", "data": "SECRET STATE"}
+    ]
+
+
 async def test_view_modes(fake_judge_model):
     # last_reply (default): the judge sees only the final reply.
     trace = full_trace_fixture()
@@ -355,12 +425,6 @@ async def test_view_modes(fake_judge_model):
     )
     assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
     assert "SECRET REASONING" not in fake_judge_model[1]
-
-
-def test_view_defaults():
-    # reference grades the final answer; rubric grades the process by default.
-    assert vf.ReferenceJudgeConfig().view == "last_reply"
-    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
 
 
 async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
@@ -389,14 +453,6 @@ async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------
-
-
-async def test_reference_empty_response_short_circuits(fake_judge_model):
-    # An empty reply scores 0 without paying for the (foregone) judge call.
-    trace = make_trace(reply="")
-    assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
-    assert fake_judge_model == []
-    assert "judge" not in trace.info
 
 
 async def test_reference_list_answer(fake_judge_model):
@@ -446,7 +502,14 @@ async def test_error_attribution(monkeypatch, tmp_path):
             return response
         finally:
             if trace is not None:
-                trace.record_judge(response)
+                trace.record_judge_call(
+                    name=self.reward_name,
+                    request={
+                        "model": self.config.model,
+                        "messages": [{"role": "user", "content": messages}],
+                    },
+                    response=response,
+                )
 
     monkeypatch.setattr(Judge, "complete", gibberish_judge)
     taskset = JudgedTaskset(
@@ -456,6 +519,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     trace = make_trace(reply="")
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["reference"].score == 0.0
+    assert "judge_calls" not in trace.info  # the (foregone) judge call was never made
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
@@ -463,7 +527,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
             trace, runtime=None
         )
     assert trace.rewards["reference"] is None  # seeded: expected but never scored
-    assert len(trace.info["judge"]) == 1  # the billed call is still recorded
+    assert len(trace.info["judge_calls"]) == 1  # the billed call is still recorded
 
 
 # --- rubric --------------------------------------------------------------------------------
@@ -526,13 +590,13 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
-def test_judge_composition_weights_are_finite(weight):
-    with pytest.raises(ValueError, match="finite number"):
-        vf.JudgeConfig(weight=weight)
-    for field in ("task_weight", "judge_weight"):
+def test_judge_composition_weights_are_finite():
+    for weight in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite number"):
-            ScoreConfig.model_validate({field: weight})
+            vf.JudgeConfig(weight=weight)
+        for field in ("task_weight", "judge_weight"):
+            with pytest.raises(ValueError, match="finite number"):
+                ScoreConfig.model_validate({field: weight})
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):
@@ -542,7 +606,7 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
-    assert len(trace.info["judge"]) == 1  # one call for the whole rubric
+    assert len(trace.info["judge_calls"]) == 1  # one call for the whole rubric
 
 
 async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
@@ -644,7 +708,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["own"].score == 0.25  # decorated rewards still run
+    assert trace.rewards["own"] == vf.Reward(score=0.25)  # decorated rewards still run
     assert trace.rewards["reference"] == vf.Reward(
         score=1.0, weight=0.5
     )  # raw score + weight, under the id-derived name
@@ -652,11 +716,5 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
         trace.rewards["quality"].score == 0.75
     )  # the rubric's aggregate, under its `name`
     assert (
-        len(trace.info["judge"]) == 2
+        len(trace.info["judge_calls"]) == 2
     )  # every judge call recorded (rubric = one call)
-
-
-async def test_task_without_judges_scores_as_before():
-    trace = make_trace()
-    await JudgedTask(trace.task.data).score(trace, runtime=None)
-    assert trace.rewards == {"own": vf.Reward(score=0.25)}

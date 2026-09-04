@@ -11,7 +11,7 @@ dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -22,16 +22,16 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 dependencies = [
-    "anthropic>=0.78.0",
-    "datasets>=3.3.0,<6.0.0",
+    "anthropic>=1.0.0",
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
-    "openai>=2.9.0",
+    "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
     "pydantic>=2.12.3",
@@ -41,12 +41,14 @@ dependencies = [
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
     "httpx>=0.27.0",
+    "httpx2>=2.12.0",
+    "h11>=0.16.0",
+    "uvicorn>=0.52.0",
     "aiohttp>=3.14.1",
     "prime-pydantic-config[toml]>=0.4.3",
-    "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.11",
+    "renderers[multimodal]>=0.1.12.dev2",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
 ]
@@ -86,6 +88,9 @@ examples = [
 ]
 
 [project.optional-dependencies]
+lean = [
+    "datasets>=3.3.0,<6.0.0",
+]
 ta = [
     "textarena==0.7.4",
     "nltk>=3.9.2",
@@ -105,33 +110,6 @@ preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
-
-# NeMo Gym declares its full platform stack; this integration only starts resource servers.
-[[tool.uv.dependency-metadata]]
-name = "nemo-gym"
-version = "0.4.0"
-requires-python = ">=3.12"
-requires-dist = [
-    "aiohttp>=3.14.1",
-    "fastapi",
-    "gprof2dot",
-    "hydra-core",
-    "itsdangerous",
-    "mcp>=1.27,<2",
-    "omegaconf",
-    "openai>=2.9",
-    "orjson",
-    "pandas",
-    "pydantic",
-    "pydot",
-    "ray>=2.55.1",
-    "requests",
-    "rich",
-    "typing-extensions",
-    "uvicorn",
-    "wandb",
-    "yappi",
-]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -243,8 +221,6 @@ addopts = [
 ]
 markers = [
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
-    "integration: marks tests as integration tests",
-    "slow: marks slow-running tests (deselect with -m 'not slow')",
     # v1 e2e matrix axes — select subsets with `-m` (see tests/v1/conftest.py). A mark is applied
     # per axis, so it matches every case touching that value on any axis.
     "subprocess: v1 e2e cases touching the subprocess (host) runtime",
@@ -263,11 +239,7 @@ markers = [
     "pi: v1 e2e cases on the pi harness",
     "pool: v1 e2e cases on the pool harness",
     "codex: v1 e2e cases on the codex harness",
-    "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
-    "parsers: marks tests for parser components",
-    "rubrics: marks tests for rubric components",
-    "environments: marks tests for environment components",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -275,7 +247,6 @@ filterwarnings = [
     "ignore::UserWarning:transformers.*",
     "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
     "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
-    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]

@@ -122,31 +122,6 @@ class Harness(ABC, Generic[ConfigT]):
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})
 
-    async def run(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages | None = None,
-    ) -> None:
-        """Run ONE segment of the exchange without retaining a process: the program
-        from launch (or, with `messages`, the user's next turn(s) via `resume`) until
-        it yields. The rollout loop owns the exchange across segments."""
-        async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            if messages is None:
-                result = await self.launch(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data
-                )
-            else:
-                result = await self.resume(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
-                )
-        await self._check_result(trace, runtime, result)
-
     async def _check_result(
         self, trace: Trace, runtime: Runtime, result: ProgramResult
     ) -> None:

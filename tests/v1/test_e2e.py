@@ -5,6 +5,9 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import subprocess
+import sys
+
 import pytest
 
 mark = pytest.mark
@@ -404,7 +407,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
-    assert trace.info["judge"]  # the call was recorded onto the trace
+    assert trace.info["judge_calls"]  # the call was recorded onto the trace
 
 
 @pytest.mark.e2e
@@ -675,6 +678,37 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         assert trace.metrics["duet"] == 1.0
 
 
+# `_request` parks a cancelled run's fire-and-forget cancel in `_cancel_tasks` with a
+# `discard` done-callback. One loop turn later the sends have finished but the callbacks
+# are still queued behind us, so `close()` meets a set of finished tasks.
+CLOSE_WITH_FINISHED_CANCELS = """
+import asyncio, uuid
+from verifiers.v1.serve.client import EnvClient
+
+async def main():
+    client = EnvClient("tcp://127.0.0.1:1")
+    for _ in range(3):
+        task = asyncio.get_running_loop().create_task(client._send_cancel(uuid.uuid4().hex))
+        client._cancel_tasks.add(task)
+        task.add_done_callback(client._cancel_tasks.discard)
+    await asyncio.sleep(0)
+    assert all(task.done() for task in client._cancel_tasks) and client._cancel_tasks
+    await client.close()
+
+asyncio.run(main())
+"""
+
+
+def test_env_client_close_drains_finished_cancels():
+    """`close()` returns once every fire-and-forget cancel has run, also when all of them
+    finished before it looked: the state Ctrl-C leaves behind in served mode. A child
+    process bounds the check, since a `close()` that never yields to the loop never lets
+    an in-loop timeout fire either."""
+    subprocess.run(
+        [sys.executable, "-c", CLOSE_WITH_FINISHED_CANCELS], check=True, timeout=30
+    )
+
+
 @pytest.mark.e2e
 async def test_replay_round_trip(run_v1, tmp_path):
     """eval -> replay -> replay-the-replay. Offline re-scoring must preserve the saved
@@ -701,11 +735,29 @@ async def test_replay_round_trip(run_v1, tmp_path):
     assert source.ok
     assert "lcs" in source.rewards
 
+    # Replay must not mix the source run's judge transcript into newly computed
+    # judge calls. Seed a saved call directly because this task scores without a
+    # judge; cleanup happens before task scoring and therefore does not inspect it.
+    import json
+
+    stream = run_dir / "traces.jsonl"
+    record = json.loads(stream.read_text())
+    record["traces"][0]["info"]["judge_calls"] = [
+        {
+            "name": "source-judge",
+            "request": {"model": "source-model", "messages": []},
+            "response": {
+                "message": {"role": "assistant", "content": "stale"},
+                "parsed": None,
+                "usage": None,
+            },
+        }
+    ]
+    stream.write_text(json.dumps(record) + "\n")
+
     async def replay(source_dir: Path, out: Path):
         # The CLI's layering, minus the argv plumbing: the saved run's config is the base
         # (`ReplayConfig` ignores its eval-only keys), the source's output_dir is dropped.
-        import json
-
         data = json.loads(saved_config_path(source_dir).read_text())
         data.pop("output_dir", None)
         config = ReplayConfig(**{**data, "rich": False})
@@ -720,6 +772,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
         # and recomputed the same value.
         assert replayed.rewards.keys() == source.rewards.keys()
         assert replayed.reward == pytest.approx(source.reward)
+        assert "judge_calls" not in replayed.info
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw

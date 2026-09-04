@@ -7,12 +7,11 @@ import re
 import shlex
 from collections import Counter
 
-from pydantic import Field
-
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -39,7 +38,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = Field(default=CODEX_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = CODEX_VERSION
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -69,24 +68,18 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         acp_bin = ACP_BIN.format(**versions)
         ready = f"{directory}/.ready"
         script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
-        ensure = shlex.quote(
-            f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})"
-        )
-        guarded = (
-            f"mkdir -p {directory} && "
-            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
-            f"sh -c {ensure}"
-        )
-        install = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ]",
+            install=script,
+            env={
                 **self.config.resolved_env,
                 "VF_CODEX_VERSION": self.config.version,
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
+            label="codex",
         )
-        if install.exit_code != 0:
-            raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -117,11 +110,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", self.trace_home(trace)], {})
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"failed to clean up Codex home: {result.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, self.trace_home(trace), "Codex home")
 
     @staticmethod
     def trace_home(trace: Trace) -> str:

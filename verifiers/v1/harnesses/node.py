@@ -1,5 +1,4 @@
-import shlex
-
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
@@ -40,16 +39,12 @@ node_ok || { echo "ACP adapters require Node.js 22.21 or newer" >&2; exit 1; }
 
 async def ensure_node(runtime: Runtime) -> None:
     """Install the shared Node runtime used by ACP adapter harnesses."""
-    lock = f"{NODE_DIR}.install.lock"
-    guarded = (
-        f'until ln -s "$$" {lock} 2>/dev/null; do '
-        f"owner=$(readlink {lock}); "
-        f'if ! kill -0 "$owner" 2>/dev/null; then '
-        f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
-        f"sleep 0.1; done; "
-        f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
-        f"sh -c {shlex.quote(INSTALL)}"
+    # The install replaces NODE_DIR wholesale, so the lock lives beside it.
+    await ensure_installed(
+        runtime,
+        directory=NODE_DIR,
+        lock=f"{NODE_DIR}.install.lock",
+        install=INSTALL,
+        env={"VF_NODE_VERSION": NODE_VERSION},
+        label="Node.js",
     )
-    result = await runtime.run(["sh", "-c", guarded], {"VF_NODE_VERSION": NODE_VERSION})
-    if result.exit_code != 0:
-        raise RuntimeError(f"Node.js install failed: {result.stderr.strip()[-500:]}")
