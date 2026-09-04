@@ -9,7 +9,8 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge import ScoreConfig
+from verifiers.v1.envs.agentic_judge import JudgeTaskConfig, ScoreConfig
+from verifiers.v1.envs.agentic_judge.env import TRACE_FILE, JudgeTask
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -361,6 +362,7 @@ def full_trace_fixture() -> vf.Trace:
                 message=AssistantMessage(
                     content="Let me look it up.",
                     reasoning_content="SECRET REASONING",
+                    provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
                     tool_calls=[
                         ToolCall(id="1", name="search", arguments='{"q": "france"}')
                     ],
@@ -390,6 +392,25 @@ def test_transcript():
     assert "[tool search]\nTOOL RESULT: Paris is the capital." in transcript
     assert "It is Paris." in transcript
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
+
+
+def test_agentic_judge_trace_hidden_reasoning_toggle():
+    task = JudgeTask.from_trace(full_trace_fixture(), JudgeTaskConfig())
+    record = json.loads(task.files[TRACE_FILE])
+    assistant = record["nodes"][1]["message"]
+    assert assistant["content"] == "Let me look it up."
+    assert assistant["tool_calls"][0]["name"] == "search"
+    assert "reasoning_content" not in assistant
+    assert "provider_state" not in assistant
+
+    task = JudgeTask.from_trace(
+        full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True)
+    )
+    assistant = json.loads(task.files[TRACE_FILE])["nodes"][1]["message"]
+    assert assistant["reasoning_content"] == "SECRET REASONING"
+    assert assistant["provider_state"] == [
+        {"type": "reasoning", "data": "SECRET STATE"}
+    ]
 
 
 async def test_view_modes(fake_judge_model):
