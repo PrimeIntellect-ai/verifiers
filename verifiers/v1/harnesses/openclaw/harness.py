@@ -9,10 +9,10 @@ from pathlib import Path
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACPConfig, ACPHarness, patch_acp_adapter
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.interception import TOOL_CONTENT_SOURCE
+from verifiers.v1.interception import TOOL_CONTENT_SOURCE, TOOL_SOCKET_SOURCE
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -25,6 +25,7 @@ TOOL_INTERCEPTION_PLUGIN_SOURCE = (
     .with_name("tool_interception.mjs")
     .read_text()
     .replace("// {tool_content}", TOOL_CONTENT_SOURCE)
+    .replace("// {tool_socket}", TOOL_SOCKET_SOURCE)
     .encode()
 )
 OPENCLAW_VERSION = "2026.7.1-2"
@@ -32,56 +33,6 @@ OPENCLAW_VERSION = "2026.7.1-2"
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
-ACP_LIB = (
-    f"{OPENCLAW_DIR}/tools/node/lib/node_modules/openclaw/dist/acp-cli-BXc5GttU.js"
-)
-ACP_PATCH_TARGET = """	start() {
-		this.log("ready");
-	}"""
-ACP_PATCH = """	start() {
-		this.log("ready");
-		void this.serveToolInterception().catch((error) => {
-			this.log(`tool interception socket stopped: ${error}`);
-		});
-	}
-	async serveToolInterception() {
-		const socketPath = process.env.VF_OPENCLAW_TOOL_SOCKET;
-		delete process.env.VF_OPENCLAW_TOOL_SOCKET;
-		if (!socketPath) return;
-		const { createServer } = await import("node:net");
-		const { rm } = await import("node:fs/promises");
-		await rm(socketPath, { force: true });
-		const server = createServer((socket) => {
-			server.close();
-			const hidden = rm(socketPath, { force: true });
-			let buffer = "";
-			let processing = Promise.resolve();
-			socket.setEncoding("utf8");
-			socket.on("data", (chunk) => {
-				buffer += chunk;
-				let newline;
-				while ((newline = buffer.indexOf("\\n")) >= 0) {
-					const line = buffer.slice(0, newline);
-					buffer = buffer.slice(newline + 1);
-					processing = processing.then(async () => {
-						await hidden;
-						const request = JSON.parse(line);
-						try {
-							const decision = await this.connection.extMethod("_verifiers/tool_interception", request.body);
-							socket.write(`${JSON.stringify({ id: request.id, decision })}\\n`);
-						} catch (error) {
-							socket.write(`${JSON.stringify({ id: request.id, error: String(error) })}\\n`);
-						}
-					});
-				}
-			});
-		});
-		this.toolInterceptionServer = server;
-		await new Promise((resolve, reject) => {
-			server.once("error", reject);
-			server.listen(socketPath, resolve);
-		});
-	}"""
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -301,15 +252,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         config: ACPConfig,
         runtime: Runtime,
     ) -> None:
-        await patch_acp_adapter(
-            runtime,
-            ACP_LIB.format(version=self.config.version),
-            ACP_PATCH_TARGET,
-            ACP_PATCH,
-            "OpenClaw",
-        )
+        config.tool_interception_socket = True
         state_dir = config.env["OPENCLAW_STATE_DIR"]
-        config.env["VF_OPENCLAW_TOOL_SOCKET"] = f"{state_dir}/tool-interception.sock"
         plugin_dir = f"{state_dir}/tool-interception"
         await runtime.write(f"{plugin_dir}/index.mjs", TOOL_INTERCEPTION_PLUGIN_SOURCE)
         await runtime.write(

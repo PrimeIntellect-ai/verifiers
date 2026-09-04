@@ -34,6 +34,7 @@ InterceptionConfig = Annotated[
 
 DIRECT_TOOL_SOURCE = (Path(__file__).resolve().parent / "direct.py").read_text()
 TOOL_CONTENT_SOURCE = (Path(__file__).resolve().parent / "content.mjs").read_text()
+TOOL_SOCKET_SOURCE = (Path(__file__).resolve().parent / "socket.mjs").read_text()
 
 
 def prepare_tool_interception(
@@ -131,6 +132,7 @@ async def serve_interception(
 __all__ = [
     "DIRECT_TOOL_SOURCE",
     "TOOL_CONTENT_SOURCE",
+    "TOOL_SOCKET_SOURCE",
     "BaseInterceptionConfig",
     "ElasticInterceptionPool",
     "ElasticInterceptionPoolConfig",

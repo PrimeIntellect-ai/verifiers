@@ -1,30 +1,19 @@
-/** Bridge Pi's native tool hooks through Verifiers' private ACP extension. */
+/** Route Pi's awaited native tool hooks to the rollout's ACP runner. */
 
 // {tool_content}
+// {tool_socket}
 
-async function intercept(
-  phase,
-  toolCallId,
-  name,
-  content,
-  ctx,
-) {
-  const response = await ctx.ui.input(
-    "vf_tool_interception",
-    JSON.stringify({
-      phase,
-      content: "nonempty_text",
-      message: {
-        role: "tool",
-        tool_call_id: toolCallId,
-        content,
-        name,
-      },
-    }),
-    { timeout: 30_000 },
-  );
-  if (!response) throw new Error("LiveACPClient cancelled tool interception");
-  return validateToolDecision(JSON.parse(response), "LiveACPClient");
+async function intercept(phase, toolCallId, name, content) {
+  return requestToolPolicy({
+    phase,
+    content: "nonempty_text",
+    message: {
+      role: "tool",
+      tool_call_id: toolCallId,
+      content,
+      name,
+    },
+  });
 }
 
 export default function toolInterceptionExtension(pi) {
@@ -52,13 +41,7 @@ export default function toolInterceptionExtension(pi) {
     const toolCallId = event.toolCallId.split("|", 1)[0];
     let decision;
     try {
-      decision = await intercept(
-        "before",
-        toolCallId,
-        event.toolName,
-        "",
-        ctx,
-      );
+      decision = await intercept("before", toolCallId, event.toolName, "");
     } catch (error) {
       console.error("Tool interception failed:", error);
       ctx.abort();
@@ -84,13 +67,7 @@ export default function toolInterceptionExtension(pi) {
     const content = vfToolContent(event.content, "Pi");
     let decision;
     try {
-      decision = await intercept(
-        "after",
-        toolCallId,
-        event.toolName,
-        content,
-        ctx,
-      );
+      decision = await intercept("after", toolCallId, event.toolName, content);
     } catch (error) {
       console.error("Tool interception failed:", error);
       ctx.abort();

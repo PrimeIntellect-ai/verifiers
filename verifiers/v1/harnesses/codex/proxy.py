@@ -1,14 +1,9 @@
-# /// script
-# requires-python = ">=3.11,<3.15"
-# dependencies = ["websockets==15.0.1"]
-# ///
-"""Mediate Codex's Code Mode host through LiveACPClient tool policy."""
+"""Code Mode mediation embedded in the ACP runner."""
 
 import asyncio
 import json
-import signal
-import sys
-from contextlib import suppress
+from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from websockets.asyncio.client import connect
@@ -35,8 +30,8 @@ def pack_frame(message: dict) -> bytes:
     return len(payload).to_bytes(4, "little") + payload
 
 
-def find_host() -> str:
-    launcher = Path(sys.argv[1]).resolve()
+def find_host(launcher: str) -> str:
+    launcher = Path(launcher).resolve()
     node_modules = next(
         (parent for parent in launcher.parents if parent.name == "node_modules"), None
     )
@@ -50,44 +45,15 @@ def find_host() -> str:
     return str(matches[0])
 
 
-class PolicyClient:
-    def __init__(self, reader: asyncio.StreamReader) -> None:
-        self.reader = reader
-        self.request_id = 0
-        self.lock = asyncio.Lock()
-
-    async def request(self, body: dict) -> dict:
-        async with self.lock:
-            self.request_id += 1
-            request_id = self.request_id
-            print(json.dumps({"id": request_id, "body": body}), flush=True)
-            line = await self.reader.readline()
-            if not line:
-                raise EOFError("LiveACPClient closed the interception channel")
-            response = json.loads(line)
-            if response.get("id") != request_id:
-                raise ValueError("LiveACPClient returned an invalid response ID")
-            if error := response.get("error"):
-                raise RuntimeError(error)
-            decision = response.get("decision")
-            if not isinstance(decision, dict) or decision.get("action") not in {
-                "allow",
-                "rewrite",
-                "stop",
-            }:
-                raise ValueError("LiveACPClient returned an invalid tool decision")
-            return decision
-
-
 async def intercept(
-    policy: PolicyClient,
+    policy: Callable[[dict], Awaitable[dict]],
     phase: str,
     call_id: str,
     name: str,
     content,
     detached_parent: str,
 ) -> dict:
-    decision = await policy.request(
+    decision = await policy(
         {
             "phase": phase,
             "content": "any",
@@ -163,7 +129,7 @@ def replacement(decision: dict):
 
 
 async def apply_result_policy(
-    policy: PolicyClient,
+    policy: Callable[[dict], Awaitable[dict]],
     response: dict,
     call_id: str,
     name: str,
@@ -181,7 +147,7 @@ async def apply_result_policy(
         value["error_text"] = None
 
 
-async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
+async def run_connection(client, host_url: str, policy) -> None:
     executions: dict[int, tuple[str, str, str]] = {}
     cells: set[str] = set()
     continuations: dict[int, tuple[str, tuple[str, str, str]]] = {}
@@ -311,7 +277,8 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
                         and isinstance(outcome, dict)
                         and len(outcome) == 1
                     ):
-                        response = outcome
+                        # Wait outcomes wrap the same runtime result as an initial reply.
+                        response = next(iter(outcome.values()))
                         call = continuation
                 if response is not None and call is not None:
                     variant, value = next(iter(response.items()))
@@ -329,22 +296,21 @@ async def run_connection(client, host_url: str, policy: PolicyClient) -> None:
             asyncio.create_task(forward_client()),
             asyncio.create_task(forward_host()),
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            with suppress(ConnectionClosed):
-                task.result()
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                with suppress(ConnectionClosed):
+                    task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run() -> None:
-    reader = asyncio.StreamReader()
-    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
-    )
+@asynccontextmanager
+async def running_codex_proxy(launcher: str, policy):
     host = await asyncio.create_subprocess_exec(
-        find_host(),
+        find_host(launcher),
         "--listen",
         "ws://127.0.0.1:0",
         stdout=asyncio.subprocess.PIPE,
@@ -362,7 +328,6 @@ async def run() -> None:
                 f"Codex Code Mode host returned an invalid endpoint: {host_url!r}"
             )
         claimed = False
-        policy = PolicyClient(reader)
 
         async def accept(client) -> None:
             nonlocal claimed
@@ -380,13 +345,8 @@ async def run() -> None:
             max_size=MAX_FRAME_BYTES + 4,
         ) as server:
             port = server.sockets[0].getsockname()[1]
-            print(f"ws://127.0.0.1:{port}", flush=True)
-            await host.wait()
-            raise RuntimeError(
-                f"Codex Code Mode host exited with status {host.returncode}"
-            )
+            yield f"ws://127.0.0.1:{port}"
     finally:
-        transport.close()
         if host.returncode is None:
             host.terminate()
             try:
@@ -394,18 +354,3 @@ async def run() -> None:
             except TimeoutError:
                 host.kill()
                 await host.wait()
-
-
-async def main() -> None:
-    task = asyncio.current_task()
-    loop = asyncio.get_running_loop()
-    if task is not None:
-        for event in (signal.SIGTERM, signal.SIGINT):
-            with suppress(NotImplementedError):
-                loop.add_signal_handler(event, task.cancel)
-    with suppress(asyncio.CancelledError):
-        await run()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

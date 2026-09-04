@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1", "httpx"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx", "websockets==15.0.1"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -12,6 +12,9 @@ import sys
 import traceback
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
+from functools import partial
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from acp import (
@@ -36,6 +39,7 @@ from acp.schema import (
 )
 
 # {tool_interception}
+# {codex_proxy}
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 TOOL_INTERCEPTION_METHOD = "verifiers/tool_interception"
@@ -132,53 +136,49 @@ class LiveACPClient(Client):
 
 
 @asynccontextmanager
-async def running_tool_proxy(command: list[str], client: LiveACPClient):
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=None,
-        env=os.environ.copy(),
-    )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    relay: asyncio.Task[None] | None = None
-    try:
-        line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
-        url = line.decode().strip()
-        if not url.startswith("ws://127.0.0.1:"):
-            raise RuntimeError(
-                f"Tool interception proxy returned an invalid endpoint: {url!r}"
-            )
+async def tool_policy_socket(client: LiveACPClient):
+    # Claim the socket once, then unlink it before any tool can execute.
+    # Only the runner holds the remote policy credential.
+    connection: asyncio.Task | None = None
+    with TemporaryDirectory(prefix="vf-tool-", dir="/tmp") as directory:
+        path = Path(directory) / "policy.sock"
 
-        async def relay_requests() -> None:
-            async for line in process.stdout:
-                request = json.loads(line)
-                request_id = request.get("id")
-                try:
-                    decision = await client.ext_method(
-                        TOOL_INTERCEPTION_METHOD, request["body"]
-                    )
-                    response = {"id": request_id, "decision": decision}
-                except Exception as error:  # noqa: BLE001 - proxy needs the failure text
-                    response = {"id": request_id, "error": str(error)}
-                process.stdin.write((json.dumps(response) + "\n").encode())
-                await process.stdin.drain()
-
-        relay = asyncio.create_task(relay_requests())
-        yield url
-    finally:
-        if relay is not None:
-            relay.cancel()
-            with suppress(asyncio.CancelledError):
-                await relay
-        if process.returncode is None:
-            process.terminate()
+        async def accept(reader, writer) -> None:
+            nonlocal connection
+            if connection is not None:
+                writer.close()
+                return
+            connection = asyncio.current_task()
+            path.unlink()
+            server.close()
             try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+                while line := await reader.readline():
+                    request = json.loads(line)
+                    try:
+                        decision = await client.ext_method(
+                            TOOL_INTERCEPTION_METHOD, request["body"]
+                        )
+                        response = {"id": request["id"], "decision": decision}
+                    except RequestError as error:
+                        response = {"id": request["id"], "error": str(error)}
+                    writer.write((json.dumps(response) + "\n").encode())
+                    await writer.drain()
+            except Exception as error:  # noqa: BLE001 - retain transport failures for prompt()
+                client.prompt_error = error
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_unix_server(
+            accept, path, limit=MAX_PACKET_BYTES
+        ) as server:
+            try:
+                yield str(path)
+            finally:
+                if connection is not None:
+                    connection.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await connection
 
 
 def user_content_blocks(contents: list, supports_images: bool) -> list:
@@ -249,10 +249,6 @@ async def prompt(
 
     tool_statuses = list(client.tool_calls.values())
     tools_finished = all(status in ("completed", "failed") for status in tool_statuses)
-    if config.get("require_terminal_tool_status", False) and not tools_finished:
-        raise RuntimeError(
-            f"ACP agent ended with unfinished tool calls: {tool_statuses}"
-        )
     completed_tool_turn = (
         response.stop_reason == "end_turn" and bool(tool_statuses) and tools_finished
     )
@@ -288,13 +284,22 @@ class ACPSession:
                 self.client.tool_interceptor = ToolInterceptionClient(  # noqa: F821
                     interception["url"], interception["secret"]
                 )
-            if proxy_command := config.get("toolInterceptionProxy"):
+            if config.get("toolInterceptionSocket"):
+                agent_env[
+                    "VF_TOOL_INTERCEPTION_SOCKET"
+                ] = await self.stack.enter_async_context(
+                    tool_policy_socket(self.client)
+                )
+            if codex_path := config.get("codeModeHost"):
                 if self.client.tool_interceptor is None:
                     raise RuntimeError("Tool interception is not configured")
                 agent_env[
                     "VF_CODE_MODE_HOST_URL"
                 ] = await self.stack.enter_async_context(
-                    running_tool_proxy(proxy_command, self.client)
+                    running_codex_proxy(  # noqa: F821
+                        codex_path,
+                        partial(self.client.ext_method, TOOL_INTERCEPTION_METHOD),
+                    )
                 )
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(

@@ -6,7 +6,6 @@ import logging
 import re
 import shlex
 from collections import Counter
-from pathlib import Path
 
 from pydantic import Field
 
@@ -27,7 +26,6 @@ CODEX_VERSION = "0.149.1"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
-PROXY_SOURCE = Path(__file__).with_name("proxy.py").read_text()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -244,11 +242,4 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"failed to prepare Codex launcher: {executable.stderr.strip()[-500:]}"
             )
         config.env["CODEX_PATH"] = launcher
-        config.tool_interception_proxy = [
-            *await runtime.prepare_uv_script(
-                PROXY_SOURCE,
-                {**config.env, "UV_FROZEN": "false"},
-                activate=False,
-            ),
-            real_codex,
-        ]
+        config.code_mode_host = real_codex
