@@ -51,6 +51,7 @@ dependencies = [
     "renderers[multimodal]>=0.1.12.dev2",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
+    "prime-evals>=0.2.4",
 ]
 
 [dependency-groups]
@@ -135,6 +136,7 @@ interception = { path = "environments/interception", editable = true }
 grayscale-interception = { path = "environments/grayscale_interception", editable = true }
 bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
+prime-evals = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-evals", rev = "59310b1c8ff7d79f2310d9347535854ac37a2c76" }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.

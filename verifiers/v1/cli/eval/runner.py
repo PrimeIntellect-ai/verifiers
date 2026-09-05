@@ -30,6 +30,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
-        await append_episode(out, episode, write_lock)
+        await run_shielded(append_episode(out, episode, write_lock))
 
     backend = (
         _in_process(env, config, semaphore, on_complete)
@@ -245,5 +246,5 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
                 from verifiers.v1.utils.platform import push_traces
 
                 push_state.started = True
-                await asyncio.to_thread(push_traces, episodes, config, push_state)
+                await asyncio.to_thread(push_traces, episodes, config, push_state, out)
     return episodes
