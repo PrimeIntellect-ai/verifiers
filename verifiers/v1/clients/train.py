@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 from openai import OpenAIError
+from openai.types import CompletionUsage
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
@@ -145,9 +146,11 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
-        # /inference/v1/generate returns exact token ids but no usage details, so the
-        # completion's reasoning-token subset is unknown.
-        usage=Usage(
+        # Preserve provider cache/reasoning details through the same accounting as chat.
+        # Older endpoints/renderers may omit usage; exact token lengths remain a fallback.
+        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"]))
+        if result.get("usage") is not None
+        else Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
         # generate() returns owned, typed lists. Skip revalidation here to avoid copying
