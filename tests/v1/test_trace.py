@@ -22,7 +22,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.types import AssistantMessage, CompletionStatus, UserMessage
 
 
 class MyTask(vf.TaskData):
@@ -122,6 +122,15 @@ def test_custom_task_state_round_trip():
         ],
     )
     tr.record_reward("r", 0.5)
+    tr.calls.append(
+        vf.ModelCall(
+            node=1,
+            finish_reason="stop",
+            completion_status=CompletionStatus(
+                status="incomplete", reason="unfinished_reasoning"
+            ),
+        )
+    )
     wire = tr.model_dump()
     assert "state" not in wire  # transient state is excluded from the dump
 
@@ -132,6 +141,8 @@ def test_custom_task_state_round_trip():
     assert rt.task.type == "MyTask"  # the producing class's name survives the wire
     assert rt.num_turns == 1 and rt.num_branches == 1
     assert rt.reward == 0.5  # property recomputed from `rewards`
+    assert rt.calls[0].completion_status == tr.calls[0].completion_status
+    assert rt.calls[0].finish_reason == "stop"
 
 
 def test_wire_trace_round_trip():

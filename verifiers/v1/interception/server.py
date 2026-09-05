@@ -63,7 +63,7 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Request, Response, Usage
+from verifiers.v1.types import CompletionStatus, FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +422,7 @@ class InterceptionServer(Interception):
         *,
         node: int | None = None,
         finish_reason: "FinishReason" = None,
+        completion_status: CompletionStatus | None = None,
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
@@ -452,6 +453,7 @@ class InterceptionServer(Interception):
                 sampling=sampling,
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,
+                completion_status=completion_status,
                 usage=usage,
                 time=TimeSpan(start=started, end=time.time()),
                 error=None
@@ -770,6 +772,9 @@ class InterceptionServer(Interception):
                     if call_response
                     else None,
                     usage=call_response.usage if call_response else None,
+                    completion_status=call_response.completion_status
+                    if call_response
+                    else None,
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
@@ -1033,6 +1038,9 @@ class InterceptionServer(Interception):
                 node=node,
                 finish_reason=response.finish_reason if response is not None else None,
                 usage=response.usage if response is not None else None,
+                completion_status=response.completion_status
+                if response is not None
+                else None,
                 error=error,
                 policy_paths=policy_paths,
                 acp=acp,
