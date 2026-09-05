@@ -4,7 +4,6 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
 
@@ -216,6 +215,9 @@ class TurnTokens(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     prompt_ids: list[int] = Field(default_factory=list)
+    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    bridged: bool = Field(default=False, exclude=True)
+    """Whether the renderer constructed this prompt by extending a stored prefix."""
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
@@ -225,9 +227,8 @@ class TurnTokens(BaseModel):
         default=None, exclude=True
     )
     is_content: list[bool] | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
-    # attributed per node by the turn's `commit`, then dropped — never persisted.
-    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
+    # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
+    mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
     # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
     # rendering renderer is multimodal.

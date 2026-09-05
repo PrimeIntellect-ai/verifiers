@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer
-from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -43,7 +42,6 @@ TRACE_VERSION = 1
 EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
-            "multi_modal_data",
             "routed_experts",
             "sampling_mask",
         }
@@ -306,30 +304,13 @@ class Branch(BaseModel):
         return weights
 
     @property
-    def multi_modal_data(self) -> MultiModalData | None:
-        """Node image data concatenated in token order for training; never persisted."""
-        merged = MultiModalData()
-        found = False
-        for node in self.nodes:
-            mmd = node.multi_modal_data
-            if mmd is None or mmd.is_empty():
-                continue
-            found = True
-            for modality, items in mmd.mm_items.items():
-                merged.mm_items.setdefault(modality, []).extend(items)
-            for modality, hashes in mmd.mm_hashes.items():
-                merged.mm_hashes.setdefault(modality, []).extend(hashes)
-        return merged if found else None
-
-    @property
     def mm_token_type_ids(self) -> list[int] | None:
         """Per-token modality markers aligned to `token_ids` (0 = text, 1 = image
-        placeholder, 2 = video placeholder), driving the trainer's vision-encoder
-        slicing; None for branches carrying no multimodal data."""
-        if self.multi_modal_data is None:
+        placeholder, 2 = video placeholder); None when none are present."""
+        if not self.mm_token_type_id_map:
             return None
-        mapping = self.mm_token_type_id_map
-        return [mapping.get(t, 0) for t in self.token_ids]
+        token_types = [self.mm_token_type_id_map.get(t, 0) for t in self.token_ids]
+        return token_types if any(token_types) else None
 
     @property
     def routed_experts(self) -> np.ndarray | None:
