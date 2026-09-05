@@ -4,9 +4,9 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any, TypeVar, cast
 
 import httpx2
+from anyio import CancelScope
 from mcp import Client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
@@ -40,18 +40,6 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
             await stack.aclose()
 
 
-async def with_retry(call: Callable[[], Awaitable[T]]) -> T:
-    """Run one client operation with the existing at-least-once retries."""
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
-        reraise=True,
-    ):
-        with attempt:
-            return await call()
-    raise RuntimeError("retrying stopped without returning or raising")
-
-
 class MCPConnection:
     """One rollout-owned client, with operations serialized across reconnects.
 
@@ -60,17 +48,29 @@ class MCPConnection:
     """
 
     def __init__(self, spec: dict[str, Any]):
+        # Bundled programs without MCP should not import the retry machinery.
+        from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+
         self.spec = spec
         self.task: asyncio.Task[None] | None = None
         self.ready: asyncio.Future[Client] | None = None
+        self.cancel_scope: CancelScope | None = None
         self.lock = asyncio.Lock()
+        self.run = AsyncRetrying(
+            stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
+            reraise=True,
+        ).wraps(self._run)
 
-    async def serve(self, ready: asyncio.Future["Client"]) -> None:
+    async def serve(
+        self, ready: asyncio.Future["Client"], cancel_scope: CancelScope
+    ) -> None:
+        stack = AsyncExitStack()
         try:
-            async with mcp_client(self.spec) as client:
-                ready.set_result(client)
-                with suppress(asyncio.CancelledError):
-                    await asyncio.Future()
+            stack.enter_context(cancel_scope)
+            client = await stack.enter_async_context(mcp_client(self.spec))
+            ready.set_result(client)
+            await asyncio.Future()
         except asyncio.CancelledError:
             pass
         except Exception as error:  # noqa: BLE001 - deliver owner failures to the caller
@@ -79,27 +79,43 @@ class MCPConnection:
         finally:
             if not ready.done():
                 ready.cancel()
+            await stack.aclose()
 
-    async def run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
-        async def attempt():
-            async with self.lock:
-                if self.task is None or self.task.done():
-                    self.ready = asyncio.get_running_loop().create_future()
-                    self.task = asyncio.create_task(self.serve(self.ready))
-                assert self.ready is not None
-                try:
-                    return await operation(await self.ready)
-                except BaseException:
-                    await self.aclose()
-                    raise
+    async def _run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
+        await self.lock.acquire()
+        try:
+            if self.task is None or self.task.done():
+                self.ready = asyncio.get_running_loop().create_future()
+                self.cancel_scope = CancelScope()
+                self.task = asyncio.create_task(
+                    self.serve(self.ready, self.cancel_scope)
+                )
+            assert self.ready is not None
+            client = await self.ready
+            return await operation(client)
+        except BaseException as error:
+            await self.aclose(abort=isinstance(error, asyncio.CancelledError))
+            raise
+        finally:
+            self.lock.release()
 
-        return await with_retry(attempt)
-
-    async def aclose(self) -> None:
-        if self.task is not None:
-            task, self.task = self.task, None
+    async def aclose(self, *, abort: bool = False) -> None:
+        if self.task is None:
+            return
+        task, self.task = self.task, None
+        cancel_scope = self.cancel_scope
+        assert cancel_scope is not None
+        # Caller cancellation must also interrupt session termination requests.
+        if abort:
+            cancel_scope.cancel()
+        else:
             task.cancel()
+        try:
             await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancel_scope.cancel()
+            await asyncio.shield(task)
+            raise
 
 
 async def connect_mcp(
