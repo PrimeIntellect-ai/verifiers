@@ -508,9 +508,9 @@ class InterceptionServer(Interception):
             streaming,
         )
         # Graph atomicity under retries: one logical non-streaming call must commit at most
-        # one turn. An explicit key identifies that call directly; otherwise only the SDK's
-        # retry marker activates body-digest replay, since an unmarked repeated body can be a
-        # legitimate later turn.
+        # one turn. An explicit key identifies that call directly. Without one, a marked SDK
+        # retry can use body-digest replay only while that body identifies one fresh logical
+        # request; a repeated body can be a legitimate later turn.
         retried = is_retried_request(request.headers)
         idempotent: IdempotentRequest | None = None
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
@@ -540,7 +540,20 @@ class InterceptionServer(Interception):
         if replay_key is not None:
             now = time.monotonic()
             _prune_idempotent_requests(session, now)
-            if idempotency_key or retried:
+            unambiguous_retry = False
+            if not idempotency_key:
+                if retried:
+                    # The original attempt can fail before this handler sees its body, making
+                    # a marked retry the first server-visible copy of the logical request.
+                    session.request_generations.setdefault(replay_key, 1)
+                else:
+                    session.request_generations[replay_key] = (
+                        session.request_generations.get(replay_key, 0) + 1
+                    )
+                unambiguous_retry = (
+                    retried and session.request_generations[replay_key] == 1
+                )
+            if idempotency_key or unambiguous_retry:
                 idempotent = session.idempotent_requests.get(replay_key)
             if idempotent is not None and idempotent.binding != binding:
                 return web.json_response(

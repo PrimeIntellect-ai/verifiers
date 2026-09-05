@@ -135,6 +135,9 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    request_generations: dict[str, int] = field(default_factory=dict)
+    """Fresh logical request count by body-derived replay key. A marked retry can use the
+    digest cache only while its key identifies exactly one request."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
