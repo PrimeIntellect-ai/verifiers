@@ -28,7 +28,7 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
-    make_runtime,
+    provision_runtime,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
@@ -267,7 +267,7 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if runtime.published_port is not None:
+    if exposed and runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
     port_file = None
@@ -316,17 +316,18 @@ async def reachable_url(
     runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
+    - else the runtime publishes the port (`expose`): a remote sandbox's URL is reachable
+      anywhere, a host-local URL directly by a local consumer and through a host tunnel
+      by a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
-    elif not service.is_local:  # in a remote sandbox → it publishes its own port
-        yield await service.expose(port)
-    elif consumer_is_local:  # local consumer → localhost, no public tunnel
-        yield f"http://127.0.0.1:{port}"
-    else:  # remote consumer → a host tunnel publishes the port outward
-        async with PrimeTunnel().expose(port) as url:
-            yield url
+        return
+    url = await service.expose(port)
+    if service.is_local and not consumer_is_local:
+        async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
+            yield public
+    else:
+        yield url
 
 
 @dataclass(frozen=True)
@@ -363,9 +364,7 @@ async def _serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = make_runtime(cfg.runtime)
-            await runtime.start()
-            stack.push_async_callback(runtime.stop)
+            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime

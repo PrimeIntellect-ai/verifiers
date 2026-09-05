@@ -225,6 +225,8 @@ markers = [
     # per axis, so it matches every case touching that value on any axis.
     "subprocess: v1 e2e cases touching the subprocess (host) runtime",
     "docker: v1 e2e cases touching the docker runtime",
+    "podman: v1 e2e cases touching the podman runtime",
+    "apptainer: v1 e2e cases touching the apptainer runtime",
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
