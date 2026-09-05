@@ -7,6 +7,7 @@ from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarness,
     ClaudeCodeHarnessConfig,
 )
+from verifiers.v1.harnesses.cline import ClineHarness, ClineHarnessConfig
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
 from verifiers.v1.harnesses.hermes_agent import (
     HermesAgentHarness,
@@ -35,6 +36,8 @@ __all__ = [
     "BrowserUseHarnessConfig",
     "ClaudeCodeHarness",
     "ClaudeCodeHarnessConfig",
+    "ClineHarness",
+    "ClineHarnessConfig",
     "CodexHarness",
     "CodexHarnessConfig",
     "HermesAgentHarness",

@@ -48,6 +48,7 @@ AGENTIC_PLACEMENTS = [
         marks=[mark.kimi_code, mark.docker],
         id="kimi-code-responses-harness-in-docker",
     ),
+    pair("cline", "docker", "cline-harness-in-docker"),
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
@@ -68,6 +69,7 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
+    pair("cline", "docker", "cline-acp-in-docker"),
     pair("codex", "docker", "codex-acp-in-docker"),
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
