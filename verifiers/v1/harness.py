@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import os
-import tarfile
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from contextlib import suppress
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
@@ -17,7 +13,6 @@ from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -31,27 +26,6 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
-
-_EXTRACT_SKILLS = """# /// script
-# requires-python = ">=3.11.4"
-# dependencies = []
-# ///
-import sys
-import tarfile
-from pathlib import Path
-
-try:
-    with tarfile.open(sys.argv[1], "r:") as archive:
-        for member in archive:
-            # The host builds this archive from selected regular files. Keep existing
-            # destination links and modes, just as an ordinary file write does.
-            archive.extract(member, sys.argv[2], set_attrs=False, filter="fully_trusted")
-except Exception as error:
-    print(str(error)[-500:], file=sys.stderr)
-    sys.exit(1)
-finally:
-    Path(sys.argv[1]).unlink()
-"""
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
@@ -126,83 +100,32 @@ class Harness(ABC, Generic[ConfigT]):
         """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
         the program's fixed skill discovery location, which a supporting harness's
         `setup` passes."""
+        uploads = []
+        executables = []
         for skill in self.config.skills:
             # Resolve so `.`/`..` entries get their real folder name (and can't
             # place files outside `dest`).
             skill = skill.resolve()
             if not skill.is_dir():
                 raise ValueError(f"skill {str(skill)!r} is not a folder")
-            executables = []
-            files = [
-                file
-                for file in sorted(skill.rglob("*"), reverse=True)
-                if file.is_file()
-            ]
-            while files:
-                batch = [files.pop()]
-                size = batch[0].stat().st_size
-                # Keep writes ordered and bound archive payloads. Large files and
-                # runtimes without cancellable processes retain ordinary writes.
-                while files and len(batch) < 32 and runtime.supports_live_processes:
-                    next_size = files[-1].stat().st_size
-                    if size + next_size > 1024 * 1024:
-                        break
-                    batch.append(files.pop())
-                    size += next_size
-                if len(batch) == 1:
-                    file = batch[0]
-                    await runtime.write(
-                        f"{dest}/{file.relative_to(skill.parent).as_posix()}",
-                        file.read_bytes(),
-                    )
-                else:
-                    buffer = io.BytesIO()
-                    with tarfile.open(fileobj=buffer, mode="w") as archive:
-                        for file in batch:
-                            member = tarfile.TarInfo(
-                                file.relative_to(skill.parent).as_posix()
-                            )
-                            data = file.read_bytes()
-                            member.size = len(data)
-                            archive.addfile(member, io.BytesIO(data))
-                    command = await runtime.prepare_uv_script(
-                        _EXTRACT_SKILLS, {"UV_FROZEN": "false"}
-                    )
-                    path = f"/tmp/vf-skills-{uuid.uuid4().hex}.tar"
-                    process = None
-                    try:
-                        await runtime.write(path, buffer.getvalue())
-                        process = await runtime.open_process([*command, path, dest], {})
-                        stderr = b""
-                        async for chunk in process.stderr:
-                            stderr = (stderr + chunk)[-2000:]
-                        if await process.wait():
-                            raise SandboxError(
-                                f"skill extraction failed: {stderr.decode(errors='replace').strip()}"
-                            )
-                    except BaseException:
-                        # Stop extraction before removing its input, even if a
-                        # destination such as a FIFO has blocked a file write.
-                        if process is not None:
-                            with suppress(BaseException):
-                                await run_shielded(asyncio.wait_for(process.kill(), 5))
-                            with suppress(BaseException):
-                                await run_shielded(asyncio.wait_for(process.wait(), 5))
-                        with suppress(BaseException):
-                            await run_shielded(
-                                asyncio.wait_for(
-                                    runtime.run(["rm", "-f", path], {}), 10
-                                )
-                            )
-                        raise
-                for file in batch:
-                    if os.access(file, os.X_OK):
-                        executables.append(
-                            f"{dest}/{file.relative_to(skill.parent).as_posix()}"
-                        )
-            if executables:
-                # `write` moves bytes, not modes; restore the execute bits scripts need.
-                await runtime.run(["chmod", "+x", *executables], {})
+            for file in skill.rglob("*"):
+                if not file.is_file():
+                    continue
+                target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
+                uploads.append((target, file.read_bytes()))
+                if os.access(file, os.X_OK):
+                    executables.append(target)
+        # Settle every upload before returning or surfacing an error.
+        results = await asyncio.gather(
+            *(runtime.write(target, data) for target, data in uploads),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        if executables:
+            # `write` moves bytes, not modes; restore the execute bits scripts need.
+            await runtime.run(["chmod", "+x", *executables], {})
 
     async def _check_result(
         self, trace: Trace, runtime: Runtime, result: ProgramResult
