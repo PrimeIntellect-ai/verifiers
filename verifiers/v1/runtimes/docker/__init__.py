@@ -5,6 +5,7 @@ import array
 import contextlib
 import json
 import logging
+import shlex
 import socket
 import subprocess
 import sys
@@ -319,8 +320,7 @@ class DockerRuntime(ContainerRuntime):
         self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
-        # Off Linux the host is a real address reached through the engine's gateway, so
-        # the cut keeps a route to it open on the proxy port only.
+        # Off Linux the host proxy has a real address; allow only its listening port.
         host = ""
         if sys.platform != "linux":
             found = await cli(
@@ -338,11 +338,19 @@ class DockerRuntime(ContainerRuntime):
                 )
         script = (
             "set -eu; HOST=$1; PORT=$2; "
+            "GW=$(ip -4 route show default | awk '/^default via/{print $3; exit}'); "
             # Docker's embedded DNS otherwise forwards requests outside the namespace.
             "ip route add blackhole 127.0.0.11/32 table local; "
+            # Published loopback traffic comes from the gateway or a local address
+            # with rootless forwarding. Peers must not send requests or get replies.
+            "iptables -F INPUT; "
+            "iptables -A INPUT -m addrtype --src-type LOCAL -j ACCEPT; "
+            'iptables -A INPUT -s "$GW" -j ACCEPT; '
+            "iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED "
+            "--ctdir REPLY -j ACCEPT; iptables -A INPUT -j REJECT; "
             "iptables -F OUTPUT; iptables -A OUTPUT -o lo -j ACCEPT; "
             "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED "
-            "--ctdir REPLY -j ACCEPT; "
+            '--ctdir REPLY -d "$GW" -j ACCEPT; '
             'if [ -n "$HOST" ]; then iptables -A OUTPUT -d "$HOST" '
             '-p tcp --dport "$PORT" -j ACCEPT; fi; '
             "iptables -A OUTPUT -j REJECT"
@@ -423,7 +431,15 @@ class DockerRuntime(ContainerRuntime):
         # A setup server outlives the network cut and needs the initially open proxy.
         if self.network_restricted:
             env = {**env, **self._proxy_env()}
-        await super().run_background(argv, env, log)
+        # The engine owns the background server as a detached exec process.
+        command = self._exec(self.process_env(env))
+        command.insert(2, "--detach")
+        script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
+        result = await cli(*command, "sh", "-c", script)
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"{self.engine} background process failed: {result.stderr.strip()}"
+            )
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:
