@@ -279,7 +279,9 @@ class ModalRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None:
+            return await super()._read(path, max_bytes)
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
         except Exception as e:

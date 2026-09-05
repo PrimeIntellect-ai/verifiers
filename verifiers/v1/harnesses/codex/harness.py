@@ -120,12 +120,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
-        created = await runtime.run(["mkdir", "-p", home], {})
-        if created.exit_code != 0:
-            raise RuntimeError(
-                f"failed to create Codex home: {created.stderr.strip()[-500:]}"
-            )
-
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(

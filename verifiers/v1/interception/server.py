@@ -490,13 +490,13 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        streaming = dialect.streaming(body)
+        req_hash = await _request_digest(raw) if not streaming else b""
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        streaming = dialect.streaming(body)
         try:
             acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
@@ -638,7 +638,9 @@ class InterceptionServer(Interception):
 
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
-            model_request = dialect.parse_request(body)
+            # Restricted mediation can mutate the body without reporting policy paths.
+            if request_rewrites or session.network_policy.network_restricted:
+                model_request = dialect.parse_request(body)
             turn = graph.prepare_turn(session.trace, model_request.messages)
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
