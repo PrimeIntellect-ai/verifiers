@@ -91,18 +91,31 @@ async def collect(
             raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
         seen.add(artifact.source)
 
-    # Check all roots in one job: remote runtimes pay a round trip per command.
-    sources = shlex.join([artifact.source for artifact in entries])
-    existence = await _run(
-        runtime,
-        f"for source in {sources}; do "
-        'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
-        "done",
-        "check artifact roots",
-    )
+    # Batch roots to save remote round trips. Leave room below the shell argument
+    # limit for the command itself and further quoting by runtime transports.
+    batches: list[list[str]] = [[]]
+    batch_bytes = 0
+    for artifact in entries:
+        source_bytes = len(shlex.quote(artifact.source).encode()) + 1
+        if batches[-1] and batch_bytes + source_bytes > 8 * 1024:
+            batches.append([])
+            batch_bytes = 0
+        batches[-1].append(artifact.source)
+        batch_bytes += source_bytes
+
+    existence: list[str] = []
+    for sources in batches:
+        output = await _run(
+            runtime,
+            f"for source in {shlex.join(sources)}; do "
+            'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
+            "done",
+            "check artifact roots",
+        )
+        existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
-    for artifact, exists in zip(entries, existence.splitlines(), strict=True):
+    for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
             if not artifact.required:
