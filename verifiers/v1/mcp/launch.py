@@ -206,12 +206,12 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         if not runtime._mcp_sources:
             # Failed installs can leave the venv behind; retain it when retrying.
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+        # Drain remote writes and installs before cancellation releases the lock.
         for source in pending:
             name, data = await _cached_sdist(Path(source))
             remote = f"{root}/{name}"
-            await runtime.write(remote, data)
+            await run_shielded(runtime.write(remote, data))
             setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-        # A cancelled caller must not let another installer overlap its remote command.
         result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
         if result.exit_code != 0:
             raise ToolsetError(
