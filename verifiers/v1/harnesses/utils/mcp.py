@@ -79,7 +79,9 @@ class MCPConnection:
         finally:
             if not ready.done():
                 ready.cancel()
-            await stack.aclose()
+            # Owner teardown must not replace the caller's error with cancellation.
+            with suppress(asyncio.CancelledError):
+                await stack.aclose()
 
     async def _run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
         await self.lock.acquire()
@@ -105,8 +107,10 @@ class MCPConnection:
         task, self.task = self.task, None
         cancel_scope = self.cancel_scope
         assert cancel_scope is not None
-        # Caller cancellation must also interrupt session termination requests.
-        if abort:
+        caller = asyncio.current_task()
+        assert caller is not None
+        # Stack cleanup can follow cancellation while awaiting a model or local tool.
+        if abort or caller.cancelling():
             cancel_scope.cancel()
         else:
             task.cancel()
