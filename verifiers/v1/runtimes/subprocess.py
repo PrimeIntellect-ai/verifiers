@@ -5,12 +5,14 @@ import contextlib
 import os
 import shutil
 import signal
+import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -161,8 +163,28 @@ class SubprocessRuntime(Runtime):
             proc
         )  # killed in stop() — a host process won't die on its own
 
-    async def _read(self, path: str) -> bytes:
-        return await asyncio.to_thread((self.workdir / path).read_bytes)
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is None:
+            return await asyncio.to_thread((self.workdir / path).read_bytes)
+
+        # Leave special files to the cancellable shell path without opening a
+        # FIFO and waking its writer. A nonblocking open and descriptor check
+        # also cover a regular path being replaced by a FIFO after the stat.
+        def read() -> bytes | None:
+            target = self.workdir / path
+            if not stat.S_ISREG(target.stat().st_mode):
+                return None
+            fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as file:
+                if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                    return None
+                return file.read(max_bytes)
+
+        try:
+            data = await asyncio.to_thread(read)
+        except OSError as exc:
+            raise SandboxError(f"read {path!r}: {exc}") from exc
+        return data if data is not None else await super()._read(path, max_bytes)
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path

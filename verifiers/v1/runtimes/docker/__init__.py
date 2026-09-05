@@ -506,19 +506,28 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
             "--workdir",
             self.config.workdir,
             self._container,
-            "cat",
+            *argv,
+            "--",
             path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        except BaseException:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            await run_shielded(proc.communicate())
+            raise
         if proc.returncode != 0:
             raise SandboxError(
                 f"read {path!r}: {stderr.decode(errors='replace').strip()}"
