@@ -5,6 +5,7 @@ import contextlib
 import os
 import shutil
 import signal
+import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -166,16 +167,24 @@ class SubprocessRuntime(Runtime):
         if max_bytes is None:
             return await asyncio.to_thread((self.workdir / path).read_bytes)
 
-        # Keep the handle in the worker: cancellation must not close a file on
-        # the event loop while that worker still holds its buffered-read lock.
-        def read() -> bytes:
-            with (self.workdir / path).open("rb") as file:
+        # Leave special files to the cancellable shell path without opening a
+        # FIFO and waking its writer. A nonblocking open and descriptor check
+        # also cover a regular path being replaced by a FIFO after the stat.
+        def read() -> bytes | None:
+            target = self.workdir / path
+            if not stat.S_ISREG(target.stat().st_mode):
+                return None
+            fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as file:
+                if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                    return None
                 return file.read(max_bytes)
 
         try:
-            return await asyncio.to_thread(read)
+            data = await asyncio.to_thread(read)
         except OSError as exc:
             raise SandboxError(f"read {path!r}: {exc}") from exc
+        return data if data is not None else await super()._read(path, max_bytes)
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path

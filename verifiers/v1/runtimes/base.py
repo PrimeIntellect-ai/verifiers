@@ -331,6 +331,8 @@ class Runtime(ABC):
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         """Read at most `max_bytes` bytes at the source, or the whole file if None.
 
+        Overrides must accept `max_bytes` and enforce it before transferring data.
+        The public `read` method checks for overflow using one extra byte.
         Runtimes without bounded binary reads delegate capped reads here, using
         base64 because `run` returns decoded text.
         """
