@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
@@ -31,6 +32,17 @@ class MyTask(vf.TaskData):
 
 class MyState(vf.State):
     score: int = 0
+
+
+class EnvTask(vf.TaskData):
+    verifier_env: dict[str, str] = Field(default_factory=dict)
+    """An environment mapping inside task data, as Harbor's `verifier_env`."""
+    verifier: dict = Field(default_factory=dict)
+    """A nested block with its own `env`, as Harbor's `verifier.env`."""
+    db_url: str = ""
+    """A connection string outside any environment mapping."""
+    ws_url: str = ""
+    """An endpoint authenticated through its query string."""
 
 
 class FailingSegmentRollout:
@@ -606,3 +618,223 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+def test_push_traces_uploads_redacted_projection(monkeypatch):
+    """`--push` drops the config fields that carry credentials and replaces every known
+    secret the agent echoed — including one the harness printed inside a quoted JSON
+    tool result — while the saved record keeps its config and the tokens never touch
+    disk. Ordinary text and short or non-credential values stay as they are."""
+    import httpx
+
+    from verifiers.v1.clients import EvalClientConfig
+    from verifiers.v1.configs.cli.eval import EvalConfig
+    from verifiers.v1.configs.harness import HarnessConfig
+    from verifiers.v1.episode import EnvInfo, Episode
+    from verifiers.v1.utils import platform
+
+    monkeypatch.setenv("PRIME_API_KEY", "prime-platform-key-0001")
+    monkeypatch.setenv("MODEL_API_KEY", "sk-model-key-000000000001")
+    monkeypatch.setenv("HOST_HF_TOKEN", "hf_host_token_00000001")
+    monkeypatch.setenv("KEYCLOAK_REALM", "production-realm")  # KEYCLOAK is not KEY
+    monkeypatch.setenv("PGPASSWORD", "pg-pass-000001")  # but PGPASSWORD is a password
+    monkeypatch.setenv(
+        "SAS_URL", "https://a.blob.core.windows.net/c?sv=2020&sig=sas-sig-000001"
+    )
+    monkeypatch.setenv("GITHUB_PAT", "ghp_pat_000000000001")  # PAT, but PATH is not
+    monkeypatch.setenv("PYTHONPATH", "/opt/keep/this/path")
+    monkeypatch.setenv("TOKEN_URL", "https://idp.example/oauth/token")  # about a token
+    monkeypatch.setenv(
+        "SSH_AUTH_SOCK", "/tmp/ssh-agent/agent.123"
+    )  # about auth, not auth
+    monkeypatch.setenv(  # a JSON-valued variable is a mapping too
+        "DOCKER_AUTH_CONFIG",
+        " "
+        + json.dumps(  # leading whitespace is valid JSON
+            {"auths": {"https://index.docker.io/v1/": {"auth": "dXNlcjpwYXNzd29yZA=="}}}
+        ),
+    )
+    client = EvalClientConfig(
+        base_url="https://svc:url-pass-000001@models.example/v1",
+        api_key_var="MODEL_API_KEY",
+        headers={"X-Auth": 'he said "hi" 0001', "X-Trace": "plain-header"},
+    )
+    # The run's env config is known too: a seat's client headers, a task config's headers.
+    config = EvalConfig(
+        env={
+            "taskset": {"id": "echo-v1"},
+            "agent": {
+                "client": {
+                    **client.model_dump(),
+                    "headers": {"X-Api-Key": "seat-key-000001"},
+                }
+            },
+        },
+        model="m",
+        client=client,
+    )
+    secrets = {
+        "prime-platform-key-0001",
+        "sk-model-key-000000000001",
+        "hf_host_token_00000001",
+        'he said "hi" 0001',
+        "hf_harness_token_0001",
+        "intercept-token-0001",
+        "hooks/abc/def",
+        "judge-key-000000001",
+        "db%40pass-000001",
+        "db@pass-000001",  # the URL password as a client echoes it
+        "url-pass-000001",
+        "grader-token-0001",
+        "retry-token-0001",  # a discarded attempt's token, carried with its errors
+        "pg-pass-000001",
+        "sas-sig-000001",  # a signed URL's signature is its bearer credential
+        "ghp_pat_000000000001",
+        "dXNlcjpwYXNzd29yZA==",  # Docker's registry auth, inside a JSON-valued variable
+        "task-url-pass-0001",
+        "query-token-0001",
+        "seat-key-000001",
+        "episode-token-0001",  # only in the episode's own task, not the trace's
+    }
+    echo = (
+        " ".join(sorted(secrets))
+        + " debug=1 plain-header production-realm /opt/keep/this/path /tmp/ssh-agent/agent.123 https://idp.example/oauth/token"
+    )
+    # A tool result as another encoder would emit it, `/` escaped and uppercase hex.
+    tool_result = (
+        '{"env": {"KEY": "he said \\"hi\\" 0001", "url": "hooks\\/abc\\/def", '
+        '"ok": "plain-header", "u": "\\u00FCn\\u00EFcode"}}'
+    )
+    deep = json.dumps({"log": json.dumps({"auth": "hooks/abc/def", "n": 1})})
+    trace = vf.Trace[EnvTask, vf.State](
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=client,
+                harness=HarnessConfig(
+                    id="bash",
+                    env={"HF_TOKEN": "hf_harness_token_0001", "DEBUG": "1"},
+                    forward_env=["HOME"],
+                ),
+            )
+        ),
+        task=vf.TraceTask(
+            type="EnvTask",
+            data=EnvTask(
+                idx=0,
+                prompt="q",
+                verifier_env={
+                    "JUDGE_API_KEY": "judge-key-000000001",
+                    "DATABASE_URL": "postgres://app:db%40pass-000001@db/x",
+                    "MODE": "fast",
+                },
+                verifier={"env": {"GRADER_TOKEN": "grader-token-0001", "N": "1"}},
+                db_url="postgres://svc:task-url-pass-0001@db/y",
+                ws_url="wss://browser.example/devtools?token=query-token-0001&v=2",
+            ),
+        ),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=AssistantMessage(content=echo), sampled=True),
+            MessageNode(
+                parent=1, message=UserMessage(content=tool_result), sampled=False
+            ),
+            MessageNode(parent=2, message=UserMessage(content=deep), sampled=False),
+        ],
+        upload_secrets=["intercept-token-0001", "hooks/abc/def"],
+    )
+    # A derived-task env: the episode's task differs from the trace's and is uploaded too.
+    episode = Episode[EnvTask, vf.State](
+        env=EnvInfo(id="echo-v1"),
+        task=vf.TraceTask(
+            type="EnvTask",
+            data=EnvTask(
+                idx=0,
+                prompt="see ?token=prose-token-0001",
+                verifier_env={"ROOT_TOKEN": "episode-token-0001"},
+            ),
+        ),
+        traces=[trace],
+        ok=True,
+        upload_secrets=["retry-token-0001"],
+    )
+
+    posted: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted[request.url.path] = request.content
+        if request.url.path.endswith("/environmentshub/resolve"):
+            return httpx.Response(200, json={"data": {"id": "env-1"}})
+        if request.url.path.endswith("/evaluations/"):
+            return httpx.Response(200, json={"evaluation_id": "eval-1"})
+        return httpx.Response(200, json={})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        platform.httpx,
+        "Client",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    url = platform.push_traces([episode], config)
+
+    assert url is not None and url.endswith("/dashboard/evaluations/eval-1")
+    body = posted["/api/v1/evaluations/eval-1/samples"].decode()
+    for secret in secrets:
+        assert secret not in body and secret.replace('"', '\\"') not in body
+    payload = json.loads(body)
+    assert "upload_secrets" not in payload["samples"][0]["info"]["native_wrapper"]
+    assert payload["samples"][0]["info"]["native_wrapper"]["task"]["data"][
+        "verifier_env"
+    ] == {"ROOT_TOKEN": "[REDACTED]"}
+    native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
+    assert "headers" not in native["agent"]["config"]["client"]
+    assert (
+        native["agent"]["config"]["client"]["base_url"]
+        == "https://svc:[REDACTED]@models.example/v1"
+    )
+    assert "env" not in native["agent"]["config"]["harness"]
+    assert native["agent"]["config"]["harness"]["forward_env"] == ["HOME"]
+    assert "upload_secrets" not in native
+    messages = payload["samples"][0]["completion"]
+    assert messages[1]["content"].endswith(
+        "debug=1 plain-header production-realm /opt/keep/this/path /tmp/ssh-agent/agent.123 https://idp.example/oauth/token"
+    )
+    assert json.loads(messages[2]["content"]) == {
+        "env": {
+            "KEY": "[REDACTED]",
+            "url": "[REDACTED]",
+            "ok": "plain-header",
+            "u": "ünïcode",
+        }
+    }
+    assert json.loads(json.loads(messages[3]["content"])["log"]) == {
+        "auth": "[REDACTED]",
+        "n": 1,
+    }
+    # The task's own environment mapping keeps its keys and URL shape; only the
+    # credential-named values and the URL password go.
+    assert payload["samples"][0]["task"]["verifier_env"] == {
+        "JUDGE_API_KEY": "[REDACTED]",
+        "DATABASE_URL": "postgres://app:[REDACTED]@db/x",
+        "MODE": "fast",
+    }
+    assert payload["samples"][0]["task"]["verifier"] == {
+        "env": {"GRADER_TOKEN": "[REDACTED]", "N": "1"}
+    }
+    assert payload["samples"][0]["task"]["db_url"] == "postgres://svc:[REDACTED]@db/y"
+    assert (
+        payload["samples"][0]["task"]["ws_url"]
+        == "wss://browser.example/devtools?token=[REDACTED]&v=2"
+    )
+    assert (
+        payload["samples"][0]["info"]["native_wrapper"]["task"]["data"]["prompt"]
+        == "see ?token=prose-token-0001"
+    )
+    # The saved record keeps the run reproducible; only the tokens stay off disk.
+    record = episode.to_record()["traces"][0]
+    assert (
+        record["agent"]["config"]["harness"]["env"]["HF_TOKEN"]
+        == "hf_harness_token_0001"
+    )
+    assert record["agent"]["config"]["client"]["headers"]["X-Trace"] == "plain-header"
+    assert "upload_secrets" not in record
+    assert "upload_secrets" not in episode.to_record()

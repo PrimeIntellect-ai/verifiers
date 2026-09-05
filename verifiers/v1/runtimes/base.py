@@ -148,6 +148,13 @@ class Runtime(ABC):
         """Whether `open_process()` is implemented for this runtime instance."""
         return type(self).open_process is not Runtime.open_process
 
+    @property
+    def secrets(self) -> list[str]:
+        """Credentials this runtime minted for the processes inside it (a policy
+        proxy's token, say). The rollout records them on its trace so an agent that
+        prints its environment cannot leak them through the platform upload."""
+        return []
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         # Per-run task values live on the runtime rather than its serializable config/info.

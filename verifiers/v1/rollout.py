@@ -7,9 +7,11 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlsplit
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -21,6 +23,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.mcp.server import STATE_SIGNATURE_PARAM
 from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
@@ -34,6 +37,7 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.redact import env_credentials, url_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +208,23 @@ class Rollout:
         )
         try:
             runtime_env = dict(self.task.runtime_env())
+            # Credentials as they are while the harness runs: the client key and those
+            # in the client headers, harness, and task runtime variables. The upload
+            # redactor also reads the current config, but task runtime values are never
+            # traced, and a key rotated since the run would otherwise be missed.
+            client = self.ctx.client
+            self.trace.upload_secrets += [
+                resolve_api_key(client),
+                *(
+                    credential
+                    for mapping in (
+                        client.headers,
+                        self.harness.config.resolved_env,
+                        runtime_env,
+                    )
+                    for credential in env_credentials(mapping)
+                ),
+            ]
             if self._borrowed_runtime is None:
                 runtime.env = runtime_env
             else:
@@ -217,6 +238,9 @@ class Rollout:
                 )
             if self._borrowed_runtime is None:
                 await runtime.start()
+            # Credentials the runtime minted at start (the Docker egress proxy token)
+            # reach every process it runs, the setup hooks included: record them first.
+            self.trace.upload_secrets += runtime.secrets
             await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
@@ -258,6 +282,15 @@ class Rollout:
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = model_secret
+            self.trace.upload_secrets += [
+                model_secret,
+                state_secret,
+                *(
+                    t.state_secret
+                    for t in self._shared_tools.values()
+                    if t.state_secret
+                ),
+            ]
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
@@ -268,6 +301,17 @@ class Rollout:
                     state_base=base_url,
                 )
             )
+            # Tool URLs are not traced but the harness reads them: a shared tool's URL
+            # carries a per-rollout signature derived from its secret, and an external
+            # tool's URL may carry userinfo credentials.
+            self.trace.upload_secrets += [
+                secret
+                for url in self._urls.values()
+                for secret in (
+                    *parse_qs(urlsplit(url).query).get(STATE_SIGNATURE_PARAM, []),
+                    *url_credentials(url),
+                )
+            ]
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
