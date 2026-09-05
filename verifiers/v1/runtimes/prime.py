@@ -384,21 +384,14 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
-        # Upload via the gateway (multipart) — never inline the bytes on the command line
-        # (a large file, e.g. a task tarball, overflows the exec command-length limit and
-        # fails with ENAMETOOLONG). The upload does NOT run in the workdir, so resolve a
-        # relative path against it (and mkdir its parent) — otherwise the sidecar writes
-        # it somewhere unwritable ("Operation not permitted").
+        # The gateway creates missing parents and uploads binary data without command-line
+        # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            await self._client.execute_command(
-                self.info.id,
-                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
-            )
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
