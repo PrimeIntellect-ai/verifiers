@@ -25,6 +25,7 @@ from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
+    CompletionStatus,
     Messages,
     Request,
     Response,
@@ -298,7 +299,14 @@ class RolloutSession:
                     raise ValueError(
                         "response interceptors must return an inert text-only message"
                     )
-                response = result.model_copy(update={"finish_reason": "stop"})
+                response = result.model_copy(
+                    update={
+                        "finish_reason": "stop",
+                        "completion_status": CompletionStatus(
+                            status="unknown", reason="response_rewritten"
+                        ),
+                    }
+                )
                 records.append(InterceptRecord(handler=handler.__name__))
 
             for stop in self.response_stops:

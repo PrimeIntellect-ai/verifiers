@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
@@ -241,12 +241,34 @@ class TurnTokens(BaseModel):
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
 
 
+class CompletionStatus(BaseModel):
+    """Versioned structural-output evidence carried on a response choice."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: Literal[1] = 1
+    status: Literal["complete", "incomplete", "invalid", "unknown"]
+    reason: str | None = None
+
+
+def completion_status_from_wire(value: Any) -> CompletionStatus | None:
+    """Invalid extension data rejects output, not the successfully executed model call."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or type(value.get("version")) is not int:
+        return CompletionStatus(status="invalid", reason="invalid_completion_metadata")
+    try:
+        return CompletionStatus.model_validate(value)
+    except ValidationError:
+        return CompletionStatus(status="invalid", reason="invalid_completion_metadata")
+
+
 class Response(BaseModel):
     id: str
     created: int
     model: str
     message: AssistantMessage
     finish_reason: FinishReason
+    completion_status: CompletionStatus | None = None
     usage: Usage | None = None
     tokens: TurnTokens | None = None
     raw: dict | None = Field(default=None, exclude=True, repr=False)

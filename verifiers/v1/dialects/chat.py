@@ -40,6 +40,7 @@ from verifiers.v1.types import (
     ToolMessage,
     Usage,
     UserMessage,
+    completion_status_from_wire,
     content_to_parts,
 )
 
@@ -213,6 +214,9 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         model=completion.model,
         message=message,
         finish_reason=finish,
+        completion_status=completion_status_from_wire(
+            getattr(choice, "vf_completion", None)
+        ),
         usage=usage,
     )
 
@@ -232,6 +236,7 @@ class ChatStreamParser(StreamParser):
         default_factory=dict
     )
     finish_reason: str | None = None
+    vf_completion: dict | None = None
     usage: dict | None = None
     head: dict | None = None
 
@@ -246,6 +251,8 @@ class ChatStreamParser(StreamParser):
             if choice.get("index", 0) != 0:
                 continue
             self.finish_reason = choice.get("finish_reason") or self.finish_reason
+            if "vf_completion" in choice:
+                self.vf_completion = choice["vf_completion"]
             delta = choice.get("delta") or {}
             for key in ("content", "reasoning_content", "reasoning"):
                 if delta.get(key) is not None:
@@ -332,6 +339,11 @@ class ChatStreamParser(StreamParser):
                     "index": 0,
                     "message": self.message,
                     "finish_reason": self.finish_reason or "stop",
+                    **(
+                        {"vf_completion": self.vf_completion}
+                        if self.vf_completion is not None
+                        else {}
+                    ),
                 }
             ],
             "usage": self.usage,
@@ -538,6 +550,11 @@ class ChatDialect(Dialect[ChatCompletion]):
             if isinstance(choice.get("message"), dict):
                 choice["message"] = {"role": "assistant", "content": text}
                 choice["finish_reason"] = "stop"
+                choice["vf_completion"] = {
+                    "version": 1,
+                    "status": "unknown",
+                    "reason": "response_rewritten",
+                }
                 choice.pop("logprobs", None)
 
     def stream_events(self, raw: dict) -> list[bytes]:
@@ -551,6 +568,11 @@ class ChatDialect(Dialect[ChatCompletion]):
                     "delta": choice.get("message")
                     or {"role": "assistant", "content": ""},
                     "finish_reason": choice.get("finish_reason"),
+                    **(
+                        {"vf_completion": choice["vf_completion"]}
+                        if "vf_completion" in choice
+                        else {}
+                    ),
                 }
             ],
         }

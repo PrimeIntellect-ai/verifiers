@@ -31,6 +31,7 @@ from verifiers.v1.types import (
     ToolCall,
     TurnTokens,
     Usage,
+    completion_status_from_wire,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,15 @@ def serialize_completion(response: Response, model: str) -> dict:
                 "index": 0,
                 "message": message,
                 "finish_reason": response.finish_reason or "stop",
+                **(
+                    {
+                        "vf_completion": response.model_dump(
+                            include={"completion_status"}
+                        )["completion_status"]
+                    }
+                    if response.completion_status is not None
+                    else {}
+                ),
             }
         ],
         "usage": usage,
@@ -146,6 +156,7 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
+        completion_status=completion_status_from_wire(result.get("completion_status")),
         # Preserve provider cache/reasoning details through the same accounting as chat.
         # Older endpoints/renderers may omit usage; exact token lengths remain a fallback.
         usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"]))

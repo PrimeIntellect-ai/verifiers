@@ -25,6 +25,7 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
+    CompletionStatus,
     FinishReason,
     Message,
     Messages,
@@ -165,6 +166,8 @@ class ModelCall(BaseModel):
     """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
     finish_reason: FinishReason = None
     """Why the model stopped, normalized (`stop` / `length` / `tool_calls`)."""
+    completion_status: CompletionStatus | None = None
+    """Structural completion evidence, separate from termination and task success."""
     usage: Usage | None = None
     """Provider-reported token usage for this exchange, cache reads included."""
     time: TimeSpan = Field(default_factory=TimeSpan)

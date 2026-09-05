@@ -54,6 +54,8 @@ class CompactionConfig(BaseConfig):
     max_attempts: PositiveInt | None = None
     """Summary-generation attempts within one compaction cycle; `None` =
     nano-rlm's default (5)."""
+    require_completion_status: bool | None = None
+    """Require explicit structural completion evidence when accepting a checkpoint."""
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -180,6 +182,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             policy_knobs["summarize_at_tokens"] = compaction.summarize_at_tokens
             policy_knobs["max_compactions"] = compaction.max_compactions
             policy_knobs["max_compaction_attempts"] = compaction.max_attempts
+            policy_knobs["require_compaction_completion_status"] = (
+                compaction.require_completion_status
+            )
         appends = [
             text
             for text in (system_prompt, self.config.append_to_system_prompt)
