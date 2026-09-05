@@ -3,7 +3,6 @@
 import hashlib
 import json
 import logging
-import shlex
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -256,25 +255,17 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
 
-        wrapper = f"{root}/prime-agent"
-        await runtime.write(
-            wrapper,
-            (
-                "#!/bin/sh\n"
-                "set -eu\n"
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"\n'
-                f'exec {shlex.join(args)} "$@"\n'
-            ).encode(),
-        )
-        executable = await runtime.run(["chmod", "700", wrapper], {})
-        if executable.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent wrapper chmod failed: {executable.stderr.strip()[-500:]}"
-            )
-
         return ACPConfig(
             env=self._env(trace, secret),
-            command=[wrapper],
+            # Expand the sandbox's PATH while keeping every agent argument literal.
+            command=[
+                "/bin/sh",
+                "-eu",
+                "-c",
+                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                "prime-agent",
+                *args,
+            ],
             prompt=prompt,
         )
 
