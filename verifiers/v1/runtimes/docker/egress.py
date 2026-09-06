@@ -8,6 +8,7 @@ import secrets
 import socket
 import ssl
 from dataclasses import dataclass, replace
+from http.cookies import SimpleCookie
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -161,7 +162,7 @@ class EgressProxy:
             self._callbacks[token] = callback
         userinfo, separator, _ = parsed.netloc.rpartition("@")
         netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
-        path = f"{_CALLBACK_PREFIX}{token}{parsed.path}"
+        path = f"{_CALLBACK_PREFIX}{token}{parsed.path or '/'}"
         return urlunsplit(("http", netloc, path, parsed.query, parsed.fragment))
 
     async def start(
@@ -361,7 +362,7 @@ class EgressProxy:
                     *connection_fields,
                 }
                 if callback is not None and not callback.forward_authorization:
-                    excluded.add(b"authorization")
+                    excluded.update((b"authorization", b"cookie"))
                 origin_rewrites = (
                     {
                         f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
@@ -433,6 +434,22 @@ class EgressProxy:
                             raise TypeError("expected an HTTP response")
                         headers = []
                         for name, value in response.headers:
+                            if name.lower() == b"set-cookie":
+                                # Cookie jars see the local HTTP hop. Scope cookies to
+                                # this capability; the proxy retains upstream TLS.
+                                cookies = SimpleCookie(value.decode("latin-1"))
+                                for cookie in cookies.values():
+                                    cookie["domain"] = ""
+                                    if scheme == "https":
+                                        cookie["secure"] = ""
+                                    scope = cookie["path"]
+                                    if not scope.startswith("/"):
+                                        scope = parsed.path.rpartition("/")[0] or "/"
+                                    cookie["path"] = f"{_CALLBACK_PREFIX}{token}{scope}"
+                                    headers.append(
+                                        (name, cookie.OutputString().encode("latin-1"))
+                                    )
+                                continue
                             if name.lower() == b"location":
                                 destination = urljoin(
                                     f"{scheme}://{callback.authority}{path}",
