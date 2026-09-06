@@ -495,6 +495,10 @@ class RolloutSession:
         leaves = graph.leaves(self.trace)
         if not message.tool_call_id:
             raise HarnessError("native hook omitted the tool call ID")
+        if phase == "cancel":
+            # A canceled nested invocation has no result to deliver or rewrite.
+            self.detached_tools.remove(message.tool_call_id)
+            return {"action": "allow"}
         matches = [
             (leaf, call)
             for leaf in leaves
@@ -510,12 +514,12 @@ class RolloutSession:
             message.name = call.name
             tool_key = (assistant_node, call.id)
             if phase != "before":
-                if tool_key not in self.prepared_tools:
+                if self.pre_tool_interception and tool_key not in self.prepared_tools:
                     raise HarnessError(
                         f"tool call {message.tool_call_id!r} reached a post-execution "
                         "hook without crossing its pre-execution hook"
                     )
-                prepared_result = self.prepared_tools.pop(tool_key)
+                prepared_result = self.prepared_tools.pop(tool_key, None)
                 if prepared_result is not None:
                     raise HarnessError(
                         f"harness reported tool call {message.tool_call_id!r} after "
@@ -567,7 +571,10 @@ class RolloutSession:
                         raise HarnessError(
                             f"nested tool call {message.tool_call_id!r} crossed its pre hook twice"
                         )
-                elif message.tool_call_id not in self.detached_tools:
+                elif (
+                    self.pre_tool_interception
+                    and message.tool_call_id not in self.detached_tools
+                ):
                     raise HarnessError(
                         f"nested tool call {message.tool_call_id!r} reached a post-execution "
                         "hook without crossing its pre-execution hook"

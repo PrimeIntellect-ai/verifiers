@@ -105,10 +105,22 @@ def wire_content(content) -> list[dict]:
     return result
 
 
-async def apply_result_policy(policy, response, call_id, name) -> None:
-    decision = await intercept(
-        policy, "after", call_id, name, response_content(response), name
-    )
+async def apply_result_policy(proxy, response, session_id, call_id, name) -> None:
+    async with proxy.tool_lock:
+        if response.WhichOneof("outcome") in {"completed", "terminated"}:
+            # Terminal outcomes can overtake cancellation events on the lease
+            # stream. Retire this cell's delegates before delivering its result.
+            proxy.closed_cells.add((session_id, response.cell_id))
+            for key, (cell_id, call) in list(proxy.calls.items()):
+                if key[0] == session_id and cell_id == response.cell_id:
+                    proxy.cancelled.add(key)
+                    await intercept(
+                        proxy.policy, "cancel", call["id"], call["name"], "", name
+                    )
+                    del proxy.calls[key]
+        decision = await intercept(
+            proxy.policy, "after", call_id, name, response_content(response), name
+        )
     if decision["action"] == "rewrite":
         del response.content_items[:]
         for item in wire_content(decision["message"]["content"]):
@@ -126,7 +138,10 @@ class CodexProxy:
         self.failure = asyncio.get_running_loop().create_future()
         self.peer: str | None = None
         self.parents: dict[str, str] = {}
-        self.calls: dict[tuple[str, str], dict] = {}
+        self.calls: dict[tuple[str, str], tuple[str, dict]] = {}
+        self.cancelled: set[tuple[str, str]] = set()
+        self.closed_cells: set[tuple[str, str]] = set()
+        self.tool_lock = asyncio.Lock()
 
     async def stream(self, method, request, context):
         if method == "OpenSession" and self.peer is None:
@@ -137,6 +152,7 @@ class CodexProxy:
         try:
             blocked = False
             outcome_received = False
+            session_id = None
             if method == "Execute":
                 self.parents[request.session_id] = "exec"
                 decision = await intercept(
@@ -158,7 +174,27 @@ class CodexProxy:
             # waiting for the first invocation here would deadlock startup.
             await context.send_initial_metadata(await upstream.initial_metadata())
             async for response in upstream:
-                if method == "SubscribeToToolCalls":
+                if method == "OpenSession":
+                    if response.WhichOneof("event") == "opened":
+                        session_id = response.opened.session_id
+                    elif response.WhichOneof("event") == "tool_call_cancelled":
+                        key = (session_id, response.tool_call_cancelled.invocation_id)
+                        # Remember cancellation even if its invocation has not
+                        # arrived, or its pre hook is still awaiting policy.
+                        self.cancelled.add(key)
+                        async with self.tool_lock:
+                            pending = self.calls.pop(key, None)
+                            if pending is not None:
+                                _, call = pending
+                                await intercept(
+                                    self.policy,
+                                    "cancel",
+                                    call["id"],
+                                    call["name"],
+                                    "",
+                                    "",
+                                )
+                elif method == "SubscribeToToolCalls":
                     key = (response.session_id, response.invocation_id)
                     call = {
                         "id": f"vf-{response.session_id}-{response.invocation_id}",
@@ -170,17 +206,28 @@ class CodexProxy:
                             else response.input_json.decode() or "null"
                         ),
                     }
-                    if key in self.calls:
-                        raise ValueError("Code Mode repeated a nested invocation")
-                    decision = await intercept(
-                        self.policy,
-                        "before",
-                        call["id"],
-                        call["name"],
-                        "",
-                        self.parents[response.session_id],
-                        call,
-                    )
+                    async with self.tool_lock:
+                        if (
+                            key in self.cancelled
+                            or (response.session_id, response.cell_id)
+                            in self.closed_cells
+                        ):
+                            continue
+                        if key in self.calls:
+                            raise ValueError("Code Mode repeated a nested invocation")
+                        decision = await intercept(
+                            self.policy,
+                            "before",
+                            call["id"],
+                            call["name"],
+                            "",
+                            self.parents[response.session_id],
+                            call,
+                        )
+                        if decision["action"] == "allow":
+                            self.calls[key] = (response.cell_id, call)
+                    if key in self.cancelled:
+                        continue
                     if decision["action"] == "rewrite":
                         # Nested results are JSON values consumed by JavaScript,
                         # so replacements must use the same JSON representation.
@@ -193,12 +240,15 @@ class CodexProxy:
                             )
                         )
                         continue
-                    self.calls[key] = call
                 elif method == "Execute" and response.WhichOneof("event") == "outcome":
                     outcome_received = True
                     if not blocked:
                         await apply_result_policy(
-                            self.policy, response.outcome, request.tool_call_id, "exec"
+                            self,
+                            response.outcome,
+                            request.session_id,
+                            request.tool_call_id,
+                            "exec",
                         )
                 yield response
             if method == "Execute" and not outcome_received:
@@ -221,36 +271,43 @@ class CodexProxy:
             if method in {"Wait", "Terminate"}:
                 self.parents[request.session_id] = "wait"
             elif method == "CompleteToolCall":
-                call = self.calls.pop((request.session_id, request.invocation_id))
-                outcome = request.WhichOneof("outcome")
-                if outcome not in {"succeeded", "failed"}:
-                    raise ValueError("Code Mode omitted its nested tool result")
-                content = (
-                    request.succeeded.output_json.decode()
-                    if outcome == "succeeded"
-                    else json.dumps({"error": request.failed.message})
-                )
-                json.loads(content)
-                decision = await intercept(
-                    self.policy,
-                    "after",
-                    call["id"],
-                    call["name"],
-                    content,
-                    self.parents[request.session_id],
-                    call,
-                )
-                if decision["action"] == "rewrite":
-                    content = json.dumps(json.loads(decision["message"]["content"]))
-                    request.succeeded.output_json = content.encode()
+                key = (request.session_id, request.invocation_id)
+                async with self.tool_lock:
+                    if key in self.cancelled:
+                        return self.proto.CompleteToolCallResponse()
+                    _, call = self.calls.pop(key)
+                    outcome = request.WhichOneof("outcome")
+                    if outcome not in {"succeeded", "failed"}:
+                        raise ValueError("Code Mode omitted its nested tool result")
+                    content = (
+                        request.succeeded.output_json.decode()
+                        if outcome == "succeeded"
+                        else json.dumps({"error": request.failed.message})
+                    )
+                    json.loads(content)
+                    decision = await intercept(
+                        self.policy,
+                        "after",
+                        call["id"],
+                        call["name"],
+                        content,
+                        self.parents[request.session_id],
+                        call,
+                    )
+                    if decision["action"] == "rewrite":
+                        content = json.dumps(json.loads(decision["message"]["content"]))
+                        request.succeeded.output_json = content.encode()
+                if key in self.cancelled:
+                    return self.proto.CompleteToolCallResponse()
             response = await getattr(self.host, method)(request)
             if method in {"Wait", "Terminate"}:
                 state = response.WhichOneof("state")
                 if state not in {"live_cell", "missing_cell"}:
                     raise ValueError("Code Mode continuation omitted its tool result")
                 await apply_result_policy(
-                    self.policy,
+                    self,
                     getattr(response, state),
+                    request.session_id,
                     f"vf-wait-{getattr(request, 'wait_id', request.cell_id)}",
                     "wait",
                 )

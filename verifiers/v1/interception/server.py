@@ -96,7 +96,7 @@ IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
 
 
 class ToolHookRequest(BaseModel):
-    phase: Literal["before", "after"]
+    phase: Literal["before", "after", "cancel"]
     message: ToolMessage
     content: Literal["any", "none", "nonempty_text"] = "any"
     detached_parent: str | None = Field(default=None, alias="detachedParent")
