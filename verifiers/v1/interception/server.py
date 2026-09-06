@@ -889,6 +889,13 @@ class InterceptionServer(Interception):
                 saw_terminal = False
                 try:
                     async for chunk in reply.chunks:
+                        # Match the live relay: empty events are not JSON payloads.
+                        if not any(
+                            line.removeprefix(b"data:").strip()
+                            for line in chunk.splitlines()
+                            if line.startswith(b"data:")
+                        ):
+                            continue
                         buffered.write(chunk)
                         saw_terminal |= dialect.is_terminal_event(chunk)
                         if parser.on_done is not None and is_sse_done_event(chunk):

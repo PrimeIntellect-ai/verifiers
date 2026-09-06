@@ -114,9 +114,17 @@ function createHook(agent, blockedCalls) {
         hookOptions,
       );
       if (decision.action === "stop") {
+        // Stopping the loop alone does not deny the pending SDK tool execution.
         return {
           continue: false,
           stopReason: decision.reason || "Rollout terminated by interception.",
+          ...(before && {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: decision.reason || "Rollout terminated by interception.",
+            },
+          }),
         };
       }
       if (before) {
@@ -141,6 +149,13 @@ function createHook(agent, blockedCalls) {
       return {
         continue: false,
         stopReason: `Tool interception is unavailable: ${error}`,
+        ...(hook.hook_event_name === "PreToolUse" && {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: `Tool interception is unavailable: ${error}`,
+          },
+        }),
       };
     }
   };

@@ -12,10 +12,12 @@ from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+TOOL_INTERCEPTION_SOURCE = Path(__file__).with_name("tool_interception.py").read_bytes()
+HERMES_VERSION = "0.19.0"
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.19.0"
+    version: PinnedVersion = HERMES_VERSION
     """Hermes Agent release to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
@@ -25,6 +27,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_PRE_TOOL_INTERCEPTION = True
+    SUPPORTS_POST_TOOL_INTERCEPTION = True
+    TOOL_INTERCEPTION_VERSION = HERMES_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -96,3 +101,20 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")
+
+    async def configure_tool_interception(
+        self, config: ACPConfig, runtime: Runtime
+    ) -> None:
+        config.tool_interception_socket = True
+        home = config.env["HERMES_HOME"]
+        name = "verifiers-tool-interception"
+        await runtime.write(
+            f"{home}/plugins/{name}/__init__.py", TOOL_INTERCEPTION_SOURCE
+        )
+        await runtime.write(
+            f"{home}/plugins/{name}/plugin.yaml",
+            json.dumps({"name": name, "version": "1.0.0"}).encode(),
+        )
+        settings = json.loads(await runtime.read(f"{home}/config.yaml"))
+        settings["plugins"] = {"enabled": [name]}
+        await runtime.write(f"{home}/config.yaml", json.dumps(settings).encode())

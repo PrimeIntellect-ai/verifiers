@@ -261,6 +261,7 @@ class RolloutSession:
         )
         # Provider-only mediation can change an earlier user message without changing
         # the harness's transcript. Its canonical current assistant still anchors the tail.
+        # Harnesses may omit provider metadata when replaying that assistant.
         if assistant_node is None:
             leaves = graph.leaves(self.trace)
             for position in range(len(request.messages) - 1, -1, -1):
@@ -270,12 +271,18 @@ class RolloutSession:
                 matches = [
                     leaf
                     for leaf in leaves
-                    if graph.message_hash(self.trace.nodes[leaf].message)
-                    == graph.message_hash(message)
+                    if graph.message_hash(
+                        self.trace.nodes[leaf].message.model_copy(
+                            update={"provider_state": None}
+                        )
+                    )
+                    == graph.message_hash(
+                        message.model_copy(update={"provider_state": None})
+                    )
                 ]
                 if len(matches) == 1:
                     assistant_node = matches[0]
-                    tail_start = position + 1
+                    tail_start = max(tail_start, position + 1)
                     break
         prepared_messages = self.prepared_messages.copy()
         prepared: set[int] = set()
@@ -291,6 +298,12 @@ class RolloutSession:
                     prepared.add(position)
                     continue
             if isinstance(message, ToolMessage):
+                if assistant_node is None and (
+                    self.pre_tool_interception or self.post_tool_interception
+                ):
+                    raise HarnessError(
+                        "native tool result could not be matched to its issuing model turn"
+                    )
                 assistant = (
                     self.trace.nodes[assistant_node].message
                     if assistant_node is not None

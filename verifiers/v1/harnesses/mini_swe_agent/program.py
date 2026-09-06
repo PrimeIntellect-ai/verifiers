@@ -5,9 +5,14 @@
 
 import sys
 
+import litellm
 from minisweagent.agents.interactive import InteractiveAgent
 from minisweagent.exceptions import Submitted
+from minisweagent.models.litellm_model import LitellmModel
 from minisweagent.run.mini import app
+
+# Interception stops are HTTP 400 responses, not transient provider failures.
+LitellmModel.abort_exceptions.append(litellm.BadRequestError)
 
 # {tool_interception}
 

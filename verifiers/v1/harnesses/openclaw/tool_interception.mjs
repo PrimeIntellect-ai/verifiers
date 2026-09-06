@@ -7,7 +7,6 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const pluginId = "verifiers-tool-interception";
 const unavailable = "Tool interception is unavailable.";
-const replaced = "Tool result replaced by interception.";
 
 async function intercept(phase, toolCallId, name, content) {
   if (typeof toolCallId !== "string" || !toolCallId) {
@@ -17,6 +16,7 @@ async function intercept(phase, toolCallId, name, content) {
   const policyToolCallId = separator > 0 ? toolCallId.slice(0, separator) : toolCallId;
   return requestToolPolicy({
     phase,
+    content: phase === "before" ? "nonempty_text" : "any",
     message: {
       role: "tool",
       tool_call_id: policyToolCallId,
@@ -66,7 +66,7 @@ export default definePluginEntry({
           block: true,
           blockReason:
             decision.action === "rewrite"
-              ? replaced
+              ? decision.message.content
               : decision.reason || "Rollout terminated by interception.",
         };
       },
