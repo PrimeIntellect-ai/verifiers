@@ -1,6 +1,7 @@
 import base64
 
 import numpy as np
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -34,9 +35,13 @@ def _routed_payload(
     }
 
 
-def test_routed_experts_attributed_and_aligned_across_turns():
-    """Each turn's full routing (start=0) is attributed to the nodes it created; the new turn's
-    nodes get this turn's slice and reused nodes keep theirs, so `Branch.routed_experts`
+@pytest.mark.parametrize("omitted_final", [False, True])
+@pytest.mark.parametrize("second_start", [0, 4, 5])
+def test_routed_experts_attributed_and_aligned_across_turns(
+    omitted_final, second_start
+):
+    """Full and delta routing preserve observed prefix rows and fill an unforwarded boundary.
+    New nodes get this turn's slice, so `Branch.routed_experts`
     concatenates back to a `[tokens, layers, top_k]` array aligned 1:1 with `branch.token_ids` —
     and survives the base64 wire round-trip."""
     trace = vf.Trace(
@@ -55,9 +60,16 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 prompt_ids=[10, 11, 12],
                 completion_ids=[20, 21],
                 message_spans=[(0, 2)],
-                routed_experts=_routed_payload(5, 0, 0),
+                routed_experts=_routed_payload(5 - omitted_final, 0, 0),
             ),
         )
+    )
+    assert trace.branches[-1].routed_experts.shape[0] == 5
+    trace = type(trace).model_validate(trace.model_dump())
+    num_reused_nodes = len(trace.nodes)
+    assert (
+        trace.nodes[-1].routed_experts.shape[0]
+        == len(trace.nodes[-1].token_ids) - omitted_final
     )
     graph.prepare_turn(
         trace,
@@ -73,21 +85,30 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 prompt_ids=[10, 11, 12, 20, 21, 30, 31],
                 completion_ids=[40, 41],
                 message_spans=[(0, 2), None, (5, 7)],
-                routed_experts=_routed_payload(9, 0, 100),
+                routed_experts=_routed_payload(
+                    9 - second_start - omitted_final,
+                    second_start,
+                    100 + 2 * second_start,
+                ),
             ),
         )
     )
     branch = trace.branches[-1]
     re = branch.routed_experts
+    if omitted_final and second_start == 5:
+        assert re is None  # The now-interior boundary row was never captured.
+        return
     assert re is not None
     assert re.shape[0] == len(branch.token_ids)
+    np.testing.assert_array_equal(re[:4, :, 0], np.arange(8).reshape(4, 2))
+    np.testing.assert_array_equal(re[4, :, 0], [108, 109] if omitted_final else [8, 9])
 
     restored = type(trace).model_validate(trace.model_dump())
     re2 = restored.branches[-1].routed_experts
     assert re2 is not None and re2.shape == re.shape and bool((re2 == re).all())
     assert all(
         node.routed_experts is None or node.routed_experts.flags.owndata
-        for node in trace.nodes
+        for node in trace.nodes[num_reused_nodes:]
     )
 
 

@@ -336,11 +336,25 @@ class Branch(BaseModel):
 
     @property
     def routed_experts(self) -> np.ndarray | None:
-        """uint8 `[tokens, layers, top_k]` routing; partial data returns None."""
+        """Token-aligned routing. Only the terminal unforwarded row may be padded."""
         nodes = [n for n in self.nodes if n.token_ids]
         if not nodes or any(n.routed_experts is None for n in nodes):
             return None
-        merged = np.concatenate([n.routed_experts for n in nodes], axis=0)
+        arrays = []
+        for i, node in enumerate(nodes):
+            arr = node.routed_experts
+            assert arr is not None
+            if i == len(nodes) - 1 and arr.shape[0] == len(node.token_ids) - 1:
+                padding = (
+                    arr[-1:]
+                    if len(arr)
+                    else np.zeros((1, *arr.shape[1:]), dtype=arr.dtype)
+                )
+                arr = np.concatenate([arr, padding])
+            if arr.shape[0] != len(node.token_ids):
+                return None
+            arrays.append(arr)
+        merged = np.concatenate(arrays, axis=0)
         total = sum(len(n.token_ids) for n in nodes)
         return merged if merged.shape[0] == total else None
 

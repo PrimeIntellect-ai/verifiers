@@ -151,9 +151,9 @@ class MessageNode(BaseModel):
     `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
-    """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
-    top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
-    the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
+    """This node's observed MoE routing — `[tokens, layers, top_k]`. The final token's row
+    may be absent until a subsequent turn forwards it; branch views pad only a terminal gap.
+    Attributed from the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
@@ -608,6 +608,7 @@ def _attribute_mm(
 
 def _attribute_routed_experts(
     trace: Trace,
+    prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
     payload: Any,
@@ -616,8 +617,8 @@ def _attribute_routed_experts(
     payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
-    the routing attributed when they were first created. A node whose slice falls outside the
-    array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
+    observed routing; an unforwarded suffix is filled when the payload covers it. A node whose
+    slice falls outside the array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
     if payload is None:
         return
@@ -625,7 +626,17 @@ def _attribute_routed_experts(
     arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
         payload["shape"]
     )
-    off = path_len - int(payload.get("start", 0) or 0)
+    start = int(payload.get("start", 0) or 0)
+    position = 0
+    for nid in prefix_node_ids:
+        node = trace.nodes[nid]
+        position += len(node.token_ids)
+        observed = node.routed_experts
+        if observed is not None and observed.shape[0] == len(node.token_ids) - 1:
+            row = position - 1 - start
+            if 0 <= row < arr.shape[0]:
+                node.routed_experts = np.concatenate([observed, arr[row : row + 1]])
+    off = path_len - start
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
@@ -634,11 +645,8 @@ def _attribute_routed_experts(
             # Own only this node's rows; a view would retain the turn's full-context array.
             trace.nodes[nid].routed_experts = arr[off:end].copy()
         elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
-            # The engine omits the turn's final position because no forward pass follows it.
-            # Pad only the final node's suffix instead of copying the full-context array.
-            trace.nodes[nid].routed_experts = np.concatenate(
-                [arr[off:], arr[-1:]], axis=0
-            )
+            # Keep the unforwarded suffix distinguishable from observed routing.
+            trace.nodes[nid].routed_experts = arr[off:].copy()
         off = end
 
 
@@ -799,7 +807,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     _attribute_routed_experts(
-        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.
