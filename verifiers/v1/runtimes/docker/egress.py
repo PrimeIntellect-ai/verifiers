@@ -361,7 +361,7 @@ class EgressProxy:
                     *connection_fields,
                 }
                 if callback is not None and not callback.forward_authorization:
-                    excluded.update((b"authorization", b"cookie"))
+                    excluded.add(b"authorization")
                 origin_rewrites = (
                     {
                         f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
@@ -369,16 +369,30 @@ class EgressProxy:
                     if callback is not None
                     else {}
                 )
-                headers = [
-                    (
-                        name,
-                        origin_rewrites.get(value.lower(), value)
-                        if name.lower() == b"origin"
-                        else value,
+                headers = []
+                for name, value in request.headers:
+                    if name.lower() in excluded:
+                        continue
+                    if callback is not None and name.lower() == b"cookie":
+                        # Callback cookie names carry their capability token. Strip
+                        # it upstream; unscoped cookies cannot cross origins.
+                        prefix = f"{token}-".encode()
+                        value = b"; ".join(
+                            cookie.removeprefix(prefix)
+                            for part in value.split(b";")
+                            if (cookie := part.strip()).startswith(prefix)
+                            or callback.forward_authorization
+                        )
+                        if not value:
+                            continue
+                    headers.append(
+                        (
+                            name,
+                            origin_rewrites.get(value.lower(), value)
+                            if name.lower() == b"origin"
+                            else value,
+                        )
                     )
-                    for name, value in request.headers
-                    if name.lower() not in excluded
-                ]
                 upstream = h11.Connection(h11.CLIENT)
                 upstream_writer.write(
                     upstream.send(
@@ -437,7 +451,7 @@ class EgressProxy:
                                 # Cookie jars see the local HTTP hop. Scope cookies to
                                 # this capability, preserving unknown cookie attributes.
                                 cookie, *attributes = value.split(b";")
-                                parts, scope = [cookie], b""
+                                parts, scope = [f"{token}-".encode() + cookie], b""
                                 for attribute in attributes:
                                     key, _, content = attribute.strip().partition(b"=")
                                     if key.lower() == b"path":
@@ -459,6 +473,7 @@ class EgressProxy:
                                     f"{scheme}://{callback.authority}{path}",
                                     value.decode("latin-1"),
                                 )
+                                value = destination.encode("latin-1")
                                 redirected = urlsplit(destination)
                                 redirect_host = (
                                     (redirected.hostname or "").lower().rstrip(".")

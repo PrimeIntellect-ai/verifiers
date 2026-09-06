@@ -256,7 +256,7 @@ class Rollout:
                     self._shared_tools,
                 )
             )
-            self._endpoint = f"{runtime.host_url(base_url)}/v1"
+            self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -314,7 +314,11 @@ class Rollout:
                     )
                 if not self._session.stopped:
                     session_kwargs = (
-                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        {
+                            "tool_interception_url": runtime.host_url(
+                                f"{base_url.rstrip('/')}/tool"
+                            )
+                        }
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
                             self._session.request_interceptors
