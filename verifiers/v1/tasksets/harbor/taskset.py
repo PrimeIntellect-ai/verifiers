@@ -379,7 +379,13 @@ def task_resources(environment, multiplier: float) -> TaskResources:
         memory=environment.memory_mb / 1024 * multiplier
         if environment.memory_mb
         else None,
-        gpu=str(environment.gpus) if environment.gpus else None,
+        gpu=(
+            f"{environment.gpu_types[0]}:{environment.gpus}"
+            if environment.gpu_types
+            else str(environment.gpus)
+        )
+        if environment.gpus
+        else None,
         disk=environment.storage_mb / 1024 * multiplier
         if environment.storage_mb
         else None,
@@ -694,7 +700,7 @@ def parse_verifier_environment(
         )
     unsupported = [
         field
-        for field in ("mcp_servers", "skills_dir", "gpu_types", "tpu")
+        for field in ("mcp_servers", "skills_dir", "tpu")
         if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:
