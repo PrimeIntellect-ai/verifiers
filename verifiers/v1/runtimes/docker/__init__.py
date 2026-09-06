@@ -11,12 +11,12 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
+from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, Runtime, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
 from verifiers.v1.runtimes.docker.egress import (
     EgressProxy,
@@ -25,6 +25,10 @@ from verifiers.v1.runtimes.docker.egress import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.modal import ModalConfig
+    from verifiers.v1.runtimes.prime import PrimeConfig
 
 
 class DockerConfig(ContainerConfig, NetworkPolicyConfig):
@@ -63,11 +67,22 @@ class DockerRuntime(ContainerRuntime):
     info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
 
     def __init__(
-        self, config: DockerConfig | PodmanConfig, name: str | None = None
+        self,
+        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        name: str | None = None,
+        *,
+        host: Runtime | None = None,
     ) -> None:
         super().__init__(name)
         self.config = config
-        self.info = self.info_cls(**config.model_dump())
+        self._host = host
+        self.info = (
+            host.info.model_copy(
+                update={"image": config.image, "workdir": config.workdir}
+            )
+            if host
+            else self.info_cls(**config.model_dump())
+        )
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
         self._proxy: EgressProxy | None = None
@@ -317,6 +332,7 @@ class DockerRuntime(ContainerRuntime):
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
         ]
+        assert isinstance(self.config, NetworkPolicyConfig)
         self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
@@ -429,13 +445,13 @@ class DockerRuntime(ContainerRuntime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
-        if self.network_restricted:
+        if self.network_restricted and self._proxy is not None:
             env = {**env, **self._proxy_env()}
         # The engine owns the background server as a detached exec process.
         command = self._exec(self.process_env(env))
         command.insert(2, "--detach")
         script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
-        result = await cli(*command, "sh", "-c", script)
+        result = await self._run_host(*command, "sh", "-c", script)
         if result.exit_code != 0:
             raise SandboxError(
                 f"{self.engine} background process failed: {result.stderr.strip()}"

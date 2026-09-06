@@ -167,6 +167,16 @@ class Runtime(ABC):
     def type(self) -> str:
         return self.config.type
 
+    def service(self, name: str) -> "Runtime":
+        """Select a filesystem and execution target within this runtime."""
+        if name != "main":
+            raise SandboxError(f"{self.type} runtime has no service {name!r}")
+        return self
+
+    async def stop_service(self, name: str) -> None:
+        """Stop one service while keeping its peers alive for collection."""
+        raise SandboxError(f"{self.type} runtime cannot stop service {name!r}")
+
     @abstractmethod
     async def start(self) -> None:
         pass
