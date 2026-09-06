@@ -375,7 +375,7 @@ async def _serve(
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
         state_url = (
-            f"{runtime.host_url(state_base.rstrip('/'))}/state" if state_base else None
+            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
         port = await serve_in_runtime(
             server,
