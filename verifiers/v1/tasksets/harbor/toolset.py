@@ -55,7 +55,14 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
         server.call_tool = self.call_tool
 
     async def list_tools(self) -> list[Tool]:
-        return (await self.client.list_tools()).tools
+        tools: list[Tool] = []
+        cursor = None
+        while True:
+            page = await self.client.list_tools(cursor=cursor)
+            tools.extend(page.tools)
+            cursor = page.next_cursor
+            if cursor is None:
+                return tools
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context | None = None
