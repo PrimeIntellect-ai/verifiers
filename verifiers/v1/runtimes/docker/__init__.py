@@ -4,6 +4,7 @@ import array
 import asyncio
 import contextlib
 import logging
+import re
 import shlex
 import socket
 import subprocess
@@ -40,8 +41,9 @@ class DockerConfig(NetworkPolicyConfig):
     memory: float | None = None
     """Hard memory limit in GB (docker `--memory`). None = unlimited."""
     gpu: str | None = None
-    """GPU spec, e.g. "A100" or "2" (docker `--gpus` uses the count; needs the nvidia
-    container toolkit). None = none."""
+    """GPU type[:count] or count only; Docker selects by count. A requested type is
+    checked with nvidia-smi inside the container (case-insensitive, whitespace/hyphen
+    boundaries). Requires the NVIDIA Container Toolkit. None = none."""
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
@@ -211,7 +213,7 @@ class DockerRuntime(Runtime):
             limits += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
             limits += ["--memory", f"{self.config.memory}g"]
-        _, gpu_count = parse_gpu(self.config.gpu)
+        gpu_type, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
         restricted = self.network_restricted
@@ -257,6 +259,29 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
+        if gpu_type and gpu_count:
+            # Check the devices Docker actually exposed, including on remote daemons.
+            gpus = await docker(
+                "exec",
+                self._container,
+                "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            )
+            if gpus.exit_code != 0:
+                raise SandboxError(
+                    f"Cannot verify Docker GPU type: {(gpus.stderr or gpus.stdout).strip()}"
+                )
+            names = gpus.stdout.strip().splitlines()
+            if len(names) != gpu_count or any(
+                not re.search(
+                    rf"(?:^|[\s-]){re.escape(gpu_type)}(?:$|[\s-])", name, re.IGNORECASE
+                )
+                for name in names
+            ):
+                raise SandboxError(
+                    f"Requested {self.config.gpu!r}, but Docker exposed: {', '.join(names) or 'no GPUs'}"
+                )
         if restricted:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
