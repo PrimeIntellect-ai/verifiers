@@ -8,7 +8,6 @@ import secrets
 import socket
 import ssl
 from dataclasses import dataclass, replace
-from http.cookies import SimpleCookie
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -436,20 +435,25 @@ class EgressProxy:
                         for name, value in response.headers:
                             if name.lower() == b"set-cookie":
                                 # Cookie jars see the local HTTP hop. Scope cookies to
-                                # this capability; the proxy retains upstream TLS.
-                                cookies = SimpleCookie(value.decode("latin-1"))
-                                for cookie in cookies.values():
-                                    cookie["domain"] = ""
-                                    if scheme == "https":
-                                        cookie["secure"] = ""
-                                    scope = cookie["path"]
-                                    if not scope.startswith("/"):
-                                        scope = parsed.path.rpartition("/")[0] or "/"
-                                    cookie["path"] = f"{_CALLBACK_PREFIX}{token}{scope}"
-                                    headers.append(
-                                        (name, cookie.OutputString().encode("latin-1"))
+                                # this capability, preserving unknown cookie attributes.
+                                cookie, *attributes = value.split(b";")
+                                parts, scope = [cookie], b""
+                                for attribute in attributes:
+                                    key, _, content = attribute.strip().partition(b"=")
+                                    if key.lower() == b"path":
+                                        scope = content
+                                    elif key.lower() != b"domain" and not (
+                                        scheme == "https" and key.lower() == b"secure"
+                                    ):
+                                        parts.append(attribute)
+                                if not scope.startswith(b"/"):
+                                    scope = (
+                                        parsed.path.rpartition("/")[0].encode() or b"/"
                                     )
-                                continue
+                                parts.append(
+                                    f" Path={_CALLBACK_PREFIX}{token}".encode() + scope
+                                )
+                                value = b";".join(parts)
                             if name.lower() == b"location":
                                 destination = urljoin(
                                     f"{scheme}://{callback.authority}{path}",
