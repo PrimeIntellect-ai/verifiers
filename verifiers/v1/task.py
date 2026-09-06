@@ -301,6 +301,13 @@ class Task(Generic[DataT, StateT, ConfigT]):
         fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))
         return fns
 
+    @property
+    def tools(self) -> list[Toolset]:
+        """Tools for this row. Additional data-dependent servers must be colocated
+        or use an existing URL; declare independent runtime placements in
+        `toolsets` so worker tunnel selection sees them before rows arrive."""
+        return self.toolsets(self.config)
+
     @classmethod
     def toolsets(cls, config: ConfigT) -> list[Toolset]:
         """Tool servers launched per rollout, each constructed with its config off

@@ -354,7 +354,7 @@ class Agent:
             # server was created; let the rollout size a scoped server instead.
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not task.toolsets(task.config)
+            run_is_local and not shared_tools and not task.tools
         ):
             return self._server
         return None
@@ -545,7 +545,7 @@ class Agent:
             self.harness,
             type(task),
             runtime_config,
-            tools=[*task.toolsets(task.config), *shared_tools.values()],
+            tools=[*task.tools, *shared_tools.values()],
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {

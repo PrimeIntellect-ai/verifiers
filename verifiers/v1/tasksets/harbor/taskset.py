@@ -147,6 +147,8 @@ class HarborData(TaskData):
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
+    mcp_servers: list[dict] = Field(default_factory=list)
+    """Task-declared MCP servers, preserved for served-task reconstruction."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -163,6 +165,15 @@ class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
+
+    @property
+    def tools(self):
+        from .toolset import HarborMCPConfig, HarborMCPToolset
+
+        return super().tools + [
+            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            for server in self.data.mcp_servers
+        ]
 
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
@@ -362,6 +373,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment if fresh else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
+            "mcp_servers": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -577,7 +589,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
-        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        **environment.model_dump(
+            include={"env", "healthcheck", "mcp_servers"}, mode="json"
+        ),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -694,7 +708,7 @@ def parse_verifier_environment(
         )
     unsupported = [
         field
-        for field in ("mcp_servers", "skills_dir", "gpu_types", "tpu")
+        for field in ("skills_dir", "gpu_types", "tpu")
         if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:
