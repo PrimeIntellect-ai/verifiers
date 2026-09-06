@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
@@ -238,68 +239,65 @@ async def main() -> None:
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
     reserved = {"browser"}
-    mcp_tools, dispatch, servers = (
-        await connect_mcp(config, reserved)
-        if config.get("mcpServers")
-        else ([], {}, {})
-    )
-    tools += mcp_tools
-    messages = (
-        [{"role": "system", "content": args.system_prompt}]
-        if args.system_prompt
-        else []
-    )
-    if initial:
-        messages.extend(initial)
-    elif args.prompt:
-        messages.append({"role": "user", "content": args.prompt})
-    while True:
-        message = await chat(client, args.model, messages, tools)
-        messages.append(message.model_dump(exclude_none=True))
-        if not message.tool_calls:
-            break
-        for call in message.tool_calls:
-            name = call.function.name
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": "",
-                "name": name,
-            }
-            if tool_interceptor is not None:
-                decision = await asyncio.to_thread(
-                    tool_interceptor.call, "before", tool_message
-                )
-                if decision["action"] == "rewrite":
-                    messages.append(decision["message"])
-                    continue
-            try:
-                tool_args = json.loads(call.function.arguments or "{}")
-            except json.JSONDecodeError as e:
-                content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
-            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-            # below assume a dict, so reject anything else as a tool error rather than crashing.
-            else:
-                if not isinstance(tool_args, dict):
-                    content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
-                elif name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "browser":
-                    content = await asyncio.to_thread(
-                        run_browser,
-                        tool_args.get("code", ""),
-                        browser_env,
+    async with AsyncExitStack() as mcp_stack:
+        mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
+        tools += mcp_tools
+        messages = (
+            [{"role": "system", "content": args.system_prompt}]
+            if args.system_prompt
+            else []
+        )
+        if initial:
+            messages.extend(initial)
+        elif args.prompt:
+            messages.append({"role": "user", "content": args.prompt})
+        while True:
+            message = await chat(client, args.model, messages, tools)
+            messages.append(message.model_dump(exclude_none=True))
+            if not message.tool_calls:
+                break
+            for call in message.tool_calls:
+                name = call.function.name
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "",
+                    "name": name,
+                }
+                if tool_interceptor is not None:
+                    decision = await asyncio.to_thread(
+                        tool_interceptor.call, "before", tool_message
                     )
+                    if decision["action"] == "rewrite":
+                        messages.append(decision["message"])
+                        continue
+                try:
+                    tool_args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError as e:
+                    content = f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON"
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
+                # below assume a dict, so reject anything else as a tool error rather than crashing.
                 else:
-                    content = f"error: unknown tool {name!r}"
-            tool_message["content"] = content
-            if tool_interceptor is not None:
-                decision = await asyncio.to_thread(
-                    tool_interceptor.call, "after", tool_message
-                )
-                if decision["action"] == "rewrite":
-                    tool_message = decision["message"]
-            messages.append(tool_message)
+                    if not isinstance(tool_args, dict):
+                        content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
+                    elif name in dispatch:
+                        content = await call_mcp(servers, dispatch, name, tool_args)
+                    elif name == "browser":
+                        content = await asyncio.to_thread(
+                            run_browser,
+                            tool_args.get("code", ""),
+                            browser_env,
+                        )
+                    else:
+                        content = f"error: unknown tool {name!r}"
+                tool_message["content"] = content
+                if tool_interceptor is not None:
+                    decision = await asyncio.to_thread(
+                        tool_interceptor.call, "after", tool_message
+                    )
+                    if decision["action"] == "rewrite":
+                        tool_message = decision["message"]
+                messages.append(tool_message)
     if tool_interceptor is not None:
         tool_interceptor.close()
 
