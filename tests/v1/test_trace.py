@@ -3,6 +3,7 @@
 recompute on load), transient `state` never crosses the wire, and the permissive `WireTrace` loads a
 dump without importing the originating taskset."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -41,7 +42,17 @@ class FailingSegmentRollout:
 
 
 @pytest.mark.asyncio
-async def test_failed_segment_does_not_reuse_prior_root_reply():
+@pytest.mark.parametrize(
+    "failure,budget,error_type",
+    [
+        (RuntimeError("segment failed after sampling"), None, "RuntimeError"),
+        (TimeoutError("harness I/O timed out"), 60, "TimeoutError"),
+        (None, 0, "AgentTimeoutError"),
+    ],
+)
+async def test_failed_segment_does_not_reuse_prior_root_reply(
+    failure, budget, error_type
+):
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
@@ -62,7 +73,9 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
                     sampled=True,
                 )
             )
-            raise RuntimeError("segment failed after sampling")
+            if failure is not None:
+                raise failure
+            await asyncio.sleep(60)  # interrupted by the expired agent deadline
 
     run = FailingSegmentRollout()
     run.trace = trace
@@ -72,8 +85,8 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     run._failure = None
     run._borrowed_runtime = None
     run.runtime = None
-    run._agent_time_remaining = None
-    run._timeouts = RolloutTimeouts()
+    run._agent_time_remaining = budget
+    run._timeouts = RolloutTimeouts(agent=budget)
     run._harness_session = FailingSession()
     run._session = SimpleNamespace(
         request_interceptors=[],
@@ -87,6 +100,17 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     assert segment.last_reply == "current partial reply"
     assert trace.root_reply is None
     assert trace.last_reply == "current partial reply"
+    assert trace.last_error.type == error_type
+    if error_type == "AgentTimeoutError":
+        from verifiers.v1.configs.retries import RetryConfig
+        from verifiers.v1.utils.retries import trace_should_retry
+
+        assert isinstance(run._failure, vf.HarnessError)
+        assert trace_should_retry(trace, RetryConfig(include=["HarnessError"]))
+        assert not trace_should_retry(
+            trace,
+            RetryConfig(include=["HarnessError"], exclude=["AgentTimeoutError"]),
+        )
 
 
 def test_bare_trace_round_trip():

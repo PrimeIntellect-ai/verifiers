@@ -516,6 +516,8 @@ async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)
+    assert judge.state.verdict.model_dump() == judge.info["verdict"]
+    assert not hasattr(solver.state, "verdict")
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
@@ -562,6 +564,8 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     assert solver.rewards["wrote_phrase"].score == 1.0
     assert solver.rewards["wrote_phrase"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)
+    assert judge.state.verdict.model_dump() == judge.info["verdict"]
+    assert not hasattr(solver.state, "verdict")
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 

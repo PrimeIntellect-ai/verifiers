@@ -2,7 +2,7 @@
 
 Four mechanisms, each in one place:
 
-1. Vocabulary (this module): `RolloutError` and the flat boundary types below. Each names the
+1. Vocabulary (this module): `RolloutError` and the boundary types below. Each names the
    boundary a failure crossed — provider, harness, toolset, sandbox, task, or
    interception — so a recorded `trace.last_error.type` says where the rollout broke.
 2. Classification (`boundary`): the one helper that runs a framework→code boundary and attributes
@@ -46,6 +46,10 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
+class AgentTimeoutError(HarnessError):
+    """The agent exhausted its cumulative rollout time budget."""
+
+
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 
@@ -58,6 +62,14 @@ class EnvError(RolloutError):
 
 class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
+
+
+class SandboxFileNotFoundError(SandboxError):
+    """A runtime read failed because the requested file does not exist."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"read {path!r}: file not found")
+        self.path = path
 
 
 class TaskError(RolloutError):

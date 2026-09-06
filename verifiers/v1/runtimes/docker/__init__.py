@@ -22,6 +22,7 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     Runtime,
     RuntimeProcess,
+    _read_error,
     parse_gpu,
 )
 from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, NetworkPolicy
@@ -511,6 +512,8 @@ class DockerRuntime(Runtime):
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
+            "--env",
+            "LC_ALL=C",
             "--workdir",
             self.config.workdir,
             self._container,
@@ -529,9 +532,7 @@ class DockerRuntime(Runtime):
             await run_shielded(proc.communicate())
             raise
         if proc.returncode != 0:
-            raise SandboxError(
-                f"read {path!r}: {stderr.decode(errors='replace').strip()}"
-            )
+            raise _read_error(path, stderr.decode(errors="replace"), argv[0])
         return stdout
 
     async def write(self, path: str, data: bytes) -> None:

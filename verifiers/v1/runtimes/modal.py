@@ -18,7 +18,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -282,8 +282,12 @@ class ModalRuntime(Runtime):
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is not None:
             return await super()._read(path, max_bytes)
+        from modal.exception import SandboxFilesystemNotFoundError
+
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
+        except SandboxFilesystemNotFoundError as e:
+            raise SandboxFileNotFoundError(path) from e
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 

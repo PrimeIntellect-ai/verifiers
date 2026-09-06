@@ -27,6 +27,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1 import errors
 from verifiers.v1.configs.retries import RetryConfig
 
 if TYPE_CHECKING:
@@ -74,15 +75,20 @@ def retrying(
 
 
 def _retryable(error: Error | None, retry: RetryConfig) -> bool:
-    """Whether `error` matches the retry policy: its exception type is included (and
-    not excluded)."""
+    """Match the recorded type and its framework boundary bases; exclusions win."""
     if error is None:
         return False
-    if error.type in retry.exclude:
+    names = {error.type}
+    error_cls = getattr(errors, error.type, None)
+    if isinstance(error_cls, type) and issubclass(error_cls, errors.RolloutError):
+        names.update(
+            cls.__name__
+            for cls in error_cls.__mro__
+            if issubclass(cls, errors.RolloutError)
+        )
+    if names.intersection(retry.exclude):
         return False
-    if retry.include:
-        return error.type in retry.include
-    return True
+    return not retry.include or bool(names.intersection(retry.include))
 
 
 def trace_should_retry(trace, retry: RetryConfig) -> bool:

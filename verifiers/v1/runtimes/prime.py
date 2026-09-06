@@ -18,11 +18,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
+from httpx import HTTPStatusError
+from prime_sandboxes.core import APIError
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -381,6 +383,26 @@ class PrimeRuntime(Runtime):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
+            cause = e.__cause__
+            if (
+                isinstance(e, APIError)
+                and isinstance(cause, HTTPStatusError)
+                and cause.response.status_code == 404
+                and cause.request.method == "GET"
+                and cause.request.url.path.endswith("/download")
+                and cause.request.url.params.get("path") == target
+                and cause.request.url.params.get("sandbox_id") == self.info.id
+            ):
+                # A gateway or missing sandbox can also return 404. Only the
+                # download service's explicit file diagnostic identifies ENOENT.
+                with contextlib.suppress(ValueError):
+                    body = cause.response.json()
+                    if (
+                        isinstance(body, dict)
+                        and body.get("code") == 404
+                        and body.get("message") == f"path '{target}' does not exist"
+                    ):
+                        raise SandboxFileNotFoundError(path) from e
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:

@@ -4,7 +4,7 @@ Two reusable envs share the grading protocol. `--env.id agentic-judge` provision
 a fresh box from the solver's runtime policy and restores only the task's collected
 artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
 solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
-criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
+criteria file) and records its verdicts through a host-side tool, with the solver's
 observable trace record uploaded at `/tmp/trace.json`. Hidden reasoning and opaque
 provider state are omitted by default and may be explicitly included through the
 judge task config. `finalize()` validates the verdicts
@@ -25,13 +25,13 @@ from pydantic import FiniteFloat
 import verifiers.v1 as vf
 from verifiers.v1.judges.rubric import (
     Criterion,
+    CriterionVerdict,
     RubricVerdicts,
     load_criteria,
     score_verdicts,
 )
 from verifiers.v1.utils.compile import validate_pairing
 
-VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
 
 GRADE_PROMPT = """\
@@ -64,7 +64,7 @@ Grade the attempt on these criteria:
 
 {listing}
 
-When you are done verifying, write your verdict as JSON to `{VERDICT_FILE}`:
+When you are done verifying, call `record` on the `verdict` tool server with:
 
     {{"verdicts": [{{"name": "<criterion name>", "reason": "<one sentence citing \
 what you verified>", "verdict": "<answer>"}}, ...]}}
@@ -72,7 +72,8 @@ what you verified>", "verdict": "<answer>"}}, ...]}}
 with one entry per criterion, using each criterion's exact name. For each, first
 write the one-sentence reason grounded in what you actually verified, then set
 verdict to exactly one of the options listed in parentheses after that
-criterion."""
+criterion. Submit the complete set in one call. A later valid call replaces the
+previous set; a final reply or sandbox file does not record a verdict."""
 
 
 def _render(template: str, **fields: str) -> str:
@@ -116,17 +117,40 @@ HINT_SECTION = """\
 {hint}"""
 
 
-class JudgeTask(vf.Task):
-    """The judge's verdict task: the solver task's world mirrored onto the minted
-    row, the trace record written (and any stale verdict removed) before the
-    judge starts, verdict scraped off the live box after it exits. `NEEDS_CONTAINER`
-    keeps `Agent.run`'s per-task backstop aligned with the judge's declared need."""
+class JudgeTaskData(vf.TaskData):
+    criteria: list[Criterion]
+
+
+class JudgeState(vf.State):
+    verdict: RubricVerdicts | None = None
+
+
+class VerdictTools(vf.Toolset[vf.ToolsetConfig, JudgeState]):
+    TOOL_PREFIX = "verdict"
+
+    async def setup_task(self, task: JudgeTaskData) -> None:
+        self.criteria = task.criteria
+
+    @vf.tool
+    def record(self, verdicts: list[CriterionVerdict]) -> dict:
+        """Record a complete verdict set. A valid call replaces any previous set."""
+        score_verdicts(verdicts, self.criteria, "the rubric's")
+        previous = self.state.verdict
+        self.state.verdict = RubricVerdicts(verdicts=verdicts)
+        return {
+            "recorded": self.state.verdict.model_dump(),
+            "previous": previous.model_dump() if previous is not None else None,
+        }
+
+
+class JudgeTask(vf.Task[JudgeTaskData, JudgeState]):
+    """Mirror the solver's world and record the judge's verdict outside its box."""
 
     NEEDS_CONTAINER = True
 
     def __init__(
         self,
-        data: vf.TaskData,
+        data: JudgeTaskData,
         files: dict[str, bytes],
         artifacts: dict[str, bytes | None],
     ) -> None:
@@ -149,6 +173,7 @@ class JudgeTask(vf.Task):
         paths they had.
         """
         solved = solution.task.data
+        criteria = config.criteria()
         record = solution.to_record()
         if not config.include_hidden_reasoning:
             for node in record["nodes"]:
@@ -164,12 +189,13 @@ class JudgeTask(vf.Task):
         workspace_note = (
             SHARED_WORKSPACE_NOTE if share_runtime else ISOLATED_WORKSPACE_NOTE
         )
-        sections = [body, _verdict_section(config.criteria()), workspace_note]
+        sections = [body, _verdict_section(criteria), workspace_note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
         return cls(
-            vf.TaskData(
+            JudgeTaskData(
+                criteria=criteria,
                 idx=solved.idx,
                 prompt=prompt,
                 image=solved.image,
@@ -182,28 +208,28 @@ class JudgeTask(vf.Task):
             artifacts={} if share_runtime else solution.state.artifacts,
         )
 
+    @classmethod
+    def toolsets(cls, config: vf.TaskConfig) -> list[vf.Toolset]:
+        # Fixed host placement: the judged workspace never owns verdict state.
+        return [VerdictTools(vf.ToolsetConfig())]
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         await vf.restore(runtime, self.artifacts)
-        # The solver had this box first: a pre-seeded verdict must never read as
-        # the judge's own, and a file (or planted symlink) at an upload path must
-        # never survive it — a symlinked TRACE_FILE would redirect the write onto
-        # any file the solver chose.
-        await runtime.run(["rm", "-f", VERDICT_FILE, *self.files], env={})
+        # Replace planted symlinks before uploading the host's trace record.
+        await runtime.run(["rm", "-f", *self.files], env={})
         for path, content in self.files.items():
             await runtime.write(path, content)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        """Scrape the verdict off the box while it's alive. A judge that wrote no
-        file (or garbage) fails HERE — on the judge's own trace, the retryable
-        unit — never silently."""
-        try:
-            raw = await runtime.read(VERDICT_FILE)
-        except Exception as e:
+        """Require an explicit host-recorded verdict on the judge's own trace."""
+        verdict = trace.state.verdict
+        if verdict is None:
             raise ValueError(
-                f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
-                'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
-            ) from e
-        trace.info["verdict"] = RubricVerdicts.model_validate_json(raw).model_dump()
+                "the judge recorded no verdict; call the verdict server's record "
+                "tool with one entry per criterion before finishing"
+            )
+        score_verdicts(verdict.verdicts, self.data.criteria, "the rubric's")
+        trace.info["verdict"] = verdict.model_dump()
 
 
 class TextFile(vf.BaseConfig):
@@ -313,7 +339,12 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
             )
-        validate_pairing(judge, JudgeTask, self.config.judge.runtime)
+        validate_pairing(
+            judge,
+            JudgeTask,
+            self.config.judge.runtime,
+            tools=JudgeTask.toolsets(self.config.task),
+        )
 
     async def setup(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
@@ -360,3 +391,7 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
         await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )
+
+
+if __name__ == "__main__":
+    VerdictTools.run()

@@ -19,7 +19,7 @@ from typing import ClassVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxFileNotFoundError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,24 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+def _read_error(path: str, stderr: str, reader: str) -> SandboxError:
+    # These readers open exactly one supplied path under LC_ALL=C. Match their
+    # ENOENT diagnostic, not loader/shell errors or a second existence probe.
+    # Ambiguous quoting remains a generic read failure.
+    message = stderr.strip()
+    missing = ": No such file or directory"
+    exact = {f"{reader}: {path}{missing}", f"{reader}: can't open '{path}'{missing}"}
+    if reader == "cat":
+        exact.update(f"cat: {quoted}{missing}" for quoted in (f"'{path}'", f'"{path}"'))
+    if message in exact or (
+        reader == "head"
+        and message.startswith("head: cannot open ")
+        and message.endswith(f" for reading{missing}")
+    ):
+        return SandboxFileNotFoundError(path)
+    return SandboxError(f"read {path!r}: {message[-500:]}")
 
 
 class RuntimeProcess(ABC):
@@ -318,7 +336,9 @@ class Runtime(ABC):
         """Read `path` into host memory. `max_bytes` caps the transfer, raising past
         the cap — for a file written by something we don't control, whose size we
         can't assume. The cap is enforced inside the box rather than after the
-        transfer. Framework method — override `_read`, not this."""
+        transfer. Missing paths raise SandboxFileNotFoundError when the provider
+        distinguishes them from other read failures. Framework method — override
+        `_read`, not this."""
         if max_bytes is None:
             return await self._read(path)
         if max_bytes < 0:
@@ -355,10 +375,10 @@ class Runtime(ABC):
                 str(max_bytes),
                 path,
             ],
-            {},
+            {"LC_ALL": "C"},
         )
         if result.exit_code:
-            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            raise _read_error(path, result.stderr, "head")
         return base64.b64decode(result.stdout)
 
     @abstractmethod

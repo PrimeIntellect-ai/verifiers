@@ -35,7 +35,7 @@ from typing import Literal
 
 import httpx
 from aiohttp import web
-from pydantic import ValidationError
+from pydantic import PositiveInt, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
@@ -64,6 +64,7 @@ from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Request, Response, Usage
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,10 @@ class InterceptionServerConfig(BaseInterceptionConfig):
     (`tunnel.type custom`)."""
 
     type: Literal["server"] = "server"
+    max_concurrent_requests: PositiveInt | None = None
+    """Maximum simultaneous upstream model requests across this server's sessions.
+    Streaming requests hold admission until their upstream connection closes. None leaves
+    request concurrency unlimited; tool execution does not occupy admission."""
     tunnel: TunnelConfig = PrimeTunnelConfig()
     """How remote consumers reach the server: `prime` (a framework-minted prime_tunnel) or
     `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
@@ -242,6 +247,11 @@ class InterceptionServer(Interception):
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
+        self._request_slots = (
+            asyncio.Semaphore(self.config.max_concurrent_requests)
+            if self.config.max_concurrent_requests is not None
+            else contextlib.nullcontext()
+        )
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
@@ -679,14 +689,15 @@ class InterceptionServer(Interception):
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
-                    call_response = await session.client.get_response(
-                        dialect,
-                        body,
-                        session.ctx.sampling,
-                        headers=upstream_headers,
-                        session_id=session.trace.id,
-                        turn=turn,
-                    )
+                    async with self._request_slots:
+                        call_response = await session.client.get_response(
+                            dialect,
+                            body,
+                            session.ctx.sampling,
+                            headers=upstream_headers,
+                            session_id=session.trace.id,
+                            turn=turn,
+                        )
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -803,14 +814,17 @@ class InterceptionServer(Interception):
         node: int | None = None
         error: Exception | None = None
         started = time.time()
+        upstream = contextlib.AsyncExitStack()
         try:
             try:
+                await upstream.enter_async_context(self._request_slots)
                 reply = await session.client.relay(
                     dialect,
                     body,
                     headers=upstream_headers,
                     session_id=session.trace.id,
                 )
+                upstream.push_async_callback(lambda: run_shielded(reply.close()))
             except RolloutError as e:
                 error = e
                 session.error = e
@@ -841,6 +855,7 @@ class InterceptionServer(Interception):
                         if parser.on_done is not None and is_sse_done_event(chunk):
                             parser.on_done()
                         parser.feed(chunk)
+                    await upstream.aclose()
                     if not saw_terminal:
                         raise ProviderError(
                             "upstream stream ended before its terminal event"
@@ -875,7 +890,7 @@ class InterceptionServer(Interception):
                     session.error = error
                     return self._fail(session, dialect, error)
                 finally:
-                    await reply.close()
+                    await upstream.aclose()
 
                 if session.released or session.stopped:
                     buffered.close()
@@ -988,7 +1003,7 @@ class InterceptionServer(Interception):
                 if queue.full():
                     queue.get_nowait()
                 await asyncio.gather(producer, return_exceptions=True)
-                await reply.close()
+                await upstream.aclose()
 
             try:
                 if parser_error is not None:
@@ -1025,20 +1040,25 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
-            # The turn's one per-exchange record: settings, timing, outcome, and the
-            # error that ended it (if any).
-            self.record_call(
-                session,
-                dialect,
-                body,
-                started,
-                node=node,
-                finish_reason=response.finish_reason if response is not None else None,
-                usage=response.usage if response is not None else None,
-                error=error,
-                policy_paths=policy_paths,
-                acp=acp,
-            )
+            try:
+                # Idempotent stack cleanup also covers failures before stream iteration.
+                await upstream.aclose()
+            finally:
+                # Record the exchange even if closing its upstream connection fails.
+                self.record_call(
+                    session,
+                    dialect,
+                    body,
+                    started,
+                    node=node,
+                    finish_reason=response.finish_reason
+                    if response is not None
+                    else None,
+                    usage=response.usage if response is not None else None,
+                    error=error,
+                    policy_paths=policy_paths,
+                    acp=acp,
+                )
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str

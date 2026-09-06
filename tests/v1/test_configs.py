@@ -18,3 +18,23 @@ CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.env.taskset.id
+
+
+@pytest.mark.parametrize("limit", [None, 1, 8])
+def test_interception_request_limit(limit):
+    from verifiers.v1.interception import make_interception
+    from verifiers.v1.interception.server import InterceptionServerConfig
+
+    config = InterceptionServerConfig(max_concurrent_requests=limit)
+    server = make_interception(config, requires_tunnel=False)
+    assert server.config.max_concurrent_requests == limit
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_interception_request_limit_must_be_positive(limit):
+    from pydantic import ValidationError
+
+    from verifiers.v1.interception.server import InterceptionServerConfig
+
+    with pytest.raises(ValidationError):
+        InterceptionServerConfig(max_concurrent_requests=limit)
