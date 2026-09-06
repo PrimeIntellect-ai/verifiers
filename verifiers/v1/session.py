@@ -27,6 +27,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     Request,
     Response,
+    ToolCall,
     ToolMessage,
     UserMessage,
 )
@@ -309,10 +310,18 @@ class RolloutSession:
                 )
                 if issuing_name in self.tool_interception_exemptions:
                     if self.post_tool_interception:
-                        if self.detached_tools:
+                        # A yielded exec may still own running nested tools. Its
+                        # visible output must cross its own post hook before the
+                        # model can request a continuation.
+                        if (
+                            self.prepared_tools.get(
+                                (assistant_node, message.tool_call_id)
+                            )
+                            is None
+                        ):
                             raise HarnessError(
-                                "native tool result reached the model request before its "
-                                "nested post-execution hooks completed"
+                                "native tool result reached the model request "
+                                "before its post-execution hook completed"
                             )
                         prepared.add(position)
                         native_prepared.add(position)
@@ -463,6 +472,7 @@ class RolloutSession:
         detached_parent: str | None = None,
         rewrite_prefix: str = "",
         rewrite_suffix: str = "",
+        tool_call: ToolCall | None = None,
     ) -> dict:
         """Run native tool policy before execution or before the next model turn."""
         if phase == "before" and not self.pre_tool_interception:
@@ -567,8 +577,18 @@ class RolloutSession:
             prepared_result = self.prepared_tools.get((assistant_node, call.id))
             if prepared_result is not None:
                 previous.append(prepared_result)
+        nested = []
+        if tool_call is not None:
+            if not detached or (tool_call.id, tool_call.name) != (
+                message.tool_call_id,
+                message.name,
+            ):
+                raise HarnessError("native hook supplied a mismatched nested tool call")
+            # Nested invocations are not model turns. Expose their actual inputs
+            # to policy without adding synthetic turns to the model transcript.
+            nested = [AssistantMessage(tool_calls=[tool_call])]
         policy_request = Request(
-            messages=[*branch, *previous, message],
+            messages=[*branch, *previous, *nested, message],
             tools=self.trace.tools or None,
         )
         request, records, stopped = await self.apply_request_policy(

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1", "httpx", "websockets==15.0.1"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx", "grpcio-tools==1.74.0"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -273,6 +273,7 @@ class ACPSession:
         self.connection: Any = None
         self.capabilities: Any = None
         self.session_id: str | None = None
+        self.code_mode_failure: asyncio.Future | None = None
         self.is_new = True
 
     async def start(self, config: dict) -> None:
@@ -294,14 +295,13 @@ class ACPSession:
             if codex_path := config.get("codeModeHost"):
                 if self.client.tool_interceptor is None:
                     raise RuntimeError("Tool interception is not configured")
-                agent_env[
-                    "VF_CODE_MODE_HOST_URL"
-                ] = await self.stack.enter_async_context(
+                host_url, self.code_mode_failure = await self.stack.enter_async_context(
                     running_codex_proxy(  # noqa: F821
                         codex_path,
                         partial(self.client.ext_method, TOOL_INTERCEPTION_METHOD),
                     )
                 )
+                agent_env["VF_CODE_MODE_HOST_URL"] = host_url
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
@@ -338,14 +338,28 @@ class ACPSession:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
-        result = await prompt(
-            self.client,
-            self.connection,
-            self.capabilities,
-            self.session_id,
-            config,
-            is_new=self.is_new,
+        pending = asyncio.create_task(
+            prompt(
+                self.client,
+                self.connection,
+                self.capabilities,
+                self.session_id,
+                config,
+                is_new=self.is_new,
+            )
         )
+        try:
+            if self.code_mode_failure is not None:
+                await asyncio.wait(
+                    [pending, self.code_mode_failure],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self.code_mode_failure.done():
+                    raise self.code_mode_failure.result()
+            result = await pending
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
         self.is_new = False
         return result
 

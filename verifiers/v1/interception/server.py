@@ -63,7 +63,14 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Request, Response, ToolMessage, Usage
+from verifiers.v1.types import (
+    FinishReason,
+    Request,
+    Response,
+    ToolCall,
+    ToolMessage,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +100,7 @@ class ToolHookRequest(BaseModel):
     message: ToolMessage
     content: Literal["any", "none", "nonempty_text"] = "any"
     detached_parent: str | None = Field(default=None, alias="detachedParent")
+    tool_call: ToolCall | None = Field(default=None, alias="toolCall")
     rewrite_prefix: str = ""
     rewrite_suffix: str = ""
 
@@ -431,6 +439,7 @@ class InterceptionServer(Interception):
                     message=hook.message,
                     content=hook.content,
                     detached_parent=hook.detached_parent,
+                    tool_call=hook.tool_call,
                     rewrite_prefix=hook.rewrite_prefix,
                     rewrite_suffix=hook.rewrite_suffix,
                 )

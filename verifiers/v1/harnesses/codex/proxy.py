@@ -1,33 +1,16 @@
-"""Code Mode mediation embedded in the ACP runner."""
+"""Mediate Codex Code Mode's gRPC calls inside the ACP runner."""
 
 import asyncio
 import json
+import sys
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
-
-from websockets.asyncio.client import connect
-from websockets.asyncio.server import serve
-from websockets.exceptions import ConnectionClosed
+from tempfile import TemporaryDirectory
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
-DUAL_WEBSOCKET = "dual-websocket-v1"
-
-
-def unpack_frame(frame: bytes) -> dict:
-    if len(frame) < 4:
-        raise ValueError("Code Mode frame is missing its length prefix")
-    size = int.from_bytes(frame[:4], "little")
-    if size > MAX_FRAME_BYTES or len(frame) != size + 4:
-        raise ValueError("Code Mode frame has an invalid payload length")
-    return json.loads(frame[4:])
-
-
-def pack_frame(message: dict) -> bytes:
-    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
-    if len(payload) > MAX_FRAME_BYTES:
-        raise ValueError("Code Mode frame exceeds the protocol limit")
-    return len(payload).to_bytes(4, "little") + payload
+# {codex_protocol}
 
 
 def find_host(launcher: str) -> str:
@@ -52,12 +35,14 @@ async def intercept(
     name: str,
     content,
     detached_parent: str,
+    tool_call: dict | None = None,
 ) -> dict:
     decision = await policy(
         {
             "phase": phase,
             "content": "any",
             "detachedParent": detached_parent,
+            "toolCall": tool_call,
             "message": {
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -66,6 +51,10 @@ async def intercept(
             },
         }
     )
+    if decision["action"] == "stop":
+        # Never resume JavaScript after a stop: even a caught tool error can
+        # otherwise cause another tool call with an unapproved result.
+        raise RuntimeError(decision.get("reason") or "Tool interception stopped")
     if decision["action"] == "rewrite":
         message = decision.get("message")
         if not isinstance(message, dict):
@@ -76,27 +65,24 @@ async def intercept(
     return decision
 
 
-def response_content(response: dict):
-    if len(response) != 1:
-        raise ValueError("Code Mode returned an invalid runtime response")
-    variant, value = next(iter(response.items()))
-    if variant not in {"Yielded", "Terminated", "Result"}:
-        raise ValueError(f"Code Mode returned an unknown response: {variant}")
+def response_content(response):
+    variant = response.WhichOneof("outcome")
+    if variant not in {"yielded", "terminated", "completed"}:
+        raise ValueError("Code Mode omitted its execution outcome")
     parts = []
-    for item in value.get("content_items", []):
-        if item.get("type") == "input_text":
-            parts.append({"type": "text", "text": item.get("text", "")})
-        elif item.get("type") == "input_image":
+    for item in response.content_items:
+        if item.WhichOneof("item") == "text":
+            parts.append({"type": "text", "text": item.text.text})
+        elif item.WhichOneof("item") == "image":
             parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": item.get("image_url", "")},
-                }
+                {"type": "image_url", "image_url": {"url": item.image.image_url}}
             )
         else:
-            raise ValueError("Code Mode interception does not support audio results")
-    if variant == "Result" and value.get("error_text") is not None:
-        parts.append({"type": "text", "text": f"Script error:\n{value['error_text']}"})
+            raise ValueError("Code Mode interception does not support this result")
+    if variant == "completed" and response.completed.HasField("error_text"):
+        parts.append(
+            {"type": "text", "text": f"Script error:\n{response.completed.error_text}"}
+        )
     if not parts:
         return ""
     if len(parts) == 1 and parts[0]["type"] == "text":
@@ -109,203 +95,190 @@ def wire_content(content) -> list[dict]:
     result = []
     for part in parts:
         if part.get("type") == "text":
-            result.append({"type": "input_text", "text": part.get("text", "")})
+            result.append({"text": {"text": part.get("text", "")}})
         elif part.get("type") == "image_url":
             result.append(
-                {
-                    "type": "input_image",
-                    "image_url": (part.get("image_url") or {}).get("url", ""),
-                }
+                {"image": {"image_url": (part.get("image_url") or {}).get("url", "")}}
             )
         else:
             raise ValueError("Tool interception returned unsupported content")
     return result
 
 
-def replacement(decision: dict):
-    if decision["action"] == "rewrite":
-        return decision["message"].get("content", "")
-    return decision.get("reason") or "Rollout terminated by interception."
-
-
-async def apply_result_policy(
-    policy: Callable[[dict], Awaitable[dict]],
-    response: dict,
-    call_id: str,
-    name: str,
-    detached_parent: str,
-) -> None:
+async def apply_result_policy(policy, response, call_id, name) -> None:
     decision = await intercept(
-        policy, "after", call_id, name, response_content(response), detached_parent
+        policy, "after", call_id, name, response_content(response), name
     )
-    if decision["action"] == "allow":
-        return
-    content = replacement(decision)
-    variant, value = next(iter(response.items()))
-    value["content_items"] = wire_content(content)
-    if variant == "Result":
-        value["error_text"] = None
+    if decision["action"] == "rewrite":
+        del response.content_items[:]
+        for item in wire_content(decision["message"]["content"]):
+            response.content_items.add(**item)
+        if response.WhichOneof("outcome") == "completed":
+            response.completed.ClearField("error_text")
 
 
-async def run_connection(client, host_url: str, policy) -> None:
-    executions: dict[int, tuple[str, str, str]] = {}
-    continuations: dict[int, tuple[str, str, str]] = {}
-    send_lock = asyncio.Lock()
-    async with connect(
-        host_url,
-        compression=None,
-        max_size=MAX_FRAME_BYTES + 4,
-        proxy=None,
-    ) as host:
+class CodexProxy:
+    def __init__(self, channel, proto, services, policy):
+        self.channel = channel
+        self.proto = proto
+        self.host = services.CodeModeHostStub(channel)
+        self.policy = policy
+        self.failure = asyncio.get_running_loop().create_future()
+        self.peer: str | None = None
+        self.parents: dict[str, str] = {}
+        self.calls: dict[tuple[str, str], dict] = {}
 
-        async def send_client(message: dict) -> None:
-            async with send_lock:
-                await client.send(pack_frame(message))
-
-        async def forward_client() -> None:
-            async for frame in client:
-                if not isinstance(frame, bytes):
-                    raise TypeError("Code Mode websocket messages must be binary")
-                message = unpack_frame(frame)
-                if message.get("type") == "connection/hello":
-                    if DUAL_WEBSOCKET in message.get("requiredCapabilities", []):
-                        raise ValueError(
-                            "Code Mode proxy cannot satisfy required dual websockets"
-                        )
-                    message["optionalCapabilities"] = [
-                        item
-                        for item in message.get("optionalCapabilities", [])
-                        if item != DUAL_WEBSOCKET
-                    ]
-                operation = message.get("request", {})
-                method = operation.get("method")
-                if (
-                    message.get("type") == "operation/request"
-                    and method == "session/execute"
-                ):
-                    request_id = message["id"]
-                    call_id = operation["request"]["tool_call_id"]
-                    decision = await intercept(
-                        policy, "before", call_id, "exec", "", "exec"
+    async def stream(self, method, request, context):
+        if method == "OpenSession" and self.peer is None:
+            self.peer = context.peer()
+        if context.peer() != self.peer:
+            raise RuntimeError("Code Mode host is already connected")
+        upstream = None
+        try:
+            blocked = False
+            outcome_received = False
+            if method == "Execute":
+                self.parents[request.session_id] = "exec"
+                decision = await intercept(
+                    self.policy, "before", request.tool_call_id, "exec", "", "exec"
+                )
+                blocked = decision["action"] == "rewrite"
+                if blocked:
+                    # Let the host retain ownership of cell IDs and lifecycle
+                    # events, executing only the approved literal replacement.
+                    request.source = "\n".join(
+                        f"{kind}({json.dumps(value)});"
+                        for item in wire_content(decision["message"]["content"])
+                        for kind, values in item.items()
+                        for value in values.values()
                     )
-                    if decision["action"] == "allow":
-                        executions[request_id] = (call_id, "exec", "exec")
-                    else:
-                        cell_id = f"vf-blocked-{request_id}"
-                        runtime_response = {
-                            "Result": {
-                                "cell_id": cell_id,
-                                "content_items": wire_content(replacement(decision)),
-                                "error_text": None,
-                            }
-                        }
-                        await send_client(
-                            {
-                                "type": "operation/response",
-                                "id": request_id,
-                                "result": {
-                                    "status": "ok",
-                                    "value": {
-                                        "type": "execution/started",
-                                        "cellId": cell_id,
-                                    },
-                                },
-                            }
-                        )
-                        await send_client(
-                            {
-                                "type": "execute/initialResponse",
-                                "id": request_id,
-                                "result": {
-                                    "status": "ok",
-                                    "value": runtime_response,
-                                },
-                            }
-                        )
-                        await send_client(
-                            {
-                                "type": "cell/closed",
-                                "sessionId": operation["sessionId"],
-                                "cellId": cell_id,
-                            }
+                    del request.enabled_tools[:]
+            upstream = getattr(self.host, method)(request)
+            # Codex waits for subscription headers before starting executions;
+            # waiting for the first invocation here would deadlock startup.
+            await context.send_initial_metadata(await upstream.initial_metadata())
+            async for response in upstream:
+                if method == "SubscribeToToolCalls":
+                    key = (response.session_id, response.invocation_id)
+                    call = {
+                        "id": f"vf-{response.session_id}-{response.invocation_id}",
+                        "name": response.tool_name.name,
+                        "type": "custom" if response.tool_kind == 2 else "function",
+                        "arguments": (
+                            json.loads(response.input_json)
+                            if response.tool_kind == 2
+                            else response.input_json.decode() or "null"
+                        ),
+                    }
+                    if key in self.calls:
+                        raise ValueError("Code Mode repeated a nested invocation")
+                    decision = await intercept(
+                        self.policy,
+                        "before",
+                        call["id"],
+                        call["name"],
+                        "",
+                        self.parents[response.session_id],
+                        call,
+                    )
+                    if decision["action"] == "rewrite":
+                        # Nested results are JSON values consumed by JavaScript,
+                        # so replacements must use the same JSON representation.
+                        content = json.dumps(json.loads(decision["message"]["content"]))
+                        await self.host.CompleteToolCall(
+                            self.proto.CompleteToolCallRequest(
+                                session_id=response.session_id,
+                                invocation_id=response.invocation_id,
+                                succeeded={"output_json": content.encode()},
+                            )
                         )
                         continue
-                elif message.get("type") == "operation/request" and method in {
-                    "session/wait",
-                    "session/terminate",
-                }:
-                    continuations[message["id"]] = (
-                        f"vf-wait-{message['id']}",
-                        "wait",
-                        "wait",
-                    )
-                await host.send(pack_frame(message))
-
-        async def forward_host() -> None:
-            async for frame in host:
-                if not isinstance(frame, bytes):
-                    raise TypeError("Code Mode websocket messages must be binary")
-                message = unpack_frame(frame)
-                request_id = message.get("id")
-                result = message.get("result", {})
-                response = None
-                call = None
-                if (
-                    request_id in executions
-                    and message.get("type") == "execute/initialResponse"
-                ):
-                    call = executions.pop(request_id)
-                    if result.get("status") != "ok":
-                        raise RuntimeError(
-                            "Code Mode execution failed before returning a tool result"
+                    self.calls[key] = call
+                elif method == "Execute" and response.WhichOneof("event") == "outcome":
+                    outcome_received = True
+                    if not blocked:
+                        await apply_result_policy(
+                            self.policy, response.outcome, request.tool_call_id, "exec"
                         )
-                    response = result["value"]
-                elif (
-                    request_id in continuations
-                    and message.get("type") == "operation/response"
-                ):
-                    call = continuations.pop(request_id)
-                    if result.get("status") != "ok":
-                        raise RuntimeError(
-                            "Code Mode continuation failed before returning a tool result"
-                        )
-                    outcome = result.get("value", {}).get("outcome")
-                    if not isinstance(outcome, dict) or set(outcome) not in (
-                        {"LiveCell"},
-                        {"MissingCell"},
-                    ):
-                        raise RuntimeError(
-                            "Code Mode continuation omitted its tool result"
-                        )
-                    # Both live and missing cells wrap a runtime result.
-                    response = next(iter(outcome.values()))
-                if call is not None:
-                    if not isinstance(response, dict):
-                        raise RuntimeError("Code Mode omitted its runtime result")
-                    await apply_result_policy(policy, response, *call)
-                await send_client(message)
-
-        tasks = [
-            asyncio.create_task(forward_client()),
-            asyncio.create_task(forward_host()),
-        ]
-        try:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                with suppress(ConnectionClosed):
-                    task.result()
+                yield response
+            if method == "Execute" and not outcome_received:
+                raise ValueError("Code Mode execution omitted its tool result")
+        except Exception as error:
+            # Dropping the host lease cancels every active cell and delegate.
+            # A single failed RPC must not leave other streams executing tools.
+            if not self.failure.done():
+                self.failure.set_result(error)
+            await self.channel.close()
+            raise
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            if upstream is not None:
+                upstream.cancel()
+
+    async def unary(self, method, request, context):
+        if context.peer() != self.peer:
+            raise RuntimeError("Code Mode host is already connected")
+        try:
+            if method in {"Wait", "Terminate"}:
+                self.parents[request.session_id] = "wait"
+            elif method == "CompleteToolCall":
+                call = self.calls.pop((request.session_id, request.invocation_id))
+                outcome = request.WhichOneof("outcome")
+                if outcome not in {"succeeded", "failed"}:
+                    raise ValueError("Code Mode omitted its nested tool result")
+                content = (
+                    request.succeeded.output_json.decode()
+                    if outcome == "succeeded"
+                    else json.dumps({"error": request.failed.message})
+                )
+                json.loads(content)
+                decision = await intercept(
+                    self.policy,
+                    "after",
+                    call["id"],
+                    call["name"],
+                    content,
+                    self.parents[request.session_id],
+                    call,
+                )
+                if decision["action"] == "rewrite":
+                    content = json.dumps(json.loads(decision["message"]["content"]))
+                    request.succeeded.output_json = content.encode()
+            response = await getattr(self.host, method)(request)
+            if method in {"Wait", "Terminate"}:
+                state = response.WhichOneof("state")
+                if state not in {"live_cell", "missing_cell"}:
+                    raise ValueError("Code Mode continuation omitted its tool result")
+                await apply_result_policy(
+                    self.policy,
+                    getattr(response, state),
+                    f"vf-wait-{getattr(request, 'wait_id', request.cell_id)}",
+                    "wait",
+                )
+            return response
+        except Exception as error:
+            if not self.failure.done():
+                self.failure.set_result(error)
+            await self.channel.close()
+            raise
 
 
 @asynccontextmanager
 async def running_codex_proxy(launcher: str, policy):
+    import grpc
+
+    # Compile the pinned upstream schema in the runner, without generated stubs
+    # or gRPC dependencies in the importing Verifiers process.
+    with TemporaryDirectory(prefix="vf-codex-proto-") as directory:
+        (Path(directory) / "vf_codex.proto").write_text(CODEX_PROTOCOL)  # noqa: F821
+        sys.path.insert(0, directory)
+        try:
+            proto, services = grpc.protos_and_services("vf_codex.proto")
+        finally:
+            sys.path.remove(directory)
     host = await asyncio.create_subprocess_exec(
         find_host(launcher),
         "--listen",
-        "ws://127.0.0.1:0",
+        "grpc://127.0.0.1:0",
         stdout=asyncio.subprocess.PIPE,
         stderr=None,
     )
@@ -316,29 +289,54 @@ async def running_codex_proxy(launcher: str, policy):
             .decode()
             .strip()
         )
-        if not host_url.startswith("ws://127.0.0.1:"):
+        if not host_url.startswith("http://127.0.0.1:"):
             raise RuntimeError(
                 f"Codex Code Mode host returned an invalid endpoint: {host_url!r}"
             )
-        claimed = False
-
-        async def accept(client) -> None:
-            nonlocal claimed
-            if claimed:
-                await client.close(1008, "Code Mode host is already connected")
-                return
-            claimed = True
-            await run_connection(client, host_url, policy)
-
-        async with serve(
-            accept,
-            "127.0.0.1",
-            0,
-            compression=None,
-            max_size=MAX_FRAME_BYTES + 4,
-        ) as server:
-            port = server.sockets[0].getsockname()[1]
-            yield f"ws://127.0.0.1:{port}"
+        options = [
+            ("grpc.max_receive_message_length", MAX_FRAME_BYTES),
+            ("grpc.max_send_message_length", MAX_FRAME_BYTES),
+        ]
+        async with grpc.aio.insecure_channel(
+            host_url.removeprefix("http://"), options=options
+        ) as channel:
+            proxy = CodexProxy(channel, proto, services, policy)
+            server = grpc.aio.server(options=options)
+            service = proto.DESCRIPTOR.services_by_name["CodeModeHost"]
+            server.add_generic_rpc_handlers(
+                (
+                    grpc.method_handlers_generic_handler(
+                        service.full_name,
+                        {
+                            method.name: (
+                                grpc.unary_stream_rpc_method_handler
+                                if method.server_streaming
+                                else grpc.unary_unary_rpc_method_handler
+                            )(
+                                partial(
+                                    proxy.stream
+                                    if method.server_streaming
+                                    else proxy.unary,
+                                    method.name,
+                                ),
+                                request_deserializer=getattr(
+                                    proto, method.input_type.name
+                                ).FromString,
+                                response_serializer=getattr(
+                                    proto, method.output_type.name
+                                ).SerializeToString,
+                            )
+                            for method in service.methods
+                        },
+                    ),
+                )
+            )
+            port = server.add_insecure_port("127.0.0.1:0")
+            await server.start()
+            try:
+                yield f"http://127.0.0.1:{port}", proxy.failure
+            finally:
+                await server.stop(0)
     finally:
         if host.returncode is None:
             host.terminate()

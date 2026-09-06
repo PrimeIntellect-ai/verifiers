@@ -36,6 +36,15 @@ ACP_SOURCE = (
             Path(__file__).resolve().parent.parent / "harnesses/codex/proxy.py"
         ).read_text(),
     )
+    .replace(
+        "# {codex_protocol}",
+        "CODEX_PROTOCOL = "
+        + repr(
+            (
+                Path(__file__).resolve().parent.parent / "harnesses/codex/codex.proto"
+            ).read_text()
+        ),
+    )
 )
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
