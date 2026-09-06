@@ -27,11 +27,19 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
         spec = self.config.server
         match spec["transport"]:
             case "stdio":
-                # Preserve the task process environment without VF's private state channel.
+                # Keep task variables, excluding the wrapper's state and bind controls.
                 env = {
                     key: value
                     for key, value in os.environ.items()
-                    if key not in {"VF_CONFIG", "VF_STATE_URL", "VF_STATE_SECRET"}
+                    if key
+                    not in {
+                        "VF_CONFIG",
+                        "VF_STATE_URL",
+                        "VF_STATE_SECRET",
+                        "MCP_HOST",
+                        "MCP_PORT",
+                        "MCP_PORT_FILE",
+                    }
                 }
                 transport = stdio_client(
                     StdioServerParameters(
