@@ -32,9 +32,11 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
@@ -53,7 +55,13 @@ REWARD_JSON_ADAPTER = TypeAdapter(
 )
 
 
+class HarborTaskConfig(TaskConfig):
+    mcp_servers: list[dict] = Field(default_factory=list)
+    """Task-declared connections, bound from HarborData during construction."""
+
+
 class HarborConfig(TasksetConfig):
+    task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
     tag, integer revision, or sha256 digest. Legacy registries selected with `repo`,
@@ -161,18 +169,23 @@ class HarborData(TaskData):
     grades in the agent's box."""
 
 
-class HarborTask(Task[HarborData]):
+class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
 
-    @property
-    def tools(self):
+    def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
+        super().__init__(data, config)
+        # Each reconstructed row gets its own connections without mutating worker config.
+        self.config = self.config.model_copy(update={"mcp_servers": data.mcp_servers})
+
+    @classmethod
+    def toolsets(cls, config: HarborTaskConfig):
         from .toolset import HarborMCPConfig, HarborMCPToolset
 
-        return super().tools + [
+        return super().toolsets(config) + [
             HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
-            for server in self.data.mcp_servers
+            for server in config.mcp_servers
         ]
 
     def runtime_env(self) -> dict[str, str]:
