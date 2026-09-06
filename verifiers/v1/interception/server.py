@@ -80,19 +80,9 @@ STREAM_MEMORY_BUFFER = 4 * 1024**2
 # millisecond; a larger one (bodies may reach `MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
 HASH_INLINE_MAX = 1024**2  # 1 MiB
-# Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
-# 0 on the first attempt, incremented on each retry of the same request.
-RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
-
-
-def is_retried_request(headers: Mapping[str, str]) -> bool:
-    try:
-        return int(headers.get(RETRY_COUNT_HEADER, 0)) > 0
-    except ValueError:
-        return False
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -100,7 +90,7 @@ def _body_digest(raw: bytes) -> bytes:
 
 
 async def _request_digest(raw: bytes) -> bytes:
-    """Digest a request body for the retry-replay guard. Hash a small body inline; offload a
+    """Digest a request body to bind its idempotency key. Hash a small body inline; offload a
     large one to a thread so it does not stall every multiplexed rollout on the event loop
     (blake2b releases the GIL, so the thread runs the hash off the loop)."""
     if len(raw) <= HASH_INLINE_MAX:
@@ -492,7 +482,10 @@ class InterceptionServer(Interception):
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
-        req_hash = await _request_digest(raw) if not streaming else b""
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        req_hash = (
+            await _request_digest(raw) if idempotency_key and not streaming else b""
+        )
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -507,13 +500,9 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries: one logical non-streaming call must commit at most
-        # one turn. An explicit key identifies that call directly; otherwise only the SDK's
-        # retry marker activates body-digest replay, since an unmarked repeated body can be a
-        # legitimate later turn.
-        retried = is_retried_request(request.headers)
+        # Only an explicit key identifies one logical call across retries. Identical bodies
+        # and SDK retry counters can belong to different calls, so they cannot authorize replay.
         idempotent: IdempotentRequest | None = None
-        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
@@ -534,14 +523,10 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
-        elif not streaming:
-            replay_key = f"retry:{request.path}:{req_hash.hex()}"
-
         if replay_key is not None:
             now = time.monotonic()
             _prune_idempotent_requests(session, now)
-            if idempotency_key or retried:
-                idempotent = session.idempotent_requests.get(replay_key)
+            idempotent = session.idempotent_requests.get(replay_key)
             if idempotent is not None and idempotent.binding != binding:
                 return web.json_response(
                     dialect.error_body(

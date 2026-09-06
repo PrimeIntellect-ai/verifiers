@@ -136,7 +136,7 @@ class RolloutSession:
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
-    """Explicit keys or marked SDK retries mapped to their replay state."""
+    """Explicit idempotency keys mapped to their replay state."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
