@@ -65,12 +65,16 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
     async def list_tools(self) -> list[Tool]:
         tools: list[Tool] = []
         cursor = None
+        seen_cursors: set[str] = set()
         while True:
             page = await self.client.list_tools(cursor=cursor)
             tools.extend(page.tools)
             cursor = page.next_cursor
             if cursor is None:
                 return tools
+            if cursor in seen_cursors:
+                raise ValueError("MCP tools pagination returned a repeated cursor")
+            seen_cursors.add(cursor)
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context | None = None
