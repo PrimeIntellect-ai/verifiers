@@ -8,7 +8,7 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -125,3 +125,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             prompt=prompt,
             system_prompt=system_prompt,
         )
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await remove_dir(runtime, f"{KIMI_HOME}/{trace.id}", "Kimi Code state")

@@ -190,7 +190,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         root = self._root(trace)
         agent_dir = f"{root}/agent"
         skills_dir = f"{agent_dir}/skills"
-        await self.install_skills(runtime, skills_dir)
         created = await runtime.run(
             [
                 "mkdir",
@@ -207,6 +206,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
+        await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",

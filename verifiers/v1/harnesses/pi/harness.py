@@ -9,7 +9,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -189,3 +189,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
         )
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
