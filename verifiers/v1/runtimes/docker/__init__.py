@@ -3,7 +3,6 @@
 import array
 import asyncio
 import contextlib
-import json
 import logging
 import shlex
 import socket
@@ -35,7 +34,7 @@ class DockerConfig(NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str | None = None
-    """Working directory override; None preserves the image's working directory."""
+    """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -180,8 +179,8 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 class DockerRuntime(Runtime):
     def __init__(self, config: DockerConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = DockerRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = DockerRuntimeInfo(**self.config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._proxy: EgressProxy | None = None
         self._proxy_host_ip: str | None = None
@@ -245,11 +244,8 @@ class DockerRuntime(Runtime):
             *network,
             *limits,
             *env_args,
-            *(
-                ["--workdir", self.config.workdir]
-                if self.config.workdir is not None
-                else []
-            ),
+            "--workdir",
+            self.config.workdir,
             "--entrypoint",
             "sleep",
             "--name",
@@ -262,15 +258,6 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
-        if self.config.workdir is None:
-            workdir = await docker(
-                "inspect", "--format", "{{json .Config.WorkingDir}}", self._container
-            )
-            if workdir.exit_code != 0:
-                raise SandboxError(f"docker inspect failed: {workdir.stderr.strip()}")
-            # Resolve before setup so commands, uploads, and relative artifacts agree.
-            self.info.workdir = json.loads(workdir.stdout) or "/"
-            self.config = self.config.model_copy(update={"workdir": self.info.workdir})
         if restricted:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.

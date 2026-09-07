@@ -77,7 +77,7 @@ class PrimeConfig(NetworkPolicyConfig):
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str | None = None
-    """Working directory override; None preserves the sandbox's working directory."""
+    """Working directory override; None uses the task's workdir, or /app."""
     vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -150,8 +150,8 @@ class PrimeRuntime(Runtime):
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
-        self.config = config
-        self.info = PrimeRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
 
     @property
@@ -243,20 +243,9 @@ class PrimeRuntime(Runtime):
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            if self.config.workdir is not None:
-                await self._client.execute_command(
-                    self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-                )
-            else:
-                result = await self._client.execute_command(self.info.id, "pwd -P")
-                workdir = result.stdout.removesuffix("\n")
-                if result.exit_code != 0 or not workdir.startswith("/"):
-                    raise SandboxError(
-                        f"could not resolve sandbox workdir: {result.stderr}"
-                    )
-                # Resolve before setup so commands, uploads, and relative artifacts agree.
-                self.info.workdir = workdir
-                self.config = self.config.model_copy(update={"workdir": workdir})
+            await self._client.execute_command(
+                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+            )
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's

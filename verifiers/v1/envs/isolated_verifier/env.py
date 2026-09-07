@@ -26,32 +26,6 @@ from verifiers.v1.utils.retries import backoff
 logger = logging.getLogger(__name__)
 
 
-class _WorkdirMismatchError(ValueError):
-    """A permanent artifact-placement error that a fresh verifier cannot fix."""
-
-
-def _validate_artifact_workdirs(
-    task: vf.Task, solver_workdir: str | None, verifier_workdir: str | None
-) -> None:
-    """Check known directories; image defaults must wait until runtime startup."""
-    if solver_workdir is None or verifier_workdir is None:
-        return
-    relative = [
-        artifact.source
-        for artifact in task.data.artifacts
-        if not PurePosixPath(artifact.source).is_absolute()
-    ]
-    solver_path = PurePosixPath(solver_workdir)
-    verifier_path = PurePosixPath(verifier_workdir)
-    if relative and solver_path != verifier_path:
-        raise _WorkdirMismatchError(
-            "isolated-verifier cannot transfer relative artifacts "
-            f"{relative!r} between solver workdir {str(solver_path)!r} and "
-            f"verifier workdir {str(verifier_path)!r}; use matching workdirs "
-            "or absolute artifact paths"
-        )
-
-
 class VerifierConfig(vf.BaseConfig):
     runtime: RuntimeConfig | None = None
     """Independent verifier placement and policy. None provisions a fresh runtime
@@ -111,10 +85,21 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 "restored safely; configure the agent or verifier runtime as docker, "
                 "prime, or modal"
             )
+        relative = [
+            artifact.source
+            for artifact in task.data.artifacts
+            if not PurePosixPath(artifact.source).is_absolute()
+        ]
         solver = resolve_runtime_config(self.config.agent.runtime, task)
-        _validate_artifact_workdirs(
-            task, getattr(solver, "workdir", None), config.workdir
-        )
+        solver_workdir = PurePosixPath(getattr(solver, "workdir", "") or "/app")
+        verifier_workdir = PurePosixPath(config.workdir or "/app")
+        if relative and solver_workdir != verifier_workdir:
+            raise ValueError(
+                "isolated-verifier cannot transfer relative artifacts "
+                f"{relative!r} between solver workdir {str(solver_workdir)!r} and "
+                f"verifier workdir {str(verifier_workdir)!r}; use matching workdirs "
+                "or absolute artifact paths"
+            )
         return config
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
@@ -126,9 +111,6 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     async def stage_verifier(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
     ) -> None:
-        _validate_artifact_workdirs(
-            task, solution.agent.runtime.workdir, runtime.config.workdir
-        )
         artifacts = dict(solution.state.artifacts)
         async with boundary(TaskError, "verifier task setup"):
             await invoke(task.setup, {"trace": solution, "runtime": runtime})
@@ -147,9 +129,6 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         *,
         scoring_timeout_covers_attempt: bool = False,
     ) -> tuple[Any, vf.Trace]:
-        _validate_artifact_workdirs(
-            task, solution.agent.runtime.workdir, config.workdir
-        )
         timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
         last: Exception | None = None
         for attempt in range(self.config.verifier.retries + 1):
@@ -197,8 +176,6 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                             verifier_task, verifier_solution, runtime
                         )
                     return result, verifier_solution
-            except _WorkdirMismatchError:
-                raise
             except Exception as error:  # noqa: BLE001 - retry the whole fresh box
                 last = error
         assert last is not None
