@@ -295,17 +295,20 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            # The shared SDK client coalesces concurrent VM job polls into batches.
-            # Rollout cancellation remains the practical execution timeout; this
-            # long SDK deadline is only a final safety bound.
-            result = await self._client.run_background_job(
+            # Poll directly so rollout cancellation owns the execution timeout.
+            job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
-                poll_interval=1,
             )
+            delay = 0.1
+            while True:
+                result = await self._client.get_background_job(self.info.id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
