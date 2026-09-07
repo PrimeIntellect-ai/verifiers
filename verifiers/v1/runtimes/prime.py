@@ -7,6 +7,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
+import base64
 import contextlib
 import logging
 import math
@@ -366,6 +367,21 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and self.config.vm:
+            try:
+                # VM execute_command uses bash and returns the complete output stream.
+                result = await self._client.execute_command(
+                    self.info.id,
+                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
+                    working_dir=self.config.workdir,
+                    env=self.process_env({}),
+                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                )
+            except Exception as exc:
+                raise SandboxError(f"read {path!r}: {exc}") from exc
+            if result.exit_code:
+                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            return base64.b64decode(result.stdout)
         if max_bytes is not None:
             return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
