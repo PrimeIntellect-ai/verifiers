@@ -17,6 +17,10 @@ Use the `eval` entrypoint
 uv run eval <MY_ENV>
 ```
 
+Agent runtimes default to Prime sandboxes. Select the runtime for the task and harness before running; use `--env.agent.runtime.type subprocess` for local debugging or `docker` for local container isolation. A multi-agent env uses its declared agent names in place of `agent`.
+
+Completed runs upload to the private Evaluations tab on the Prime Intellect platform by default; `--no-push` disables upload. Evaluations run through an environment-server worker pool by default; `--no-serve` runs them in-process.
+
 ## Core workflow
 
 1. Resolve and validate config without model calls:
@@ -59,8 +63,10 @@ env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `-
 ```bash
 uv run eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
 uv run eval my-task-v1 --env.id agentic-judge \
-  --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
+  --env.solver.runtime.type docker                          # judge the solver's artifacts in a fresh sandbox
 ```
+
+For `agentic-judge`, the judge uses the solver's runtime policy in a separate sandbox. Configure `--env.solver.runtime.*`; the judge's runtime setting is ignored.
 
 ## Disabling tools
 
@@ -146,7 +152,7 @@ uv run eval @ configs/my-eval.toml
 
 ## Retries
 
-Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
+Retries are opt-in at two levels: `--env.<agent>.retries` reruns that agent's rollout, while `--env.retries` reruns the entire episode. Both default to no retries. Filter retryable errors by type:
 
 ```bash
 uv run eval my-task-v1 \
@@ -161,17 +167,21 @@ A run writes to `output_dir / run.dir` (`-o` sets `output_dir`, default `outputs
 
 ```text
 outputs/<env>--<model>--<harness>--<short-id>/
-├── configs/eval.json
-├── logs/eval.log
+├── configs/resolved/eval.json
+├── logs/
+│   ├── attempt_1/eval.log
+│   └── latest -> attempt_1
 └── traces.jsonl
 ```
 
-`configs/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+`configs/resolved/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+
+Each launch writes a new `logs/attempt_<n>/eval.log`; `logs/latest` points to that attempt.
 
 Resume in place by re-running the run's own saved config with `--resume` (it re-runs only the missing/errored rollouts; any config drift from the saved run is refused):
 
 ```bash
-uv run eval @ <run-dir>/configs/eval.json --resume
+uv run eval @ <run-dir>/configs/resolved/eval.json --resume
 ```
 
 To overwrite a run dir and start fresh instead, use `--clean`.
