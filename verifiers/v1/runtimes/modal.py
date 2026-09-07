@@ -39,7 +39,8 @@ _APP_NAME = "verifiers-v1"
 class ModalConfig(BaseConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None preserves the sandbox's working directory."""
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
@@ -134,7 +135,18 @@ class ModalRuntime(Runtime):
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
+            if self.config.workdir is not None:
+                await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
+            else:
+                result = await self.run(["pwd", "-P"], {})
+                workdir = result.stdout.removesuffix("\n")
+                if result.exit_code != 0 or not workdir.startswith("/"):
+                    raise SandboxError(
+                        f"could not resolve sandbox workdir: {result.stderr}"
+                    )
+                # Resolve before setup so commands, uploads, and relative artifacts agree.
+                self.info.workdir = workdir
+                self.config = self.config.model_copy(update={"workdir": workdir})
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's

@@ -76,7 +76,8 @@ class PrimeConfig(NetworkPolicyConfig):
     platform auto-builds what the sandbox needs from it (a VM image for `vm` sandboxes,
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None preserves the sandbox's working directory."""
     vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -242,9 +243,20 @@ class PrimeRuntime(Runtime):
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._client.execute_command(
-                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
+            if self.config.workdir is not None:
+                await self._client.execute_command(
+                    self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+                )
+            else:
+                result = await self._client.execute_command(self.info.id, "pwd -P")
+                workdir = result.stdout.removesuffix("\n")
+                if result.exit_code != 0 or not workdir.startswith("/"):
+                    raise SandboxError(
+                        f"could not resolve sandbox workdir: {result.stderr}"
+                    )
+                # Resolve before setup so commands, uploads, and relative artifacts agree.
+                self.info.workdir = workdir
+                self.config = self.config.model_copy(update={"workdir": workdir})
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
