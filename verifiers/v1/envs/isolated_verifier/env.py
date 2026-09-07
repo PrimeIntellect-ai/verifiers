@@ -85,21 +85,6 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 "restored safely; configure the agent or verifier runtime as docker, "
                 "prime, or modal"
             )
-        relative = [
-            artifact.source
-            for artifact in task.data.artifacts
-            if not PurePosixPath(artifact.source).is_absolute()
-        ]
-        solver = resolve_runtime_config(self.config.agent.runtime, task)
-        solver_workdir = PurePosixPath(getattr(solver, "workdir", "") or "/")
-        verifier_workdir = PurePosixPath(config.workdir)
-        if relative and solver_workdir != verifier_workdir:
-            raise ValueError(
-                "isolated-verifier cannot transfer relative artifacts "
-                f"{relative!r} between solver workdir {str(solver_workdir)!r} and "
-                f"verifier workdir {str(verifier_workdir)!r}; use matching workdirs "
-                "or absolute artifact paths"
-            )
         return config
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
@@ -111,6 +96,21 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     async def stage_verifier(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
     ) -> None:
+        relative = [
+            artifact.source
+            for artifact in task.data.artifacts
+            if not PurePosixPath(artifact.source).is_absolute()
+        ]
+        # Image defaults are known only after each runtime has started.
+        solver_workdir = PurePosixPath(solution.agent.runtime.workdir)
+        verifier_workdir = PurePosixPath(runtime.config.workdir)
+        if relative and solver_workdir != verifier_workdir:
+            raise ValueError(
+                "isolated-verifier cannot transfer relative artifacts "
+                f"{relative!r} between solver workdir {str(solver_workdir)!r} and "
+                f"verifier workdir {str(verifier_workdir)!r}; use matching workdirs "
+                "or absolute artifact paths"
+            )
         artifacts = dict(solution.state.artifacts)
         async with boundary(TaskError, "verifier task setup"):
             await invoke(task.setup, {"trace": solution, "runtime": runtime})
