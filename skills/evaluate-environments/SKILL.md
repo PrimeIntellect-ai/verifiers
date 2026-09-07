@@ -103,6 +103,22 @@ uv run eval my-task-v1 \
   --env.agent.runtime.memory 8
 ```
 
+### Subprocess and task network policies
+
+The subprocess runtime cannot enforce task-level network restrictions. It rejects
+tasks with a concrete or empty `TaskData.network_allow` list, or a non-empty
+`network_block` list, by default. If running those tasks with inherited host
+networking is an explicit and acceptable tradeoff, opt in through configuration:
+
+```toml
+[env.agent.runtime]
+type = "subprocess"
+ignore_task_network_policy = true
+```
+
+This does not enforce the task's requested policy; it deliberately ignores it.
+Prefer a Docker or Prime runtime when isolation is required.
+
 Sampling:
 
 ```bash
