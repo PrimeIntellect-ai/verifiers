@@ -534,9 +534,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         if task
         else []
     )
-    # Older registry entries stored one author in [metadata].
-    if not authors and meta.get("author_name"):
-        authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     if harbor_config.ignore_timeouts:
         agent_timeout = scoring_timeout = None
     else:
