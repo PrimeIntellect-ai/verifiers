@@ -6,13 +6,29 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import ConfigDict, Field, FiniteFloat
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
 
 PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""
+
+
+class RuntimeSkills(BaseModel):
+    """A directory of skill folders already present inside the agent runtime."""
+
+    runtime: str
+
+
+SkillSource = Path | RuntimeSkills
+
+
+def skill_destination(skill: SkillSource, dest: str) -> str:
+    """Runtime roots merge into `dest`; host folders keep their resolved name."""
+    return (
+        dest if isinstance(skill, RuntimeSkills) else f"{dest}/{skill.resolve().name}"
+    )
 
 
 class HarnessConfig(BaseConfig):
@@ -26,10 +42,10 @@ class HarnessConfig(BaseConfig):
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
     """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
-    skills: list[Path] = Field(default_factory=list)
-    """Skill folders to upload into the program's skill discovery directory — each
-    lands at `<skills dir>/<folder name>`. Only harnesses whose program discovers
-    skills natively (`SUPPORTS_SKILLS`) accept them."""
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Host skill folders or `{runtime: path}` roots of skills inside the runtime.
+    Sources are installed in order; later files override matching earlier files.
+    Only harnesses with native skill support (`SUPPORTS_SKILLS`) accept them."""
 
     @property
     def name(self) -> str:

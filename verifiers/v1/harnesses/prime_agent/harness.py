@@ -7,7 +7,7 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
@@ -251,7 +251,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if self.config.autonomous:
             args.append("--autonomous")
         for skill in self.config.skills:
-            args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
+            args += ["--skill", skill_destination(skill, SKILLS_DIR)]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
 

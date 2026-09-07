@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, RuntimeSkills, skill_destination
 from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -96,10 +96,27 @@ class Harness(ABC, Generic[ConfigT]):
         """Provision this harness in `runtime` before its execution timeout starts."""
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
-        """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
-        the program's fixed skill discovery location, which a supporting harness's
-        `setup` passes."""
+        """Install `config.skills` in the program's discovery directory.
+        Runtime roots are copied in place; host skill folders are uploaded."""
         for skill in self.config.skills:
+            target_dir = skill_destination(skill, dest)
+            if isinstance(skill, RuntimeSkills):
+                result = await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        'mkdir -p "$2" && if [ -d "$1" ] && ! [ "$1" -ef "$2" ]; then cp -a "$1/." "$2/"; fi',
+                        "vf-skills",
+                        skill.runtime,
+                        target_dir,
+                    ],
+                    {},
+                )
+                if result.exit_code:
+                    raise RuntimeError(
+                        f"installing runtime skills failed: {result.stderr}"
+                    )
+                continue
             # Resolve so `.`/`..` entries get their real folder name (and can't
             # place files outside `dest`).
             skill = skill.resolve()
@@ -109,7 +126,7 @@ class Harness(ABC, Generic[ConfigT]):
             for file in sorted(skill.rglob("*")):
                 if not file.is_file():
                     continue
-                target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
+                target = f"{target_dir}/{file.relative_to(skill).as_posix()}"
                 await runtime.write(target, file.read_bytes())
                 if os.access(file, os.X_OK):
                     executables.append(target)

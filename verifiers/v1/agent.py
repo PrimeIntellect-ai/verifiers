@@ -19,6 +19,7 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.harness import RuntimeSkills
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -532,6 +533,15 @@ class Agent:
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
+        harness = self.harness
+        skills = [*task.data.skills, *harness.config.skills]
+        if task.data.skills or any(
+            isinstance(skill, RuntimeSkills) for skill in skills
+        ):
+            # Task and runtime sources vary per run; keep harness state and caches local.
+            harness = type(harness)(
+                harness.config.model_copy(update={"skills": skills})
+            )
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -542,7 +552,7 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
-            self.harness,
+            harness,
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
@@ -550,7 +560,7 @@ class Agent:
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
             "agent_config": self.config,
-            "harness": self.harness,
+            "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
             "timeouts": replace(

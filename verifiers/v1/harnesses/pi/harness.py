@@ -7,7 +7,7 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
@@ -159,8 +159,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         skill_args = [
             arg
             for skill in self.config.skills
-            # Resolve like `install_skills` so the path matches what it wrote.
-            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+            for arg in ("--skill", skill_destination(skill, SKILLS_DIR))
         ]
         pi_args = [
             PI_BIN,

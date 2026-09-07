@@ -66,11 +66,13 @@ The names of these tools are set by the respective harness. Consult the relevant
 
 ## Skills
 
-Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Codex) take a `skills` list of local skill folders, each uploaded into the program's skill discovery directory in the agent's runtime as `<skills dir>/<folder name>`:
+Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Codex) take a `skills` list. A local skill folder is uploaded to `<skills dir>/<folder name>`. A `{runtime = "..."}` entry copies the contents of a directory already inside the runtime into the program's skill discovery directory:
 
 ```toml
 [env.agent.harness]
-skills = ["path/to/my-skill"]
+skills = [{runtime = "/opt/skills"}, "path/to/my-skill"]
 ```
 
-Setting `skills` on a harness without native skill support fails up front.
+Tasks can supply the same sources through `TaskData.skills`, for example `skills=[vf.RuntimeSkills(runtime="/opt/skills")]`. Task sources are installed first, followed by harness sources; later files override matching earlier files. Sources are resolved after task setup.
+
+Setting `skills` on a task or harness without native harness skill support fails up front.
