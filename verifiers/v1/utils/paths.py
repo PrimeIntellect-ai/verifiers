@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 
@@ -10,4 +11,10 @@ def home_dir() -> Path:
         return Path(tempfile.gettempdir())
 
 
-CACHE_DIR = home_dir() / ".cache" / "verifiers"
+def cache_dir() -> Path:
+    if override := os.environ.get("VERIFIERS_CACHE_DIR"):
+        return Path(override).expanduser()
+    return home_dir() / ".cache" / "verifiers"
+
+
+CACHE_DIR = cache_dir()

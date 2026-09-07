@@ -46,8 +46,7 @@ def resolve_runtime_config(
         task.data.network_block
     )
     ignore_task_policy = (
-        isinstance(config, SubprocessConfig)
-        and config.ignore_task_network_policy
+        isinstance(config, SubprocessConfig) and config.ignore_task_network_policy
     )
     if task_network_policy and not ignore_task_policy:
         if not isinstance(config, NetworkPolicyConfig):
