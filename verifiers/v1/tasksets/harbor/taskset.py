@@ -27,7 +27,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -250,27 +250,27 @@ class HarborTask(Task[HarborData]):
         if not self.scoring_deferred:
             trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
-    async def stage_verifier(self, runtime: Runtime) -> None:
-        # An artifact under /tests must not replace the task package's verifier.
-        await self.stage_tests(runtime, wipe=True)
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        if any(
+            PurePosixPath(root).is_relative_to("/tests")
+            for root in trace.state.artifacts
+        ):
+            raise TaskError("Harbor artifacts cannot restore into /tests")
+        # Overlay packaged tests while preserving dependencies baked into the image.
+        await self.stage_tests(runtime)
         self.verifier_staged = True
 
-    async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
+    async def stage_tests(self, runtime: Runtime) -> None:
         """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
 
         Raises rather than scoring stale state: a leftover reward file — planted by
         the agent or shipped in the image — must be gone before `test.sh` runs, so a
         removal that fails must not fall through to reading it.
-
-        `wipe` for a box we did not watch being built: a fresh container of the task's
-        image can ship its own `/tests`, and a leftover file there would be graded as
-        though it came from the package.
         """
         await runtime.write(
             "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
         )
         stage = (
-            f"{'rm -rf /tests && ' if wipe else ''}"
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
             "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
         )
