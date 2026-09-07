@@ -256,25 +256,32 @@ class HarborTask(Task[HarborData]):
             for root in trace.state.artifacts
         ):
             raise TaskError("Harbor artifacts cannot restore into /tests")
-        # Overlay packaged tests while preserving dependencies baked into the image.
-        await self.stage_tests(runtime)
+        await self.stage_tests(runtime, wipe=True)
         self.verifier_staged = True
 
-    async def stage_tests(self, runtime: Runtime) -> None:
-        """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
+    async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
+        """Use a dedicated verifier image's tests, or stage the task package's tests.
 
         Raises rather than scoring stale state: a leftover reward file — planted by
         the agent or shipped in the image — must be gone before `test.sh` runs, so a
         removal that fails must not fall through to reading it.
         """
-        await runtime.write(
-            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
-        )
-        stage = (
+        # Harbor's dedicated verifier image owns the complete test suite and its
+        # dependencies. Mixing it with packaged tests can retain obsolete helpers.
+        stage = "test -f /tests/test.sh"
+        if self.data.verifier is None or self.data.verifier.image is None:
+            await runtime.write(
+                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+            )
+            stage = (
+                f"{'rm -rf /tests && ' if wipe else ''}"
+                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            )
+        command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            f"mkdir -p /logs/verifier && {stage}"
         )
-        result = await runtime.run(["sh", "-c", stage], {})
+        result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
