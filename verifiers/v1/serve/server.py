@@ -136,11 +136,21 @@ class EnvServer:
         ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
-        data = msgpack.packb(
-            response.model_dump(mode="python"),
-            default=msgpack_encoder,
-            use_bin_type=True,
-        )
+        try:
+            data = msgpack.packb(
+                response.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            )
+        except Exception as e:
+            # Encoding failures must also reply so clients don't wait indefinitely.
+            logger.warning("response encoding failed: %s", e, exc_info=True)
+            data = msgpack.packb(
+                BaseResponse(
+                    success=False, error=f"{type(e).__name__}: {e}"
+                ).model_dump(),
+                use_bin_type=True,
+            )
         try:
             # Let ZMQ retain the packed response instead of copying large traces.
             await self.frontend.send_multipart(

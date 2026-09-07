@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 import numpy as np
+from pydantic_core import to_jsonable_python
 
 # Marker key inside the encoded payload so a decoder can recognize a
 # tensor round-trip without disturbing arbitrary user dicts.
@@ -31,14 +32,17 @@ def msgpack_encoder(obj):
     is ONLY called for types msgpack doesn't recognize. This avoids the massive
     performance penalty of recursing through millions of tokens in Python.
 
-    Handles: Path, UUID, Enum, datetime, Pydantic models, numpy scalars,
+    Handles: Path, UUID, sets, Enum, datetime, Pydantic models, numpy scalars,
     numpy arrays, torch tensors, and dataclasses (e.g. renderers'
     ``MultiModalData`` / ``PlaceholderRange``). Tensors and ndarrays are
     encoded as ``{__torch_tensor__: True, dtype, shape, data}``.
+    Other types use Pydantic's JSON conversions; unsupported types still raise.
     Does NOT handle: lists, dicts, basic types (msgpack does this natively in C).
     """
     if isinstance(obj, (Path, UUID)):
         return str(obj)
+    elif isinstance(obj, (set, frozenset)):
+        return list(obj)
     elif isinstance(obj, Enum):
         return obj.value
     elif isinstance(obj, (datetime, date)):
@@ -61,5 +65,4 @@ def msgpack_encoder(obj):
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
     else:
-        # raise on unknown types to make issues visible
-        raise TypeError(f"Object of type {type(obj)} is not msgpack serializable")
+        return to_jsonable_python(obj)
