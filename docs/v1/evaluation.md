@@ -73,6 +73,6 @@ Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Cod
 skills = [{runtime = "/opt/skills"}, "path/to/my-skill"]
 ```
 
-Tasks can supply the same sources through `TaskData.skills`, for example `skills=[vf.RuntimeSkills(runtime="/opt/skills")]`. Task sources are installed first, followed by harness sources; later files override matching earlier files. Sources are resolved after task setup.
+Tasks can supply the same sources through `TaskData.skills`, for example `skills=[vf.RuntimeSkills(runtime="/opt/skills")]`. Task sources are installed first, followed by harness sources; later files override matching earlier files. Each run gets its own installed skills. Sources are resolved after task setup, and missing source directories fail the run.
 
 Setting `skills` on a task or harness without native harness skill support fails up front.

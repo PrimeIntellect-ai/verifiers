@@ -44,8 +44,8 @@ class Harness(ABC, Generic[ConfigT]):
     where model-directed execution changes the rules: the subprocess-on-host
     warning, the judge env's sandbox requirement."""
     SUPPORTS_SKILLS: ClassVar[bool] = False
-    """Whether the program discovers SKILL.md skills — its `setup` calls
-    `install_skills` with the program's fixed discovery location; configuring
+    """Whether the program discovers SKILL.md skills — it calls
+    `install_skills` with a run-scoped discovery location; configuring
     `skills` on a harness without support is rejected up front."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
@@ -105,7 +105,7 @@ class Harness(ABC, Generic[ConfigT]):
                     [
                         "sh",
                         "-c",
-                        'mkdir -p "$2" && if [ -d "$1" ] && ! [ "$1" -ef "$2" ]; then cp -a "$1/." "$2/"; fi',
+                        '[ -d "$1" ] && mkdir -p "$2" && if ! [ "$1" -ef "$2" ]; then cp -a "$1/." "$2/"; fi',
                         "vf-skills",
                         skill.runtime,
                         target_dir,
@@ -114,7 +114,7 @@ class Harness(ABC, Generic[ConfigT]):
                 )
                 if result.exit_code:
                     raise RuntimeError(
-                        f"installing runtime skills failed: {result.stderr}"
+                        f"installing runtime skills from {skill.runtime!r} failed: {result.stderr}"
                     )
                 continue
             # Resolve so `.`/`..` entries get their real folder name (and can't

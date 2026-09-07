@@ -22,7 +22,6 @@ PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "1.2.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -48,7 +47,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
@@ -120,6 +118,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
+        await self.install_skills(runtime, f"{home}/skills")
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(

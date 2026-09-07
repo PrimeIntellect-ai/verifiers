@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
 ACP_COMMAND = [BINARY, "acp"]
-SKILLS_DIR = f"{KIMI_HOME}/skills"
 
 INSTALL = r"""
 set -e
@@ -52,7 +51,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
@@ -77,6 +75,8 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"
+        skills_dir = f"{kimi_home}/skills"
+        await self.install_skills(runtime, skills_dir)
         provider_type = {
             "chat_completions": "openai",
             "responses": "openai_responses",
@@ -88,7 +88,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             else endpoint
         )
         config = {
-            "extra_skill_dirs": [SKILLS_DIR] if self.config.skills else [],
+            "extra_skill_dirs": [skills_dir] if self.config.skills else [],
             **(
                 {
                     "permission": {

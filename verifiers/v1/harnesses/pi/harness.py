@@ -21,7 +21,6 @@ KEY_VAR = "PI_INTERCEPT_KEY"
 PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
-SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.25.0"
 ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
@@ -61,7 +60,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info(
             "pi: ensuring Pi %s and pi-acp %s are installed",
@@ -93,6 +91,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         agent_dir = f".vf-pi-agent-{trace.id}"
+        skills_dir = f"{agent_dir}/skills"
+        await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -159,7 +159,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         skill_args = [
             arg
             for skill in self.config.skills
-            for arg in ("--skill", skill_destination(skill, SKILLS_DIR))
+            for arg in ("--skill", skill_destination(skill, skills_dir))
         ]
         pi_args = [
             PI_BIN,

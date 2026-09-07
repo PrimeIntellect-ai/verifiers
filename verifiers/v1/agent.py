@@ -19,7 +19,6 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
-from verifiers.v1.configs.harness import RuntimeSkills
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -535,10 +534,8 @@ class Agent:
         interception — shared by `run` and `interaction`."""
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
-        if task.data.skills or any(
-            isinstance(skill, RuntimeSkills) for skill in skills
-        ):
-            # Task and runtime sources vary per run; keep harness state and caches local.
+        if skills:
+            # Skill installations can hold run-specific state, such as RLM's package environment.
             harness = type(harness)(
                 harness.config.model_copy(update={"skills": skills})
             )
