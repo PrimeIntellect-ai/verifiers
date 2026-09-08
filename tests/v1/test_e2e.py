@@ -169,6 +169,7 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pair("rlm", "e2b", "rlm-acp-in-e2b"),
     pytest.param(
         "prime-agent",
         "prime",

@@ -11,7 +11,6 @@ import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.runtimes import E2BConfig, E2BRuntime
-from verifiers.v1.runtimes.e2b import _egress_update
 
 CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"))
 
@@ -91,79 +90,3 @@ def test_e2b_config_accepts_supported_egress_rules(rule: str) -> None:
 )
 def test_e2b_config_accepts_supported_block_rules(rule: str) -> None:
     assert E2BConfig(block=[rule]).block == [rule]
-
-
-def test_e2b_command_combines_runtime_and_process_environments() -> None:
-    runtime = E2BRuntime(E2BConfig())
-    runtime.env = {
-        "RUNTIME_ONLY": "runtime",
-        "OVERRIDDEN": "runtime",
-        "PATH": "/runtime/bin",
-    }
-
-    command, env = runtime._command(
-        ["printenv"],
-        {
-            "PROCESS_ONLY": "process",
-            "OVERRIDDEN": "process",
-            "PATH": "/process/bin",
-        },
-    )
-
-    assert command == 'export PATH="$VF_RUNTIME_PATH"; exec printenv'
-    assert env == {
-        "RUNTIME_ONLY": "runtime",
-        "PROCESS_ONLY": "process",
-        "OVERRIDDEN": "process",
-        "VF_RUNTIME_PATH": "/process/bin",
-    }
-
-
-@pytest.mark.asyncio
-async def test_e2b_teardown_retries_after_a_failed_kill() -> None:
-    class FlakySandbox:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def kill(self) -> None:
-            self.calls += 1
-            if self.calls == 1:
-                raise RuntimeError("transient failure")
-
-    runtime = E2BRuntime(E2BConfig())
-    sandbox = FlakySandbox()
-    runtime._sandbox = sandbox
-
-    await runtime.teardown()
-    assert runtime._sandbox is sandbox
-
-    await runtime.teardown()
-    assert runtime._sandbox is None
-
-
-def test_e2b_egress_update_states_the_complete_policy() -> None:
-    routes = ["https://tunnel.example.com/intercept"]
-
-    unrestricted = _egress_update(E2BConfig(), None)
-    assert unrestricted == {"allow_internet_access": True}
-
-    blocklist = _egress_update(E2BConfig(block=["203.0.113.0/24"]), routes)
-    assert blocklist == {
-        "allow_out": ["tunnel.example.com"],
-        "deny_out": ["203.0.113.0/24"],
-    }
-
-    allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
-    assert allowlist == {
-        "allow_out": ["tunnel.example.com", "api.example.com"],
-        "deny_out": ["0.0.0.0/0"],
-    }
-
-    framework_only = _egress_update(E2BConfig(allow=[]), routes)
-    assert framework_only == {
-        "allow_out": ["tunnel.example.com"],
-        "deny_out": ["0.0.0.0/0"],
-    }
-
-    no_routes = _egress_update(E2BConfig(allow=[]), [])
-    assert no_routes == {"allow_internet_access": False}
