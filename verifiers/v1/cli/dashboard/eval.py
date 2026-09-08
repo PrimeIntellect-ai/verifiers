@@ -281,17 +281,25 @@ def Overview(config: EvalConfig) -> Table:
 
 
 def _push_footer(push: "PushState | None") -> Group | None:
-    """The `--push` status line under the rollouts, shown once the run finishes and the upload
-    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
-    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    """The `--push` line under the rollouts: dim with the run's URL while it streams,
+    white once pushed, red when it failed. `None` when `--push` is off or the run stayed
+    local."""
     if push is None or not push.started:
         return None
-    if not push.done:
-        line = Text("Pushing traces...", style="dim")
-    elif push.url:
+    if push.error and push.url:
+        # The run exists and holds what streamed up; only closing it out failed.
         line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-    else:
+        line.append(f"  not closed out: {push.error}", style="red")
+    elif push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    elif push.incomplete and push.url:
+        # Closed out, but the uploader lost records: what landed is there, say what didn't.
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+        line.append(f"  incomplete: {push.incomplete}", style="red")
+    elif not push.finished:
+        line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
+    else:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
     return Group(Rule(style="dim"), line)
 
 
