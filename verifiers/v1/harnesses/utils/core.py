@@ -189,13 +189,10 @@ async def chat(
     tools: list[dict],
     *,
     tool_choice: str | None = None,
-    stream: bool = False,
 ):
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    if not stream:
-        return await client.chat.completions.create(**kwargs)
     raw_stream = await client.chat.completions.create(
         **kwargs, stream=True, stream_options={"include_usage": True}
     )
@@ -356,7 +353,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
-    parser.add_argument("--stream", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
     return parser.parse_args()
@@ -413,7 +409,6 @@ async def main() -> None:
             tools,
             args.compaction,
             args.summarize_at_tokens,
-            stream=args.stream,
         )
         if compactor.enabled and compactor.threshold is None:
             compactor.threshold = await discover_threshold(client, args.model)
