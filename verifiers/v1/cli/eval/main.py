@@ -24,6 +24,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -137,10 +138,10 @@ def main(argv: list[str] | None = None) -> None:
     if config.push and config.rich is None:
         from verifiers.v1.utils.platform import push_traces
 
-        push_traces(episodes, config)
+        push_traces(episodes, config, results_dir=run_path)
     if (
         config.rich is None
     ):  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
-                print(trace.model_dump_json(indent=2, exclude_none=True))
+                print(trace.model_dump_json(indent=2, exclude=EXCLUDE_FIELDS))

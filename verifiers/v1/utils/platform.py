@@ -1,45 +1,74 @@
 """Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
 
 Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
-samples -> finalize). Each sample keeps the complete native Episode as its source
-of truth and includes a flat summary for older Platform consumers. Auth + base URL
-come from `$PRIME_API_KEY` / `~/.prime/config.json`.
+samples -> finalize). Each sample keeps a reviewable native Episode projection and
+a flat summary for older Platform consumers. Run-local configuration remains in the
+saved output directory. Auth + base URL come from `$PRIME_API_KEY` /
+`~/.prime/config.json`.
 """
 
-import json
 import logging
-import os
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-import httpx
+from prime_evals import (
+    MAX_SAMPLES_PAYLOAD_BYTES,
+    APIClient,
+    Config,
+    CreateEvaluationRequest,
+    EvalsClient,
+    prepare_upload,
+    secret_values,
+    serialize_json,
+)
+from pydantic import BaseModel
 
+from verifiers.v1.cli.output import read_upload_secret_fingerprints
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.episode import Episode
-from verifiers.v1.trace import Trace
-from verifiers.v1.utils.prime import load_prime_config
+from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
+from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_API_URL = "https://api.primeintellect.ai"
-DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
-# Repeated /samples posts append; match the Prime Evals client's request ceiling.
-_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+PROVIDER_STATE_FIELDS = {
+    "encrypted_content",
+    "signature",
+    "data",
+}
+PLATFORM_TRACE_EXCLUDE = {
+    "upload_secrets": True,
+    "agent": {
+        "config": {
+            "client": {"headers"},
+            "harness": {"env", "skills"},
+        },
+        "runtime": {"id"},
+    },
+    "nodes": {
+        "__all__": {
+            **{field: True for field in EXCLUDE_FIELDS["nodes"]["__all__"]},
+            **{
+                field: True
+                for field in (
+                    "token_ids",
+                    "mask",
+                    "is_content",
+                    "logprobs",
+                    "advantages",
+                    "reference_logprobs",
+                    "loss_weights",
+                )
+            },
+            "message": {"provider_state": {"__all__": PROVIDER_STATE_FIELDS}},
+        }
+    },
+    "mm_token_type_id_map": True,
+}
 
 
-def json_bytes(value: Any) -> int:
-    return len(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    )
-
-
-@dataclass
-class PushState:
+class PushState(BaseModel):
     """Mutable upload status shared with the dashboard."""
 
     started: bool = False
@@ -48,8 +77,33 @@ class PushState:
     error: str | None = None
 
 
+def dump_messages(messages: Messages) -> list[dict[str, Any]]:
+    return [
+        message.model_dump(
+            mode="json",
+            exclude={"provider_state": {"__all__": PROVIDER_STATE_FIELDS}},
+            exclude_none=True,
+        )
+        for message in messages
+    ]
+
+
+def finish_push(
+    state: PushState | None,
+    url: str | None = None,
+    error: str | None = None,
+) -> str | None:
+    if state is not None:
+        state.url = url
+        state.error = error
+        state.done = True
+    return url
+
+
 def trace_to_sample(
-    trace: Trace, rollout_number: int = 1, episode_id: str | None = None
+    trace: Trace,
+    rollout_number: int = 1,
+    episode_id: str | None = None,
 ) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the v0 eval-sample format).
 
@@ -58,9 +112,6 @@ def trace_to_sample(
     so a multi-trace rollout's grouping travels with each row without a nested
     schema. No prompt/completion split (meaningless mid-branch): `completion` is the
     final branch's messages, `trajectory` one message list per branch."""
-
-    def dump(messages):
-        return [m.model_dump(mode="json", exclude_none=True) for m in messages]
 
     task = trace.task.data.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
@@ -73,7 +124,7 @@ def trace_to_sample(
         "trainable": trace.agent.trainable,
         "task": task,
         "prompt": [],
-        "completion": dump(branches[-1].messages) if branches else [],
+        "completion": dump_messages(branches[-1].messages) if branches else [],
         "answer": task.get("answer"),
         # Keyed `tool_defs` because the v0 sample format already carries it there.
         "tool_defs": [t.model_dump(mode="json", exclude_none=True) for t in trace.tools]
@@ -90,7 +141,7 @@ def trace_to_sample(
         "stop_condition": trace.stop_condition,
         "trajectory": [
             {
-                "messages": dump(branch.messages),
+                "messages": dump_messages(branch.messages),
                 "num_input_tokens": branch.num_input_tokens,
                 "num_output_tokens": branch.num_output_tokens,
             }
@@ -107,26 +158,6 @@ def trace_to_sample(
         if reward is not None:
             sample.setdefault(name, reward.score)
     return sample
-
-
-def credentials() -> tuple[str | None, str, str, str | None]:
-    """(api_key, api_base, frontend_url, team_id) from env vars / `~/.prime/config.json`."""
-    cfg = load_prime_config()
-    api_key = os.getenv("PRIME_API_KEY") or cfg.get("api_key")
-    base = (
-        os.getenv("PRIME_API_BASE_URL")
-        or os.getenv("PRIME_BASE_URL")
-        or cfg.get("base_url")
-        or DEFAULT_API_URL
-    )
-    base = base.rstrip("/").removesuffix("/api/v1")
-    frontend = (
-        os.getenv("PRIME_FRONTEND_URL")
-        or cfg.get("frontend_url")
-        or DEFAULT_FRONTEND_URL
-    )
-    team_id = os.getenv("PRIME_TEAM_ID") or cfg.get("team_id")
-    return api_key, base, frontend, team_id
 
 
 def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
@@ -163,9 +194,10 @@ def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
 def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
     """One Platform sample per Episode, with a legacy-compatible trace summary.
 
-    The native Episode in `info.native_wrapper` is authoritative and contains every
-    trace. One trainable trace (or the first trace) supplies only the flat summary
-    used by older consumers. `native_trace_index` identifies that summary trace.
+    The Episode projection in `info.native_wrapper` contains every trace's review
+    data, without transport, runtime identity, opaque continuation, or per-token
+    training state. One trainable trace (or the first trace) supplies the flat
+    summary used by older consumers. `native_trace_index` identifies that trace.
     """
     counts: dict[int, int] = {}
     samples = []
@@ -187,10 +219,17 @@ def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
         sample["sample_id"] = episode.id
         sample["info"] = {
             **(sample["info"] or {}),
-            "native_wrapper": episode.to_record(),
+            "native_wrapper": episode.model_dump(
+                mode="json",
+                exclude={
+                    "upload_secrets": True,
+                    "traces": {"__all__": PLATFORM_TRACE_EXCLUDE},
+                },
+                exclude_none=True,
+            ),
             "native_trace_index": summary_trace_index,
         }
-        if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+        if len(serialize_json({"samples": [sample]})) <= MAX_SAMPLES_PAYLOAD_BYTES:
             samples.append(sample)
             continue
         logger.warning(
@@ -208,25 +247,20 @@ def push_traces(
     episodes: list[Episode],
     config: EvalConfig,
     state: "PushState | None" = None,
+    results_dir: Path | None = None,
 ) -> str | None:
     """Upload a finished run to the platform; return the viewer URL (None if
     skipped/failed). Resolves the env by name (get-or-create, so a local run
     uploads without a prior `prime env push`); when `state` is given, records the
     outcome on it so the dashboard's status line resolves."""
 
-    def finish(url: str | None = None, error: str | None = None) -> str | None:
-        if state is not None:
-            state.url = url
-            state.error = error
-            state.done = True
-        return url
-
-    api_key, base, frontend, team_id = credentials()
+    prime_config = Config()
+    api_key = prime_config.api_key
     if not api_key:
         logger.warning(
             "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
         )
-        return finish(error="no PRIME_API_KEY (run `prime login`)")
+        return finish_push(state, error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = config.env.taskset.id
@@ -241,77 +275,74 @@ def push_traces(
         **metrics,
     }
 
-    team = {"team_id": team_id} if team_id else {}
-    api = f"{base}/api/v1"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
+        clients = [config.client]
+        known_secrets = list(
+            secret_values(
+                api_key,
+                *(secret for episode in episodes for secret in episode.upload_secrets),
+            )
+        )
+        secret_sources = []
+        for trace in traces:
+            agent = trace.agent.config
+            known_secrets.extend(trace.upload_secrets)
+            if agent.client is not None:
+                clients.append(agent.client)
+            if agent.harness is not None:
+                secret_sources.append(agent.harness.resolved_env)
+        for client in clients:
+            known_secrets.append(resolve_api_key(client))
+            secret_sources.append(resolve_headers(client))
+
+        saved_episode_ids = {episode.id for episode in episodes if episode.traces}
+        secret_fingerprints = (
+            read_upload_secret_fingerprints(results_dir, saved_episode_ids)
+            if results_dir is not None
+            else ()
+        )
+
         samples = build_samples(episodes)
-        batches: list[list[dict[str, Any]]] = []
-        batch: list[dict[str, Any]] = []
-        payload_bytes = len(b'{"samples":[]}')
-        for i, sample in enumerate(samples):
-            sample_bytes = json_bytes(sample)
-            sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
-            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                raise ValueError(
-                    f"sample {i} is too large to upload "
-                    f"({sample_payload_bytes} > "
-                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
-                )
-            next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
-            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                batches.append(batch)
-                batch = []
-                payload_bytes = len(b'{"samples":[]}')
-                next_payload_bytes = payload_bytes + sample_bytes
-            batch.append(sample)
-            payload_bytes = next_payload_bytes
-        if batch or not samples:
-            batches.append(batch)
-
-        with httpx.Client(headers=headers, timeout=300.0) as client:
-
-            def post(path: str, body: dict) -> dict:
-                resp = client.post(f"{api}{path}", json=body)
-                resp.raise_for_status()
-                return resp.json()
-
-            env_id = post("/environmentshub/resolve", {"name": env_name, **team})[
-                "data"
-            ]["id"]
-            eval_id = post(
-                "/evaluations/",
-                {
-                    "name": config.run.name,
-                    "environments": [{"id": env_id}],
-                    "model_name": config.model,
-                    "dataset": env_name,
-                    "framework": "verifiers",
-                    "metadata": metadata,
-                    "metrics": metrics,
-                    "tags": [],
-                    **team,
-                },
-            )["evaluation_id"]
-            for batch in batches:
-                body = json.dumps(
-                    {"samples": batch},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-                resp = client.post(
-                    f"{api}/evaluations/{eval_id}/samples",
-                    content=body,
-                )
-                resp.raise_for_status()
-            post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
+        request = CreateEvaluationRequest(
+            name=config.run.name,
+            environments=[{"name": env_name}],
+            model_name=config.model,
+            dataset=env_name,
+            framework="verifiers",
+            metadata=metadata,
+            metrics=metrics,
+        )
+        prepared = prepare_upload(
+            {
+                "request": request.model_dump(mode="json"),
+                "samples": samples,
+            },
+            known_secrets,
+            secret_sources,
+            secret_fingerprints,
+        )
+        payload = prepared.data
+        redactions = prepared.report.locations
+        request = CreateEvaluationRequest.model_validate(payload["request"])
+        samples = payload["samples"]
+        if redactions:
+            logger.warning(
+                "--push: preflight redacted %d credential-bearing value(s); "
+                "saved traces were not changed",
+                redactions,
+            )
+        with APIClient(config=prime_config) as api_client:
+            eval_id = EvalsClient(api_client).push_evaluation(
+                request,
+                samples,
+                max_payload_bytes=MAX_SAMPLES_PAYLOAD_BYTES,
+            )
     except Exception as e:  # noqa: BLE001 - push is best-effort across the full upload
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
-        return finish(error=f"{type(e).__name__}: {e}")
+        return finish_push(state, error=f"{type(e).__name__}: {e}")
 
-    url = f"{frontend}/dashboard/evaluations/{eval_id}"
+    url = f"{prime_config.frontend_url.rstrip('/')}/dashboard/evaluations/{eval_id}"
     logger.info("--push: uploaded %d samples -> %s", len(samples), url)
-    return finish(url=url)
+    return finish_push(state, url=url)

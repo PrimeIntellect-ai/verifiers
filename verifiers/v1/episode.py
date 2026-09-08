@@ -12,6 +12,11 @@ from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace, TraceTask
 from verifiers.v1.types import Usage
 
+EPISODE_EXCLUDE_FIELDS = {
+    "upload_secrets": True,
+    "traces": {"__all__": EXCLUDE_FIELDS},
+}
+
 
 class EnvInfo(BaseModel):
     """The env that ran the episode, self-describing without the run's config."""
@@ -101,6 +106,8 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the episode completed successfully."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
+    upload_secrets: list[str] = Field(default_factory=list, repr=False)
+    """Ephemeral capabilities from discarded attempts, retained for upload redaction."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
 
@@ -154,7 +161,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         Per-token float streams are rounded to `float_decimals` (`None` keeps every digit)."""
         return self.model_dump(
             mode="json",
-            exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+            exclude=EPISODE_EXCLUDE_FIELDS,
             exclude_none=True,
             context={"float_decimals": float_decimals},
         )

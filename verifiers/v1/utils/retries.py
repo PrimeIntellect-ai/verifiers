@@ -18,6 +18,7 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from prime_evals import secret_values
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -27,6 +28,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 from verifiers.v1.configs.retries import RetryConfig
 
 if TYPE_CHECKING:
@@ -113,6 +115,7 @@ async def run_episode_with_retry(
     attempts' errors are prepended so the episode shows the full history; a final
     good attempt returns clean."""
     history: list = []
+    history_secrets = []
     for attempt in range(retry.max_retries + 1):
         final = await run()
         if attempt == retry.max_retries or not episode_should_retry(final, retry):
@@ -121,8 +124,22 @@ async def run_episode_with_retry(
             (t.last_error for t in final.traces if t.last_error), None
         )
         history.extend(final.errors)
+        history_secrets.extend(final.upload_secrets)
         for trace in final.traces:
             history.extend(trace.errors)
+            history_secrets.extend(trace.upload_secrets)
+        agents = [trace.agent.config for trace in final.traces]
+        clients = [agent.client for agent in agents if agent.client is not None]
+        sources = [
+            agent.harness.resolved_env for agent in agents if agent.harness is not None
+        ] + [resolve_headers(client) for client in clients]
+        api_keys = [resolve_api_key(client) for client in clients]
+        values = [
+            *api_keys,
+            *(value for source in sources for value in source.values()),
+        ]
+        classified = set(secret_values(*api_keys, secret_sources=sources))
+        history_secrets.extend(value for value in values if value in classified)
         delay = backoff(attempt)
         logger.warning(
             "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
@@ -138,4 +155,5 @@ async def run_episode_with_retry(
         # `ok` stamp, never errors-emptiness. In place: the envelope, the stamp,
         # and every consumer share this one list.
         final.errors[:0] = history
+        final.upload_secrets[:0] = history_secrets
     return final

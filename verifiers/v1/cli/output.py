@@ -1,12 +1,13 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
+"""On-disk output: rollout traces, resolved configs, and upload-redaction fingerprints.
 
 Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
 next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
 whole episode owed on resume, and a failure before any trace minted still leaves
 its errors on disk. The JSON file is the run's resolved config in the format the
 CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
-append as episodes complete, so results are durable mid-run. Files written
-by this surface contain episodes only.
+append as episodes complete, so results are durable mid-run. Runtime credentials stay
+out of the trace; a non-plaintext sidecar lets resumed uploads redact them if the agent
+echoed one into review data.
 """
 
 import asyncio
@@ -15,10 +16,12 @@ import os
 from functools import cache
 from pathlib import Path
 
+from prime_evals import SecretFingerprint, fingerprint_secret, secret_values
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
+from verifiers.v1.episode import EPISODE_EXCLUDE_FIELDS, EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
@@ -26,6 +29,9 @@ from verifiers.v1.utils.aio import run_shielded
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
+
+UPLOAD_SECRET_FINGERPRINTS_FILE = "upload-secret-fingerprints.jsonl"
+"""Non-plaintext lookup material for redacting generated capabilities after resume."""
 
 CONFIG_DIR = "configs"
 """Directory inside a run dir holding its configs: the launch TOML copied verbatim to
@@ -122,7 +128,7 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
     if not tomls:
         return
     texts = (
-        [text for _, text in tomls]
+        [toml[1] for toml in tomls]
         if len(tomls) == 1
         else [f"# @ {p}\n{text}" for p, text in tomls]
     )
@@ -134,24 +140,68 @@ def write_launch_toml(results_dir: Path, name: str = "eval") -> None:
 def save_config(
     config: BaseModel, results_dir: Path, filename: str = "eval.json"
 ) -> None:
-    """Set up the run's output dir: write the resolved config, copy the launch TOML,
-    and start a fresh (empty) `traces.jsonl`. Call once up front, before episodes start
-    landing."""
+    """Write run config and initialize fresh trace and upload-redaction output files."""
     write_config(config, results_dir, filename)
     write_launch_toml(results_dir, Path(filename).stem)
     (results_dir / TRACES_FILE).write_text(
         ""
     )  # fresh; appended to as rollouts complete
+    (results_dir / UPLOAD_SECRET_FINGERPRINTS_FILE).write_text("")
 
 
 def write_episode(
     results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
+    agents = [trace.agent.config for trace in episode.traces]
+    clients = [agent.client for agent in agents if agent.client is not None]
+    sources = [
+        agent.harness.resolved_env for agent in agents if agent.harness is not None
+    ] + [resolve_headers(client) for client in clients]
+    secrets = secret_values(
+        *episode.upload_secrets,
+        *(secret for trace in episode.traces for secret in trace.upload_secrets),
+        *(resolve_api_key(client) for client in clients),
+        secret_sources=sources,
+    )
+    fingerprint_record = {
+        "episode_id": episode.id,
+        "fingerprints": [fingerprint_secret(secret) for secret in secrets],
+    }
+    with (results_dir / UPLOAD_SECRET_FINGERPRINTS_FILE).open("a") as f:
+        f.write(json.dumps(fingerprint_record, separators=(",", ":")) + "\n")
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    data = type_adapter(type(episode)).dump_json(
+        episode,
+        exclude=EPISODE_EXCLUDE_FIELDS,
+        exclude_none=True,
+    )
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
+
+
+def read_upload_secret_fingerprints(
+    results_dir: Path, episode_ids: set[str]
+) -> tuple[SecretFingerprint, ...]:
+    """Read the sidecar records needed by resumed episodes, failing if any are absent."""
+    records = {}
+    with (results_dir / UPLOAD_SECRET_FINGERPRINTS_FILE).open() as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record["episode_id"] in episode_ids:
+                records[record["episode_id"]] = record["fingerprints"]
+    if missing := episode_ids - records.keys():
+        raise ValueError(
+            f"missing upload secret fingerprints for {len(missing)} episode(s)"
+        )
+    return tuple(
+        (length, digest)
+        for fingerprints in records.values()
+        for length, digest in fingerprints
+    )
 
 
 def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
@@ -179,16 +229,11 @@ async def append_episode(
     lock: asyncio.Lock,
 ) -> None:
     """Append one finished rollout episode without blocking the event loop. The run's
-    shared lock preserves whole-line ordering, and awaiting the worker preserves
-    per-episode durability."""
+    shared lock preserves whole-line ordering. Callers shield the whole operation so
+    cancellation cannot interrupt lock acquisition or the worker."""
 
-    async def persist() -> None:
-        async with lock:
-            await asyncio.to_thread(write_episode, results_dir, episode)
-
-    # Run lock acquisition and the worker to completion even under cancellation, so
-    # finalized episodes are never lost mid-write (`run_shielded` re-raises the cancellation).
-    await run_shielded(persist())
+    async with lock:
+        await asyncio.to_thread(write_episode, results_dir, episode)
 
 
 async def append_trace(
@@ -202,4 +247,4 @@ async def append_trace(
         traces=[trace],
         ok=trace.ok,
     )
-    await append_episode(results_dir, episode, lock)
+    await run_shielded(append_episode(results_dir, episode, lock))

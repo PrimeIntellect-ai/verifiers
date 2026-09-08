@@ -41,7 +41,11 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    resolve_api_key,
+    resolve_headers,
+)
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -1089,7 +1093,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept models: id=%s", session.trace.id)
         config = session.ctx.client
-        headers = dict(config.headers or {})
+        headers = resolve_headers(config)
         headers.update(dialect.auth_headers(resolve_api_key(config)))
         try:
             # Finite read timeout: a hung provider must not stall threshold discovery

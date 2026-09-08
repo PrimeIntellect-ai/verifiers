@@ -3,13 +3,30 @@
 recompute on load), transient `state` never crosses the wire, and the permissive `WireTrace` loads a
 dump without importing the originating taskset."""
 
+import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from prime_evals import fingerprint_secret
 
 import verifiers.v1 as vf
-from verifiers.v1.agent import Interaction
+from verifiers.v1.agent import Agent, Interaction
+from verifiers.v1.cli.output import (
+    TRACES_FILE,
+    UPLOAD_SECRET_FINGERPRINTS_FILE,
+    read_episodes,
+    write_episode,
+)
+from verifiers.v1.configs.client import (
+    PRIME_TEAM_ID_HEADER,
+    EvalClientConfig,
+    resolve_headers,
+)
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.episode import Episode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.rlm.harness import (
     RLM_SESSION_METADATA_KEY,
@@ -17,12 +34,17 @@ from verifiers.v1.harnesses.rlm.harness import (
     RLMHarnessConfig,
 )
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.runtimes.docker import DockerRuntimeInfo
 from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
+from verifiers.v1.trace import Error
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils import platform
+from verifiers.v1.utils.platform import PushState, build_samples, push_traces
+from verifiers.v1.utils.retries import run_episode_with_retry
 
 
 class MyTask(vf.TaskData):
@@ -38,6 +60,47 @@ class FailingSegmentRollout:
     closed = Rollout.closed
     fail = Rollout.fail
     step = Rollout.step
+
+
+class StopInPreflight:
+    def __init__(
+        self,
+        capability: str,
+        has_fingerprint: bool = True,
+        persisted_secrets: tuple[str, ...] = (),
+    ) -> None:
+        self.capability = capability
+        self.has_fingerprint = has_fingerprint
+        self.persisted_secrets = (capability, *persisted_secrets)
+
+    def __call__(
+        self, payload, known_secrets, secret_sources, secret_fingerprints
+    ) -> None:
+        assert payload["samples"]
+        assert self.capability in json.dumps(payload)
+        assert (
+            all(
+                fingerprint_secret(secret) in secret_fingerprints
+                for secret in self.persisted_secrets
+            )
+            is self.has_fingerprint
+        )
+        assert {
+            "prime-api-key",
+            "agent-api-key-0123456789",
+            "run-api-key-0123456789",
+        }.issubset(known_secrets)
+        sources = {
+            name: value for source in secret_sources for name, value in source.items()
+        }
+        assert sources["RUNTIME_SECRET"] == "runtime-secret-0123456789"
+        if "FORWARDED_RUNTIME_SECRET" in sources:
+            assert sources["FORWARDED_RUNTIME_SECRET"] == "forwarded-secret-0123456789"
+        assert sources["X-Auth"] in {
+            "agent-header-secret-0123456789",
+            "run-header-secret-0123456789",
+        }
+        raise RuntimeError("preflight stopped upload")
 
 
 @pytest.mark.asyncio
@@ -180,6 +243,268 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_platform_sample_separates_runtime_data_without_reducing_review_data():
+    task = vf.WireTaskData.model_validate(
+        {
+            "idx": 4,
+            "prompt": "Solve the task",
+            "answer": "reference answer",
+            "rubric": "award one point for the reference answer",
+            "workdir": "/Users/alice/private-project",
+            "network_allow": ["10.0.0.4"],
+        }
+    )
+    trace = vf.Trace(
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                harness=HarnessConfig(
+                    env={"RUNTIME_SETTING": "literal-value"},
+                    forward_env=["USER_SECRET"],
+                    skills=["/Users/alice/private-skill"],
+                ),
+                client=EvalClientConfig(
+                    base_url="https://example.com/v1",
+                    api_key_var="USER_SECRET",
+                    headers={
+                        "X-Custom": "runtime-header",
+                        "X-Prime-Team-ID": "team-private",
+                    },
+                ),
+            ),
+            runtime=DockerRuntimeInfo(
+                id="container-private",
+                image="private.example.com/image",
+                workdir="/Users/alice/runtime",
+            ),
+        ),
+        task=vf.TraceTask(
+            type="Task",
+            data=task,
+            key="content-derived-key",
+            hash="content-derived-hash",
+        ),
+        nodes=[
+            MessageNode(
+                message=AssistantMessage(
+                    content="reviewable completion",
+                    reasoning_content="reviewable reasoning",
+                    provider_state=[
+                        {
+                            "id": "provider-action-id",
+                            "container_id": "container-private",
+                            "encrypted_content": "opaque-continuation",
+                            "signature": "opaque-signature",
+                            "data": "opaque-redacted-thinking",
+                            "input": "reviewable provider input",
+                            "phase": "commentary",
+                        }
+                    ],
+                ),
+                sampled=True,
+                token_ids=[1, 2],
+                mask=[True, True],
+                is_content=[True, True],
+                logprobs=[-0.1, -0.2],
+            ),
+        ],
+        info={"raw_credentials": "reviewable trace info"},
+        errors=[
+            Error(
+                type="RuntimeError",
+                message="failed in /Users/alice/private-project",
+                traceback="reviewable traceback",
+            )
+        ],
+    )
+    episode = Episode(task=trace.task, traces=[trace])
+    sample = build_samples([episode])[0]
+
+    native_trace = sample["info"]["native_wrapper"]["traces"][0]
+    client = native_trace["agent"]["config"]["client"]
+    harness = native_trace["agent"]["config"]["harness"]
+    assert "headers" not in client and client["api_key_var"] == "USER_SECRET"
+    assert {"env", "skills"}.isdisjoint(harness)
+    assert harness["forward_env"] == ["USER_SECRET"]
+    assert "id" not in native_trace["agent"]["runtime"]
+    assert native_trace["info"] == {"raw_credentials": "reviewable trace info"}
+    assert native_trace["errors"][0]["traceback"] == "reviewable traceback"
+    assert native_trace["task"] == trace.task.model_dump(mode="json", exclude_none=True)
+
+    assistant = native_trace["nodes"][0]
+    assert {"token_ids", "mask", "is_content", "logprobs"}.isdisjoint(assistant)
+    assert assistant["message"]["reasoning_content"] == "reviewable reasoning"
+    provider_state = assistant["message"]["provider_state"][0]
+    assert provider_state == {
+        "id": "provider-action-id",
+        "container_id": "container-private",
+        "input": "reviewable provider input",
+        "phase": "commentary",
+    }
+
+    local_trace = episode.to_record()["traces"][0]
+    assert local_trace["agent"]["config"]["client"]["headers"]
+    assert local_trace["agent"]["config"]["harness"]["env"]
+    assert local_trace["agent"]["runtime"]["id"] == "container-private"
+    assert local_trace["nodes"][0]["message"]["provider_state"][0]["encrypted_content"]
+
+
+def test_prime_team_header_is_resolved_live_without_entering_config(monkeypatch):
+    monkeypatch.setenv("PRIME_TEAM_ID", "team-private")
+    config = EvalClientConfig(headers={"X-Custom": "keep"})
+
+    assert config.headers == {"X-Custom": "keep"}
+    assert PRIME_TEAM_ID_HEADER not in config.model_dump_json()
+    assert resolve_headers(config) == {
+        "X-Custom": "keep",
+        PRIME_TEAM_ID_HEADER: "team-private",
+    }
+
+
+def test_trace_push_runs_preflight_before_opening_the_network(monkeypatch, tmp_path):
+    monkeypatch.setenv("FORWARDED_RUNTIME_SECRET", "forwarded-secret-0123456789")
+    monkeypatch.setenv("AGENT_API_KEY", "agent-api-key-0123456789")
+    monkeypatch.setenv("RUN_API_KEY", "run-api-key-0123456789")
+    monkeypatch.setenv("PRIME_API_KEY", "prime-api-key")
+    capability = "rollout-capability-0123456789"
+    trace = vf.Trace(
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=EvalClientConfig(
+                    api_key_var="AGENT_API_KEY",
+                    headers={"X-Auth": "agent-header-secret-0123456789"},
+                ),
+                harness=HarnessConfig(
+                    env={"RUNTIME_SECRET": "runtime-secret-0123456789"},
+                    forward_env=["FORWARDED_RUNTIME_SECRET"],
+                ),
+            )
+        ),
+        task=vf.TraceTask(
+            type="Task", data=vf.TaskData(idx=0, prompt=f"echoed {capability}")
+        ),
+    )
+    trace.upload_secrets.append(capability)
+    episode = Episode(task=trace.task, traces=[trace])
+    episode_capability = "episode-capability-0123456789"
+    episode.upload_secrets.append(episode_capability)
+    assert "upload_secrets" not in json.dumps(episode.to_record())
+    wire_episode = vf.WireEpisode.model_validate(episode.model_dump())
+    assert wire_episode.upload_secrets == [episode_capability]
+    assert wire_episode.traces[0].upload_secrets == [capability]
+    (tmp_path / TRACES_FILE).touch()
+    write_episode(tmp_path, episode)
+    assert capability in (tmp_path / TRACES_FILE).read_text()
+    assert capability not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
+    assert (
+        episode_capability
+        not in (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).read_text()
+    )
+    with (tmp_path / UPLOAD_SECRET_FINGERPRINTS_FILE).open("a") as f:
+        f.write('{"episode_id":')
+    (episode,) = read_episodes(tmp_path, vf.WireTrace)
+    assert episode.upload_secrets == []
+    assert episode.traces[0].upload_secrets == []
+    monkeypatch.delenv("FORWARDED_RUNTIME_SECRET")
+    config = SimpleNamespace(
+        env=SimpleNamespace(taskset=SimpleNamespace(id="test-env")),
+        run=SimpleNamespace(id="run-1", name="test-run"),
+        model="test-model",
+        num_rollouts=1,
+        client=EvalClientConfig(
+            api_key_var="RUN_API_KEY",
+            headers={"X-Auth": "run-header-secret-0123456789"},
+        ),
+    )
+    state = PushState()
+
+    monkeypatch.setattr(
+        platform,
+        "prepare_upload",
+        StopInPreflight(
+            capability,
+            persisted_secrets=(
+                "forwarded-secret-0123456789",
+                episode_capability,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        platform,
+        "APIClient",
+        lambda **unused_kwargs: pytest.fail("network opened before upload preflight"),
+    )
+
+    assert push_traces([episode], config, state, tmp_path) is None
+    assert state.error == "RuntimeError: preflight stopped upload"
+
+    state = PushState()
+    monkeypatch.setattr(
+        platform,
+        "prepare_upload",
+        StopInPreflight(capability, has_fingerprint=False),
+    )
+    assert push_traces([episode], config, state) is None
+    assert state.error == "RuntimeError: preflight stopped upload"
+
+
+def test_retry_history_keeps_generated_upload_secrets(monkeypatch):
+    task = vf.TraceTask(type="Task", data=vf.TaskData(idx=0))
+    agent_info = vf.AgentInfo(config=vf.AgentConfig())
+    first_trace = vf.Trace(agent=agent_info, task=task)
+    first_trace.errors.append(Error(type="ProviderError", message="retry"))
+    first_trace.upload_secrets.append("first-agent-capability-0123456789")
+    final_trace = vf.Trace(agent=agent_info, task=task, ok=True)
+    final_trace.upload_secrets.append("final-agent-capability-0123456789")
+    agent = Agent.__new__(Agent)
+    agent._closed = False
+    agent.config = SimpleNamespace(retries=RetryConfig(max_retries=1))
+    agent._run_once = AsyncMock(side_effect=[first_trace, final_trace])
+    monkeypatch.setattr("verifiers.v1.agent.asyncio.sleep", AsyncMock())
+
+    result = asyncio.run(agent.run(SimpleNamespace()))
+
+    assert result.upload_secrets == [
+        "first-agent-capability-0123456789",
+        "final-agent-capability-0123456789",
+    ]
+
+    monkeypatch.setenv("DISCARDED_API_KEY", "discarded-api-key-0123456789")
+    discarded_trace = vf.Trace(
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                client=EvalClientConfig(
+                    api_key_var="DISCARDED_API_KEY",
+                    headers={"X-Auth": "discarded-header-secret-0123456789"},
+                ),
+                harness=HarnessConfig(
+                    env={"RUNTIME_SECRET": "discarded-runtime-secret-0123456789"}
+                ),
+            )
+        ),
+        task=task,
+        errors=[Error(type="ProviderError", message="retry")],
+        upload_secrets=["discarded-agent-capability-0123456789"],
+    )
+    first_episode = Episode(
+        task=task,
+        errors=[Error(type="EnvError", message="retry")],
+        upload_secrets=["first-episode-capability-0123456789"],
+        traces=[discarded_trace],
+    )
+    final_episode = Episode(task=task, ok=True, traces=[final_trace])
+    attempts = AsyncMock(side_effect=[first_episode, final_episode])
+
+    result = asyncio.run(run_episode_with_retry(attempts, RetryConfig(max_retries=1)))
+
+    assert result.upload_secrets == [
+        "first-episode-capability-0123456789",
+        "discarded-agent-capability-0123456789",
+        "discarded-api-key-0123456789",
+        "discarded-runtime-secret-0123456789",
+        "discarded-header-secret-0123456789",
+    ]
 
 
 def _semantic_edge_set() -> vf.SemanticEdgeSet:

@@ -41,15 +41,16 @@ TRACE_VERSION = 1
 
 
 EXCLUDE_FIELDS: dict = {
+    "upload_secrets": True,
     "nodes": {
         "__all__": {
             "multi_modal_data",
             "routed_experts",
             "sampling_mask",
         }
-    }
+    },
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+"""Ephemeral fields kept on the eval wire but excluded from disk serialization."""
 
 
 class TimeSpan(BaseModel):
@@ -440,6 +441,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
+    upload_secrets: list[str] = Field(default_factory=list, repr=False)
+    """Ephemeral transport capabilities carried over the eval wire for upload redaction."""
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""

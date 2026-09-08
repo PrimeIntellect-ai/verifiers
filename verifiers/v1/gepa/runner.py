@@ -22,6 +22,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
 
     async def on_complete(episode: Episode) -> None:
         if run_dir is not None:
-            await append_episode(run_dir, episode, write_lock)
+            await run_shielded(append_episode(run_dir, episode, write_lock))
 
     try:
         # The endpoint stays config: the interception server builds the live client.

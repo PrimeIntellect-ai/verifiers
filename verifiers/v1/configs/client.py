@@ -46,14 +46,6 @@ class BaseClientConfig(BaseConfig):
         )
         if "base_url" not in self.model_fields_set:
             self.base_url = prime_base_url
-        host = urlparse(self.base_url).hostname or ""
-        if host != PRIME_INFERENCE_HOST and not host.endswith(
-            f".{PRIME_INFERENCE_HOST}"
-        ):
-            return self
-        team_id = os.environ.get("PRIME_TEAM_ID") or prime_config.get("team_id")
-        if team_id:
-            self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
 
 
@@ -102,3 +94,17 @@ def resolve_api_key(config: BaseClientConfig) -> str:
     ):
         api_key = load_prime_config().get("api_key")
     return api_key or "EMPTY"
+
+
+def resolve_headers(config: BaseClientConfig) -> dict[str, str]:
+    """Endpoint headers with Prime team routing resolved only for the live client."""
+    headers = dict(config.headers)
+    host = urlparse(config.base_url).hostname or ""
+    if config.api_key_var != "PRIME_API_KEY" or not (
+        host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}")
+    ):
+        return headers
+    team_id = os.environ.get("PRIME_TEAM_ID") or load_prime_config().get("team_id")
+    if team_id:
+        headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
+    return headers

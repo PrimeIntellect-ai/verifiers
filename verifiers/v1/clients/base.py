@@ -5,7 +5,11 @@ import re
 import httpx
 from openai import AsyncOpenAI
 
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    resolve_api_key,
+    resolve_headers,
+)
 
 # No read timeout: agentic completions are slow and the rollout timeout is the real
 # backstop. The connect bound stays so an unreachable endpoint still fails fast.
@@ -23,7 +27,7 @@ def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
     return AsyncOpenAI(
         base_url=config.base_url,
         api_key=resolve_api_key(config),
-        default_headers=config.headers or None,
+        default_headers=resolve_headers(config) or None,
         timeout=DEFAULT_TIMEOUT,
         max_retries=MAX_RETRIES,
         http_client=httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS),

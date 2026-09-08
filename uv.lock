@@ -3453,6 +3453,16 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-evals"
+version = "0.2.4"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-evals&rev=59310b1c8ff7d79f2310d9347535854ac37a2c76#59310b1c8ff7d79f2310d9347535854ac37a2c76" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "tenacity" },
+]
+
+[[package]]
 name = "prime-pydantic-config"
 version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -5367,6 +5377,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
+    { name = "prime-evals" },
     { name = "prime-pydantic-config", extra = ["toml"] },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
