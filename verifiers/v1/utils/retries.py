@@ -113,6 +113,7 @@ async def run_episode_with_retry(
     attempts' errors are prepended so the episode shows the full history; a final
     good attempt returns clean."""
     history: list = []
+    history_secrets: list[str] = []
     for attempt in range(retry.max_retries + 1):
         final = await run()
         if attempt == retry.max_retries or not episode_should_retry(final, retry):
@@ -121,8 +122,10 @@ async def run_episode_with_retry(
             (t.last_error for t in final.traces if t.last_error), None
         )
         history.extend(final.errors)
+        history_secrets.extend(final.upload_secrets)
         for trace in final.traces:
             history.extend(trace.errors)
+            history_secrets.extend(trace.upload_secrets)
         delay = backoff(attempt)
         logger.warning(
             "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
@@ -136,6 +139,8 @@ async def run_episode_with_retry(
     if history:
         # The full history rides the final episode either way; success is the
         # `ok` stamp, never errors-emptiness. In place: the envelope, the stamp,
-        # and every consumer share this one list.
+        # and every consumer share this one list. Each attempt's secrets ride with
+        # the errors they may appear in.
         final.errors[:0] = history
+        final.upload_secrets[:0] = history_secrets
     return final

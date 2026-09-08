@@ -399,6 +399,7 @@ class Agent:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         history: list = []
+        history_secrets: list[str] = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
                 task, runtime, tools, on_trace, collect_artifacts
@@ -412,6 +413,7 @@ class Agent:
                 )
                 break
             history.extend(trace.errors)
+            history_secrets.extend(trace.upload_secrets)
             delay = backoff(attempt)
             logger.warning(
                 "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
@@ -423,8 +425,10 @@ class Agent:
             await asyncio.sleep(delay)
         if history:
             # The full history rides the final trace either way; success is the
-            # `ok` stamp, never errors-emptiness.
+            # `ok` stamp, never errors-emptiness. Each attempt's secrets ride with
+            # the errors they may appear in.
             trace.errors = history + trace.errors
+            trace.upload_secrets[:0] = history_secrets
         return trace
 
     async def _run_once(

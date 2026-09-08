@@ -41,15 +41,17 @@ TRACE_VERSION = 1
 
 
 EXCLUDE_FIELDS: dict = {
+    "upload_secrets": True,
     "nodes": {
         "__all__": {
             "multi_modal_data",
             "routed_experts",
             "sampling_mask",
         }
-    }
+    },
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+"""Fields kept on the msgpack wire but excluded from disk serialization: raw tensors,
+and the rollout's own credentials."""
 
 
 class TimeSpan(BaseModel):
@@ -440,6 +442,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
+    upload_secrets: list[str] = Field(default_factory=list, repr=False)
+    """Credentials that exist only at rollout time: the interception tokens the harness
+    holds and credential-named variables the task resolves into its runtime. An agent
+    that prints its environment echoes them into the trace, so the platform upload
+    redacts them; never written to disk."""
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""

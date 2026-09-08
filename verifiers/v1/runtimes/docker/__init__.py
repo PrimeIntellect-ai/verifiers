@@ -398,6 +398,10 @@ class DockerRuntime(Runtime):
             raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
         self._cut = True
 
+    @property
+    def secrets(self) -> list[str]:
+        return [self._proxy.token] if self._proxy is not None else []
+
     def _proxy_env(self) -> dict[str, str]:
         if self._proxy is None:
             return {}
