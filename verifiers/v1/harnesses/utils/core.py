@@ -204,12 +204,20 @@ async def chat(
     async with AsyncChatCompletionStream(
         raw_stream=raw_stream, response_format=omit, input_tools=[]
     ) as response:
-        await response.until_done()
-        completion = response.current_completion_snapshot
-        if not completion.choices or any(
-            choice.finish_reason is None for choice in completion.choices
+        completion = None
+        async for event in response:
+            if event.type == "chunk":
+                completion = event.snapshot
+        if (
+            completion is None
+            or not completion.choices
+            or any(choice.finish_reason is None for choice in completion.choices)
         ):
             raise RuntimeError("model stream ended before a completion finished")
+        for choice in completion.choices:
+            # Some providers repeat the role in each delta. The SDK concatenates
+            # these strings, but the role is metadata, not incremental content.
+            choice.message.role = "assistant"
         return completion
 
 

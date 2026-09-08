@@ -56,7 +56,7 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
-    if isinstance(ctx.client, EvalClientConfig):
+    if source == CHAT_PROGRAM_SOURCE and isinstance(ctx.client, EvalClientConfig):
         args.append("--stream")
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
