@@ -7,8 +7,8 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
-import base64
 import contextlib
+import io
 import logging
 import math
 import shlex
@@ -372,19 +372,30 @@ class PrimeRuntime(Runtime):
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is not None and self.config.vm:
             try:
-                # VM execute_command uses bash and returns the complete output stream.
-                result = await self._client.execute_command(
+                # Stream binary output: execute_command buffers base64 text for the
+                # entire file. Bound the source read and the host buffer independently.
+                process = await self._client.open_process(
                     self.info.id,
-                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
+                    f"head -c {max_bytes} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
                     env=self.process_env({}),
-                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 )
+                async with contextlib.aclosing(process):
+                    with io.BytesIO() as data:
+                        async for chunk in process.stdout:
+                            if data.tell() + len(chunk) > max_bytes:
+                                raise SandboxError(
+                                    "read stream exceeded its byte limit"
+                                )
+                            data.write(chunk)
+                        stderr = b""
+                        async for chunk in process.stderr:
+                            stderr = (stderr + chunk)[-500:]
+                        if await process.wait():
+                            raise SandboxError(stderr.decode(errors="replace").strip())
+                        return data.getvalue()
             except Exception as exc:
                 raise SandboxError(f"read {path!r}: {exc}") from exc
-            if result.exit_code:
-                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
-            return base64.b64decode(result.stdout)
         if max_bytes is not None:
             return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.

@@ -109,6 +109,8 @@ tool and provider-held resource remains disabled.
 
 `--env.taskset.artifact-max-bytes` sets the total artifact archive budget per solver runtime (default: 32 MiB), including the `/logs/artifacts/` convention directory. Increase it for tasks that transfer trained checkpoints or VM disk files. The budget also applies when scoring is deferred to a separate verifier.
 
+Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
+
 `artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Collect hooks run in the agent's box from the task's `finalize`, which is Harbor's own ordering — after the agent phase, before collection — and declared paths plus the `/logs/artifacts/` convention dir are then carried into the grading box and restored at their original paths ("no translation", as in Harbor).
 
 Two deliberate differences from `harbor run`:
