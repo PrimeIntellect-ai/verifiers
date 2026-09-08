@@ -19,10 +19,13 @@ from typing import cast
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
+    SUMMARY_FILE,
     append_episode,
     attempt_log_file,
     output_path,
     save_config,
+    summarize,
+    write_summary,
 )
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
@@ -176,6 +179,9 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             raise SystemExit(0)
         counts = distribute(keys, owed, config.num_rollouts)
         plan = [(task, n) for task, n in zip(tasks, counts) if n]
+        # The kept rows are a new run state: the summary described the old one, and
+        # the run rewrites it on completion.
+        (out / SUMMARY_FILE).unlink(missing_ok=True)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -246,4 +252,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
                 push_state.started = True
                 await asyncio.to_thread(push_traces, episodes, config, push_state)
+    summary = summarize(episodes)
+    write_summary(out, summary)
+    logger.info(
+        "summary: episodes=%d failed=%d reward=%s",
+        summary.episodes,
+        summary.failed,
+        "—" if summary.reward is None else f"{summary.reward:.3f}",
+    )
     return episodes

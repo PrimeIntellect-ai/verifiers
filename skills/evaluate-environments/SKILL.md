@@ -163,10 +163,11 @@ A run writes to `output_dir / run.dir` (`-o` sets `output_dir`, default `outputs
 outputs/<env>--<model>--<harness>--<short-id>/
 ├── configs/eval.json
 ├── logs/eval.log
+├── summary.json
 └── traces.jsonl
 ```
 
-`configs/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+`configs/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume). `summary.json` is written when the run completes: episodes, failures by error type, the mean reward over scored rollouts, and the same per task — read it rather than re-deriving those from `traces.jsonl`.
 
 Resume in place by re-running the run's own saved config with `--resume` (it re-runs only the missing/errored rollouts; any config drift from the saved run is refused):
 

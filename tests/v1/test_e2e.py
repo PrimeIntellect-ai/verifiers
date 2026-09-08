@@ -776,3 +776,91 @@ async def test_replay_round_trip(run_v1, tmp_path):
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw
+
+
+@mark.null
+@mark.subprocess
+async def test_summary(run_v1, stub_model, tmp_path):
+    """`summary.json` lands beside `traces.jsonl` when the run completes, with the run's
+    reading of itself. Model-free: the stub answers every request with "hello world" and
+    fails the "fail" phrase upstream, so the three echo tasks land scored 1.0, scored 0.0
+    and failed (a `ProviderError` on the trace) — no key, no network."""
+    import json
+
+    # The stub's failure is deterministic; a retry would only replay it.
+    no_retry = {"max_retries": 0}
+    traces = await run_v1(
+        "echo-v1",
+        output_dir=tmp_path,
+        runtime={"type": "subprocess"},
+        client=stub_model,
+        taskset_overrides={"phrases": ["hello world", "wrong", "fail"]},
+        num_tasks=3,
+        env={"retries": no_retry, "agent": {"retries": no_retry}},
+    )
+    assert len(traces) == 3
+    assert json.loads((tmp_path / "summary.json").read_text()) == {
+        "episodes": 3,
+        "failed": 1,
+        "errors": {"ProviderError": 1},
+        "reward": 0.5,
+        "tasks": {
+            "echo:hello world": {
+                "name": None,
+                "rollouts": 1,
+                "failed": 0,
+                "reward": 1.0,
+            },
+            "echo:wrong": {"name": None, "rollouts": 1, "failed": 0, "reward": 0.0},
+            "echo:fail": {"name": None, "rollouts": 1, "failed": 1, "reward": None},
+        },
+    }
+
+
+def test_summary_rules():
+    """The rules the echo run can't reach. A rollout's reward is its policy traces'
+    (`trainable`): a frozen seat's own reward (a judge's, a modeled user's) never dilutes
+    the mean, every trace counts when no seat is trainable, and a trace that scored
+    nothing leaves its rollout unscored, outside the mean. A failure is attributed to the
+    failed trace's error, never to the history an ok trace kept from its own retries."""
+    import verifiers.v1 as vf
+    from verifiers.v1.cli.output import summarize
+
+    task = vf.TraceTask(type="Task", data=vf.TaskData(idx=0), key="t")
+
+    def trace(
+        reward: float | None,
+        trainable: bool = True,
+        ok: bool = True,
+        errors: tuple[str, ...] = (),
+    ) -> vf.Trace:
+        return vf.Trace(
+            task=task,
+            agent=vf.AgentInfo(config=vf.AgentConfig(), trainable=trainable),
+            rewards={} if reward is None else {"r": vf.Reward(score=reward)},
+            ok=ok,
+            errors=[vf.Error(type=type_, message="") for type_ in errors],
+        )
+
+    def episode(*traces: vf.Trace, ok: bool = True) -> vf.Episode:
+        return vf.Episode(task=task, traces=list(traces), ok=ok)
+
+    summary = summarize(
+        [
+            episode(trace(1.0), trace(0.0, trainable=False)),  # the policy's 1.0
+            episode(trace(0.0, trainable=False), trace(0.5, trainable=False)),  # 0.25
+            episode(trace(None)),  # unscored
+            episode(  # failed by the policy seat; the frozen seat recovered from its own
+                trace(0.0, trainable=False, errors=("ProviderError",)),
+                trace(None, ok=False, errors=("TaskError",)),
+                ok=False,
+            ),
+        ]
+    )
+    assert summary.episodes == 4
+    assert summary.failed == 1
+    assert summary.errors == {"TaskError": 1}
+    assert summary.reward == pytest.approx((1.0 + 0.25) / 2)
+    assert summary.tasks["t"].rollouts == 4
+    assert summary.tasks["t"].failed == 1
+    assert summary.tasks["t"].reward == pytest.approx((1.0 + 0.25) / 2)
