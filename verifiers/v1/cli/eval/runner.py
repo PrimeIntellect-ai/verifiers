@@ -13,8 +13,10 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import cast
+
+from pydantic import BaseModel
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
@@ -25,16 +27,34 @@ from verifiers.v1.cli.output import (
     save_config,
 )
 from verifiers.v1.cli.resume import distribute
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import BaseClientConfig, ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
+from verifiers.v1.runtimes import SubprocessConfig
 
 logger = logging.getLogger(__name__)
 
 RunSlotFn = Callable[[RunSlot], Awaitable[Episode]]
 OnComplete = Callable[[Episode], Awaitable[None]]
+
+
+def _endpoints(value: object, path: str = "") -> Iterator[tuple[str, BaseClientConfig]]:
+    """Every endpoint config under `value`, by its config path: the run's `client`, a
+    seat's override (`env.b.client`), a judge wherever a task config declares one
+    (`env.taskset.task.judges[0]`). Fields and list items are walked; a found
+    endpoint's own fields are not."""
+    if isinstance(value, BaseClientConfig):
+        yield path, value
+    elif isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            yield from _endpoints(
+                getattr(value, name), f"{path}.{name}" if path else name
+            )
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            yield from _endpoints(item, f"{path}[{i}]")
 
 
 @contextlib.asynccontextmanager
@@ -196,6 +216,21 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             config.model,
             via,
         )
+    # Name where each seat runs and what each endpoint is called with before a sandbox
+    # is provisioned or a request sent: a role the config never mentions runs on the
+    # defaults, and the defaults are hosted on the author's credentials.
+    for role, harness in config.env.agent_harnesses().items():
+        runtime = getattr(config.env, role).runtime
+        where = f"{runtime.type} runtime"
+        if not isinstance(runtime, SubprocessConfig):  # a sandbox boots an image
+            where += f" ({runtime.image})"
+        logger.info("env.%s: %s harness on the %s", role, harness.name, where)
+    for path, client in _endpoints(config):
+        logger.info("%s: %s ($%s)", path, client.base_url, client.api_key_var)
+    logger.info(
+        "push: %s",
+        "on -> Prime Intellect platform ($PRIME_API_KEY)" if config.push else "off",
+    )
     start = time.time()
     logger.info("results: %s", out)
 

@@ -111,9 +111,11 @@ def main(argv: list[str] | None = None) -> None:
                 f"comparable; re-run with `uv run eval @ {saved_path} --resume`, or "
                 "start a fresh run"
             )
-    if config.dry_run:  # resolved + validated; write it to the output dir and exit
+    if config.dry_run:  # resolved + validated; write and print it, then exit
         setup_logging("DEBUG" if config.verbose else "INFO")
-        logger.info("wrote config to %s", write_config(config, run_path))
+        config_path = write_config(config, run_path)
+        print(config_path.read_text())
+        logger.info("wrote config to %s", config_path)
         return
     # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
     # points there) — in server mode (the default) the workers write there too, and
