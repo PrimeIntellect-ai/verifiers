@@ -155,12 +155,13 @@ def context_tokens(completion) -> int:
 class Compactor:
     """Compact once and retry once when a model turn exhausts its context."""
 
-    def __init__(self, client, model, tools, enabled, threshold):
+    def __init__(self, client, model, tools, enabled, threshold, *, stream=False):
         self.client = client
         self.model = model
         self.tools = tools
         self.enabled = enabled
         self.threshold = threshold
+        self.stream = stream
         self.compacted = False
         self.last_good = 0
         """Message count of the newest state that passed a threshold check - by
@@ -178,7 +179,9 @@ class Compactor:
 
     async def complete(self, messages: list[dict]):
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await chat(
+                self.client, self.model, messages, self.tools, stream=self.stream
+            )
         except APIStatusError as error:
             if (
                 not self.enabled
@@ -206,7 +209,9 @@ class Compactor:
 
         messages = await self.compact(messages)
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await chat(
+                self.client, self.model, messages, self.tools, stream=self.stream
+            )
         except APIStatusError as error:
             # The rebuilt conversation is sized to fit, so this is out of moves.
             if is_context_overflow(error):
@@ -234,6 +239,7 @@ class Compactor:
                     checkpoint,
                     self.tools,
                     tool_choice="none",
+                    stream=self.stream,
                 )
             except APIStatusError as error:
                 if not is_context_overflow(error):

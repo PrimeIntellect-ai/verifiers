@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from types import ModuleType
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
@@ -55,6 +56,8 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
+    if isinstance(ctx.client, EvalClientConfig):
+        args.append("--stream")
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
     if mcp_urls:

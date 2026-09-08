@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI, omit
+from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -188,11 +189,28 @@ async def chat(
     tools: list[dict],
     *,
     tool_choice: str | None = None,
+    stream: bool = False,
 ):
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    return await client.chat.completions.create(**kwargs)
+    if not stream:
+        return await client.chat.completions.create(**kwargs)
+    raw_stream = await client.chat.completions.create(
+        **kwargs, stream=True, stream_options={"include_usage": True}
+    )
+    # Accumulate native deltas without auto-parsing tool arguments or treating
+    # finish_reason="length" as an exception: compaction owns that decision.
+    async with AsyncChatCompletionStream(
+        raw_stream=raw_stream, response_format=omit, input_tools=[]
+    ) as response:
+        await response.until_done()
+        completion = response.current_completion_snapshot
+        if not completion.choices or any(
+            choice.finish_reason is None for choice in completion.choices
+        ):
+            raise RuntimeError("model stream ended before a completion finished")
+        return completion
 
 
 async def run_tool_hook(
@@ -330,6 +348,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
+    parser.add_argument("--stream", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
     return parser.parse_args()
@@ -386,6 +405,7 @@ async def main() -> None:
             tools,
             args.compaction,
             args.summarize_at_tokens,
+            stream=args.stream,
         )
         if compactor.enabled and compactor.threshold is None:
             compactor.threshold = await discover_threshold(client, args.model)
