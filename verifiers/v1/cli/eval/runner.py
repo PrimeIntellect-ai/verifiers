@@ -152,6 +152,19 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     if config.num_tasks is not None:
         selected = selected.head(config.num_tasks)
     tasks = list(selected)
+    if env is None:
+        # A served worker rebuilds each task from its wire data as the taskset's declared
+        # `Task` type; a per-case subclass (its own rewards, toolsets, hooks) would come
+        # back as the base class and score silently wrong, so refuse before dispatch.
+        declared = type(taskset).task_type()
+        foreign = sorted({type(t).__name__ for t in tasks if type(t) is not declared})
+        if foreign:
+            raise ValueError(
+                f"{type(taskset).__name__} loads tasks of {', '.join(foreign)}, but a "
+                f"served run rebuilds every task as its declared {declared.__name__} from "
+                "wire data, dropping what only the subclass defines. Dispatch on a "
+                f"TaskData field inside {declared.__name__}, or run in-process with --no-serve"
+            )
     out = output_path(config)
     # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
     plan = [(task, config.num_rollouts) for task in tasks]

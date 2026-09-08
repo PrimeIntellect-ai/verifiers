@@ -10,6 +10,9 @@ import sys
 
 import pytest
 
+from verifiers.v1.cli.eval.runner import run_eval
+from verifiers.v1.configs.cli.eval import EvalConfig
+
 mark = pytest.mark
 
 
@@ -697,6 +700,26 @@ async def main():
 
 asyncio.run(main())
 """
+
+
+async def test_served_run_refuses_per_case_task_subclass(tmp_path):
+    """A served worker rebuilds each task as the taskset's declared `Task` type from wire
+    data, so a per-case subclass would lose its own rewards and toolsets and score wrong
+    without a word. The runner refuses before anything is spawned; `--no-serve` runs it."""
+    config = EvalConfig(  # served: the default `[serve]` pool
+        env={
+            "taskset": {"id": "subclass-task-v1"},
+            "agent": {"harness": {"id": "null"}},
+        },
+        num_tasks=2,
+        rich=None,
+        output_dir=tmp_path,
+        run={"dir": "served"},
+        model="none",
+    )
+    with pytest.raises(ValueError, match="SpecialTask.*served run.*--no-serve"):
+        await run_eval(config)
+    assert not (tmp_path / "served").exists()
 
 
 def test_env_client_close_drains_finished_cancels():
