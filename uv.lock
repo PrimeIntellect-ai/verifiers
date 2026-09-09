@@ -21,14 +21,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-prime-pydantic-config = false
 harbor = "2026-08-11T00:00:00Z"
-ty = "2026-07-28T00:00:00Z"
-ruff = "2026-07-28T00:00:00Z"
+prime-pydantic-config = false
 prime-runs = false
-prime-tunnel = false
 prime-sandboxes = false
+prime-tunnel = false
 renderers = false
+ruff = "2026-07-28T00:00:00Z"
+ty = "2026-07-28T00:00:00Z"
 
 [[package]]
 name = "aiofile"
@@ -3472,15 +3472,15 @@ toml = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.1"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/db/3d5a9362f0d373d10145eaee3ac255cf227bf4164b36d04119b18e226607/prime_runs-0.1.1.tar.gz", hash = "sha256:0be97dcc95b3f1648ca25475efa45a5892fb12a775bf1f61728baec73a0088bb", size = 61110, upload-time = "2026-09-04T17:01:33.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/ee/0e9cf800aa6b3db148b01d26e0d6957074027f52323b348ad35594e41d1c/prime_runs-0.1.2.tar.gz", hash = "sha256:2cd4775aa3176f95abf3def78ba257b6b0579ba2606d24307c88495e5b1bb6f1", size = 62099, upload-time = "2026-09-09T00:28:45.621Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/52/3fa41ac5e3c8bfa8eb33520f86634ae56474228f85c59b16aa04875efd7d/prime_runs-0.1.1-py3-none-any.whl", hash = "sha256:d512753ff84159a1234d1ea93091857f0a59fba12ef7ab2f69bfb579deb5ce75", size = 43006, upload-time = "2026-09-04T17:01:31.821Z" },
+    { url = "https://files.pythonhosted.org/packages/37/59/e48470b0b47d3fc261e31e13d1ed47177f0a71044234ae46b40b00063f1c/prime_runs-0.1.2-py3-none-any.whl", hash = "sha256:95ca0775317cf2733aa38a0a26b263174b992d5be63009a4cfeeff212924759b", size = 43333, upload-time = "2026-09-09T00:28:44.22Z" },
 ]
 
 [[package]]
