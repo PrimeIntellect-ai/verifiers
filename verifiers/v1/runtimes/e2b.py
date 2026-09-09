@@ -4,6 +4,12 @@
 host-side harness/framework can reach a tool server hosted in the sandbox. The reverse
 direction (a program in the sandbox reaching a host service) is the shared host-side
 `Tunnel` (interception.tunnel), not the runtime's concern.
+
+Two E2B SDK gaps shape the command plumbing here: every command runs through a login
+shell (``bash -l -c``, so profile output can pollute the streams — fenced by the start
+marker `_command` emits and consumers strip), and command output reaches callbacks as
+UTF-8 text with ``errors="replace"`` (lossy for bytes — `open_process` swaps the
+handle's decoders to latin-1 to recover exact bytes; see `E2BProcess`).
 """
 
 import asyncio
@@ -207,8 +213,11 @@ class E2BProcess(RuntimeProcess):
         pending = self._prefix[stream]
         if pending is None:
             return data
+        # Resume the search where the last chunk left off (the marker can straddle
+        # a chunk boundary), so pathological pre-marker noise stays linear to scan.
+        search_from = max(0, len(pending) - len(self._marker) + 1)
         pending.extend(data)
-        start = pending.find(self._marker)
+        start = pending.find(self._marker, search_from)
         if start < 0:
             return b""
         self._prefix[stream] = None
@@ -238,8 +247,16 @@ class E2BProcess(RuntimeProcess):
         except Exception as e:
             raise SandboxError(f"e2b live process failed: {e}") from e
         finally:
-            self._stdout_queue.put_nowait(None)
-            self._stderr_queue.put_nowait(None)
+            # A process that died before printing its marker produced only pre-marker
+            # output — the shell's own diagnosis of why it never started. Flush it so
+            # the failure is debuggable (mirrors run()'s missing-marker fallback).
+            for queue, stream in (
+                (self._stdout_queue, "stdout"),
+                (self._stderr_queue, "stderr"),
+            ):
+                if pending := self._prefix[stream]:
+                    queue.put_nowait(bytes(pending))
+                queue.put_nowait(None)
 
     async def write(self, data: bytes) -> None:
         try:
@@ -294,6 +311,9 @@ class E2BRuntime(Runtime):
         self.config = config
         self.info = E2BRuntimeInfo(**config.model_dump())
         self._sandbox = None
+        # Start marker for `_command`'s login-shell fence; random so no login-shell
+        # output can contain it (see `_command`).
+        self._marker = f"vf-start-{uuid.uuid4().hex}"
 
     @property
     def published_port(self) -> int | None:
@@ -402,37 +422,39 @@ class E2BRuntime(Runtime):
 
     def _command(
         self, argv: list[str], env: dict[str, str]
-    ) -> tuple[str, dict[str, str], str]:
-        """The wrapped command, its env, and the per-call start marker.
+    ) -> tuple[str, dict[str, str]]:
+        """The wrapped command and its env.
 
         E2B commands run through a login shell (the SDK hardcodes ``bash -l -c``),
         which brings two hazards the wrapper fences off: profile initialization can
         print to stdout/stderr (polluting results on images whose /etc/profile.d has
-        banners), and it re-derives PATH. The marker — echoed on both streams right
-        before ``exec`` — lets consumers drop everything the shell produced; the
-        caller-supplied PATH is restored after initialization so it has the same
-        precedence as on other runtimes."""
+        banners), and it re-derives PATH. The runtime's start marker — echoed on both
+        streams right before ``exec`` — lets consumers drop everything the shell
+        produced; the caller-supplied PATH is restored after initialization so it has
+        the same precedence as on other runtimes. The marker is printed as two printf
+        arguments so the contiguous marker string never appears in the command text
+        itself: a profile enabling ``set -x`` traces each command to stderr, and a
+        traced marker would trip the strip before the real one arrives."""
         command_env = self.process_env(env)
-        marker = f"vf-start-{uuid.uuid4().hex}"
-        quoted = shlex.quote(marker)
-        command = (
-            f"printf '%s' {quoted}; printf '%s' {quoted} >&2; exec {shlex.join(argv)}"
-        )
+        head, tail = self._marker[:9], self._marker[9:]
+        emit = f"printf '%s%s' {shlex.quote(head)} {shlex.quote(tail)}"
+        command = f"{emit}; {emit} >&2; exec {shlex.join(argv)}"
         if "PATH" in command_env:
             command_env["VF_RUNTIME_PATH"] = command_env.pop("PATH")
             command = f'export PATH="$VF_RUNTIME_PATH"; {command}'
-        return command, command_env, marker
+        return command, command_env
 
-    @staticmethod
-    def _after_marker(text: str, marker: str) -> str:
-        """Drop login-shell noise: everything through the start marker."""
-        _, sep, tail = text.partition(marker)
+    def _after_marker(self, text: str) -> str:
+        """Drop login-shell noise: everything through the start marker. Text without
+        the marker (the shell died before ``exec``) passes through whole — it is the
+        diagnosis of why the command never ran."""
+        _, sep, tail = text.partition(self._marker)
         return tail if sep else text
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         from e2b import CommandExitException  # importable once `start` succeeded
 
-        command, command_env, marker = self._command(argv, env)
+        command, command_env = self._command(argv, env)
         try:
             result = await self._sandbox.commands.run(
                 command,
@@ -446,8 +468,8 @@ class E2BRuntime(Runtime):
             raise SandboxError(f"e2b exec failed: {e}") from e
         return ProgramResult(
             result.exit_code,
-            self._after_marker(result.stdout or "", marker),
-            self._after_marker(result.stderr or "", marker),
+            self._after_marker(result.stdout or ""),
+            self._after_marker(result.stderr or ""),
         )
 
     async def _finished_status(self, status_path: str) -> str | None:
@@ -472,7 +494,7 @@ class E2BRuntime(Runtime):
             'out=$1; err=$2; status=$3; shift 3; "$@" >"$out" 2>"$err"; '
             'rc=$?; printf "%s\\n" "$rc" >"$status"; exit 0'
         )
-        command, command_env, _ = self._command(
+        command, command_env = self._command(
             [
                 "sh",
                 "-c",
@@ -515,12 +537,15 @@ class E2BRuntime(Runtime):
                         handle = await self._sandbox.commands.connect(
                             handle.pid, timeout=0
                         )
-                    except Exception:  # noqa: BLE001 - completion beats a dead stream
+                    except Exception as reconnect_error:
+                        # Completion beats a dead stream: the program may have finished
+                        # (pid gone) during the backoff.
                         status = await self._finished_status(status_path)
                         if status is None:
                             raise SandboxError(
-                                f"e2b durable program connection failed: {e}"
-                            ) from e
+                                "e2b durable program connection failed: "
+                                f"{e}; reconnect failed: {reconnect_error}"
+                            ) from reconnect_error
                         break
             stdout, stderr = await asyncio.gather(
                 self._sandbox.files.read(stdout_path),
@@ -546,12 +571,12 @@ class E2BRuntime(Runtime):
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        command, command_env, marker = self._command(argv, env)
+        command, command_env = self._command(argv, env)
         # Hold the program on a stdin gate so it cannot write before this method swaps
         # the handle's stream decoders to latin-1 (see E2BProcess) — only then is the
         # RuntimeProcess bytes contract (e.g. ACP's length-prefixed frames) honored.
         command = f"read -r vf_go_; {command}"
-        process = E2BProcess(self._sandbox, marker.encode())
+        process = E2BProcess(self._sandbox, self._marker.encode())
         try:
             handle = await self._sandbox.commands.run(
                 command,
@@ -566,6 +591,9 @@ class E2BRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"e2b live process failed to start: {e}") from e
         try:
+            # TODO(e2b): drop this once the SDK grows a bytes mode for command output;
+            # the swap rides on private attrs the guard below can only prove exist,
+            # not that chunks still route through them (they do on 2.35.0–2.46.x).
             for name in ("_stdout_decoder", "_stderr_decoder"):
                 if not hasattr(handle, name):
                     raise SandboxError(
@@ -573,12 +601,13 @@ class E2BRuntime(Runtime):
                         "decoders; cannot deliver byte-accurate process output"
                     )
                 setattr(handle, name, codecs.getincrementaldecoder("latin-1")())
-            process.attach(handle)
             await handle.send_stdin(b"\n")  # release the gate
         except BaseException:
             with contextlib.suppress(Exception):
                 await handle.kill()
             raise
+        # Attach last: a gate failure above leaves no orphaned wait task behind.
+        process.attach(handle)
         return process
 
     async def run_background(

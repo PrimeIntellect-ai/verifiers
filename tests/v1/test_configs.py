@@ -11,6 +11,7 @@ import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.runtimes import E2BConfig, E2BRuntime
+from verifiers.v1.runtimes.e2b import _egress_update
 
 CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"))
 
@@ -90,3 +91,34 @@ def test_e2b_config_accepts_supported_egress_rules(rule: str) -> None:
 )
 def test_e2b_config_accepts_supported_block_rules(rule: str) -> None:
     assert E2BConfig(block=[rule]).block == [rule]
+
+
+def test_e2b_egress_update_states_the_complete_policy() -> None:
+    # The security-critical policy table: whether a "restricted" sandbox actually
+    # gets a deny-everything floor, with framework routes kept reachable. No e2e
+    # placement runs network-restricted, so this table is pinned here.
+    routes = ["https://tunnel.example.com/intercept"]
+
+    unrestricted = _egress_update(E2BConfig(), None)
+    assert unrestricted == {"allow_internet_access": True}
+
+    blocklist = _egress_update(E2BConfig(block=["203.0.113.0/24"]), routes)
+    assert blocklist == {
+        "allow_out": ["tunnel.example.com"],
+        "deny_out": ["203.0.113.0/24"],
+    }
+
+    allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
+    assert allowlist == {
+        "allow_out": ["tunnel.example.com", "api.example.com"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+
+    framework_only = _egress_update(E2BConfig(allow=[]), routes)
+    assert framework_only == {
+        "allow_out": ["tunnel.example.com"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+
+    no_routes = _egress_update(E2BConfig(allow=[]), [])
+    assert no_routes == {"allow_internet_access": False}

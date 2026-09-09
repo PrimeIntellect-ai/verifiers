@@ -104,7 +104,9 @@ modal = [
     "modal>=1.5.4",
 ]
 e2b = [
-    "e2b>=2.35.0",
+    # <3: the runtime swaps the SDK command handle's private stream decoders for
+    # byte-accurate live output (see runtimes/e2b.py open_process).
+    "e2b>=2.35.0,<3",
 ]
 openenv = [
     "openenv>=0.4.1",
