@@ -48,6 +48,12 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
+    attach: str | None = None
+    """Stream into a run the launcher already created on the platform instead of opening a
+    new one — its evaluation id. Hosted evaluations pass the sandbox's `$EVALUATION_ID`
+    here; the platform owns that run's record and status, and a run that cannot be
+    attached to is an error rather than a local fallback. Requires `push`."""
+
     _id: str | None = PrivateAttr(default=None)
 
     @property
@@ -144,4 +150,12 @@ class EvalConfig(BaseConfig):
             self.run.name = default_run_name(self.env, self.model)
         if self.run.dir is None:
             self.run.dir = self.run.name
+        return self
+
+    @model_validator(mode="after")
+    def attach_needs_push(self):
+        if self.run.attach and not self.push:
+            raise ValueError(
+                "run.attach names a run on the platform, so it needs push (drop --no-push)"
+            )
         return self

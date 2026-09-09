@@ -45,7 +45,10 @@ class PushState:
 def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.Run:
     """Open the run this eval streams into, before the first rollout, and give the
     config the run's id. A run that cannot be opened is logged and replaced by a
-    disabled one; the eval goes on."""
+    disabled one; the eval goes on. With `run.attach` the run already exists on the
+    platform (a hosted evaluation's launcher created it and is waiting on it), so
+    there is no local fallback: failing to attach fails the eval."""
+    attach = config.run.attach
     identity: dict[str, Any] = {
         "name": config.run.name,
         # Resolved by name via the hub's get-or-create; no taskset, nothing to attach to.
@@ -61,12 +64,23 @@ def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.R
         },
     }
     if config.push and os.getenv(pr.MODE_ENV, "").strip().lower() == "disabled":
+        if attach:
+            raise RuntimeError(
+                f"run.attach={attach!r} names a run on the platform, but "
+                f"{pr.MODE_ENV}=disabled would keep this eval local"
+            )
         # The SDK's own kill switch; the explicit `mode="online"` below would override it.
         logger.info("--push: %s=disabled; running without a platform run", pr.MODE_ENV)
     elif config.push:
         try:
-            state.run = pr.init(mode="online", **identity)
-        except Exception as e:  # noqa: BLE001 - a failed upload must not fail the eval
+            state.run = pr.init(mode="online", id=attach, **identity)
+        except Exception as e:
+            if attach:
+                # The launcher's run would sit at running until it times out; a local
+                # run nobody reads is not a substitute.
+                raise RuntimeError(
+                    f"--run.attach: could not attach to run {attach!r} ({type(e).__name__}: {e})"
+                ) from e
             logger.warning(
                 "--push: could not open the run (%s: %s); running without it",
                 type(e).__name__,

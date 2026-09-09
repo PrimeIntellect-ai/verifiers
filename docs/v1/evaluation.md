@@ -48,6 +48,10 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
   prints each trace as JSON at the end
 - `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the
   attempt's logs (`logs/latest/eval.log`), the env workers' lines included
+- `push` — upload the run to the Prime Intellect platform as it goes (default; `--no-push`
+  keeps it local). `run.attach <evaluation-id>` streams into a run the platform already
+  created instead of opening a new one — this is how a hosted evaluation's sandbox runs
+  the same command; it is not something a local run sets by hand
 
 ## Resuming evaluations
 
