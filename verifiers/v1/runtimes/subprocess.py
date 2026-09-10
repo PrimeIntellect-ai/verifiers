@@ -12,7 +12,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import sandbox_error
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -183,7 +183,7 @@ class SubprocessRuntime(Runtime):
         try:
             data = await asyncio.to_thread(read)
         except OSError as exc:
-            raise SandboxError(f"read {path!r}: {exc}") from exc
+            raise sandbox_error(f"read {path!r}", exc) from exc
         return data if data is not None else await super()._read(path, max_bytes)
 
     async def write(self, path: str, data: bytes) -> None:

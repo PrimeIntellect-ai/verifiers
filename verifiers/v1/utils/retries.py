@@ -6,8 +6,8 @@ Two opt-in whole-run retry atoms sit above that: `Agent.run` reruns ITS OWN roll
 while the trace ends with a retryable error (`--env.<agent>.retries` — a flaky
 grader retries without re-burning the solver), and `run_episode_with_retry` reruns
 the entire episode (`--env.retries`) — the coarse fallback for faults no agent
-owns: the env's own hooks, cross-agent state. Both match by exception type name;
-both off by default.
+owns: the env's own hooks, cross-agent state. Both match by exception type name
+(a base class matching its subclasses); both off by default.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1 import errors
 from verifiers.v1.configs.retries import RetryConfig
 
 if TYPE_CHECKING:
@@ -73,15 +74,26 @@ def retrying(
     )
 
 
+def _family(type_name: str) -> set[str]:
+    """The names a recorded error type answers to in a retry policy: its own and its
+    `RolloutError` bases' (a `SandboxUnavailableError` is a `SandboxError`), looked up in
+    `verifiers.v1.errors`; a type not defined there answers only to itself."""
+    cls = getattr(errors, type_name, None)
+    if not (isinstance(cls, type) and issubclass(cls, errors.RolloutError)):
+        return {type_name}
+    return {c.__name__ for c in cls.__mro__ if issubclass(c, errors.RolloutError)}
+
+
 def _retryable(error: Error | None, retry: RetryConfig) -> bool:
-    """Whether `error` matches the retry policy: its exception type is included (and
-    not excluded)."""
+    """Whether `error` matches the retry policy: its exception type (or a base of it) is
+    included and not excluded."""
     if error is None:
         return False
-    if error.type in retry.exclude:
+    family = _family(error.type)
+    if family & set(retry.exclude):
         return False
     if retry.include:
-        return error.type in retry.include
+        return bool(family & set(retry.include))
     return True
 
 

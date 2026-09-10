@@ -10,6 +10,9 @@ Four mechanisms, each in one place:
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
+   A boundary type may be narrowed by a subclass naming the fault (`SandboxUnavailableError`) when
+   typed evidence — an exception type, an errno, an HTTP status, an RPC code — says so (`sandbox_error`);
+   the subclass's `code` rides onto the trace so a consumer branches on it instead of the message text.
 3. Surfacing (`session.RolloutSession.error`): a model or tool call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
@@ -22,13 +25,20 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
-from collections.abc import AsyncIterator
+import errno
+from collections.abc import AsyncIterator, Iterator
+from typing import ClassVar
 
+import httpx
 from openai import OpenAIError
 
 
 class RolloutError(Exception):
     """Base for a failure recorded onto the trace rather than crashing the rollout."""
+
+    code: ClassVar[str | None] = None
+    """Stable machine-readable name of the failure class, recorded as `trace.Error.code`; None on
+    the bare boundary types. Set by subclasses that name a fault, never per instance."""
 
 
 class ProviderError(RolloutError):
@@ -57,7 +67,44 @@ class EnvError(RolloutError):
 
 
 class SandboxError(RolloutError):
-    """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
+    """A runtime/sandbox operation failed (provisioning, exec, or file I/O) — the bare type when
+    nothing typed says more; the subclasses below name the fault (see `sandbox_error`)."""
+
+
+class SandboxNotFoundError(SandboxError):
+    """The path, or the box itself, is gone."""
+
+    code = "not_found"
+
+
+class SandboxTimeoutError(SandboxError):
+    """The operation, or the box's lifetime, ran out."""
+
+    code = "timeout"
+
+
+class SandboxUnavailableError(SandboxError):
+    """The provider or box is transiently unreachable (retry later)."""
+
+    code = "unavailable"
+
+
+class SandboxDeniedError(SandboxError):
+    """The provider refused: auth, billing, permission."""
+
+    code = "denied"
+
+
+class SandboxDiskFullError(SandboxError):
+    """The box's disk is full (ENOSPC)."""
+
+    code = "disk_full"
+
+
+class SandboxProvisioningError(SandboxError):
+    """The box never came up."""
+
+    code = "provisioning"
 
 
 class TaskError(RolloutError):
@@ -116,3 +163,75 @@ def model_error(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
     )
+
+
+def _chain(e: BaseException) -> Iterator[BaseException]:
+    """`e` and the failures it wraps, outermost first, as a traceback prints them: `__cause__`,
+    else the implicit `__context__` of an error raised inside another's handler without `from`
+    (the prime SDK's `APIError("HTTP 503: ...")` keeps its typed status only there)."""
+    current: BaseException | None = e
+    while current is not None:
+        yield current
+        if current.__cause__ is None and current.__suppress_context__:
+            return  # `raise ... from None`
+        current = current.__cause__ or current.__context__
+
+
+def _http_class(status: int) -> type[SandboxError] | None:
+    """The `SandboxError` subclass an HTTP status from a sandbox provider names."""
+    if status == 404:
+        return SandboxNotFoundError
+    if status in (401, 402, 403):
+        return SandboxDeniedError
+    if status in (408, 504):
+        return SandboxTimeoutError
+    if status == 429 or status >= 500:
+        return SandboxUnavailableError
+    return None
+
+
+def _rpc_class(e: BaseException) -> type[SandboxError] | None:
+    """The `SandboxError` subclass a Connect RPC failure's code names (connectrpc ships with
+    prime-sandboxes; without it nothing is an RPC failure)."""
+    try:
+        from connectrpc.code import Code
+        from connectrpc.errors import ConnectError
+    except ImportError:
+        return None
+    if not isinstance(e, ConnectError):
+        return None
+    if e.code is Code.NOT_FOUND:
+        return SandboxNotFoundError
+    if e.code is Code.DEADLINE_EXCEEDED:
+        return SandboxTimeoutError
+    if e.code in (Code.UNAVAILABLE, Code.RESOURCE_EXHAUSTED, Code.ABORTED):
+        return SandboxUnavailableError
+    if e.code in (Code.PERMISSION_DENIED, Code.UNAUTHENTICATED):
+        return SandboxDeniedError
+    return None
+
+
+def _sandbox_class(e: BaseException) -> type[SandboxError] | None:
+    """The `SandboxError` subclass one failure's own type, errno, HTTP status or RPC code names."""
+    if isinstance(e, FileNotFoundError):
+        return SandboxNotFoundError
+    if isinstance(e, (TimeoutError, httpx.TimeoutException)):
+        return SandboxTimeoutError
+    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        return SandboxDiskFullError
+    if isinstance(e, httpx.HTTPStatusError):
+        return _http_class(e.response.status_code)
+    if isinstance(e, httpx.TransportError):
+        return SandboxUnavailableError
+    return _rpc_class(e)
+
+
+def sandbox_error(
+    message: str, e: BaseException, *, default: type[SandboxError] = SandboxError
+) -> SandboxError:
+    """Map a runtime failure to the `SandboxError` subclass its typed evidence names — an
+    exception type, an errno, an HTTP status or a Connect RPC code, read off `e` and the failures
+    it chains, never its text — else `default`. The runtime counterpart of `model_error`; runtimes
+    call it at their mapping seam: `raise sandbox_error("prime exec failed", e) from e`."""
+    cls = next((c for c in map(_sandbox_class, _chain(e)) if c is not None), default)
+    return cls(f"{message}: {e}")

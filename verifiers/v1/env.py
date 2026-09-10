@@ -21,7 +21,7 @@ from verifiers.v1.configs.env import (
     default_agent_harness,
 )
 from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.errors import EnvError, boundary
+from verifiers.v1.errors import EnvError, RolloutError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
     Interception,
@@ -43,7 +43,10 @@ def _as_error(e: Exception) -> Error:
     """`e` as an episode-level `Error`. Call inside the `except` handling `e` — the
     traceback comes from the active exception context."""
     return Error(
-        type=type(e).__name__, message=str(e), traceback=traceback.format_exc()
+        type=type(e).__name__,
+        message=str(e),
+        code=e.code if isinstance(e, RolloutError) else None,
+        traceback=traceback.format_exc(),
     )
 
 

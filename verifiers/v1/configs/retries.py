@@ -6,7 +6,8 @@ from pydantic_config import BaseConfig
 
 class RetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error. `include`/`exclude`
-    name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
+    name exception classes (e.g. ``ProviderError``, ``SandboxError``); a base class
+    names its subclasses too (``SandboxError`` covers ``SandboxUnavailableError``)."""
 
     max_retries: int = Field(0, ge=0)
     """Whole-rollout retries beyond the first attempt. Off by default — the SDKs

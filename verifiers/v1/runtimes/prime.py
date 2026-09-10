@@ -19,11 +19,31 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
+from prime_sandboxes import (
+    APITimeoutError,
+    CommandTimeoutError,
+    DownloadTimeoutError,
+    PaymentRequiredError,
+    SandboxFileNotFoundError,
+    SandboxImagePullError,
+    SandboxNotRunningError,
+    SandboxOOMError,
+    UnauthorizedError,
+    UploadTimeoutError,
+)
+from prime_sandboxes import SandboxTimeoutError as SDKSandboxTimeoutError
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import (
+    SandboxDeniedError,
+    SandboxError,
+    SandboxNotFoundError,
+    SandboxProvisioningError,
+    SandboxTimeoutError,
+    sandbox_error,
+)
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -44,6 +64,44 @@ bounded by idle detection or rollout cancellation; 30 days is above any real run
 
 
 BASE_LABELS: list[str] = []
+
+_SDK_TIMEOUTS = (
+    APITimeoutError,
+    CommandTimeoutError,
+    DownloadTimeoutError,
+    UploadTimeoutError,
+    SDKSandboxTimeoutError,
+)
+_GONE = ("TERMINATED", "ERROR", "TIMEOUT")
+"""`SandboxNotRunningError.status` values that mean the box is gone (the SDK's own set), as
+opposed to not up yet."""
+
+
+def _sdk_class(e: BaseException) -> type[SandboxError] | None:
+    """The `SandboxError` subclass an SDK failure's own type names, or None."""
+    if isinstance(e, SandboxFileNotFoundError):
+        return SandboxNotFoundError
+    if isinstance(e, (UnauthorizedError, PaymentRequiredError)):
+        return SandboxDeniedError
+    if isinstance(e, _SDK_TIMEOUTS):
+        return SandboxTimeoutError
+    if isinstance(e, SandboxImagePullError):
+        return SandboxProvisioningError
+    if isinstance(e, SandboxOOMError) or (
+        isinstance(e, SandboxNotRunningError) and e.status in _GONE
+    ):
+        return SandboxNotFoundError
+    return None
+
+
+def _error(
+    what: str, e: BaseException, *, default: type[SandboxError] = SandboxError
+) -> SandboxError:
+    """`sandbox_error` with the SDK's own failure types read first."""
+    cls = _sdk_class(e)
+    if cls is not None:
+        return cls(f"{what}: {e}")
+    return sandbox_error(what, e, default=default)
 
 
 @dataclass
@@ -249,7 +307,9 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+            raise _error(
+                "prime sandbox provisioning failed", e, default=SandboxProvisioningError
+            ) from e
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
@@ -279,14 +339,14 @@ class PrimeRuntime(Runtime):
                         delay = min(delay * 2, 3)
                         status = await self._client.get_network(self.info.id)
             except TimeoutError as e:
-                raise SandboxError(
+                raise SandboxTimeoutError(
                     "prime egress policy was not applied within 60s on sandbox "
                     f"{self.info.id}; refusing to start the agent unrestricted"
                 ) from e
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(f"prime egress policy failed: {e}") from e
+            raise _error("prime egress policy failed", e) from e
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
@@ -313,7 +373,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
+            raise _error("prime exec failed", e) from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -336,7 +396,7 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
         except Exception as e:
-            raise SandboxError(f"prime live process failed to start: {e}") from e
+            raise _error("prime live process failed to start", e) from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
@@ -348,10 +408,11 @@ class PrimeRuntime(Runtime):
         try:
             exposed = await self._client.expose(self.info.id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
-            raise SandboxError(
+            raise _error(
                 "prime port exposure failed — port exposure isn't supported in this sandbox's "
                 "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
-                f"use a colocated / docker / modal tools.runtime instead. ({e})"
+                "use a colocated / docker / modal tools.runtime instead",
+                e,
             ) from e
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
@@ -368,7 +429,7 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
         except Exception as e:
-            raise SandboxError(f"prime background launch failed: {e}") from e
+            raise _error("prime background launch failed", e) from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is not None and self.config.vm:
@@ -382,7 +443,7 @@ class PrimeRuntime(Runtime):
                     timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 )
             except Exception as exc:
-                raise SandboxError(f"read {path!r}: {exc}") from exc
+                raise _error(f"read {path!r}", exc) from exc
             if result.exit_code:
                 raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
             return base64.b64decode(result.stdout)
@@ -401,7 +462,7 @@ class PrimeRuntime(Runtime):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+            raise _error(f"read {path!r}", e) from e
 
     async def write(self, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
@@ -416,7 +477,7 @@ class PrimeRuntime(Runtime):
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+            raise _error(f"write {path!r}", e) from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

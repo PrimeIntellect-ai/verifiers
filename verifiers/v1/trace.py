@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError
+from verifiers.v1.errors import ProviderError, RolloutError
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -87,6 +87,8 @@ class Error(BaseModel):
     type: str
     message: str
     status_code: int | None = None
+    code: str | None = None
+    """The failure class's stable code (`RolloutError.code`), when the error names one."""
     traceback: str | None = None
 
 
@@ -734,6 +736,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                code=error.code if isinstance(error, RolloutError) else None,
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None
