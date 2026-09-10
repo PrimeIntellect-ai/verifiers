@@ -4,7 +4,8 @@ import copy
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
@@ -189,6 +190,33 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
             continue
         yield call, max(0, call.usage.input_tokens - prev_total)
         prev_total = call.usage.total_tokens
+
+
+@dataclass(frozen=True, slots=True)
+class TraceProgress:
+    """An immutable snapshot of a trace's growth, handed to an `on_progress` hook once per
+    recorded model call. It is built on the event loop from the one call just appended —
+    cheap whatever the trace's size — and the hook runs off the loop, so it never touches
+    the live, mutating trace. A consumer that wants the whole trace reads the `Trace` it
+    already owns (`on_trace`'s argument, `Interaction.trace`, `Rollout.trace`) on its own
+    schedule."""
+
+    trace_id: str
+    """`Trace.id` of the rollout that progressed."""
+    calls: int
+    """`len(Trace.calls)` at the snapshot — `last_call`'s ordinal, and the order of
+    deliveries (which may overlap)."""
+    nodes: int
+    """`len(Trace.nodes)` at the snapshot, the turn `last_call` committed (if any) included."""
+    last_call: ModelCall
+    """A deep copy of the call record just appended (`Trace.calls[calls - 1]`)."""
+    elapsed_s: float
+    """Seconds since the trace was minted (`Trace.timing.start`)."""
+
+
+ProgressHook = Callable[[TraceProgress], Awaitable[None] | None]
+"""An `on_progress` hook: a plain callable, run in the loop's default executor, or a
+coroutine function, run as a task on the loop."""
 
 
 class Branch(BaseModel):

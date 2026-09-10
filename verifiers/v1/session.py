@@ -10,6 +10,7 @@ budget (turns / tokens), checked between turns.
 import asyncio
 import inspect
 import logging
+import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import RolloutError, TaskError
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import InterceptRecord, ProgressHook, Trace, TraceProgress
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -147,25 +148,64 @@ class RolloutSession:
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
     prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
-    on_progress: Callable[[Trace], None] | None = None
-    """A read-only observer of the live trace, notified after each recorded model call (its
-    committed turn included). It must not mutate the trace."""
+    on_progress: ProgressHook | None = None
+    """Handed a `TraceProgress` snapshot after each recorded model call, off the event loop:
+    a plain callable runs in the loop's default executor, a coroutine function as a task."""
+    progress_tasks: set["asyncio.Task"] = field(default_factory=set)
+    """Coroutine `on_progress` deliveries in flight (asyncio holds tasks weakly). Not cancelled
+    at release: a snapshot outlives the trace's seal."""
 
     @property
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
     def progress(self) -> None:
-        """Schedule `on_progress` for the trace's new content. The hook runs on the next loop
-        iteration, not here: this is called on the interception server's request path (an
-        exchange's `finally`), whose latency a consumer's hook must not add to. Scheduled
-        notifications run in order; a hook failure is logged, never the rollout's."""
-        if self.on_progress is not None:
-            asyncio.get_running_loop().call_soon(self._notify, self.on_progress)
-
-    def _notify(self, on_progress: Callable[[Trace], None]) -> None:
+        """Snapshot the trace's newest call into a `TraceProgress` and hand it to
+        `on_progress` off the event loop. This runs on the interception server's request path
+        (an exchange's `finally`), before the response is flushed, so it only builds the
+        snapshot and schedules: a plain callable goes to the loop's default executor (shared
+        with the process's other blocking work — keep hooks quick), a coroutine function
+        becomes a task. Deliveries may overlap; `TraceProgress.calls` orders them. A hook
+        failure — or a failure to schedule one — is logged, never the rollout's."""
+        hook, trace = self.on_progress, self.trace
+        if hook is None or not trace.calls:
+            return
+        snapshot = TraceProgress(
+            trace_id=trace.id,
+            calls=len(trace.calls),
+            nodes=len(trace.nodes),
+            last_call=trace.calls[-1].model_copy(deep=True),
+            elapsed_s=time.time() - trace.timing.start,
+        )
         try:
-            on_progress(self.trace)
+            loop = asyncio.get_running_loop()
+            if inspect.iscoroutinefunction(hook) or inspect.iscoroutinefunction(
+                hook.__call__
+            ):
+                task = loop.create_task(self._deliver_async(hook, snapshot))
+                self.progress_tasks.add(task)
+                task.add_done_callback(self.progress_tasks.discard)
+            else:
+                loop.run_in_executor(None, self._deliver, hook, snapshot)
+        except RuntimeError:  # no running loop, or its executor is shut down
+            logger.warning(
+                "on_progress hook not scheduled (rollout %s)", trace.id, exc_info=True
+            )
+
+    def _deliver(self, hook: ProgressHook, snapshot: TraceProgress) -> None:
+        """Run a plain hook; called in an executor thread."""
+        try:
+            hook(snapshot)
+        except Exception:
+            logger.warning(
+                "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True
+            )
+
+    async def _deliver_async(self, hook: ProgressHook, snapshot: TraceProgress) -> None:
+        try:
+            result = hook(snapshot)
+            if inspect.isawaitable(result):
+                await result
         except Exception:
             logger.warning(
                 "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True

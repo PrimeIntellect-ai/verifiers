@@ -161,10 +161,10 @@ async def test_on_progress_observes_live_trace(upstream):
         vf.AgentConfig(model="m", client=upstream, runtime=SubprocessConfig())
     )
     agent.harness = ProbeHarness(HarnessConfig(id="probe"))
-    seen: list[tuple[vf.Trace, int]] = []
+    seen: list[vf.TraceProgress] = []
 
-    def on_progress(trace: vf.Trace) -> None:
-        seen.append((trace, len(trace.calls)))
+    def on_progress(progress: vf.TraceProgress) -> None:
+        seen.append(progress)
         raise RuntimeError("consumer bug")  # logged, never the rollout's failure
 
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
@@ -172,20 +172,55 @@ async def test_on_progress_observes_live_trace(upstream):
 
     assert trace.ok and trace.errors == []
     assert len(trace.calls) == trace.num_turns == ProbeHarness.calls
-    assert all(live is trace for live, _ in seen)
-    assert [calls for _, calls in seen] == [1, 2, 3]
+    await settled(
+        lambda: len(seen) >= ProbeHarness.calls
+    )  # the last delivery is off-loop
+    seen.sort(key=lambda p: p.calls)  # deliveries run concurrently in the executor
+    assert [p.calls for p in seen] == [1, 2, 3]
+    assert [p.nodes for p in seen] == [
+        2,
+        4,
+        6,
+    ]  # each call commits its (user, assistant)
+    assert all(p.trace_id == trace.id and p.elapsed_s > 0 for p in seen)
+    # Each snapshot carries its own copy of the call it announces, never the live record.
+    for progress, call in zip(seen, trace.calls):
+        assert progress.last_call == call and progress.last_call is not call
+        assert progress.last_call.node == call.node is not None
 
 
-async def test_on_progress_runs_off_the_request_path():
-    # `record_call` runs in an exchange's `finally`, on the interception server's request
-    # path. The hook is deferred to the next loop iteration, in order, so a slow consumer adds
-    # nothing to the model call's latency, and it sees the trace as recorded by then.
-    seen: list[int] = []
+async def settled(done, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not done():
+        assert time.monotonic() < deadline, "progress deliveries did not land"
+        await asyncio.sleep(0.01)
 
-    def slow(trace: vf.Trace) -> None:
+
+def slow_sync(seen: list[vf.TraceProgress]):
+    def hook(progress: vf.TraceProgress) -> None:
         time.sleep(0.2)
-        seen.append(len(trace.calls))
+        seen.append(progress)
+        raise RuntimeError("consumer bug")
 
+    return hook
+
+
+def slow_async(seen: list[vf.TraceProgress]):
+    async def hook(progress: vf.TraceProgress) -> None:
+        await asyncio.sleep(0.2)
+        seen.append(progress)
+        raise RuntimeError("consumer bug")
+
+    return hook
+
+
+@pytest.mark.parametrize("make_hook", [slow_sync, slow_async], ids=["sync", "async"])
+async def test_on_progress_runs_off_the_event_loop(make_hook, caplog):
+    # `record_call` runs in an exchange's `finally`, on the interception server's request
+    # path, before the response is flushed. It only snapshots and schedules: a blocking hook
+    # runs in the executor (a coroutine hook as a task), so neither the next `record_call`
+    # nor the loop itself waits on it — and a raising hook is logged, never raised.
+    seen: list[vf.TraceProgress] = []
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
@@ -193,7 +228,7 @@ async def test_on_progress_runs_off_the_request_path():
     session = RolloutSession(
         ctx=ModelContext(model="m", client=EvalClientConfig(base_url="http://x/v1")),
         trace=trace,
-        on_progress=slow,
+        on_progress=make_hook(seen),
     )
     server, dialect = InterceptionServer(), ChatDialect()
     started = time.monotonic()
@@ -201,8 +236,18 @@ async def test_on_progress_runs_off_the_request_path():
         server.record_call(session, dialect, {"model": "m"}, time.time())
     assert time.monotonic() - started < 0.1
     assert len(trace.calls) == 2 and seen == []
-    await asyncio.sleep(0)
-    assert seen == [2, 2]
+
+    # Ping the loop while the hooks run: a hook on the loop would stall it for 0.2 s.
+    worst, last = 0.0, time.monotonic()
+    while len(seen) < 2:
+        assert time.monotonic() - started < 5, "progress deliveries did not land"
+        await asyncio.sleep(0.005)
+        now = time.monotonic()
+        worst, last = max(worst, now - last), now
+    assert worst < 0.1
+    assert sorted(p.calls for p in seen) == [1, 2]
+    assert all(p.trace_id == trace.id for p in seen)
+    assert caplog.text.count("on_progress hook failed") == 2
 
 
 def test_bare_trace_round_trip():

@@ -34,7 +34,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import ProgressHook, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -383,7 +383,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        on_progress: Callable[[Trace], None] | None = None,
+        on_progress: ProgressHook | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
@@ -391,14 +391,17 @@ class Agent:
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O; `on_progress` is a read-only observer
-        of the same live trace, called after every recorded model call, off the
-        model call's own path (deferred to the next loop iteration, in order; a
-        hook failure is logged, never the rollout's) — it must not mutate the
-        trace. `collect_artifacts` captures the task's declared artifacts after
-        its finalizer while its container runtime is still alive. Retries whole
-        while the trace ends with a retryable error (`config.retries`) — never into
-        a borrowed box; the final trace keeps earlier attempts' errors."""
+        moment it's minted, before any I/O; `on_progress` gets an immutable
+        `TraceProgress` snapshot after every recorded model call, off the event
+        loop (a plain callable runs in the loop's default executor, a coroutine
+        function as a task; deliveries may overlap — `TraceProgress.calls` orders
+        them; a hook failure is logged, never the rollout's), so a slow hook adds
+        nothing to the model call's latency. A consumer that wants the whole
+        trace reads `on_trace`'s argument on its own schedule. `collect_artifacts`
+        captures the task's declared artifacts after its finalizer while its
+        container runtime is still alive. Retries whole while the trace ends with
+        a retryable error (`config.retries`) — never into a borrowed box; the
+        final trace keeps earlier attempts' errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
@@ -437,7 +440,7 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
-        on_progress: Callable[[Trace], None] | None,
+        on_progress: ProgressHook | None,
         collect_artifacts: bool,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
@@ -476,7 +479,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        on_progress: Callable[[Trace], None] | None = None,
+        on_progress: ProgressHook | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -501,9 +504,10 @@ class Agent:
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
-        `on_trace`). `on_progress` is a read-only observer of the live trace,
-        called after every recorded model call (as in `run`). An exchange is
-        caller-driven, so `config.retries` does not apply here."""
+        `on_trace`). `on_progress` gets a `TraceProgress` snapshot after every
+        recorded model call, off the event loop (as in `run`); the whole trace is
+        `interaction.trace`. An exchange is caller-driven, so `config.retries`
+        does not apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
@@ -653,7 +657,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        on_progress: Callable[[Trace], None] | None = None,
+        on_progress: ProgressHook | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
         async with self._gate or nullcontext():
@@ -676,7 +680,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        on_progress: Callable[[Trace], None] | None = None,
+        on_progress: ProgressHook | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
