@@ -53,6 +53,12 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pytest.param(
+        "bash",
+        {"type": "modal", "allow": []},
+        marks=[mark.bash, mark.modal],
+        id="bash-harness-in-modal-framework-only",
+    ),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -417,7 +423,9 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime=harness_runtime
+        if isinstance(harness_runtime, dict)
+        else {"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
         max_tokens=8192,
