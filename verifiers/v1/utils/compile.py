@@ -14,6 +14,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.task import Task
+from verifiers.v1.utils.artifacts import validate_artifact_mounts
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,9 @@ def resolve_runtime_config(
         ):  # still the default → task may set it
             updates[resource] = value
         # else: cli/toml changed it from the default → it wins over the task
-    return config.model_copy(update=updates) if updates else config
+    config = config.model_copy(update=updates) if updates else config
+    validate_artifact_mounts(config, (a.source for a in task.data.artifacts))
+    return config
 
 
 def validate_pairing(
