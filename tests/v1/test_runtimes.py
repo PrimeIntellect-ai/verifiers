@@ -1,7 +1,8 @@
 """`RuntimePool`: the boxes `Agent.provision(task, reuse=key)` keeps between contexts —
 hit/miss on key, config, TTL and liveness (probed under the new env); teardown on error,
-a cancelled probe, caller stop, `discard`, `max_idle` and pool close; one box per key, its
-gate dropped when unused. Subprocess runtimes (a directory each), no model."""
+a cancelled probe, caller stop, `discard`, `max_idle` and pool close (a lease queued
+behind it refused); one box per key, its gate dropped when unused. Subprocess runtimes
+(a directory each), no model."""
 
 import asyncio
 import gc
@@ -10,7 +11,12 @@ from pathlib import Path
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import RuntimePool, RuntimePoolConfig, SubprocessRuntime
+from verifiers.v1.runtimes import (
+    Runtime,
+    RuntimePool,
+    RuntimePoolConfig,
+    SubprocessRuntime,
+)
 from verifiers.v1.runtimes.base import _LIVE, cleanup_at_exit
 from verifiers.v1.runtimes.subprocess import SubprocessConfig
 
@@ -124,9 +130,9 @@ async def test_lease_tears_down_instead_of_keeping() -> None:
         async with runtimes.lease("k", SUBPROCESS, {}) as last:
             pass
     assert last.stopped  # closing the pool
-    async with runtimes.lease("k", SUBPROCESS, {}) as after:
-        pass
-    assert after.stopped  # a release after the pool closed stops, never parks
+    with pytest.raises(RuntimeError, match="runtime pool is closed"):
+        async with runtimes.lease("k", SUBPROCESS, {}):
+            pass  # a lease after the pool closed is refused, never started
 
 
 async def test_idle_boxes_reach_the_atexit_backstop() -> None:
@@ -172,6 +178,45 @@ async def test_one_box_per_key_serialises_leases() -> None:
         await asyncio.gather(first, second)
         assert not runtimes._locks  # nothing holds or waits on the key: gate dropped
     assert order == ["first:in", "first:out", "second:in", "second:out"]
+
+
+async def test_stop_refuses_a_lease_queued_on_a_key(monkeypatch) -> None:
+    started: list[SubprocessRuntime] = []
+    real_start = SubprocessRuntime.start
+
+    async def counting_start(self: SubprocessRuntime) -> None:
+        started.append(self)
+        await real_start(self)
+
+    runtimes = pool()
+    async with runtimes:
+        held, release = asyncio.Event(), asyncio.Event()
+        boxes: list[Runtime] = []
+
+        async def hold() -> None:
+            async with runtimes.lease("k", SUBPROCESS, {}) as box:
+                boxes.append(box)
+                held.set()
+                await release.wait()
+
+        async def queued() -> None:
+            async with runtimes.lease("k", SUBPROCESS, {}):
+                pass
+
+        holder = asyncio.create_task(hold())
+        await held.wait()
+        waiter = asyncio.create_task(queued())
+        await asyncio.sleep(0)
+        assert runtimes._locks["k"].users == 2  # the second lease waits on the gate
+        monkeypatch.setattr(SubprocessRuntime, "start", counting_start)
+        await runtimes.stop()  # closes the pool while the waiter is still queued
+        release.set()
+        await holder
+        with pytest.raises(RuntimeError, match="runtime pool is closed"):
+            await waiter
+    assert boxes[0].stopped  # the live lease's box stops on release, never parks
+    assert started == []  # the queued lease never started a box
+    assert not runtimes._locks
 
 
 def _agent(runtimes: RuntimePool | None) -> vf.Agent:

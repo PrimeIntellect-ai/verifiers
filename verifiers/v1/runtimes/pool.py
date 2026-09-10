@@ -96,12 +96,16 @@ class RuntimePool:
         `config`, it is alive, and its idle time is under `ttl`, else a fresh box started
         from `config` (a stale one stopped first), with `env` as its environment. A normal
         exit parks the box idle under `key`; an exception (a cancellation included), a box
-        the caller already `stop()`ped, or a closed pool tears it down instead — the
-        outcome `provision_runtime`'s `finally: stop()` gives."""
+        the caller already `stop()`ped, or a pool closed meanwhile tears it down instead —
+        the outcome `provision_runtime`'s `finally: stop()` gives. A lease reaching its
+        gate after the pool closed is refused: nothing may start a box `stop` will not see."""
         # Lazy: the package imports this module.
         from verifiers.v1.runtimes import make_runtime
 
         async with self._lock(key):
+            # Queued behind a lease that outlived `stop`, or called after it.
+            if self._closed:
+                raise RuntimeError("runtime pool is closed")
             runtime = await self._take(key, config, env)
             if runtime is None:
                 runtime = make_runtime(config)
