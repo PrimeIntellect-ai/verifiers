@@ -19,6 +19,8 @@ from prime_sandboxes import (
 
 import verifiers.v1 as vf
 from verifiers.v1.errors import sandbox_error
+from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.prime import _error
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
 from verifiers.v1.utils.retries import _retryable
@@ -162,3 +164,44 @@ async def test_subprocess_missing_path_is_not_found(tmp_path):
         await runtime.read("missing.txt", max_bytes=16)
     with pytest.raises(vf.SandboxNotFoundError):
         await runtime.read("missing.txt")
+
+
+class _FailingProbe(Runtime):
+    """A runtime whose every exec fails the given way."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def start(self) -> None:
+        pass
+
+    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        raise self.error
+
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        raise NotImplementedError
+
+    async def write(self, path: str, data: bytes) -> None:
+        raise NotImplementedError
+
+
+async def test_dead_runtime_probe_keeps_the_typed_fault():
+    harness = NullHarness(NullHarnessConfig(id="null"))
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
+    )
+    failed = ProgramResult(exit_code=1, stdout="", stderr="boom")
+    # The probe couldn't reach the box: that is the runtime's answer, not proof it's gone.
+    for error in (vf.SandboxUnavailableError("503"), vf.SandboxTimeoutError("slow")):
+        with pytest.raises(type(error)):
+            await harness._check_result(trace, _FailingProbe(error), failed)
+    # The box said it's gone, or nothing typed says more: the box died under the harness.
+    for error in (
+        vf.SandboxNotFoundError("404"),
+        vf.SandboxError("exec failed"),
+        RuntimeError("raw"),
+    ):
+        with pytest.raises(vf.SandboxNotFoundError, match="runtime died"):
+            await harness._check_result(trace, _FailingProbe(error), failed)

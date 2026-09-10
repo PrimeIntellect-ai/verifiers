@@ -19,7 +19,7 @@ from typing import ClassVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, SandboxNotFoundError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -215,9 +215,16 @@ class Runtime(ABC):
         """Whether the box still executes anything. Not every runtime raises when
         the box is gone — some surface it as `exec`'s own non-zero result,
         indistinguishable from the command failing. One probe on the failure path
-        tells the two apart before we blame anyone."""
+        tells the two apart before we blame anyone. A typed fault other than
+        not-found (unreachable, timed out, refused) means the probe couldn't reach
+        the box — not that the box said it's gone — and propagates as the runtime's
+        real answer."""
         try:
             return (await self.run(["true"], {})).exit_code == 0
+        except SandboxError as e:
+            if type(e) is SandboxError or isinstance(e, SandboxNotFoundError):
+                return False  # the box is gone, or nothing typed says more
+            raise
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 

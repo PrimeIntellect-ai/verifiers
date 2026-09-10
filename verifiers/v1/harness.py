@@ -126,6 +126,8 @@ class Harness(ABC, Generic[ConfigT]):
             return
         # The real cause is at the END of a traceback, so keep the tail.
         detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+        # A probe that can't reach the box (unavailable, timed out) raises its own typed
+        # error here; only a box that is gone — or an untyped exec failure — is not-found.
         if not await runtime.alive():
             raise SandboxNotFoundError(
                 f"runtime died under harness {self.config.id!r} "
