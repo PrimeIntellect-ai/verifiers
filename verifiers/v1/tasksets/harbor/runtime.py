@@ -52,7 +52,11 @@ class HarborComposeRuntime(DockerRuntime):
             "services"
         ]
         owner = "main"
+        seen: set[str] = set()
         while services.get(owner, {}).get("network_mode", "").startswith("service:"):
+            if owner in seen:
+                raise SandboxError("Cyclic Compose network_mode service chain")
+            seen.add(owner)
             owner = services[owner]["network_mode"].split(":", 1)[1]
         main: dict[str, object] = {
             "image": self.config.image,
