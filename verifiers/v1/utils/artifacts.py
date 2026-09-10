@@ -44,14 +44,14 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
     mounts = getattr(config, "mounts", {})
     if not mounts:
         return
-    workdir = PurePosixPath(getattr(config, "workdir", None) or "/")
+    workdir = getattr(config, "workdir", None) or "/"
     for source in [ARTIFACTS_DIR, *sources]:
-        path = PurePosixPath("/" + posixpath.normpath(workdir / source).lstrip("/"))
+        path = posixpath.join(workdir, source)
+        path = posixpath.normpath("/" + path.lstrip("/"))
         for target in mounts:
-            mount = PurePosixPath(target)
-            if path.is_relative_to(mount) or mount.is_relative_to(path):
+            if posixpath.commonpath((path, target)) in (path, target):
                 raise ValueError(
-                    f"artifact root {str(path)!r} overlaps mount {target!r}; "
+                    f"artifact root {path!r} overlaps mount {target!r}; "
                     "keep mounted data separate from output artifacts"
                 )
 

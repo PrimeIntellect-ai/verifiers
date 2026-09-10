@@ -1,7 +1,7 @@
 """Shared execution runtime configuration."""
 
 from fnmatch import fnmatchcase
-from typing import Literal, Self
+from typing import Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
@@ -11,7 +11,6 @@ from pydantic_config import BaseConfig
 class BindMount(BaseConfig):
     """An existing file or directory on the Docker daemon's host."""
 
-    type: Literal["bind"] = "bind"
     source: str = Field(pattern=r"^/[^\x00]*$")
     """Absolute host path. The runtime never creates or removes the source."""
     read_only: bool = True
