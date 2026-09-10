@@ -43,14 +43,11 @@ CHAT_PLACEMENTS = [
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
     *[
-        pytest.param(
+        pair(
             "bash",
             engine,
-            marks=[
-                mark.bash,
-                mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
-            ],
-            id=f"bash-harness-in-{engine}",
+            f"bash-harness-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
         )
         for engine in ("podman", "apptainer")
     ],
@@ -82,14 +79,11 @@ USER_RUNTIMES = [
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
     *[
-        pytest.param(
+        pair(
             "pool",
             engine,
-            marks=[
-                mark.pool,
-                mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
-            ],
-            id=f"pool-acp-in-{engine}",
+            f"pool-acp-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
         )
         for engine in ("podman", "apptainer")
     ],
@@ -126,14 +120,11 @@ ACP_RESUME_PLACEMENTS = [
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
 TOOL_PLACEMENTS = [
     *[
-        pytest.param(
+        pair(
             "subprocess",
             engine,
-            marks=[
-                mark.subprocess,
-                mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
-            ],
-            id=f"harness-in-subprocess-with-tool-in-{engine}",
+            f"harness-in-subprocess-with-tool-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
         )
         for engine in ("podman", "apptainer")
     ],
