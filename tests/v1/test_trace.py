@@ -3,7 +3,9 @@
 recompute on load), transient `state` never crosses the wire, and the permissive `WireTrace` loads a
 dump without importing the originating taskset."""
 
+import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -12,8 +14,9 @@ from aiohttp import web
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.rlm.harness import (
@@ -21,6 +24,7 @@ from verifiers.v1.harnesses.rlm.harness import (
     RLMHarness,
     RLMHarnessConfig,
 )
+from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
 from verifiers.v1.semantic import (
@@ -28,6 +32,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
+from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
@@ -169,6 +174,35 @@ async def test_on_progress_observes_live_trace(upstream):
     assert len(trace.calls) == trace.num_turns == ProbeHarness.calls
     assert all(live is trace for live, _ in seen)
     assert [calls for _, calls in seen] == [1, 2, 3]
+
+
+async def test_on_progress_runs_off_the_request_path():
+    # `record_call` runs in an exchange's `finally`, on the interception server's request
+    # path. The hook is deferred to the next loop iteration, in order, so a slow consumer adds
+    # nothing to the model call's latency, and it sees the trace as recorded by then.
+    seen: list[int] = []
+
+    def slow(trace: vf.Trace) -> None:
+        time.sleep(0.2)
+        seen.append(len(trace.calls))
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
+    )
+    session = RolloutSession(
+        ctx=ModelContext(model="m", client=EvalClientConfig(base_url="http://x/v1")),
+        trace=trace,
+        on_progress=slow,
+    )
+    server, dialect = InterceptionServer(), ChatDialect()
+    started = time.monotonic()
+    for _ in range(2):
+        server.record_call(session, dialect, {"model": "m"}, time.time())
+    assert time.monotonic() - started < 0.1
+    assert len(trace.calls) == 2 and seen == []
+    await asyncio.sleep(0)
+    assert seen == [2, 2]
 
 
 def test_bare_trace_round_trip():

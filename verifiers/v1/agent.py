@@ -391,13 +391,14 @@ class Agent:
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O; `on_progress` observes it again after
-        every recorded model call (a hook failure is logged, never the rollout's).
-        `collect_artifacts` captures the task's declared artifacts after its
-        finalizer while its container runtime is still alive. Retries whole while
-        the trace ends with a retryable error
-        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        moment it's minted, before any I/O; `on_progress` is a read-only observer
+        of the same live trace, called after every recorded model call, off the
+        model call's own path (deferred to the next loop iteration, in order; a
+        hook failure is logged, never the rollout's) — it must not mutate the
+        trace. `collect_artifacts` captures the task's declared artifacts after
+        its finalizer while its container runtime is still alive. Retries whole
+        while the trace ends with a retryable error (`config.retries`) — never into
+        a borrowed box; the final trace keeps earlier attempts' errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
@@ -500,9 +501,9 @@ class Agent:
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
-        `on_trace`). `on_progress` observes the live trace after every recorded
-        model call. An exchange is caller-driven, so `config.retries` does not
-        apply here."""
+        `on_trace`). `on_progress` is a read-only observer of the live trace,
+        called after every recorded model call (as in `run`). An exchange is
+        caller-driven, so `config.retries` does not apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()

@@ -148,18 +148,24 @@ class RolloutSession:
     prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
     on_progress: Callable[[Trace], None] | None = None
-    """Observes the live trace after each recorded model call (its committed turn included)."""
+    """A read-only observer of the live trace, notified after each recorded model call (its
+    committed turn included). It must not mutate the trace."""
 
     @property
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
     def progress(self) -> None:
-        """Notify `on_progress` of new trace content; a consumer bug never fails the rollout."""
-        if self.on_progress is None:
-            return
+        """Schedule `on_progress` for the trace's new content. The hook runs on the next loop
+        iteration, not here: this is called on the interception server's request path (an
+        exchange's `finally`), whose latency a consumer's hook must not add to. Scheduled
+        notifications run in order; a hook failure is logged, never the rollout's."""
+        if self.on_progress is not None:
+            asyncio.get_running_loop().call_soon(self._notify, self.on_progress)
+
+    def _notify(self, on_progress: Callable[[Trace], None]) -> None:
         try:
-            self.on_progress(self.trace)
+            on_progress(self.trace)
         except Exception:
             logger.warning(
                 "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True
