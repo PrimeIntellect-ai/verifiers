@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.eval.runner import _take, run_stream
+from verifiers.v1.cli.eval.runner import _plan_stream, _take, run_stream
 from verifiers.v1.env import RunSlot
 
 
@@ -206,6 +206,44 @@ async def test_failing_slot_cancels_the_rest_and_closes_the_stream() -> None:
         await run
     assert sorted(cancelled) == [0, 2]
     assert taskset.pulled == 3 and taskset.closed  # the feed's waiter is gone too
+
+
+@pytest.mark.parametrize("window", [2, None])
+async def test_failing_slot_is_seen_while_the_feed_is_quiet(window) -> None:
+    """A slot failing while the runner waits on the feed aborts the run at once: the
+    pull is raced against the slots, so a quiet feed cannot hide the failure."""
+    taskset = queued(0)  # one task, then the feed is quiet forever
+
+    async def run_slot(slot: RunSlot):
+        raise RuntimeError("boom")
+
+    run = run_stream(groups(taskset.stream()), run_slot, window)
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(run, timeout=2)  # a hang fails as a timeout
+    assert taskset.pulled == 1 and taskset.closed
+
+
+async def test_a_tasks_rollouts_are_windowed_one_by_one() -> None:
+    """`-c` bounds slots in flight, not tasks: a task's `-r` rollouts join the
+    display at once but are scheduled one per group, so the window holds them."""
+    taskset = queued(0, None)
+    display: list[RunSlot] = []
+    alive = peak = 0
+
+    async def run_slot(slot: RunSlot):
+        nonlocal alive, peak
+        alive += 1
+        peak = max(peak, alive)
+        await asyncio.sleep(0)
+        alive -= 1
+        return slot.task.data.idx
+
+    def plan_slots(task) -> list[RunSlot]:
+        return [RunSlot(task) for _ in range(50)]
+
+    stream = _plan_stream(taskset.stream(), plan_slots, display)
+    assert len(await run_stream(stream, run_slot, window=1)) == 50
+    assert len(display) == 50 and peak == 1 and taskset.closed
 
 
 async def test_cancelling_the_run_closes_a_waiting_stream() -> None:

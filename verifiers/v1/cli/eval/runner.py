@@ -88,15 +88,26 @@ async def run_stream(
     in submission order once the stream has ended and the last slot is done. One
     slot failing cancels the rest and waits for them to unwind, so nothing keeps
     uploading into a run the caller is already closing; the stream is `aclose()`d
-    on any exit. Not a `TaskGroup`: that wraps errors in an `ExceptionGroup`, and
-    `main` would no longer see a `KeyboardInterrupt` as Ctrl-C."""
+    on any exit. The pull is its own task, raced against the slots' first failure:
+    a slot that fails while the feed is quiet aborts the run at once, not when the
+    feed next yields (which may be never). Not a `TaskGroup`: that wraps errors in
+    an `ExceptionGroup`, and `main` would no longer see a `KeyboardInterrupt` as
+    Ctrl-C."""
     started: list[asyncio.Task[Episode]] = []
     pending: set[asyncio.Task[Episode]] = set()
+    pull: asyncio.Task[list[RunSlot]] | None = None
+    # Resolved with the first slot to fail (by a done-callback, so the wait on the
+    # pull stays O(1) however many slots a static run has in flight).
+    failed: asyncio.Future[asyncio.Task[Episode]] = (
+        asyncio.get_running_loop().create_future()
+    )
+
+    def watch(task: asyncio.Task[Episode]) -> None:
+        if not task.cancelled() and task.exception() is not None and not failed.done():
+            failed.set_result(task)
+
     try:
-        async for group in groups:
-            for slot in group:
-                started.append(asyncio.ensure_future(run_slot(slot)))
-                pending.add(started[-1])
+        while True:
             # Back-pressure: the next group is pulled only once a slot has freed.
             while window is not None and len(pending) >= window:
                 done, pending = await asyncio.wait(
@@ -104,15 +115,45 @@ async def run_stream(
                 )
                 for task in done:
                     task.result()  # a failed slot raises here: cancel the rest
+            pull = asyncio.ensure_future(anext(groups))
+            await asyncio.wait({pull, failed}, return_when=asyncio.FIRST_COMPLETED)
+            if failed.done():
+                failed.result().result()  # raises the slot's error: cancel the rest
+            try:
+                group = pull.result()
+            except StopAsyncIteration:
+                break
+            for slot in group:
+                started.append(asyncio.ensure_future(run_slot(slot)))
+                started[-1].add_done_callback(watch)
+                pending.add(started[-1])
         return await asyncio.gather(*started)
     except BaseException:
-        for task in started:
+        # The pull too: the stream must not still be running when it is closed.
+        tasks = [*started, pull] if pull is not None else started
+        for task in tasks:
             task.cancel()
         # return_exceptions: wait for every task, not just the first to cancel.
-        await asyncio.gather(*started, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
     finally:
         await groups.aclose()
+
+
+async def _plan_stream(
+    tasks: AsyncGenerator[Task, None],
+    plan_slots: Callable[[Task], list[RunSlot]],
+    slots: list[RunSlot],
+) -> AsyncGenerator[list[RunSlot], None]:
+    """Plan each task as it arrives: its slots join the display (`slots`) at once,
+    but are yielded one per group, so the window bounds the slots in flight rather
+    than the tasks — a task's `-r` rollouts wait here, not as live coroutines."""
+    async with contextlib.aclosing(tasks):
+        async for task in tasks:
+            planned = plan_slots(task)
+            slots.extend(planned)  # the display grows with the stream
+            for slot in planned:
+                yield [slot]
 
 
 @contextlib.asynccontextmanager
@@ -319,15 +360,6 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     slots = [RunSlot.finished(episode) for episode in finished]
 
-    async def plan_stream(
-        tasks: AsyncGenerator[Task, None],
-    ) -> AsyncGenerator[list[RunSlot], None]:
-        async with contextlib.aclosing(tasks):
-            async for task in tasks:
-                planned = plan_slots(task, config.num_rollouts)
-                slots.extend(planned)  # the display grows with the stream
-                yield planned
-
     # The run is closed out whatever breaks, backend setup and teardown included.
     try:
         async with backend as run_slot:
@@ -335,7 +367,11 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
                 # Each task is planned as it arrives, pulled only as slots free up: the
                 # feed decides what is owed, `-c` how many run at once, `-n` how many
                 # in total.
-                groups = plan_stream(_take(selected.stream(), config.num_tasks))
+                groups = _plan_stream(
+                    _take(selected.stream(), config.num_tasks),
+                    lambda task: plan_slots(task, config.num_rollouts),
+                    slots,
+                )
                 window = config.max_concurrent
             else:
                 # Every slot exists before the first rollout runs; the semaphore alone
