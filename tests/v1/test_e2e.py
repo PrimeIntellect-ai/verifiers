@@ -678,6 +678,38 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         assert trace.metrics["duet"] == 1.0
 
 
+@pytest.mark.e2e
+@pytest.mark.parametrize("runner", ["run_v1", "run_v1_server"])
+async def test_streaming_taskset(runner, request, tmp_path):
+    """A taskset whose tasks arrive over time (`stream()`): the runner pulls each as it
+    appears, runs it, and ends when the stream drains — in-process and served alike."""
+    from verifiers.v1.cli.output import TRACES_FILE
+
+    traces = await request.getfixturevalue(runner)(
+        "echo-stream-v1",
+        harness="null",
+        runtime={"type": "subprocess"},
+        output_dir=tmp_path,
+        num_tasks=None,
+        max_turns=2,
+    )
+    assert len(traces) == 3
+    assert all(trace.ok and trace.reward == 1.0 for trace in traces)
+    assert sorted(trace.task.data.idx for trace in traces) == [0, 1, 2]
+    assert len((tmp_path / TRACES_FILE).read_text().splitlines()) == 3
+
+
+@pytest.mark.parametrize("option", ["shuffle", "resume"])
+async def test_streaming_taskset_refuses_shuffle_and_resume(option):
+    """No whole set to sample and no keys to resume against: refused before any rollout."""
+    from verifiers.v1.cli.eval.runner import run_eval
+    from verifiers.v1.configs.cli.eval import EvalConfig
+
+    config = EvalConfig(env={"taskset": {"id": "echo-stream-v1"}}, **{option: True})
+    with pytest.raises(ValueError, match=f"streams its tasks - cannot {option}"):
+        await run_eval(config)
+
+
 # `_request` parks a cancelled run's fire-and-forget cancel in `_cancel_tasks` with a
 # `discard` done-callback. One loop turn later the sends have finished but the callbacks
 # are still queued behind us, so `close()` meets a set of finished tasks.

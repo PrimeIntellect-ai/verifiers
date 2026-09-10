@@ -38,10 +38,13 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
-  infinite taskset (a procedural generator, e.g. `wordle`) requires it
+  infinite taskset (a procedural generator, e.g. `wordle`) requires it; a streaming
+  taskset (tasks arrive over time) runs until its stream drains, the dashboard's total
+  growing as tasks appear
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
-- `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
+- `shuffle` — samples the task order (fixed seed); an error on an infinite or a
+  streaming taskset
 - `serve` — on by default: rollouts run through an elastic env-server worker pool
   (`[serve]` sizes it, e.g. `serve.pool.type`); `--no-serve` runs them in-process
 - `rich` — the live dashboard (default); `--no-rich` streams logs to the console and

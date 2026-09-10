@@ -138,6 +138,20 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 
 Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
+## Streaming tasksets
+
+A taskset whose tasks appear over time — a queue, a feed of work owed — overrides `stream()` instead of listing them: an async generator that awaits its source, yields each task complete, and returns when the source is drained. The eval runner consumes `stream()` for every taskset (the default streams `iter(self)`); on a streaming one it pulls the next task only while fewer than `max_concurrent` rollouts are in flight, so the feed is read at the pace the run can take, and the run ends with the stream. `-n` bounds it by count; `--shuffle` and `--resume` are errors (no whole set to sample, no keys to resume against). `load()` still exists for what can be listed up front (often nothing: `return []`).
+
+```python
+class TurnTaskset(vf.Taskset[TurnTask, TurnConfig]):
+    def load(self) -> list[TurnTask]:
+        return []
+
+    async def stream(self) -> AsyncIterator[TurnTask]:
+        async for owed in self.feed():  # waits for the next item; returns when drained
+            yield TurnTask(TurnData(idx=owed.id, prompt=owed.prompt), self.config.task)
+```
+
 ## Adding Tools
 
 Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
