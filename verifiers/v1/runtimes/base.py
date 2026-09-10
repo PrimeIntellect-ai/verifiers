@@ -71,6 +71,10 @@ class RuntimeProcess(ABC):
         pass
 
     @abstractmethod
+    async def poll(self) -> int | None:
+        """Return the underlying process's exit code without waiting for it to exit."""
+
+    @abstractmethod
     async def terminate(self) -> None:
         pass
 

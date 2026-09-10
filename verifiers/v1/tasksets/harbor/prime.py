@@ -38,7 +38,7 @@ class PrimeComposeVM(PrimeRuntime):
                     "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
                     "apt-get install -y -qq --no-install-recommends docker.io docker-cli docker-compose iptables "
                     "> /tmp/docker-install.log 2>&1 || { tail -40 /tmp/docker-install.log; exit 1; }; "
-                    "dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 </dev/null &"
+                    "nohup setsid dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 </dev/null &"
                 ),
             ],
             {},

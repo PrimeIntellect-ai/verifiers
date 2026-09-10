@@ -82,15 +82,16 @@ class ContainerProcess(RuntimeProcess):
         self._process = process
         self._runtime = runtime
         self._pid = pid
-        self._returncode: int | None = None
         self.stdout, self.stderr = process.stdout, process.stderr
 
     async def write(self, data: bytes) -> None:
         await self._process.write(data)
 
     async def wait(self) -> int:
-        self._returncode = await self._process.wait()
-        return self._returncode
+        return await self._process.wait()
+
+    async def poll(self) -> int | None:
+        return await self._process.poll()
 
     async def terminate(self) -> None:
         await self._signal("TERM")
@@ -99,7 +100,7 @@ class ContainerProcess(RuntimeProcess):
         await self._signal("KILL")
 
     async def _signal(self, signal: str) -> None:
-        if self._returncode is not None:
+        if await self.poll() is not None:
             return
         result = await self._runtime._run_host(
             *self._runtime._exec({}),
@@ -110,7 +111,7 @@ class ContainerProcess(RuntimeProcess):
             signal,
             str(self._pid),
         )
-        if result.exit_code != 0:
+        if result.exit_code != 0 and await self.poll() is None:
             raise SandboxError(
                 f"container process signal failed: {result.stderr.strip()}"
             )
@@ -131,17 +132,18 @@ async def _abort_process_startup(
     )
     try:
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                runtime._run_host(
-                    *runtime._exec({}),
-                    "sh",
-                    "-c",
-                    cleanup,
-                    "vf-process-cleanup",
-                    pidfile,
-                ),
-                timeout=5,
-            )
+            if await proc.poll() is None:
+                await asyncio.wait_for(
+                    runtime._run_host(
+                        *runtime._exec({}),
+                        "sh",
+                        "-c",
+                        cleanup,
+                        "vf-process-cleanup",
+                        pidfile,
+                    ),
+                    timeout=5,
+                )
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.kill(), 5)
@@ -237,9 +239,14 @@ class ContainerRuntime(Runtime):
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
+                    # An exited client gets one final PID read: short commands may
+                    # have written their PID and finished before the first poll.
+                    returncode = await proc.poll()
                     ready = await self._run_host(*self._exec({}), "cat", pidfile)
                     if ready.exit_code == 0 and ready.stdout.strip().isdigit():
                         return ContainerProcess(proc, self, int(ready.stdout.strip()))
+                    if returncode is not None:
+                        break
                     await asyncio.sleep(0.05)
         except TimeoutError as error:
             stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
@@ -249,6 +256,11 @@ class ContainerRuntime(Runtime):
         except BaseException:
             await run_shielded(_abort_process_startup(proc, self, pidfile))
             raise
+        stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
+        raise SandboxError(
+            f"container client exited with code {returncode} before reporting its PID: "
+            f"{stderr or ready.stderr.strip()}"
+        )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

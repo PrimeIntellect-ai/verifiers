@@ -274,7 +274,10 @@ async def harbor_compose_runtime(
         if not config.vm:
             raise ValueError("Harbor Compose on Prime requires vm=True")
         host = PrimeComposeVM(
-            config.model_copy(update={"image": "python:3.11-slim", "workdir": "/"})
+            # Trixie supplies Docker's separate CLI and Compose v2 packages.
+            config.model_copy(
+                update={"image": "python:3.11-slim-trixie", "workdir": "/"}
+            )
         )
     elif isinstance(config, ModalConfig):
         from verifiers.v1.tasksets.harbor.modal import ModalComposeVM
