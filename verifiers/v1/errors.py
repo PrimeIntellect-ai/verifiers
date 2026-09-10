@@ -65,7 +65,9 @@ class SandboxError(RolloutError):
     `not_found` (the path, or the box itself, is gone), `timeout` (the operation or the box's
     lifetime ran out), `disk_full` (ENOSPC), `unavailable` (the provider was unreachable or
     answered 5xx/429), `provisioning` (the box never came up), `denied` (the provider refused:
-    401/402/403). None when nothing typed says."""
+    401/402/403). None when nothing typed says. A cancelled task's own cancellation is never a
+    `SandboxError`: a runtime whose SDK reports it as an ordinary failure re-raises
+    `asyncio.CancelledError`, so a caller that retries on sandbox faults cannot swallow it."""
 
     def __init__(self, message: str = "", *, code: str | None = None) -> None:
         super().__init__(message)

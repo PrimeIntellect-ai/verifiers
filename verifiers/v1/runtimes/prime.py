@@ -9,11 +9,12 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 import asyncio
 import base64
 import contextlib
+import functools
 import logging
 import math
 import shlex
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -24,6 +25,7 @@ from connectrpc.errors import ConnectError
 from prime_sandboxes import (
     APIError,
     APITimeoutError,
+    AsyncSandboxProcess,
     CommandTimeoutError,
     DownloadTimeoutError,
     PaymentRequiredError,
@@ -76,14 +78,24 @@ _RPC_FAULTS = {
 }
 
 
-def _fault_code(e: BaseException) -> str | None:
-    """The `SandboxError.code` an SDK failure identifies: its exception type, the Connect RPC
-    code or `httpx` status it wraps, or a Python-level fault (`sandbox_fault_code`). SDK gap:
-    the base `APIError` names the HTTP status only in its text (`"HTTP 503: ..."`) and is
-    raised inside the `httpx` handler without `from`, so the typed status is read from its
-    `__context__` here — the one place that hop is taken, instead of parsing the message."""
+def _chain(e: BaseException) -> Iterator[BaseException]:
+    """`e` and the failures it wraps, outermost first. SDK gap: the base `APIError` names the
+    HTTP status only in its text (`"HTTP 503: ..."`) and is raised inside the `httpx` handler
+    without `from`, so the typed status is reached through its `__context__` here — the one
+    place that hop is taken, instead of parsing the message."""
     current: BaseException | None = e
     while current is not None:
+        yield current
+        if isinstance(current, APIError) and current.__cause__ is None:
+            current = current.__context__
+        else:
+            current = current.__cause__
+
+
+def _fault_code(e: BaseException) -> str | None:
+    """The `SandboxError.code` an SDK failure identifies: its exception type, the Connect RPC
+    code or `httpx` status it wraps, or a Python-level fault (`sandbox_fault_code`)."""
+    for current in _chain(e):
         if isinstance(current, SandboxFileNotFoundError):
             return "not_found"
         if isinstance(current, (UnauthorizedError, PaymentRequiredError)):
@@ -96,11 +108,59 @@ def _fault_code(e: BaseException) -> str | None:
             return _RPC_FAULTS[current.code]
         if (code := sandbox_fault_code(current)) is not None:
             return code
-        if isinstance(current, APIError) and current.__cause__ is None:
-            current = current.__context__
-        else:
-            current = current.__cause__
     return None
+
+
+def _cancelled(e: BaseException | None) -> bool:
+    """Whether an SDK failure is really this task's cancellation. connectrpc turns the
+    `CancelledError` raised inside an RPC into `ConnectError(CANCELED, "Request was
+    cancelled")` and the SDK re-wraps that as `APIError`, so a cancelled task comes back from
+    a sandbox call with an ordinary error while `Task.cancelling()` stays set. True when the
+    current task is being cancelled, or when the failure carries the cancel itself (the
+    CANCELED code, or the `CancelledError` chained under it)."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        return True
+    return e is not None and any(
+        isinstance(current, asyncio.CancelledError)
+        or (isinstance(current, ConnectError) and current.code is Code.CANCELED)
+        for current in _chain(e)
+    )
+
+
+def _failure(
+    message: str, e: BaseException, *, fallback: str | None = None
+) -> BaseException:
+    """The exception to raise for an SDK failure `e`: the task's cancellation when that is
+    what the SDK reported (`_cancelled`) — a `SandboxError` there would let a caller that
+    retries on sandbox faults swallow the cancel and keep working — else a `SandboxError`
+    carrying the typed fault code (`fallback` when nothing typed says)."""
+    if _cancelled(e):
+        return asyncio.CancelledError()
+    return SandboxError(message, code=_fault_code(e) or fallback)
+
+
+def _cancel_aware(can_reconnect: Callable[..., bool]) -> Callable[..., bool]:
+    """`AsyncSandboxProcess._can_reconnect` with the pump's own cancellation terminal."""
+
+    @functools.wraps(can_reconnect)
+    def wrapper(self: Any, reconnects: int, error: BaseException | None) -> bool:
+        return not _cancelled(error) and can_reconnect(self, reconnects, error)
+
+    return wrapper
+
+
+# The SDK's live-process stream pump (`AsyncSandboxProcess._pump`, a task of its own) meets the
+# same swallow: cancelled (by `aclose`, or by the loop's shutdown cancelling every task), its
+# stream raises `ConnectError(CANCELED)` rather than `CancelledError`, and `_can_reconnect` — a
+# deny-list of definitive codes — calls that recoverable and re-attaches ("live process stream
+# dropped (Request was cancelled); re-attaching 1/5"), so a cancelled pump streams on until the
+# remote process exits and `asyncio.run` never returns. Until the SDK owns the cancel, the
+# predicate is wrapped here so the pump ends instead; guarded, so an SDK that renames it is
+# left alone.
+_sdk_can_reconnect = getattr(AsyncSandboxProcess, "_can_reconnect", None)
+if _sdk_can_reconnect is not None and not hasattr(_sdk_can_reconnect, "__wrapped__"):
+    AsyncSandboxProcess._can_reconnect = _cancel_aware(_sdk_can_reconnect)
 
 
 @dataclass
@@ -305,9 +365,8 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise SandboxError(
-                f"prime sandbox provisioning failed: {e}",
-                code=_fault_code(e) or "provisioning",
+            raise _failure(
+                f"prime sandbox provisioning failed: {e}", e, fallback="provisioning"
             ) from e
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
@@ -346,9 +405,7 @@ class PrimeRuntime(Runtime):
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(
-                f"prime egress policy failed: {e}", code=_fault_code(e)
-            ) from e
+            raise _failure(f"prime egress policy failed: {e}", e) from e
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
@@ -375,7 +432,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}", code=_fault_code(e)) from e
+            raise _failure(f"prime exec failed: {e}", e) from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -398,9 +455,7 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
         except Exception as e:
-            raise SandboxError(
-                f"prime live process failed to start: {e}", code=_fault_code(e)
-            ) from e
+            raise _failure(f"prime live process failed to start: {e}", e) from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
@@ -412,11 +467,11 @@ class PrimeRuntime(Runtime):
         try:
             exposed = await self._client.expose(self.info.id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
-            raise SandboxError(
+            raise _failure(
                 "prime port exposure failed — port exposure isn't supported in this sandbox's "
                 "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
                 f"use a colocated / docker / modal tools.runtime instead. ({e})",
-                code=_fault_code(e),
+                e,
             ) from e
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
@@ -433,9 +488,7 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
         except Exception as e:
-            raise SandboxError(
-                f"prime background launch failed: {e}", code=_fault_code(e)
-            ) from e
+            raise _failure(f"prime background launch failed: {e}", e) from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is not None and self.config.vm:
@@ -449,9 +502,7 @@ class PrimeRuntime(Runtime):
                     timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 )
             except Exception as exc:
-                raise SandboxError(
-                    f"read {path!r}: {exc}", code=_fault_code(exc)
-                ) from exc
+                raise _failure(f"read {path!r}: {exc}", exc) from exc
             if result.exit_code:
                 raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
             return base64.b64decode(result.stdout)
@@ -470,7 +521,7 @@ class PrimeRuntime(Runtime):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}", code=_fault_code(e)) from e
+            raise _failure(f"read {path!r}: {e}", e) from e
 
     async def write(self, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
@@ -485,7 +536,7 @@ class PrimeRuntime(Runtime):
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}", code=_fault_code(e)) from e
+            raise _failure(f"write {path!r}: {e}", e) from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
