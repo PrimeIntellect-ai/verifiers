@@ -1,11 +1,20 @@
-"""Shared configuration for execution-time network policy."""
+"""Shared execution runtime configuration."""
 
 from fnmatch import fnmatchcase
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
+
+
+class BindMount(BaseConfig):
+    """An existing file or directory on the Docker daemon's host."""
+
+    type: Literal["bind"] = "bind"
+    source: str = Field(pattern=r"^/[^\x00]*$")
+    """Absolute host path. The runtime never creates or removes the source."""
+    read_only: bool = True
 
 
 def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
