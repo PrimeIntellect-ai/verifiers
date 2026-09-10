@@ -166,13 +166,13 @@ def _close(
 
 
 def _losses(run: pr.Run) -> str | None:
-    """What the uploader could not store, or `None`. A sink that switched itself off
-    quietly (Prime Traces outside the beta) is not a loss and is not counted here."""
-    parts = [
+    """What the run could not finish or store, or `None`."""
+    parts = list(run.errors)
+    parts.extend(
         f"{count} record(s) not stored by the {sink} sink"
         for sink, count in sorted(run.failed_records.items())
         if count
-    ]
+    )
     if run.dropped_records:
         parts.append(f"{run.dropped_records} record(s) never queued (uploader overrun)")
     return "; ".join(parts) or None
