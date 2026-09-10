@@ -476,7 +476,9 @@ class Rollout:
                         )
                         if self._collect_artifacts and not trace.state.artifacts:
                             trace.state.artifacts = await collect(
-                                runtime, self.task.data.artifacts
+                                runtime,
+                                self.task.data.artifacts,
+                                max_bytes=self.task.data.artifact_max_bytes,
                             )
                 now = time.time()
                 trace.timing.finalize.end = now
