@@ -37,6 +37,10 @@ class HarborComposeRuntime(DockerRuntime):
     ):
         if config.gpu:
             raise ValueError("Harbor Compose currently supports CPU tasks")
+        if isinstance(config, DockerConfig) and config.mounts:
+            raise ValueError(
+                "Docker bind mounts are not supported for Harbor Compose tasks"
+            )
         if isinstance(config, DockerConfig) and config.network_restricted:
             raise ValueError(
                 "Harbor Compose on local Docker requires public networking"

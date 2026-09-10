@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import io
 import logging
+import posixpath
+import re
 import shlex
 import tarfile
 import uuid
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,58 @@ class Artifact(BaseModel):
     required: bool = True
     service: str = "main"
     """Source service; restoration uses the same path in the grader."""
+
+
+def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
+    """Keep external datasets out of artifact copies and destructive restoration."""
+    mounts = getattr(config, "mounts", {})
+    if not mounts:
+        return
+    workdir = PurePosixPath(getattr(config, "workdir", None) or "/")
+    for source in [ARTIFACTS_DIR, *sources]:
+        path = PurePosixPath("/" + posixpath.normpath(workdir / source).lstrip("/"))
+        for target in mounts:
+            mount = PurePosixPath(target)
+            if path.is_relative_to(mount) or mount.is_relative_to(path):
+                raise ValueError(
+                    f"artifact root {str(path)!r} overlaps mount {target!r}; "
+                    "keep mounted data separate from output artifacts"
+                )
+
+
+async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> None:
+    """Reject relocated mounts and aliases that bypass lexical overlap checks."""
+    mounts = getattr(runtime.config, "mounts", {})
+    if not mounts:
+        return
+    sources = list(sources)
+    validate_artifact_mounts(runtime.config, sources)
+    workdir = PurePosixPath(getattr(runtime.config, "workdir", None) or "/")
+    paths: set[str] = set()
+    for source in [*mounts, ARTIFACTS_DIR, *sources]:
+        path = workdir / source
+        # Keep '..' until after checking its preceding components for symlinks.
+        paths.update(str(parent) for parent in (path, *path.parents))
+    await _run(
+        runtime,
+        f"for mount_path in {shlex.join(sorted(paths))}; do "
+        'if [ -L "$mount_path" ]; then '
+        "printf 'mount or artifact path traverses symlink: %s\\n' "
+        '"$mount_path" >&2; exit 1; fi; done',
+        "validate mount and artifact paths",
+    )
+    # Renaming a parent relocates a bind mount without introducing any symlinks.
+    mountinfo = (await runtime.read("/proc/self/mountinfo")).decode(
+        errors="surrogateescape"
+    )
+    mounted = {line.split(" ")[4] for line in mountinfo.split("\n") if line}
+    for target in mounts:
+        escaped = re.sub(r"[ \t\n\\]", lambda m: f"\\{ord(m[0]):03o}", target)
+        if escaped not in mounted:
+            raise RuntimeError(
+                f"mount target {target!r} is no longer mounted; "
+                "do not move mount targets or their parent directories"
+            )
 
 
 async def collect(
@@ -137,6 +192,7 @@ async def collect(
 
     existence: list[str] = []
     for service, sources in batches:
+        await validate_runtime_mounts(runtime.service(service), sources)
         output = await _run(
             runtime.service(service),
             f"for source in {shlex.join(sources)}; do "
@@ -173,6 +229,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     """
     if not collected:
         return
+    await validate_runtime_mounts(runtime, collected)
     # Restoring into the subprocess runtime would extract absolute paths onto the
     # developer's filesystem, so refuse it before any archive reaches the host.
     if getattr(runtime.config, "type", None) == "subprocess":
