@@ -1,8 +1,9 @@
 """`RuntimePool`: the boxes `Agent.provision(task, reuse=key)` keeps between contexts —
-hit/miss on key, config, TTL and liveness (probed under the new env); teardown on error,
-a cancelled probe, caller stop, `discard`, `max_idle` and pool close (a lease queued
-behind it refused); one box per key, its gate dropped when unused. Subprocess runtimes
-(a directory each), no model."""
+hit/miss on key, config, TTL and liveness (probed under the new env); a box started with
+no lease's env, each lease's env its own per-exec overlay; teardown on error, a cancelled
+probe, caller stop, `discard`, `max_idle` and pool close (a lease queued behind it
+refused); one box per key, its gate dropped when unused. Subprocess runtimes (a directory
+each), no model."""
 
 import asyncio
 import gc
@@ -75,6 +76,29 @@ async def test_the_probe_runs_under_the_new_lease_env() -> None:
             assert not await box.alive()  # `true` is unreachable under an empty PATH
         async with runtimes.lease("k", SUBPROCESS, {}) as again:
             assert again is box  # probed under the new env, not the last lease's
+
+
+async def test_a_pooled_box_starts_without_a_lease_env(monkeypatch) -> None:
+    """Docker/prime/modal bake `runtime.env` into the box at creation, and a pooled box
+    hosts later leases: it is started with no lease's env, and each lease's env is the
+    per-exec overlay for that lease alone (parked, the box carries none)."""
+    started_with: list[dict[str, str]] = []
+    real_start = SubprocessRuntime.start
+
+    async def spy_start(self: SubprocessRuntime) -> None:
+        started_with.append(dict(self.env))  # what a container would bake in
+        await real_start(self)
+
+    monkeypatch.setattr(SubprocessRuntime, "start", spy_start)
+    probe = ["sh", "-c", 'echo "${VF_LEASE_A-unset}" "${VF_LEASE_B-unset}"']
+    async with pool() as runtimes:
+        async with runtimes.lease("k", SUBPROCESS, {"VF_LEASE_A": "a"}) as first:
+            assert (await first.run(probe, {})).stdout.split() == ["a", "unset"]
+        assert first.env == {}
+        async with runtimes.lease("k", SUBPROCESS, {"VF_LEASE_B": "b"}) as second:
+            assert second is first
+            assert (await second.run(probe, {})).stdout.split() == ["unset", "b"]
+    assert started_with == [{}]  # one box, started with nothing lease-specific
 
 
 async def test_cancelling_a_lease_mid_probe_stops_the_popped_box(monkeypatch) -> None:

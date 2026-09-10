@@ -94,9 +94,12 @@ class RuntimePool:
     ) -> AsyncIterator[Runtime]:
         """The seam `Agent.provision` rides: the idle box under `key` when its config equals
         `config`, it is alive, and its idle time is under `ttl`, else a fresh box started
-        from `config` (a stale one stopped first), with `env` as its environment. A normal
-        exit parks the box idle under `key`; an exception (a cancellation included), a box
-        the caller already `stop()`ped, or a pool closed meanwhile tears it down instead —
+        from `config` alone (a stale one stopped first). Either way the box carries `env`
+        as its `runtime.env` for this lease only — applied per exec, never baked into the
+        box at creation, so nothing of one lease's environment (a task's `runtime_env()`
+        secrets) becomes a default the next lease on the box inherits. A normal exit
+        parks the box idle under `key`; an exception (a cancellation included), a box the
+        caller already `stop()`ped, or a pool closed meanwhile tears it down instead —
         the outcome `provision_runtime`'s `finally: stop()` gives. A lease reaching its
         gate after the pool closed is refused: nothing may start a box `stop` will not see."""
         # Lazy: the package imports this module.
@@ -108,13 +111,16 @@ class RuntimePool:
                 raise RuntimeError("runtime pool is closed")
             runtime = await self._take(key, config, env)
             if runtime is None:
+                # Started task-neutral: docker/prime/modal bake `runtime.env` into the
+                # box at creation, and this box may later host another lease. A lease's
+                # env is set afterwards and rides each exec (`process_env`) instead.
                 runtime = make_runtime(config)
-                runtime.env = dict(env)
                 try:
                     await runtime.start()
                 except BaseException:
                     await runtime.stop()
                     raise
+                runtime.env = dict(env)
             try:
                 yield runtime
             except BaseException:
@@ -125,6 +131,7 @@ class RuntimePool:
             if self._closed:
                 await runtime.stop()
                 return
+            runtime.env = {}  # parked: no lease's env is kept on the box
             self._idle[key] = _Idle(runtime, config, time.monotonic())
             await self._trim()
 
