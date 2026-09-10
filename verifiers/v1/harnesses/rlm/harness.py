@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import secrets
 import shlex
 from typing import Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -114,11 +115,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
-        # Before the installer: install.sh packages the skills it finds.
-        await self.install_skills(runtime, SKILLS_DIR)
+        if self.config.skills:
+            # Editable skill packages and uv's tool environment must belong to this run.
+            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
         directory = self._install_dir()
+        skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
+        await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
@@ -129,7 +134,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
             f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
@@ -240,6 +247,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        if self._skills_install_dir is not None:
+            await remove_dir(
+                runtime, self._skills_install_dir, "RLM skill installation"
+            )
 
     @staticmethod
     def _home(trace: Trace) -> str:
@@ -247,4 +258,4 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
-        return f"{RLM_CACHE_DIR}-{cache_key}"
+        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{cache_key}"

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -96,6 +97,9 @@ class TaskData(BaseModel):
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
+
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Skill sources installed before the harness's configured skills for this task."""
 
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime

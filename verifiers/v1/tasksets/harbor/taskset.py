@@ -32,6 +32,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.harness import RuntimeSkills
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
@@ -369,6 +370,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment if fresh else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
+            "skills": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -587,6 +589,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        skills=[RuntimeSkills(runtime=environment.skills_dir)]
+        if environment.skills_dir
+        else [],
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
@@ -703,9 +708,7 @@ def parse_verifier_environment(
             task_dir.name,
         )
     unsupported = [
-        field
-        for field in ("mcp_servers", "skills_dir", "tpu")
-        if getattr(environment, field, None)
+        field for field in ("mcp_servers", "tpu") if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
