@@ -7,6 +7,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
+import base64
 import contextlib
 import logging
 import math
@@ -294,17 +295,20 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            # The shared SDK client coalesces concurrent VM job polls into batches.
-            # Rollout cancellation remains the practical execution timeout; this
-            # long SDK deadline is only a final safety bound.
-            result = await self._client.run_background_job(
+            # Poll directly so rollout cancellation owns the execution timeout.
+            job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
-                poll_interval=1,
             )
+            delay = 0.1
+            while True:
+                result = await self._client.get_background_job(self.info.id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -365,7 +369,24 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and self.config.vm:
+            try:
+                # VM execute_command uses bash and returns the complete output stream.
+                result = await self._client.execute_command(
+                    self.info.id,
+                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
+                    working_dir=self.config.workdir,
+                    env=self.process_env({}),
+                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                )
+            except Exception as exc:
+                raise SandboxError(f"read {path!r}: {exc}") from exc
+            if result.exit_code:
+                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            return base64.b64decode(result.stdout)
+        if max_bytes is not None:
+            return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
@@ -382,21 +403,14 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
-        # Upload via the gateway (multipart) — never inline the bytes on the command line
-        # (a large file, e.g. a task tarball, overflows the exec command-length limit and
-        # fails with ENAMETOOLONG). The upload does NOT run in the workdir, so resolve a
-        # relative path against it (and mkdir its parent) — otherwise the sidecar writes
-        # it somewhere unwritable ("Operation not permitted").
+        # The gateway creates missing parents and uploads binary data without command-line
+        # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            await self._client.execute_command(
-                self.info.id,
-                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
-            )
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )

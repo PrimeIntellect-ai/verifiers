@@ -16,7 +16,6 @@ otherwise build the verifier image from ``tests/Dockerfile``.
 """
 
 import asyncio
-import copy
 import hashlib
 import io
 import logging
@@ -28,7 +27,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -163,6 +162,8 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
+    verifier_staged: bool = False
+
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
@@ -186,9 +187,9 @@ class HarborTask(Task[HarborData]):
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
         if self.data.healthcheck is not None:
-            await self._wait_for_health(runtime, self.data.healthcheck)
+            await self.wait_for_health(runtime, self.data.healthcheck)
 
-    async def _wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
+    async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError
         from harbor.models.task.config import HealthcheckConfig
 
@@ -246,37 +247,41 @@ class HarborTask(Task[HarborData]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        trace.state.artifacts = await collect(runtime, self.data.artifacts)
+        if not self.scoring_deferred:
+            trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
-    def graded_elsewhere(self) -> "HarborTask":
-        """A copy whose `solved` records nothing here: the harbor env grades this
-        task's finished work in a separate box of the task's choosing."""
-        clone = copy.copy(self)
-        clone._graded_elsewhere = True
-        return clone
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        if any(
+            PurePosixPath(root).is_relative_to("/tests")
+            for root in trace.state.artifacts
+        ):
+            raise TaskError("Harbor artifacts cannot restore into /tests")
+        await self.stage_tests(runtime, wipe=True)
+        self.verifier_staged = True
 
-    _graded_elsewhere: bool = False
-
-    async def _stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
-        """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
+    async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
+        """Use a dedicated verifier image's tests, or stage the task package's tests.
 
         Raises rather than scoring stale state: a leftover reward file — planted by
         the agent or shipped in the image — must be gone before `test.sh` runs, so a
         removal that fails must not fall through to reading it.
-
-        `wipe` for a box we did not watch being built: a fresh container of the task's
-        image can ship its own `/tests`, and a leftover file there would be graded as
-        though it came from the package.
         """
-        await runtime.write(
-            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
-        )
-        stage = (
-            f"{'rm -rf /tests && ' if wipe else ''}"
+        # Harbor's dedicated verifier image owns the complete test suite and its
+        # dependencies. Mixing it with packaged tests can retain obsolete helpers.
+        stage = "test -f /tests/test.sh"
+        if self.data.verifier is None or self.data.verifier.image is None:
+            await runtime.write(
+                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+            )
+            stage = (
+                f"{'rm -rf /tests && ' if wipe else ''}"
+                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            )
+        command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            f"mkdir -p /logs/verifier && {stage}"
         )
-        result = await runtime.run(["sh", "-c", stage], {})
+        result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
@@ -286,24 +291,26 @@ class HarborTask(Task[HarborData]):
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         if self.data.verifier is not None:
-            if not self._graded_elsewhere:
+            if not self.verifier_staged:
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
                     '([verifier].environment_mode = "separate"); grade it through '
                     "the harbor env (this taskset's default), or force shared "
                     "grading with --taskset.ignore-separate-verifier"
                 )
-            return {}
-        await self._stage_tests(runtime)
-        return await self._graded(runtime, trace)
+        else:
+            await self.stage_tests(runtime)
+        return await self.run_verifier(runtime, trace)
 
-    async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+    async def run_verifier(
+        self, runtime: Runtime, trace: Trace
+    ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         await runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
-        scores = await self._reward_json(runtime)
+        scores = await self.read_reward_json(runtime)
         if scores is not None:
             if isinstance(scores, dict) and "reward" in scores:
                 trace.record_metrics(
@@ -325,7 +332,9 @@ class HarborTask(Task[HarborData]):
         except (SandboxError, OSError, ValueError):
             return 0.0
 
-    async def _reward_json(self, runtime: Runtime) -> float | dict[str, float] | None:
+    async def read_reward_json(
+        self, runtime: Runtime
+    ) -> float | dict[str, float] | None:
         """Read Harbor's scalar or keyed JSON reward, if it is valid.
 
         Bounded: this is a grading input, and nothing guarantees its size.
@@ -377,7 +386,13 @@ def task_resources(environment, multiplier: float) -> TaskResources:
         memory=environment.memory_mb / 1024 * multiplier
         if environment.memory_mb
         else None,
-        gpu=str(environment.gpus) if environment.gpus else None,
+        gpu=(
+            f"{environment.gpu_types[0]}:{environment.gpus}"
+            if environment.gpu_types
+            else str(environment.gpus)
+        )
+        if environment.gpus
+        else None,
         disk=environment.storage_mb / 1024 * multiplier
         if environment.storage_mb
         else None,
@@ -526,9 +541,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         if task
         else []
     )
-    # Older registry entries stored one author in [metadata].
-    if not authors and meta.get("author_name"):
-        authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     if harbor_config.ignore_timeouts:
         agent_timeout = scoring_timeout = None
     else:
@@ -692,7 +704,7 @@ def parse_verifier_environment(
         )
     unsupported = [
         field
-        for field in ("mcp_servers", "skills_dir", "gpu_types", "tpu")
+        for field in ("mcp_servers", "skills_dir", "tpu")
         if getattr(environment, field, None)
     ]
     if environment.os != TaskOS.LINUX or unsupported:

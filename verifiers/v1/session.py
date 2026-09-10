@@ -158,22 +158,24 @@ class RolloutSession:
         """Run typed request interceptors and stops over one canonical request."""
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
-        turn = graph.prepare_turn(self.trace, request.messages)
-        prepared_users = self.prepared_users.copy()
         prepared: set[int] = set()
         candidates: set[int] = set()
-        for position in range(turn.tail_start, len(request.messages)):
-            message = request.messages[position]
-            if isinstance(message, UserMessage):
-                candidates.add(position)
-                key = graph.message_hash(message)
-                if prepared_users[key]:
-                    prepared_users[key] -= 1
-                    prepared.add(position)
-            elif isinstance(message, ToolMessage):
-                candidates.add(position)
-                if self.prepared_tool_results.get(message.tool_call_id) == message:
-                    prepared.add(position)
+        if self.request_interceptors:
+            turn = graph.prepare_turn(self.trace, request.messages)
+            prepared_users = self.prepared_users.copy()
+            for position in range(turn.tail_start, len(request.messages)):
+                message = request.messages[position]
+                if isinstance(message, UserMessage):
+                    candidates.add(position)
+                    if prepared_users:
+                        key = graph.message_hash(message)
+                        if prepared_users[key]:
+                            prepared_users[key] -= 1
+                            prepared.add(position)
+                elif isinstance(message, ToolMessage):
+                    candidates.add(position)
+                    if self.prepared_tool_results.get(message.tool_call_id) == message:
+                        prepared.add(position)
         already_intercepted = candidates and candidates == prepared
 
         current = request
@@ -240,7 +242,7 @@ class RolloutSession:
     def consume_prepared(self, messages: Messages) -> None:
         """Forget pre-harness rewrites only after their model request commits."""
         for message in messages:
-            if isinstance(message, UserMessage):
+            if isinstance(message, UserMessage) and self.prepared_users:
                 key = graph.message_hash(message)
                 if self.prepared_users[key]:
                     self.prepared_users[key] -= 1

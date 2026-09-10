@@ -1,9 +1,7 @@
 from pathlib import Path
 
-from pydantic import Field
-
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -13,7 +11,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="2.4.6", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "2.4.6"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
 

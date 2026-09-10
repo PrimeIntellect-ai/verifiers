@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(GEPAConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
+    typed_axis = any(a.startswith("--env.") for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)

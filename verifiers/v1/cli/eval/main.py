@@ -46,11 +46,9 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    # An env-block flag (or a since-moved flat axis) skips the usage gate so the
-    # typed parse renders its did-you-mean instead of a bare usage line.
-    typed_axis = any(
-        a.startswith(("--env.", "--taskset.", "--harness.", "--serve.")) for a in argv
-    )
+    # An env-block flag skips the usage gate so the typed parse renders its
+    # did-you-mean instead of a bare usage line.
+    typed_axis = any(a.startswith(("--env.", "--serve.")) for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)
@@ -136,10 +134,6 @@ def main(argv: list[str] | None = None) -> None:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if config.push and config.rich is None:
-        from verifiers.v1.utils.platform import push_traces
-
-        push_traces(episodes, config)
     if (
         config.rich is None
     ):  # --rich is the whole output; otherwise dump each trace as JSON

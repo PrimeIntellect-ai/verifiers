@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
@@ -44,12 +45,18 @@ from verifiers.v1.types import (
 )
 
 
+class ModdedChoice(Choice):
+    # Logprobs are relayed in Response.raw; trace conversion never reads them.
+    logprobs: Any = None
+
+
 class ModdedChatCompletion(ChatCompletion):
     """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
     outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
     valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
     lenient about the label instead of dropping it."""
 
+    choices: list[ModdedChoice]
     service_tier: str | None = None
 
 

@@ -24,7 +24,7 @@ RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
 
 # Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse. Each
 # criterion carries a one-sentence `reason` written *before* the verdict (chain-of-thought), so the
-# verdict follows from it and the reasoning is auditable in `trace.info["judge"]`.
+# verdict follows from it and the reasoning is auditable in `trace.info["judge_calls"]`.
 JSON_SUFFIX = (
     "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '

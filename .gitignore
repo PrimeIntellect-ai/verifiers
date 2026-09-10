@@ -14,7 +14,7 @@ env/
 .python-version
 
 # artifacts
-core.* 
+core.[0-9]*
 .coverage
 dist/
 build/

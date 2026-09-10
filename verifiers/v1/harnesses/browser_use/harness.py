@@ -6,13 +6,14 @@ from pydantic import model_validator
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses.standalone import inline_mcp_client, launch_chat_program
+from verifiers.v1.harnesses.utils import mcp
+from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = inline_mcp_client(
-    (Path(__file__).resolve().parent / "program.py").read_text()
+PROGRAM_SOURCE = bundle_program(
+    (Path(__file__).resolve().parent / "program.py").read_text(), mcp
 )
 
 # The helper names and persistence rules the model needs to use the local tool.

@@ -7,7 +7,8 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import Field
 
-from verifiers.v1.mcp import SharedToolsetConfig, Toolset, mcp_client
+from verifiers.v1.harnesses.utils.mcp import mcp_client
+from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.state import State
 
 
