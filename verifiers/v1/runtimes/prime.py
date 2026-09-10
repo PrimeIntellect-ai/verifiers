@@ -136,6 +136,9 @@ class PrimeProcess(RuntimeProcess):
     async def wait(self) -> int:
         return await self._process.wait()
 
+    async def poll(self) -> int | None:
+        return self._process.returncode
+
     async def terminate(self) -> None:
         await self._process.terminate()
 

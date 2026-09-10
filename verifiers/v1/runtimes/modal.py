@@ -78,6 +78,9 @@ class ModalProcess(RuntimeProcess):
     async def wait(self) -> int:
         return await self._process.wait.aio()
 
+    async def poll(self) -> int | None:
+        return await self._process.poll.aio()
+
     async def terminate(self) -> None:
         await self._signal("TERM")
 
