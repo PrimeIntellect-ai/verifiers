@@ -80,12 +80,22 @@ class RLMHarnessConfig(HarnessConfig):
     max_concurrent_subagents: PositiveInt | None = None
     """Sub-agents running at once per session tree; `None` = nano-rlm's default (4),
     raised to an explicit `max_depth` when needed to keep the policy valid."""
+    max_subagent_calls: PositiveInt | None = None
+    """Tree-total recursive call cap; `None` uses nano-rlm's default (64)."""
+    exec_timeout: PositiveInt | None = None
+    """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
+    default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    allow_git: bool | None = None
+    """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
+    nano-rlm's default (false). Ordinary Git commands remain allowed either way;
+    this is not filesystem or process isolation."""
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
     max_total_tokens: PositiveInt | None = None
     """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
-    tree; once spent every engine stops and no further sub-agents spawn. `None` = unbounded."""
+    tree; once spent every engine stops and no further sub-agents spawn. `None` uses
+    nano-rlm's default (1,000,000); it does not disable the budget."""
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
@@ -169,6 +179,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         policy_knobs: dict[str, Any] = {
             "max_depth": self.config.max_depth,
             "max_concurrent_subagents": max_concurrent_subagents,
+            "max_subagent_calls": self.config.max_subagent_calls,
+            "exec_timeout": self.config.exec_timeout,
+            "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
