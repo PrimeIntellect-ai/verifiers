@@ -165,7 +165,10 @@ class SubprocessRuntime(Runtime):
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is None:
-            return await asyncio.to_thread((self.workdir / path).read_bytes)
+            try:
+                return await asyncio.to_thread((self.workdir / path).read_bytes)
+            except OSError as exc:
+                raise sandbox_error(f"read {path!r}", exc) from exc
 
         # Leave special files to the cancellable shell path without opening a
         # FIFO and waking its writer. A nonblocking open and descriptor check

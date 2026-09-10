@@ -160,3 +160,5 @@ async def test_subprocess_missing_path_is_not_found(tmp_path):
     runtime.workdir = tmp_path
     with pytest.raises(vf.SandboxNotFoundError):
         await runtime.read("missing.txt", max_bytes=16)
+    with pytest.raises(vf.SandboxNotFoundError):
+        await runtime.read("missing.txt")
