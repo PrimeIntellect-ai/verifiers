@@ -37,10 +37,11 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
-- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
-  infinite taskset (a procedural generator, e.g. `wordle`) requires it; a streaming
-  taskset (tasks arrive over time) runs until its stream drains, the dashboard's total
-  growing as tasks appear
+- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; a
+  taskset without an end of its own requires it: an infinite one (a procedural
+  generator, e.g. `wordle`) and a streaming one (tasks arrive over time — the run takes
+  the next `n` and ends; an eval is bounded, a service that consumes a feed for as long
+  as it runs is built on `run_stream` instead, see [tasksets](tasksets.md#streaming-tasksets))
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite or a

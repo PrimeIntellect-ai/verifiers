@@ -1,17 +1,14 @@
 """`Taskset` iteration and the `head`/`shuffle` views over list, generator,
-and `INFINITE` `load` implementations; `stream()` and the runner's windowed
+and `INFINITE` `load` implementations; `stream()` and `run_stream`'s windowed
 pull over a taskset whose tasks arrive over time."""
 
 import asyncio
-import contextlib
 import itertools
-from collections.abc import AsyncGenerator
 
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.eval.runner import _plan_stream, _take, run_stream
-from verifiers.v1.env import RunSlot
+from verifiers.v1.cli.eval.runner import _plan_stream, _take
 
 
 class CountTask(vf.Task[vf.TaskData]):
@@ -125,13 +122,6 @@ def queued(*items: int | None) -> QueueTaskset:
     return taskset
 
 
-async def groups(tasks) -> AsyncGenerator[list[RunSlot], None]:
-    """One slot per task, closing the source when closed — the runner's planner."""
-    async with contextlib.aclosing(tasks):
-        async for task in tasks:
-            yield [RunSlot(task)]
-
-
 async def test_default_stream_is_iteration() -> None:
     taskset = FiniteTaskset(vf.TasksetConfig())
     assert taskset.streaming is False
@@ -139,8 +129,22 @@ async def test_default_stream_is_iteration() -> None:
     assert [t.data.idx async for t in _take(taskset.stream(), 3)] == [0, 1, 2]
 
 
-async def test_stream_pulls_only_as_slots_free() -> None:
-    """The window is back-pressure: with `window` slots in flight the next task is
+async def test_take_is_the_next_n_of_a_feed() -> None:
+    """`-n` on a stream: the next `n` tasks, fewer if the feed ends first, and no
+    pull for an (n+1)th; `0` pulls nothing. A started source is closed either way."""
+    taskset = queued(0, 1, 2, 3)  # never ended: the feed is still waiting
+    assert [t.data.idx async for t in _take(taskset.stream(), 2)] == [0, 1]
+    assert taskset.pulled == 2 and taskset.closed
+    taskset = queued(0, 1, None)
+    assert [t.data.idx async for t in _take(taskset.stream(), 5)] == [0, 1]
+    assert taskset.closed
+    taskset = queued(0)
+    assert [t async for t in _take(taskset.stream(), 0)] == []
+    assert taskset.pulled == 0  # never started, so nothing to close
+
+
+async def test_stream_pulls_only_as_runs_free() -> None:
+    """The window is back-pressure: with `window` runs in flight the next task is
     not pulled; `-n` ends the pull without touching the (n+1)th; results keep
     submission order and the source is closed."""
     taskset = queued(0, 1, 2, 3, 4)  # never ended: the feed is still waiting
@@ -148,89 +152,89 @@ async def test_stream_pulls_only_as_slots_free() -> None:
     running = asyncio.Semaphore(0)
     gate = asyncio.Event()
 
-    async def run_slot(slot: RunSlot):
+    async def run(task: CountTask):
         running.release()
         await gate.wait()
-        return slot.task.data.idx
+        return task.data.idx
 
-    run = asyncio.ensure_future(
-        run_stream(groups(_take(taskset.stream(), 4)), run_slot, window=2)
+    result = asyncio.ensure_future(
+        vf.run_stream(_take(taskset.stream(), 4), run, window=2)
     )
     for _ in range(2):
         await running.acquire()
     await asyncio.sleep(0)
-    assert taskset.pulled == 2 and not run.done()
+    assert taskset.pulled == 2 and not result.done()
     gate.set()
-    assert await run == [0, 1, 2, 3]
+    assert await result == [0, 1, 2, 3]
     assert taskset.pulled == 4 and taskset.closed
 
 
 async def test_stream_ends_with_its_source() -> None:
+    """The caller decides when the source ends: the run returns once it has, with
+    every result in submission order."""
     taskset = queued(2, 1, 0, None)
     order: list[int] = []
 
-    async def run_slot(slot: RunSlot):
-        await asyncio.sleep(0.01 * slot.task.data.idx)
-        order.append(slot.task.data.idx)
-        return slot.task.data.idx
+    async def run(task: CountTask):
+        await asyncio.sleep(0.01 * task.data.idx)
+        order.append(task.data.idx)
+        return task.data.idx
 
-    results = await run_stream(groups(taskset.stream()), run_slot, window=None)
+    results = await vf.run_stream(taskset.stream(), run, window=None)
     assert results == [2, 1, 0] and order == [0, 1, 2]
     assert taskset.closed
 
 
-async def test_failing_slot_cancels_the_rest_and_closes_the_stream() -> None:
+async def test_failing_run_cancels_the_rest_and_closes_the_stream() -> None:
     taskset = queued(0, 1, 2, 3)  # never ended
     running = asyncio.Semaphore(0)
     failed = asyncio.Event()
     cancelled: list[int] = []
 
-    async def run_slot(slot: RunSlot):
+    async def run(task: CountTask):
         running.release()
-        if slot.task.data.idx == 1:
+        if task.data.idx == 1:
             await failed.wait()
             raise RuntimeError("boom")
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
-            cancelled.append(slot.task.data.idx)
+            cancelled.append(task.data.idx)
             raise
 
-    run = asyncio.ensure_future(
-        run_stream(groups(taskset.stream()), run_slot, window=3)
-    )
+    result = asyncio.ensure_future(vf.run_stream(taskset.stream(), run, window=3))
     for _ in range(3):
         await running.acquire()
     failed.set()
     with pytest.raises(RuntimeError, match="boom"):
-        await run
+        await result
     assert sorted(cancelled) == [0, 2]
     assert taskset.pulled == 3 and taskset.closed  # the feed's waiter is gone too
 
 
 @pytest.mark.parametrize("window", [2, None])
-async def test_failing_slot_is_seen_while_the_feed_is_quiet(window) -> None:
-    """A slot failing while the runner waits on the feed aborts the run at once: the
-    pull is raced against the slots, so a quiet feed cannot hide the failure."""
+async def test_failing_run_is_seen_while_the_feed_is_quiet(window) -> None:
+    """A run failing while the runner waits on the feed aborts at once: the pull is
+    raced against the runs, so a quiet feed cannot hide the failure."""
     taskset = queued(0)  # one task, then the feed is quiet forever
 
-    async def run_slot(slot: RunSlot):
+    async def run(task: CountTask):
         raise RuntimeError("boom")
 
-    run = run_stream(groups(taskset.stream()), run_slot, window)
+    result = vf.run_stream(taskset.stream(), run, window=window)
     with pytest.raises(RuntimeError, match="boom"):
-        await asyncio.wait_for(run, timeout=2)  # a hang fails as a timeout
+        await asyncio.wait_for(result, timeout=2)  # a hang fails as a timeout
     assert taskset.pulled == 1 and taskset.closed
 
 
 async def test_a_tasks_rollouts_are_windowed_one_by_one() -> None:
     """`-c` bounds slots in flight, not tasks: a task's `-r` rollouts join the
-    display at once but are scheduled one per group, so the window holds them."""
+    display at once but are yielded one by one, so the window holds them."""
     taskset = queued(0, None)
-    display: list[RunSlot] = []
+    display: list[vf.RunSlot] = []
     alive = peak = 0
 
-    async def run_slot(slot: RunSlot):
+    async def run_slot(slot: vf.RunSlot):
         nonlocal alive, peak
         alive += 1
         peak = max(peak, alive)
@@ -238,21 +242,23 @@ async def test_a_tasks_rollouts_are_windowed_one_by_one() -> None:
         alive -= 1
         return slot.task.data.idx
 
-    def plan_slots(task) -> list[RunSlot]:
-        return [RunSlot(task) for _ in range(50)]
+    def plan_slots(task) -> list[vf.RunSlot]:
+        return [vf.RunSlot(task) for _ in range(50)]
 
     stream = _plan_stream(taskset.stream(), plan_slots, display)
-    assert len(await run_stream(stream, run_slot, window=1)) == 50
+    assert len(await vf.run_stream(stream, run_slot, window=1)) == 50
     assert len(display) == 50 and peak == 1 and taskset.closed
 
 
 async def test_cancelling_the_run_closes_a_waiting_stream() -> None:
     taskset = queued()  # nothing yet: `stream()` is parked on the feed
-    run = asyncio.ensure_future(
-        run_stream(groups(taskset.stream()), lambda slot: None, window=None)
-    )
+
+    async def run(task: CountTask) -> None:
+        return None
+
+    result = asyncio.ensure_future(vf.run_stream(taskset.stream(), run, window=None))
     await asyncio.sleep(0)
-    run.cancel()
+    result.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await run
+        await result
     assert taskset.closed

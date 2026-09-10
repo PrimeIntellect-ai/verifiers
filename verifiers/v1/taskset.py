@@ -14,7 +14,9 @@ type.
 A taskset whose tasks appear over time (a queue, a feed) overrides `stream()`
 instead: an async generator that awaits its source, yields each task complete,
 and returns when the source is drained. The runner consumes `stream()` either
-way — the default streams `iter(self)`.
+way — the default streams `iter(self)`. `vf eval` takes a stream's next `-n`
+tasks and ends; consuming it for as long as it runs is a service's job, built on
+`run_stream`.
 """
 
 from __future__ import annotations
@@ -70,8 +72,8 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         """The tasks as they become available — the read path a runner consumes.
         The default yields `iter(self)` (system prompt and any `head`/`shuffle`
         view applied); a taskset whose tasks appear over time overrides this (see
-        module doc) — such a taskset cannot be shuffled or resumed, `-n` bounds
-        it by count."""
+        module doc) — such a taskset cannot be shuffled or resumed, and `vf eval`
+        requires `-n`: it takes the next `n` and ends."""
         for task in self:
             yield task
 

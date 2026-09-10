@@ -42,13 +42,10 @@ class PushState:
         return self.error is not None or self.url is not None
 
 
-def open_run(
-    config: EvalConfig, state: PushState, *, num_examples: int | None
-) -> pr.Run:
+def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.Run:
     """Open the run this eval streams into, before the first rollout, and give the
-    config the run's id (`num_examples` is None when a stream's count is not known
-    up front). A run that cannot be opened is logged and replaced by a disabled one;
-    the eval goes on. With `run.attach` the run already exists on the
+    config the run's id. A run that cannot be opened is logged and replaced by a
+    disabled one; the eval goes on. With `run.attach` the run already exists on the
     platform (a hosted evaluation's launcher created it and is waiting on it), so
     there is no local fallback: failing to attach fails the eval."""
     attach = config.run.attach

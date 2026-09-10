@@ -7,8 +7,11 @@ selection, resume, persistence, the dashboard — and differ only in how one slo
 becomes one episode: `env.run_slot` in-process, a `run` request to the pool
 otherwise. Tasks come off the taskset's `stream()`: a static taskset's are all
 planned up front, a streaming one's as they appear, pulled while the concurrency
-window has room. The dashboard watches the same `RunSlot`s either way; a served slot
-has no live traces, so its per-turn detail lands when the episode completes.
+window has room — the next `-n` of them, then the run ends: an eval is a report on
+a finite set. Open-ended consumption of a feed is a service's job, built on the
+same primitive, `vf.run_stream`, not this entrypoint's. The
+dashboard watches the same `RunSlot`s either way; a served slot has no live traces,
+so its per-turn detail lands when the episode completes.
 """
 
 import asyncio
@@ -17,6 +20,7 @@ import logging
 import time
 from collections.abc import (
     AsyncGenerator,
+    AsyncIterable,
     AsyncIterator,
     Awaitable,
     Callable,
@@ -39,7 +43,7 @@ from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
 from verifiers.v1.task import Task
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.aio import run_shielded, run_stream
 from verifiers.v1.utils.platform import (
     PushState,
     abort_run,
@@ -62,98 +66,38 @@ async def _aiter(items: Iterable[T]) -> AsyncGenerator[T, None]:
         yield item
 
 
-async def _take(tasks: AsyncIterator[T], n: int | None) -> AsyncGenerator[T, None]:
-    """The first `n` tasks of an async source (all when None), without pulling an
-    (n+1)th the source may still be waiting for; the source is closed after."""
-    taken = 0
+async def _take(tasks: AsyncIterable[T], n: int) -> AsyncGenerator[T, None]:
+    """The first `n` tasks of an async source (fewer if it ends first), without
+    pulling an (n+1)th the source may still be waiting for; the source is closed
+    after — a live feed's `-n`."""
+    source = aiter(tasks)
     try:
-        async for task in tasks:
-            yield task
-            taken += 1
-            if taken == n:
+        for _ in range(n):
+            try:
+                task = await anext(source)
+            except StopAsyncIteration:
                 break
+            yield task
     finally:
         # End the source now (its `finally` runs), not when it is collected.
-        if (aclose := getattr(tasks, "aclose", None)) is not None:
+        if (aclose := getattr(source, "aclose", None)) is not None:
             await aclose()
 
 
-async def run_stream(
-    groups: AsyncGenerator[list[RunSlot], None],
-    run_slot: RunSlotFn,
-    window: int | None,
-) -> list[Episode]:
-    """Run each group of slots as it arrives, pulling the next group only while fewer
-    than `window` slots are in flight (None = pull freely), and return every episode
-    in submission order once the stream has ended and the last slot is done. One
-    slot failing cancels the rest and waits for them to unwind, so nothing keeps
-    uploading into a run the caller is already closing; the stream is `aclose()`d
-    on any exit. The pull is its own task, raced against the slots' first failure:
-    a slot that fails while the feed is quiet aborts the run at once, not when the
-    feed next yields (which may be never). Not a `TaskGroup`: that wraps errors in
-    an `ExceptionGroup`, and `main` would no longer see a `KeyboardInterrupt` as
-    Ctrl-C."""
-    started: list[asyncio.Task[Episode]] = []
-    pending: set[asyncio.Task[Episode]] = set()
-    pull: asyncio.Task[list[RunSlot]] | None = None
-    # Resolved with the first slot to fail (by a done-callback, so the wait on the
-    # pull stays O(1) however many slots a static run has in flight).
-    failed: asyncio.Future[asyncio.Task[Episode]] = (
-        asyncio.get_running_loop().create_future()
-    )
-
-    def watch(task: asyncio.Task[Episode]) -> None:
-        if not task.cancelled() and task.exception() is not None and not failed.done():
-            failed.set_result(task)
-
-    try:
-        while True:
-            # Back-pressure: the next group is pulled only once a slot has freed.
-            while window is not None and len(pending) >= window:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    task.result()  # a failed slot raises here: cancel the rest
-            pull = asyncio.ensure_future(anext(groups))
-            await asyncio.wait({pull, failed}, return_when=asyncio.FIRST_COMPLETED)
-            if failed.done():
-                failed.result().result()  # raises the slot's error: cancel the rest
-            try:
-                group = pull.result()
-            except StopAsyncIteration:
-                break
-            for slot in group:
-                started.append(asyncio.ensure_future(run_slot(slot)))
-                started[-1].add_done_callback(watch)
-                pending.add(started[-1])
-        return await asyncio.gather(*started)
-    except BaseException:
-        # The pull too: the stream must not still be running when it is closed.
-        tasks = [*started, pull] if pull is not None else started
-        for task in tasks:
-            task.cancel()
-        # return_exceptions: wait for every task, not just the first to cancel.
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-    finally:
-        await groups.aclose()
-
-
 async def _plan_stream(
-    tasks: AsyncGenerator[Task, None],
+    tasks: AsyncIterable[Task],
     plan_slots: Callable[[Task], list[RunSlot]],
     slots: list[RunSlot],
-) -> AsyncGenerator[list[RunSlot], None]:
+) -> AsyncGenerator[RunSlot, None]:
     """Plan each task as it arrives: its slots join the display (`slots`) at once,
-    but are yielded one per group, so the window bounds the slots in flight rather
+    but are yielded one by one, so the window bounds the slots in flight rather
     than the tasks — a task's `-r` rollouts wait here, not as live coroutines."""
-    async with contextlib.aclosing(tasks):
-        async for task in tasks:
+    async with contextlib.aclosing(aiter(tasks)) as source:
+        async for task in source:
             planned = plan_slots(task)
             slots.extend(planned)  # the display grows with the stream
             for slot in planned:
-                yield [slot]
+                yield slot
 
 
 @contextlib.asynccontextmanager
@@ -263,13 +207,17 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     # workers each load their own, and this process owns just the taskset.
     env = None if config.serve is not None else load_environment(config.env)
     taskset = env.taskset if env is not None else load_taskset(config.env.taskset)
-    if config.num_tasks is None and taskset.INFINITE:
-        raise ValueError(
-            f"{type(taskset).__name__} is infinite - bound the run with -n"
-        )
-    # A streaming taskset's tasks appear over time: nothing to list up front, so
-    # no whole set to shuffle and no keys to resume against (`-n` still bounds it).
+    # An eval is a report on a finite set: a taskset without an end of its own — a
+    # procedural generator, or a stream whose tasks appear over time — is bounded by
+    # `-n` (the stream's next `-n` tasks), never waited on open-endedly. A service
+    # that consumes a feed for as long as it runs is built on `run_stream` instead.
     streaming = taskset.streaming
+    if config.num_tasks is None and (taskset.INFINITE or streaming):
+        what = "streams its tasks" if streaming else "is infinite"
+        raise ValueError(
+            f"{type(taskset).__name__} {what} - bound the run with -n/--num-examples"
+        )
+    # Nothing to list up front: no whole set to shuffle and no keys to resume against.
     if streaming and (config.shuffle or config.resume):
         raise ValueError(
             f"{type(taskset).__name__} streams its tasks - cannot "
@@ -316,10 +264,9 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             if config.serve is not None
             else ""
         )
-        count = config.num_tasks if streaming else len(plan)
         logger.info(
-            "running %sx%d rollouts on %s%s",
-            "streamed tasks " if count is None else count,
+            "running %dx%d rollouts on %s%s",
+            config.num_tasks if streaming else len(plan),
             config.num_rollouts,
             config.model,
             via,
@@ -335,7 +282,10 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(
-        config, push_state, num_examples=config.num_tasks if streaming else len(tasks)
+        config,
+        push_state,
+        # A stream's count is its `-n` (required); fewer land if the feed ends first.
+        num_examples=cast(int, config.num_tasks) if streaming else len(tasks),
     )
     # Resumed rollouts are part of this run too.
     log_episodes(run, finished)
@@ -366,9 +316,10 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             if streaming:
                 # Each task is planned as it arrives, pulled only as slots free up: the
                 # feed decides what is owed, `-c` how many run at once, `-n` how many
-                # in total.
-                groups = _plan_stream(
-                    _take(selected.stream(), config.num_tasks),
+                # in total — the next `-n`, then the run ends (`_take` never pulls an
+                # (n+1)th the feed may still be waiting for).
+                source = _plan_stream(
+                    _take(taskset.stream(), cast(int, config.num_tasks)),
                     lambda task: plan_slots(task, config.num_rollouts),
                     slots,
                 )
@@ -376,16 +327,16 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             else:
                 # Every slot exists before the first rollout runs; the semaphore alone
                 # bounds what runs, so nothing is held back.
-                planned = [plan_slots(task, n) for task, n in plan]
-                slots.extend(slot for group in planned for slot in group)
-                groups, window = _aiter(planned), None
+                planned = [slot for task, n in plan for slot in plan_slots(task, n)]
+                slots.extend(planned)
+                source, window = _aiter(planned), None
             display = (
                 dashboard(slots, config, start, push=push_state)
                 if config.rich is not None
                 else contextlib.nullcontext()
             )
             async with display:
-                results = await run_stream(groups, run_slot, window)
+                results = await run_stream(source, run_slot, window=window)
                 episodes = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
                 # Shielded: a Ctrl-C here must not cancel the close-out before the
