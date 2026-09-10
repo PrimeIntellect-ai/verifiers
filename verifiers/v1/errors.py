@@ -22,8 +22,10 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
+import errno
 from collections.abc import AsyncIterator
 
+import httpx
 from openai import OpenAIError
 
 
@@ -57,7 +59,17 @@ class EnvError(RolloutError):
 
 
 class SandboxError(RolloutError):
-    """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
+    """A runtime/sandbox operation failed (provisioning, exec, or file I/O). `code` names the
+    fault when typed evidence (an exception type, an errno, an HTTP/RPC status — never the
+    message text) identifies it, so a consumer branches on it instead of parsing the message:
+    `not_found` (the path, or the box itself, is gone), `timeout` (the operation or the box's
+    lifetime ran out), `disk_full` (ENOSPC), `unavailable` (the provider was unreachable or
+    answered 5xx/429), `provisioning` (the box never came up), `denied` (the provider refused:
+    401/402/403). None when nothing typed says."""
+
+    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class TaskError(RolloutError):
@@ -87,6 +99,35 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what} timed out") from e
     except Exception as e:
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
+
+
+def sandbox_fault_code(e: BaseException) -> str | None:
+    """The `SandboxError.code` a Python-level fault identifies — a missing path, a timeout,
+    ENOSPC, or an `httpx` status / transport error — or None when nothing typed does."""
+    if isinstance(e, FileNotFoundError):
+        return "not_found"
+    if isinstance(e, (TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        return "disk_full"
+    if isinstance(e, httpx.HTTPStatusError):
+        return _http_fault_code(e.response.status_code)
+    if isinstance(e, httpx.TransportError):
+        return "unavailable"
+    return None
+
+
+def _http_fault_code(status: int) -> str | None:
+    """The `SandboxError.code` an HTTP status from a sandbox provider identifies."""
+    if status == 404:
+        return "not_found"
+    if status in (401, 402, 403):
+        return "denied"
+    if status in (408, 504):
+        return "timeout"
+    if status == 429 or status >= 500:
+        return "unavailable"
+    return None
 
 
 def _provider_status(e: OpenAIError | str) -> int:
