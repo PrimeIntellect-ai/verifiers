@@ -6,17 +6,23 @@ dump without importing the originating taskset."""
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from aiohttp import web
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.rlm.harness import (
     RLM_SESSION_METADATA_KEY,
     RLMHarness,
     RLMHarnessConfig,
 )
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
 from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -87,6 +93,82 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     assert segment.last_reply == "current partial reply"
     assert trace.root_reply is None
     assert trace.last_reply == "current partial reply"
+
+
+COMPLETION = {
+    "id": "cmpl",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "m",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+}
+
+
+class ProbeHarness(Harness[HarnessConfig]):
+    """An in-process chat loop: `calls` model turns through the interception endpoint."""
+
+    NEEDS_CONTAINER = False
+    calls = 3
+
+    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
+        messages = [{"role": "user", "content": data.prompt}]
+        headers = {"Authorization": f"Bearer {secret}"}
+        async with httpx.AsyncClient(base_url=endpoint, headers=headers) as client:
+            for _ in range(self.calls):
+                body = {"model": ctx.model, "messages": messages}
+                reply = await client.post("/chat/completions", json=body)
+                reply.raise_for_status()
+                messages.append(reply.json()["choices"][0]["message"])
+                messages.append({"role": "user", "content": "again"})
+        return ProgramResult(exit_code=0, stdout="", stderr="")
+
+
+@pytest.fixture
+async def upstream(monkeypatch):
+    """A loopback provider answering every chat completion with `COMPLETION`."""
+
+    async def complete(request: web.Request) -> web.Response:
+        return web.json_response(COMPLETION)
+
+    monkeypatch.setenv("UPSTREAM_API_KEY", "test")
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", complete)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    yield EvalClientConfig(
+        base_url=f"http://127.0.0.1:{port}/v1", api_key_var="UPSTREAM_API_KEY"
+    )
+    await runner.cleanup()
+
+
+async def test_on_progress_observes_live_trace(upstream):
+    agent = vf.make_agent(
+        vf.AgentConfig(model="m", client=upstream, runtime=SubprocessConfig())
+    )
+    agent.harness = ProbeHarness(HarnessConfig(id="probe"))
+    seen: list[tuple[vf.Trace, int]] = []
+
+    def on_progress(trace: vf.Trace) -> None:
+        seen.append((trace, len(trace.calls)))
+        raise RuntimeError("consumer bug")  # logged, never the rollout's failure
+
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    trace = await agent.run(task, on_progress=on_progress)
+
+    assert trace.ok and trace.errors == []
+    assert len(trace.calls) == trace.num_turns == ProbeHarness.calls
+    assert all(live is trace for live, _ in seen)
+    assert [calls for _, calls in seen] == [1, 2, 3]
 
 
 def test_bare_trace_round_trip():

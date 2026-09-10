@@ -476,6 +476,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        session.progress()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect

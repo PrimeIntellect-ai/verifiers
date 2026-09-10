@@ -383,6 +383,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        on_progress: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
@@ -390,9 +391,11 @@ class Agent:
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. `collect_artifacts` captures the task's
-        declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
+        moment it's minted, before any I/O; `on_progress` observes it again after
+        every recorded model call (a hook failure is logged, never the rollout's).
+        `collect_artifacts` captures the task's declared artifacts after its
+        finalizer while its container runtime is still alive. Retries whole while
+        the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
         if self._closed:
@@ -401,7 +404,7 @@ class Agent:
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, on_progress, collect_artifacts
             )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
@@ -433,6 +436,7 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
+        on_progress: Callable[[Trace], None] | None,
         collect_artifacts: bool,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
@@ -444,6 +448,7 @@ class Agent:
         run = Rollout(
             task=task,
             on_trace=on_trace,
+            on_progress=on_progress,
             collect_artifacts=collect_artifacts,
             **params,
         )
@@ -470,6 +475,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        on_progress: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -494,7 +500,8 @@ class Agent:
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
-        `on_trace`). An exchange is caller-driven, so `config.retries` does not
+        `on_trace`). `on_progress` observes the live trace after every recorded
+        model call. An exchange is caller-driven, so `config.retries` does not
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
@@ -504,6 +511,7 @@ class Agent:
             task=task,
             has_user=True,
             on_trace=on_trace,
+            on_progress=on_progress,
             **params,
         )
         interaction = Interaction(run, gate=self._gate)
@@ -644,6 +652,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        on_progress: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
         async with self._gate or nullcontext():
@@ -652,6 +661,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
+                on_progress=on_progress,
                 collect_artifacts=collect_artifacts,
             )
         self._completed.append(trace)
@@ -665,6 +675,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        on_progress: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -686,6 +697,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
+                on_progress=on_progress,
             ) as interaction:
                 yield interaction
         finally:

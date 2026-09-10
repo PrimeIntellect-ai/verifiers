@@ -70,6 +70,7 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        on_progress: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> None:
         self.task = task
@@ -126,6 +127,7 @@ class Rollout:
             ],
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
+            on_progress=on_progress,
         )
         self._stack = AsyncExitStack()
         self._failed = False

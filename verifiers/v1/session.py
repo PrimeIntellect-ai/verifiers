@@ -147,10 +147,23 @@ class RolloutSession:
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
     prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
+    on_progress: Callable[[Trace], None] | None = None
+    """Observes the live trace after each recorded model call (its committed turn included)."""
 
     @property
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
+
+    def progress(self) -> None:
+        """Notify `on_progress` of new trace content; a consumer bug never fails the rollout."""
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress(self.trace)
+        except Exception:
+            logger.warning(
+                "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True
+            )
 
     async def rewrite_request(
         self, request: Request, *, run_stops: bool = True
