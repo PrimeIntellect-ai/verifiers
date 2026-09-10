@@ -11,6 +11,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
+from verifiers.v1.runtimes import RuntimePoolConfig
 from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import deep_merge
 
@@ -59,6 +60,9 @@ class EnvConfig(BaseConfig):
     in flight."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
+    runtimes: RuntimePoolConfig | None = None
+    """Keep boxes between rollouts for agents that `provision(task, reuse=key)`; None
+    (default) tears every box down with its context — the RL/eval semantics."""
 
     @property
     def env_id(self) -> str:

@@ -459,6 +459,57 @@ async def test_multi_agent_env(run_v1, tmp_path):
     assert by_name["b"]["agent"]["trainable"] is False
 
 
+# env x harness runtime for the box-reuse env: the host runtime, and a restricted
+# container whose second episode re-opens egress for setup (`prepare_setup`).
+REUSE_PLACEMENTS = [
+    pytest.param(
+        "null",
+        {"type": "subprocess"},
+        marks=[mark.null, mark.subprocess],
+        id="null-harness-in-subprocess",
+    ),
+    pytest.param(
+        "bash",
+        {"type": "docker", "block": ["example.com"]},
+        marks=[mark.bash, mark.docker],
+        id="bash-harness-in-restricted-docker",
+    ),
+]
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness,runtime", REUSE_PLACEMENTS)
+async def test_runtime_pool_keeps_the_box_across_episodes(
+    run_v1, harness, runtime, tmp_path
+):
+    """`--env.runtimes` keeps the box an env `provision(task, reuse=key)`s (reuse-v1)
+    between episodes: both rollouts borrow one box; the same env without the pool
+    provisions a box per episode."""
+    pooled = await run_v1(
+        "reuse-v1",
+        harness=harness,
+        runtime=runtime,
+        env={"runtimes": {"ttl": 60}},
+        n=2,
+        output_dir=tmp_path / "pooled",
+        max_turns=2,
+    )
+    assert len(pooled) == 2
+    assert all(t.ok and t.agent.runtime.borrowed for t in pooled)
+    assert len({t.agent.runtime.id for t in pooled}) == 1  # one box, two episodes
+    plain = await run_v1(
+        "reuse-v1",
+        harness=harness,
+        runtime=runtime,
+        n=2,
+        output_dir=tmp_path / "plain",
+        max_turns=2,
+    )
+    assert len(plain) == 2
+    assert all(t.ok and t.agent.runtime.borrowed for t in plain)
+    assert len({t.agent.runtime.id for t in plain}) == 2  # a box per episode
+
+
 @pytest.mark.e2e
 async def test_env_id_best_of_n(run_v1, tmp_path):
     """`--env.id` pairs a bundled env with an arbitrary taskset: best-of-n over the

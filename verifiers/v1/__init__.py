@@ -79,6 +79,8 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     RuntimeInfo,
+    RuntimePool,
+    RuntimePoolConfig,
     RuntimeProcess,
     SubprocessConfig,
 )
@@ -298,6 +300,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RuntimeProcess",
     "RuntimeConfig",
     "RuntimeInfo",
+    "RuntimePool",
+    "RuntimePoolConfig",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
