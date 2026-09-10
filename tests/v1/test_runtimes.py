@@ -1,6 +1,7 @@
 """`RuntimePool`: the boxes `Agent.provision(task, reuse=key)` keeps between contexts —
-hit/miss on key, config, TTL and liveness; teardown on error, caller stop, `discard`,
-`max_idle` and pool close; one box per key. Subprocess runtimes (a directory each), no model."""
+hit/miss on key, config, TTL and liveness (probed under the new env); teardown on error,
+a cancelled probe, caller stop, `discard`, `max_idle` and pool close; one box per key, its
+gate dropped when unused. Subprocess runtimes (a directory each), no model."""
 
 import asyncio
 import gc
@@ -60,6 +61,40 @@ async def test_lease_replaces_a_box_that_no_longer_fits(monkeypatch) -> None:
 
 async def _false() -> bool:
     return False
+
+
+async def test_the_probe_runs_under_the_new_lease_env() -> None:
+    async with pool() as runtimes:
+        async with runtimes.lease("k", SUBPROCESS, {"PATH": ""}) as box:
+            assert not await box.alive()  # `true` is unreachable under an empty PATH
+        async with runtimes.lease("k", SUBPROCESS, {}) as again:
+            assert again is box  # probed under the new env, not the last lease's
+
+
+async def test_cancelling_a_lease_mid_probe_stops_the_popped_box(monkeypatch) -> None:
+    probing = asyncio.Event()
+
+    async def _slow_alive(self) -> bool:
+        probing.set()
+        await asyncio.sleep(60)
+        return True
+
+    async with pool() as runtimes:
+        async with runtimes.lease("k", SUBPROCESS, {}) as box:
+            pass
+        monkeypatch.setattr(SubprocessRuntime, "alive", _slow_alive)
+
+        async def take() -> None:
+            async with runtimes.lease("k", SUBPROCESS, {}):
+                pass
+
+        task = asyncio.create_task(take())
+        await probing.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Popped before the probe: the cancellation must stop it, not orphan it.
+        assert box.stopped and not runtimes._idle and not runtimes._locks
 
 
 async def test_sweeper_stops_an_expired_idle_box() -> None:
@@ -132,8 +167,10 @@ async def test_one_box_per_key_serialises_leases() -> None:
         second = asyncio.create_task(hold("second", None))
         await asyncio.sleep(0.05)
         assert order == ["first:in"]  # the second lease waits for the first to end
+        assert runtimes._locks["k"].users == 2  # one holding, one waiting
         gate.set()
         await asyncio.gather(first, second)
+        assert not runtimes._locks  # nothing holds or waits on the key: gate dropped
     assert order == ["first:in", "first:out", "second:in", "second:out"]
 
 

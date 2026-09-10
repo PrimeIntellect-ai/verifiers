@@ -9,7 +9,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
@@ -42,6 +42,14 @@ class _Idle:
     since: float
 
 
+@dataclass
+class _Gate:
+    """A key's lock and the number of leases holding or waiting on it."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class RuntimePool:
     """Live boxes kept between `Agent.provision(..., reuse=key)` contexts: one box per
     key, reused while its config still matches, it is alive, and its idle time is under
@@ -54,7 +62,7 @@ class RuntimePool:
     def __init__(self, config: RuntimePoolConfig | None = None) -> None:
         self.config = config or RuntimePoolConfig()
         self._idle: dict[str, _Idle] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, _Gate] = {}
         self._closed = False
         self._sweeper: asyncio.Task[None] | None = None
 
@@ -94,15 +102,15 @@ class RuntimePool:
         from verifiers.v1.runtimes import make_runtime
 
         async with self._lock(key):
-            runtime = await self._take(key, config)
+            runtime = await self._take(key, config, env)
             if runtime is None:
                 runtime = make_runtime(config)
+                runtime.env = dict(env)
                 try:
                     await runtime.start()
                 except BaseException:
                     await runtime.stop()
                     raise
-            runtime.env = dict(env)
             try:
                 yield runtime
             except BaseException:
@@ -116,23 +124,43 @@ class RuntimePool:
             self._idle[key] = _Idle(runtime, config, time.monotonic())
             await self._trim()
 
-    def _lock(self, key: str) -> asyncio.Lock:
-        return self._locks.setdefault(key, asyncio.Lock())
+    @asynccontextmanager
+    async def _lock(self, key: str) -> AsyncIterator[None]:
+        """Exclusive (FIFO) use of `key`; its gate is dropped once no lease holds or waits on it."""
+        gate = self._locks.setdefault(key, _Gate())
+        gate.users += 1
+        try:
+            async with gate.lock:
+                yield
+        finally:
+            gate.users -= 1
+            if gate.users == 0:
+                del self._locks[key]
 
     def _expired(self, entry: _Idle) -> bool:
         return time.monotonic() - entry.since >= self.config.ttl
 
-    async def _take(self, key: str, config: "RuntimeConfig") -> Runtime | None:
-        """The idle box under `key` if it still fits, else None (a stale one is stopped)."""
+    async def _take(
+        self, key: str, config: "RuntimeConfig", env: Mapping[str, str]
+    ) -> Runtime | None:
+        """The idle box under `key` if it still fits (probed under `env`), else None (a
+        stale one is stopped)."""
         entry = self._idle.pop(key, None)
         if entry is None:
             return None
-        if (
-            entry.config == config
-            and not entry.runtime.stopped
-            and not self._expired(entry)
-            and await entry.runtime.alive()
-        ):
+        # The probe runs under this lease's env, not whatever the last one left behind.
+        entry.runtime.env = dict(env)
+        try:
+            fits = (
+                entry.config == config
+                and not entry.runtime.stopped
+                and not self._expired(entry)
+                and await entry.runtime.alive()
+            )
+        except BaseException:  # a cancelled probe must not leak the popped box
+            await entry.runtime.stop()
+            raise
+        if fits:
             logger.info("runtime pool: reusing box %s for %r", entry.runtime.name, key)
             return entry.runtime
         logger.info("runtime pool: replacing box %s for %r", entry.runtime.name, key)
