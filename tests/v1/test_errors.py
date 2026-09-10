@@ -1,11 +1,13 @@
 """Sandbox fault codes: typed evidence (an exception type, an HTTP status) names the fault, the
-code rides the `SandboxError` onto the trace, a missing path reads as `not_found`, and a
-cancelled task's own cancellation is never a sandbox fault."""
+code rides the `SandboxError` onto the trace, a missing path reads as `not_found`, a cancelled
+task's own cancellation is never a sandbox fault, and an `asyncio.timeout` deadline the SDK
+reports the same way is still a timeout."""
 
 import asyncio
 import contextlib
 import errno
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -17,6 +19,7 @@ from prime_sandboxes._proto.command_session import command_session_pb2
 
 import verifiers.v1 as vf
 from verifiers.v1.errors import sandbox_fault_code
+from verifiers.v1.runtimes import prime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime, _fault_code
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
 
@@ -101,8 +104,8 @@ def _bare_swallow(cancel: asyncio.CancelledError) -> APIError:
 
 
 class _FakeSandboxClient:
-    """An SDK client whose RPC parks until the task is cancelled, then reports the cancel as an
-    ordinary error (`swallow`), or fails outright with `error`."""
+    """An SDK client whose RPCs park until the task is cancelled, then report the cancel as an
+    ordinary error (`swallow`), or fail outright with `error`."""
 
     def __init__(
         self,
@@ -113,7 +116,7 @@ class _FakeSandboxClient:
         self.error = error
         self.entered = asyncio.Event()
 
-    async def start_background_job(self, *args, **kwargs):
+    async def _rpc(self):
         if self.error is not None:
             raise self.error
         self.entered.set()
@@ -122,6 +125,15 @@ class _FakeSandboxClient:
         except asyncio.CancelledError as cancel:
             assert self.swallow is not None
             raise self.swallow(cancel) from None
+
+    async def start_background_job(self, *args, **kwargs):
+        return await self._rpc()
+
+    async def set_network(self, *args, **kwargs):
+        return SimpleNamespace(applied=False)
+
+    async def get_network(self, *args, **kwargs):
+        return await self._rpc()
 
 
 def _prime_runtime(monkeypatch, client) -> PrimeRuntime:
@@ -144,6 +156,41 @@ async def test_cancelled_rpc_is_the_cancellation_not_a_sandbox_fault(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
+
+
+@pytest.mark.parametrize("swallow", [_rpc_cancelled, _bare_swallow])
+async def test_deadline_inside_the_runtime_is_a_timeout_fault_not_a_cancel(
+    monkeypatch, swallow
+):
+    # `prepare_execution` polls under its own `asyncio.timeout`; the expiry cancels the task
+    # mid-RPC and the SDK reports it exactly like a cancel. It must come out as the timeout
+    # fault, and leave the task uncancelled — not as the cancel of a task nobody cancelled.
+    monkeypatch.setattr(prime, "EGRESS_APPLY_TIMEOUT", 0.5)
+    client = _FakeSandboxClient(swallow=swallow)
+    runtime = _prime_runtime(monkeypatch, client)
+    runtime.config = PrimeConfig(allow=["example.com"])
+    with pytest.raises(vf.SandboxError) as info:
+        await runtime.prepare_execution(None)
+    assert info.value.code == "timeout"
+    assert "not applied within 0.5s" in str(info.value)
+    assert client.entered.is_set()
+    task = asyncio.current_task()
+    assert task is not None and task.cancelling() == 0
+
+
+@pytest.mark.parametrize("swallow", [_rpc_cancelled, _bare_swallow])
+async def test_deadline_around_the_runtime_is_the_callers_timeout(monkeypatch, swallow):
+    # A caller's deadline (a rollout stage budget) over a runtime call: the re-raised cancel
+    # reaches the caller's scope while the task still counts as cancelling, so the scope owns
+    # it and the caller sees its `TimeoutError`, with the task left uncancelled.
+    client = _FakeSandboxClient(swallow=swallow)
+    runtime = _prime_runtime(monkeypatch, client)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await runtime.run(["true"], {})
+    assert client.entered.is_set()
+    task = asyncio.current_task()
+    assert task is not None and task.cancelling() == 0
 
 
 async def test_sdk_fault_without_a_cancel_stays_a_sandbox_fault(monkeypatch):

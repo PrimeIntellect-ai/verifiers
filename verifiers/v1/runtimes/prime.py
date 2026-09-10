@@ -61,6 +61,9 @@ bounded by idle detection or rollout cancellation; 30 days is above any real run
 
 BASE_LABELS: list[str] = []
 
+EGRESS_APPLY_TIMEOUT: float = 60
+"""Seconds `prepare_execution` waits for the platform to report an egress policy applied."""
+
 _SDK_TIMEOUTS = (
     APITimeoutError,
     CommandTimeoutError,
@@ -111,33 +114,39 @@ def _fault_code(e: BaseException) -> str | None:
     return None
 
 
-def _cancelled(e: BaseException | None) -> bool:
-    """Whether an SDK failure is really this task's cancellation. connectrpc turns the
-    `CancelledError` raised inside an RPC into `ConnectError(CANCELED, "Request was
-    cancelled")` and the SDK re-wraps that as `APIError`, so a cancelled task comes back from
-    a sandbox call with an ordinary error while `Task.cancelling()` stays set. True when the
-    current task is being cancelled, or when the failure carries the cancel itself (the
-    CANCELED code, or the `CancelledError` chained under it)."""
+def _cancelled() -> bool:
+    """Whether the current task is being cancelled — what tells a swallowed cancel from a
+    fault. connectrpc turns the `CancelledError` raised inside an RPC into
+    `ConnectError(CANCELED, "Request was cancelled")` and the SDK re-wraps that as `APIError`,
+    so a cancelled task comes back from a sandbox call with an ordinary error while
+    `Task.cancelling()` stays set. Only that count is consulted, never the error's chain: an
+    `asyncio.timeout` deadline cancels the task the same way and meets the same rewrite, and
+    only the scope owning the deadline tells the two apart — from the `CancelledError` it is
+    handed while the count is still set. Past the scope the task is uncancelled, and a CANCELED
+    code under an ordinary error is a deadline that already fired (or another task's cancel,
+    batched in by the SDK's coalesced polls), not this task's cancel."""
     task = asyncio.current_task()
-    if task is not None and task.cancelling():
-        return True
-    return e is not None and any(
-        isinstance(current, asyncio.CancelledError)
-        or (isinstance(current, ConnectError) and current.code is Code.CANCELED)
-        for current in _chain(e)
-    )
+    return task is not None and task.cancelling() > 0
 
 
-def _failure(
-    message: str, e: BaseException, *, fallback: str | None = None
-) -> BaseException:
-    """The exception to raise for an SDK failure `e`: the task's cancellation when that is
-    what the SDK reported (`_cancelled`) — a `SandboxError` there would let a caller that
-    retries on sandbox faults swallow the cancel and keep working — else a `SandboxError`
-    carrying the typed fault code (`fallback` when nothing typed says)."""
-    if _cancelled(e):
-        return asyncio.CancelledError()
-    return SandboxError(message, code=_fault_code(e) or fallback)
+@contextlib.contextmanager
+def _faults(what: str, *, fallback: str | None = None) -> Iterator[None]:
+    """Wrap one SDK call. Its failure is re-raised as the task's cancellation when that is what
+    the SDK reported (`_cancelled`) — a `SandboxError` there would let a caller that retries on
+    sandbox faults swallow the cancel and keep working — else as a `SandboxError` carrying the
+    typed fault code (`fallback` when nothing typed says). Sits directly around the call, inside
+    any `asyncio.timeout` scope over it: the cancel must be re-raised while the task still
+    counts as cancelling, where the scope turns its own deadline into `TimeoutError` and lets
+    an external cancel through. Past the scope the swallowed deadline is an ordinary error, and
+    would surface as the cancel of a task nobody cancelled."""
+    try:
+        yield
+    except SandboxError:
+        raise
+    except Exception as e:
+        if _cancelled():
+            raise asyncio.CancelledError() from e
+        raise SandboxError(f"{what}: {e}", code=_fault_code(e) or fallback) from e
 
 
 def _cancel_aware(can_reconnect: Callable[..., bool]) -> Callable[..., bool]:
@@ -145,7 +154,7 @@ def _cancel_aware(can_reconnect: Callable[..., bool]) -> Callable[..., bool]:
 
     @functools.wraps(can_reconnect)
     def wrapper(self: Any, reconnects: int, error: BaseException | None) -> bool:
-        return not _cancelled(error) and can_reconnect(self, reconnects, error)
+        return not _cancelled() and can_reconnect(self, reconnects, error)
 
     return wrapper
 
@@ -314,7 +323,8 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
-        try:
+        # provisioning failure is one rollout's problem, not the eval's
+        with _faults("prime sandbox provisioning failed", fallback="provisioning"):
             async with (
                 creation_limiter(
                     (self.config.creates_per_min or 0) / 60, "prime-sandbox"
@@ -362,18 +372,12 @@ class PrimeRuntime(Runtime):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
-        except (
-            Exception
-        ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise _failure(
-                f"prime sandbox provisioning failed: {e}", e, fallback="provisioning"
-            ) from e
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
         if not self.network_restricted:
             return
-        try:
+        with _faults("prime egress policy failed"):
             if routes is None:
                 policy = {"allow": ["*"]}
             else:
@@ -389,23 +393,22 @@ class PrimeRuntime(Runtime):
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
-            try:
-                async with asyncio.timeout(60):
-                    delay = 0.1
-                    while not status.applied:
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 2, 3)
+        try:
+            async with asyncio.timeout(EGRESS_APPLY_TIMEOUT):
+                delay = 0.1
+                while not status.applied:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 3)
+                    # Inside the deadline's scope, so its expiry lands below as `TimeoutError`.
+                    with _faults("prime egress policy failed"):
                         status = await self._client.get_network(self.info.id)
-            except TimeoutError as e:
-                raise SandboxError(
-                    "prime egress policy was not applied within 60s on sandbox "
-                    f"{self.info.id}; refusing to start the agent unrestricted",
-                    code="timeout",
-                ) from e
-        except SandboxError:
-            raise
-        except Exception as e:
-            raise _failure(f"prime egress policy failed: {e}", e) from e
+        except TimeoutError as e:
+            raise SandboxError(
+                "prime egress policy was not applied within "
+                f"{EGRESS_APPLY_TIMEOUT:g}s on sandbox {self.info.id}; refusing to start "
+                "the agent unrestricted",
+                code="timeout",
+            ) from e
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
@@ -414,7 +417,8 @@ class PrimeRuntime(Runtime):
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        try:
+        # a sandbox/API failure is one rollout's problem, not the eval's
+        with _faults("prime exec failed"):
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
                 self.info.id,
@@ -429,10 +433,6 @@ class PrimeRuntime(Runtime):
                     break
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise _failure(f"prime exec failed: {e}", e) from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -447,15 +447,13 @@ class PrimeRuntime(Runtime):
                 "persistent harness sessions on Prime require a VM sandbox; "
                 "set runtime.prime.vm=true"
             )
-        try:
+        with _faults("prime live process failed to start"):
             process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
-        except Exception as e:
-            raise _failure(f"prime live process failed to start: {e}", e) from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
@@ -464,15 +462,13 @@ class PrimeRuntime(Runtime):
         # sandbox needs no host tunnel. Port exposure is region-gated: many regions (incl. the
         # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
         # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
-        try:
+        # surface prime's exposure constraints actionably
+        with _faults(
+            "prime port exposure failed — port exposure isn't supported in this sandbox's "
+            "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
+            "use a colocated / docker / modal tools.runtime instead"
+        ):
             exposed = await self._client.expose(self.info.id, port)
-        except Exception as e:  # surface prime's exposure constraints actionably
-            raise _failure(
-                "prime port exposure failed — port exposure isn't supported in this sandbox's "
-                "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
-                f"use a colocated / docker / modal tools.runtime instead. ({e})",
-                e,
-            ) from e
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
 
@@ -480,19 +476,17 @@ class PrimeRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
-        try:
+        with _faults("prime background launch failed"):
             await self._client.start_background_job(
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
-        except Exception as e:
-            raise _failure(f"prime background launch failed: {e}", e) from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is not None and self.config.vm:
-            try:
+            with _faults(f"read {path!r}"):
                 # VM execute_command uses bash and returns the complete output stream.
                 result = await self._client.execute_command(
                     self.info.id,
@@ -501,8 +495,6 @@ class PrimeRuntime(Runtime):
                     env=self.process_env({}),
                     timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 )
-            except Exception as exc:
-                raise _failure(f"read {path!r}: {exc}", exc) from exc
             if result.exit_code:
                 raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
             return base64.b64decode(result.stdout)
@@ -515,13 +507,10 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        try:
-            with tempfile.TemporaryDirectory() as directory:
-                download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
-                return await asyncio.to_thread(download.read_bytes)
-        except Exception as e:
-            raise _failure(f"read {path!r}: {e}", e) from e
+        with _faults(f"read {path!r}"), tempfile.TemporaryDirectory() as directory:
+            download = Path(directory) / "download"
+            await self._client.download_file(self.info.id, target, str(download))
+            return await asyncio.to_thread(download.read_bytes)
 
     async def write(self, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
@@ -531,12 +520,10 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        try:
+        with _faults(f"write {path!r}"):
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
-        except Exception as e:
-            raise _failure(f"write {path!r}: {e}", e) from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
