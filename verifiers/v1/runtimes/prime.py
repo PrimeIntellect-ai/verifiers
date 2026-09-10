@@ -76,7 +76,8 @@ class PrimeConfig(NetworkPolicyConfig):
     platform auto-builds what the sandbox needs from it (a VM image for `vm` sandboxes,
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -149,8 +150,8 @@ class PrimeRuntime(Runtime):
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
-        self.config = config
-        self.info = PrimeRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
 
     @property

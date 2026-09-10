@@ -39,7 +39,8 @@ _APP_NAME = "verifiers-v1"
 class ModalConfig(BaseConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
@@ -107,8 +108,8 @@ class ModalRuntime(Runtime):
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = ModalRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = ModalRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
 
     @property
