@@ -396,8 +396,11 @@ class Agent:
         loop (a plain callable runs in the loop's default executor, a coroutine
         function as a task; deliveries may overlap — `TraceProgress.calls` orders
         them; a hook failure is logged, never the rollout's), so a slow hook adds
-        nothing to the model call's latency. A consumer that wants the whole
-        trace reads `on_trace`'s argument on its own schedule. `collect_artifacts`
+        nothing to the model call's latency. A hook that falls behind has new
+        snapshots dropped past a small pending cap, and deliveries still pending
+        when the rollout concludes are cancelled — the returned trace is the
+        conclusion. A consumer that wants the whole trace reads `on_trace`'s
+        argument on its own schedule. `collect_artifacts`
         captures the task's declared artifacts after its finalizer while its
         container runtime is still alive. Retries whole while the trace ends with
         a retryable error (`config.retries`) — never into a borrowed box; the

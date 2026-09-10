@@ -36,6 +36,11 @@ from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
 
+MAX_PENDING_PROGRESS = 8
+"""`on_progress` deliveries a session keeps in flight. A hook that can't keep up (or never
+returns) would otherwise retain one task and copied call record per model call for the
+rollout's whole life; past this many pending, new snapshots are dropped."""
+
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
     """Select a hook boundary solely from its annotated parameters."""
@@ -152,8 +157,12 @@ class RolloutSession:
     """Handed a `TraceProgress` snapshot after each recorded model call, off the event loop:
     a plain callable runs in the loop's default executor, a coroutine function as a task."""
     progress_tasks: set["asyncio.Task"] = field(default_factory=set)
-    """Coroutine `on_progress` deliveries in flight (asyncio holds tasks weakly). Not cancelled
-    at release: a snapshot outlives the trace's seal."""
+    """`on_progress` deliveries in flight, one task each (asyncio holds tasks weakly). At most
+    `MAX_PENDING_PROGRESS` — past that, new snapshots are dropped — and `release()` cancels
+    whatever is still pending, so a stalled hook never retains a snapshot per model call
+    for the rollout's life, or anything once it concludes."""
+    progress_dropped: int = 0
+    """Snapshots dropped because `MAX_PENDING_PROGRESS` deliveries were already pending."""
 
     @property
     def stopped(self) -> bool:
@@ -163,12 +172,22 @@ class RolloutSession:
         """Snapshot the trace's newest call into a `TraceProgress` and hand it to
         `on_progress` off the event loop. This runs on the interception server's request path
         (an exchange's `finally`), before the response is flushed, so it only builds the
-        snapshot and schedules: a plain callable goes to the loop's default executor (shared
-        with the process's other blocking work — keep hooks quick), a coroutine function
-        becomes a task. Deliveries may overlap; `TraceProgress.calls` orders them. A hook
-        failure — or a failure to schedule one — is logged, never the rollout's."""
+        snapshot and schedules one delivery task (`_deliver`). Deliveries may overlap;
+        `TraceProgress.calls` orders them. Once `MAX_PENDING_PROGRESS` are pending the hook
+        has stalled, and new snapshots are dropped (logged once) rather than retained. A
+        hook failure — or a failure to schedule one — is logged, never the rollout's."""
         hook, trace = self.on_progress, self.trace
         if hook is None or not trace.calls:
+            return
+        if len(self.progress_tasks) >= MAX_PENDING_PROGRESS:
+            self.progress_dropped += 1
+            if self.progress_dropped == 1:
+                logger.warning(
+                    "on_progress hook has %d deliveries pending; dropping new snapshots "
+                    "until it catches up (rollout %s)",
+                    MAX_PENDING_PROGRESS,
+                    trace.id,
+                )
             return
         snapshot = TraceProgress(
             trace_id=trace.id,
@@ -178,35 +197,33 @@ class RolloutSession:
             elapsed_s=time.time() - trace.timing.start,
         )
         try:
-            loop = asyncio.get_running_loop()
-            if inspect.iscoroutinefunction(hook) or inspect.iscoroutinefunction(
-                hook.__call__
-            ):
-                task = loop.create_task(self._deliver_async(hook, snapshot))
-                self.progress_tasks.add(task)
-                task.add_done_callback(self.progress_tasks.discard)
-            else:
-                loop.run_in_executor(None, self._deliver, hook, snapshot)
-        except RuntimeError:  # no running loop, or its executor is shut down
+            task = asyncio.get_running_loop().create_task(self._deliver(hook, snapshot))
+        except RuntimeError:  # no running loop
             logger.warning(
                 "on_progress hook not scheduled (rollout %s)", trace.id, exc_info=True
             )
+            return
+        self.progress_tasks.add(task)
+        task.add_done_callback(self.progress_tasks.discard)
 
-    def _deliver(self, hook: ProgressHook, snapshot: TraceProgress) -> None:
-        """Run a plain hook; called in an executor thread."""
+    async def _deliver(self, hook: ProgressHook, snapshot: TraceProgress) -> None:
+        """One `on_progress` delivery. A coroutine function is called here and awaited; a
+        plain callable is called in the loop's default executor (shared with the process's
+        other blocking work — keep hooks quick), and an awaitable it returns (a `def`
+        delegating to a coroutine) is awaited here too, so it always runs to completion.
+        Cancelled by `release()` if still pending when the rollout concludes."""
         try:
-            hook(snapshot)
-        except Exception:
-            logger.warning(
-                "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True
-            )
-
-    async def _deliver_async(self, hook: ProgressHook, snapshot: TraceProgress) -> None:
-        try:
-            result = hook(snapshot)
+            if inspect.iscoroutinefunction(hook) or inspect.iscoroutinefunction(
+                hook.__call__
+            ):
+                result = hook(snapshot)
+            else:
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None, hook, snapshot
+                )
             if inspect.isawaitable(result):
                 await result
-        except Exception:
+        except Exception:  # a consumer bug, never the rollout's
             logger.warning(
                 "on_progress hook failed (rollout %s)", self.trace.id, exc_info=True
             )
@@ -450,9 +467,13 @@ class RolloutSession:
         task.add_done_callback(self.tasks.discard)
 
     def release(self) -> None:
-        """Seal the session: no further trace mutation, and in-flight handlers cancel."""
+        """Seal the session: no further trace mutation, and in-flight handlers cancel — as
+        do `on_progress` deliveries still pending: the rollout has concluded, and its
+        conclusion is the trace itself, not a snapshot."""
         self.released = True
         for task in list(self.tasks):
+            task.cancel()
+        for task in list(self.progress_tasks):
             task.cancel()
 
     async def refused(self) -> str | None:

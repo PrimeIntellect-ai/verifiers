@@ -216,7 +216,10 @@ class TraceProgress:
 
 ProgressHook = Callable[[TraceProgress], Awaitable[None] | None]
 """An `on_progress` hook: a plain callable, run in the loop's default executor, or a
-coroutine function, run as a task on the loop."""
+coroutine function, run as a task on the loop (an awaitable a plain callable returns is
+awaited on the loop too). Each delivery is a task; a hook that falls behind has new
+snapshots dropped past a small pending cap, and deliveries still pending when the rollout
+concludes are cancelled — the conclusion is the returned trace."""
 
 
 class Branch(BaseModel):

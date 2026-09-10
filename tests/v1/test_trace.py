@@ -4,8 +4,11 @@ recompute on load), transient `state` never crosses the wire, and the permissive
 dump without importing the originating taskset."""
 
 import asyncio
+import gc
 import json
+import threading
 import time
+import warnings
 from types import SimpleNamespace
 
 import httpx
@@ -32,7 +35,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import MAX_PENDING_PROGRESS, RolloutSession
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
@@ -248,6 +251,122 @@ async def test_on_progress_runs_off_the_event_loop(make_hook, caplog):
     assert sorted(p.calls for p in seen) == [1, 2]
     assert all(p.trace_id == trace.id for p in seen)
     assert caplog.text.count("on_progress hook failed") == 2
+
+
+def make_session(hook) -> RolloutSession:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
+    )
+    return RolloutSession(
+        ctx=ModelContext(model="m", client=EvalClientConfig(base_url="http://x/v1")),
+        trace=trace,
+        on_progress=hook,
+    )
+
+
+def stalled_async(entered: list[int]):
+    async def hook(progress: vf.TraceProgress) -> None:
+        entered.append(progress.calls)
+        await asyncio.Event().wait()
+
+    return hook, lambda: None
+
+
+def stalled_sync(entered: list[int]):
+    gate = threading.Event()
+
+    def hook(progress: vf.TraceProgress) -> None:
+        entered.append(progress.calls)
+        gate.wait()
+
+    return hook, gate.set
+
+
+@pytest.mark.parametrize("stall", [stalled_sync, stalled_async], ids=["sync", "async"])
+async def test_on_progress_bounds_pending_deliveries(stall, caplog):
+    # A hook that never returns must not retain one task and one copied call record per
+    # model call for the rollout's life: past MAX_PENDING_PROGRESS pending deliveries new
+    # snapshots are dropped (logged once), and `release()` cancels what is still pending —
+    # a blocking hook's queued executor work included.
+    entered: list[int] = []
+    hook, unblock = stall(entered)
+    session = make_session(hook)
+    server, dialect = InterceptionServer(), ChatDialect()
+    try:
+        for _ in range(50):
+            server.record_call(session, dialect, {"model": "m"}, time.time())
+            await asyncio.sleep(0)
+        assert len(session.trace.calls) == 50
+        assert len(session.progress_tasks) == MAX_PENDING_PROGRESS
+        assert session.progress_dropped == 50 - MAX_PENDING_PROGRESS
+        assert caplog.text.count("dropping new snapshots") == 1
+        await asyncio.sleep(0.05)
+        assert sorted(entered) == list(range(1, len(entered) + 1))  # in order
+        assert 0 < len(entered) <= MAX_PENDING_PROGRESS
+
+        pending = list(session.progress_tasks)
+        session.release()
+        await asyncio.gather(*pending, return_exceptions=True)
+        assert all(task.cancelled() for task in pending)
+        assert session.progress_tasks == set()
+        # Sealed: a straggler exchange schedules nothing further.
+        server.record_call(session, dialect, {"model": "m"}, time.time())
+        assert session.progress_tasks == set() and len(session.trace.calls) == 50
+    finally:
+        unblock()  # let the executor threads a blocking hook holds go
+
+
+async def test_on_progress_plain_hook_returning_awaitable_completes():
+    # `ProgressHook` admits `def hook(p): return async_cb(p)`. The plain callable runs in
+    # the executor, but the coroutine it hands back must be awaited on the loop, not
+    # dropped (an unawaited coroutine: the callback never runs, and Python warns).
+    seen: list[int] = []
+
+    async def async_cb(progress: vf.TraceProgress) -> None:
+        await asyncio.sleep(0)
+        seen.append(progress.calls)
+
+    def hook(progress: vf.TraceProgress):
+        return async_cb(progress)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        session = make_session(hook)
+        server, dialect = InterceptionServer(), ChatDialect()
+        for _ in range(2):
+            server.record_call(session, dialect, {"model": "m"}, time.time())
+        await settled(lambda: not session.progress_tasks)
+        gc.collect()
+    assert sorted(seen) == [1, 2]
+    assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
+
+
+async def test_on_progress_pending_delivery_cancels_at_close(upstream):
+    # The rollout's close releases its session, which cancels a delivery the hook is still
+    # holding: the conclusion is the returned trace, and a stalled hook retains nothing.
+    agent = vf.make_agent(
+        vf.AgentConfig(model="m", client=upstream, runtime=SubprocessConfig())
+    )
+    agent.harness = ProbeHarness(HarnessConfig(id="probe"))
+    seen: list[int] = []
+    cancelled = asyncio.Event()
+
+    async def on_progress(progress: vf.TraceProgress) -> None:
+        seen.append(progress.calls)
+        if progress.calls == ProbeHarness.calls:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    trace = await agent.run(task, on_progress=on_progress)
+
+    assert trace.ok and trace.errors == []
+    assert sorted(seen) == [1, 2, 3]
+    await settled(cancelled.is_set)
 
 
 def test_bare_trace_round_trip():
