@@ -14,7 +14,6 @@ from openai import APIStatusError, AsyncOpenAI
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
-        CompactionFailed,
         Compactor,
         bound_tool_message,
         compactable,
@@ -226,10 +225,6 @@ async def run_chat_loop(
     while True:
         try:
             completion, messages = await compactor.complete(messages)
-        except CompactionFailed:
-            # The context is exhausted and could not be summarized: end the run
-            # cleanly with what the conversation holds - still a trainable sample.
-            return
         except APIStatusError as error:
             # Null cannot compact, so context exhaustion ends it with the transcript so far.
             if args.bash or not is_context_overflow(error):
@@ -310,10 +305,7 @@ async def run_chat_loop(
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):
-            try:
-                messages = await compactor.compact(messages)
-            except CompactionFailed:
-                return
+            messages = await compactor.compact(messages)
 
 
 def parse_args() -> argparse.Namespace:
