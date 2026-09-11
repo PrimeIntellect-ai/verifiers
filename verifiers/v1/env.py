@@ -29,7 +29,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
+from verifiers.v1.runtimes import RuntimePool, SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type, deep_merge
@@ -144,6 +144,9 @@ class Env(ABC, Generic[ConfigT]):
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
+        self.runtimes: RuntimePool | None = None
+        """The boxes kept between rollouts (`--env.runtimes`), for agents that
+        `provision(task, reuse=key)`; `run()` may `discard(key)` one it is done with."""
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
 
@@ -229,6 +232,7 @@ class Env(ABC, Generic[ConfigT]):
             return _EpisodeAgent(
                 resolved,
                 interception=self._interception,
+                runtimes=self.runtimes,
                 name=name,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
@@ -367,9 +371,13 @@ class Env(ABC, Generic[ConfigT]):
                     if server.state_secret
                 ),
             )
-            async with interception:
+            runtimes = (
+                RuntimePool(self.config.runtimes) if self.config.runtimes else None
+            )
+            async with interception, runtimes or contextlib.nullcontext():
                 self._shared_tools = shared
                 self._interception = interception
+                self.runtimes = runtimes
                 try:
                     await self.start()
                     yield
@@ -380,6 +388,7 @@ class Env(ABC, Generic[ConfigT]):
                     finally:
                         self._shared_tools = {}
                         self._interception = None
+                        self.runtimes = None
 
     def _runs_local(self) -> bool:
         """Whether every role's runtime policy is local (any remote role means tunnels)."""
