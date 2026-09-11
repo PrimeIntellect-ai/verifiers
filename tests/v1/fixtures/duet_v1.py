@@ -15,9 +15,13 @@ import verifiers.v1 as vf
 
 
 class DuetEnvConfig(vf.EnvConfig):
-    # Both seats pin the lean `null` chat loop.
-    a: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
-    b: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
+    # The ordinary CI smoke test needs only local `null` chat loops.
+    a: vf.AgentConfig = vf.AgentConfig(
+        harness=vf.HarnessConfig(id="null"), runtime=vf.SubprocessConfig()
+    )
+    b: vf.AgentConfig = vf.AgentConfig(
+        harness=vf.HarnessConfig(id="null"), runtime=vf.SubprocessConfig()
+    )
 
 
 class DuetEnv(vf.Env[DuetEnvConfig]):

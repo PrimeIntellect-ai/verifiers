@@ -3,7 +3,9 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -248,7 +250,7 @@ async def run_chat_loop(
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
+                    args.tool_interception_secret,
                     "before",
                     tool_message,
                 )
@@ -296,7 +298,7 @@ async def run_chat_loop(
                 decision = await run_tool_hook(
                     tool_client,
                     args.tool_interception_url,
-                    args.api_key,
+                    args.tool_interception_secret,
                     "after",
                     tool_message,
                 )
@@ -318,6 +320,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-secret-bytes", type=int, default=0)
     parser.add_argument("--bash", action="store_true")
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
@@ -329,6 +332,17 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
+    args.tool_interception_secret = ""
+    if args.tool_interception_secret_bytes:
+        payload = sys.stdin.buffer.read(args.tool_interception_secret_bytes)
+        if len(payload) != args.tool_interception_secret_bytes:
+            raise RuntimeError("tool interception credential handoff ended early")
+        args.tool_interception_secret = payload.decode()
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(devnull, sys.stdin.fileno())
+        finally:
+            os.close(devnull)
     initial = []
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)

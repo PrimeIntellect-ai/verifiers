@@ -26,10 +26,10 @@ class BaseInterceptionConfig(BaseConfig):
     `multiplex`)."""
 
 
-# (base_url, model_secret, state_secret): model inference and task state deliberately use
-# separate capabilities. `base_url` is universally reachable — the interception is exposed
-# whenever any consumer is remote.
-Slot = tuple[str, str, str]
+# (base_url, model_secret, state_secret, tool_secret): model inference, private task state,
+# and native tool interception deliberately use separate capabilities. `base_url` is
+# universally reachable — the interception is exposed whenever any consumer is remote.
+Slot = tuple[str, str, str, str]
 
 
 class Interception(ABC):
