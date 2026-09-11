@@ -21,7 +21,7 @@ ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-"""Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
+"""Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
 
 

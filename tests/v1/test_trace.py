@@ -10,6 +10,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.cli.output import write_episode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.rlm.harness import (
     RLM_SESSION_METADATA_KEY,
@@ -109,13 +110,13 @@ def test_bare_trace_round_trip():
     assert rt.reward == 0.0 and rt.errors == []
 
 
-def test_custom_task_state_round_trip():
+def test_custom_task_state_round_trip(tmp_path):
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
     tr = vf.Trace[MyTask, MyState](
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
-        state=MyState(score=7),
+        state=MyState(score=7, artifacts={"/artifact.bin": b"\xff\x00\xfe"}),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a"), sampled=True),
@@ -132,6 +133,10 @@ def test_custom_task_state_round_trip():
     assert rt.task.type == "MyTask"  # the producing class's name survives the wire
     assert rt.num_turns == 1 and rt.num_branches == 1
     assert rt.reward == 0.5  # property recomputed from `rewards`
+    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
+    saved = json.loads((tmp_path / "traces.jsonl").read_bytes())
+    assert "state" not in saved["traces"][0]
+    assert tr.state.artifacts["/artifact.bin"] == b"\xff\x00\xfe"
 
 
 def test_wire_trace_round_trip():

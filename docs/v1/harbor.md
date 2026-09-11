@@ -135,6 +135,8 @@ tool and provider-held resource remains disabled.
 
 `artifact_max_bytes` defaults to 32 MiB and bounds the total archive bytes across all services. Increase it for tasks whose outputs exceed that limit. Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
+Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
+
 Two deliberate differences from `harbor run`:
 
 - **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
