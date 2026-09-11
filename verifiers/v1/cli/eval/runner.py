@@ -5,15 +5,27 @@ elastic — one worker, scaling on demand), the same path prime-rl trains throug
 `--no-serve` runs them in-process instead. Both paths share this runner — task
 selection, resume, persistence, the dashboard — and differ only in how one slot
 becomes one episode: `env.run_slot` in-process, a `run` request to the pool
-otherwise. The dashboard watches the same `RunSlot`s either way; a served slot
-has no live traces, so its per-turn detail lands when the episode completes.
+otherwise. Tasks come off the taskset's `stream()`: a static taskset's are all
+planned up front, a streaming one's as they appear, pulled while the concurrency
+window has room — the next `-n` of them, then the run ends: an eval is a report on
+a finite set. Open-ended consumption of a feed is a service's job, built on the
+same primitive, `vf.run_stream`, not this entrypoint's. The
+dashboard watches the same `RunSlot`s either way; a served slot has no live traces,
+so its per-turn detail lands when the episode completes.
 """
 
 import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+)
 from typing import TypeVar, cast
 
 from verifiers.v1.cli.dashboard import dashboard
@@ -30,7 +42,8 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.task import Task
+from verifiers.v1.utils.aio import run_shielded, run_stream
 from verifiers.v1.utils.platform import (
     PushState,
     abort_run,
@@ -44,24 +57,47 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
-    """`asyncio.gather`, but one rollout failing cancels the rest and waits for them
-    to unwind, so nothing keeps uploading into a run the caller is already closing.
-    Not a `TaskGroup`: that wraps errors in an `ExceptionGroup`, and `main` would no
-    longer see a `KeyboardInterrupt` as Ctrl-C."""
-    tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
-    try:
-        return await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        # return_exceptions: wait for every task, not just the first to cancel.
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-
-
 RunSlotFn = Callable[[RunSlot], Awaitable[Episode]]
 OnComplete = Callable[[Episode], Awaitable[None]]
+
+
+async def _aiter(items: Iterable[T]) -> AsyncGenerator[T, None]:
+    for item in items:
+        yield item
+
+
+async def _take(tasks: AsyncIterable[T], n: int) -> AsyncGenerator[T, None]:
+    """The first `n` tasks of an async source (fewer if it ends first), without
+    pulling an (n+1)th the source may still be waiting for; the source is closed
+    after — a live feed's `-n`."""
+    source = aiter(tasks)
+    try:
+        for _ in range(n):
+            try:
+                task = await anext(source)
+            except StopAsyncIteration:
+                break
+            yield task
+    finally:
+        # End the source now (its `finally` runs), not when it is collected.
+        if (aclose := getattr(source, "aclose", None)) is not None:
+            await aclose()
+
+
+async def _plan_stream(
+    tasks: AsyncIterable[Task],
+    plan_slots: Callable[[Task], list[RunSlot]],
+    slots: list[RunSlot],
+) -> AsyncGenerator[RunSlot, None]:
+    """Plan each task as it arrives: its slots join the display (`slots`) at once,
+    but are yielded one by one, so the window bounds the slots in flight rather
+    than the tasks — a task's `-r` rollouts wait here, not as live coroutines."""
+    async with contextlib.aclosing(aiter(tasks)) as source:
+        async for task in source:
+            planned = plan_slots(task)
+            slots.extend(planned)  # the display grows with the stream
+            for slot in planned:
+                yield slot
 
 
 @contextlib.asynccontextmanager
@@ -171,14 +207,26 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     # workers each load their own, and this process owns just the taskset.
     env = None if config.serve is not None else load_environment(config.env)
     taskset = env.taskset if env is not None else load_taskset(config.env.taskset)
-    if config.num_tasks is None and taskset.INFINITE:
+    # An eval is a report on a finite set: a taskset without an end of its own — a
+    # procedural generator, or a stream whose tasks appear over time — is bounded by
+    # `-n` (the stream's next `-n` tasks), never waited on open-endedly. A service
+    # that consumes a feed for as long as it runs is built on `run_stream` instead.
+    streaming = taskset.streaming
+    if config.num_tasks is None and (taskset.INFINITE or streaming):
+        what = "streams its tasks" if streaming else "is infinite"
         raise ValueError(
-            f"{type(taskset).__name__} is infinite - bound the run with -n"
+            f"{type(taskset).__name__} {what} - bound the run with -n/--num-examples"
+        )
+    # Nothing to list up front: no whole set to shuffle and no keys to resume against.
+    if streaming and (config.shuffle or config.resume):
+        raise ValueError(
+            f"{type(taskset).__name__} streams its tasks - cannot "
+            f"{'shuffle' if config.shuffle else 'resume'}"
         )
     selected = taskset.shuffle() if config.shuffle else taskset
     if config.num_tasks is not None:
         selected = selected.head(config.num_tasks)
-    tasks = list(selected)
+    tasks = [] if streaming else list(selected)
     out = output_path(config)
     # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
     plan = [(task, config.num_rollouts) for task in tasks]
@@ -218,7 +266,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         )
         logger.info(
             "running %dx%d rollouts on %s%s",
-            len(plan),
+            config.num_tasks if streaming else len(plan),
             config.num_rollouts,
             config.model,
             via,
@@ -233,7 +281,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     push_state = PushState()
 
     # Opened before the first rollout so every episode streams as it lands.
-    run = open_run(config, push_state, num_examples=len(tasks))
+    run = open_run(
+        config,
+        push_state,
+        # A stream's count is its `-n` (required); fewer land if the feed ends first.
+        num_examples=cast(int, config.num_tasks) if streaming else len(tasks),
+    )
     # Resumed rollouts are part of this run too.
     log_episodes(run, finished)
 
@@ -247,28 +300,43 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         if env is not None
         else _server(config, config.serve, semaphore, on_complete)
     )
+
+    # The display slots: in-process ones are the env's own (it fills their live
+    # traces); a served rollout's is a client-side stand-in its worker never sees.
+    def plan_slots(task: Task, n: int) -> list[RunSlot]:
+        if env is not None:
+            return env.slots(task, n)
+        return [RunSlot(task) for _ in range(n)]
+
+    slots = [RunSlot.finished(episode) for episode in finished]
+
     # The run is closed out whatever breaks, backend setup and teardown included.
     try:
         async with backend as run_slot:
-            # The display slots: in-process ones are the env's own (it fills their live
-            # traces); a served rollout's is a client-side stand-in its worker never sees.
-            planned = [
-                slot
-                for task, n in plan
-                for slot in (
-                    env.slots(task, n)
-                    if env is not None
-                    else [RunSlot(task) for _ in range(n)]
+            if streaming:
+                # Each task is planned as it arrives, pulled only as slots free up: the
+                # feed decides what is owed, `-c` how many run at once, `-n` how many
+                # in total — the next `-n`, then the run ends (`_take` never pulls an
+                # (n+1)th the feed may still be waiting for).
+                source = _plan_stream(
+                    _take(taskset.stream(), cast(int, config.num_tasks)),
+                    lambda task: plan_slots(task, config.num_rollouts),
+                    slots,
                 )
-            ]
-            slots = [RunSlot.finished(episode) for episode in finished] + planned
+                window = config.max_concurrent
+            else:
+                # Every slot exists before the first rollout runs; the semaphore alone
+                # bounds what runs, so nothing is held back.
+                planned = [slot for task, n in plan for slot in plan_slots(task, n)]
+                slots.extend(planned)
+                source, window = _aiter(planned), None
             display = (
                 dashboard(slots, config, start, push=push_state)
                 if config.rich is not None
                 else contextlib.nullcontext()
             )
             async with display:
-                results = await gather_rollouts(run_slot(slot) for slot in planned)
+                results = await run_stream(source, run_slot, window=window)
                 episodes = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
                 # Shielded: a Ctrl-C here must not cancel the close-out before the

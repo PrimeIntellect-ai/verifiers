@@ -138,6 +138,37 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 
 Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
+## Streaming tasksets
+
+A taskset whose tasks appear over time — a queue, a feed of work owed — overrides `stream()` instead of listing them: an async generator that awaits its source, yields each task complete, and returns when the source is drained. Every taskset has a `stream()` (the default streams `iter(self)`); the override is the declaration (`taskset.streaming`). `load()` still exists for what can be listed up front (often nothing: `return []`).
+
+```python
+class TurnTaskset(vf.Taskset[TurnTask, TurnConfig]):
+    def load(self) -> list[TurnTask]:
+        return []
+
+    async def stream(self) -> AsyncIterator[TurnTask]:
+        async for owed in self.feed():  # waits for the next item; returns when drained
+            yield TurnTask(TurnData(idx=owed.id, prompt=owed.prompt), self.config.task)
+```
+
+Two scopes consume it, and the split is deliberate:
+
+- **`vf eval` is bounded.** An eval is a report on a finite set, so on a streaming taskset `-n` is required: the run takes the stream's _next_ `n` tasks (pulling each only while fewer than `-c` rollouts are in flight, so the feed is read at the pace the run can take — and never an `(n+1)`th the feed may still be waiting for), then ends and reports, exactly as on any other taskset. Omitting `-n` is an error, never an open-ended wait. `--shuffle` and `--resume` are errors too (no whole set to sample, no keys to resume against).
+- **Long-running consumption is a service's job — yours.** The eval entrypoint does not wait for new tasks; the primitive it runs on does, and is public: `vf.run_stream(source, run, *, window)` consumes an async iterable under a concurrency window with back-pressure, cancels the rest when one run fails, and closes the source on any exit. The caller decides when the source ends. A service is three statements around it:
+
+```python
+async with env.serving():  # env-level resources (shared tool servers, interception), up for the life of the service
+    ctx = vf.ModelContext(client=client, model=model, sampling=sampling)
+    await vf.run_stream(
+        env.taskset.stream(),
+        lambda task: env.run_slot(vf.RunSlot(task), ctx),
+        window=32,
+    )
+```
+
+`env.run_slot` is what the eval runner calls per rollout (whole-episode retries per `--env.retries`; pass `on_complete=` to persist or publish each episode as it lands), so a service and an eval run the same episode code — the service just owns the loop, its shutdown, and where the results go.
+
 ## Adding Tools
 
 Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
