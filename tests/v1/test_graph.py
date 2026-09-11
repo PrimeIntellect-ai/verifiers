@@ -95,8 +95,8 @@ def test_bridged_turn_recovers_the_prior_turn_unforwarded_row():
     """A turn never forwards its own final sampled token, so the engine returns one routing row
     fewer than the turn has prompt plus completion positions, and that final position is filled
     with a copy of its predecessor: a placeholder, effectively. The next turn's prefill does
-    forward it and reports it as row 0 (the `- 1` in `routed_experts_prompt_start`), so the
-    placeholder must be replaced by that real row rather than discarded."""
+    forward it and reports it as row 0, so the placeholder must be replaced by that real row
+    rather than discarded."""
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
