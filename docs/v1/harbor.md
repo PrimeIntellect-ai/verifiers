@@ -83,11 +83,26 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 ## Docker Compose
 
 With the default Harbor env, tasks containing `environment/docker-compose.yaml`
-run their topology through Harbor on an unrestricted local Docker runtime. Compose
-preserves service entrypoints, commands, dependencies, health checks and networking;
-the agent executes in `main`. The env removes the entire project after the rollout.
-GPU and restricted-network Compose runs are rejected. Separate graders still use
-the ordinary verifier runtime; sidecar artifacts and collect hooks are unsupported.
+run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
+Compose preserves service entrypoints, commands, dependencies, health checks,
+networking, and volumes; the agent executes in `main`.
+
+For Prime, set `runtime.type = "prime"` and `vm = true`. One VM hosts Docker and all
+services, and its network policy applies to every service after trusted setup.
+For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
+backend with Docker support and requires `network_access = true` and access to that
+backend. Local Docker Compose also requires unrestricted networking. GPU Compose
+tasks are unsupported.
+
+The runtime's CPU and memory settings size the entire remote sandbox, so allow room
+for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
+All service images must be Docker-pullable inside the sandbox; Prime-only VM image
+references cannot serve as inner container images. Prime VM ports cannot be
+published externally. Modal publishes main's runtime service port through its
+encrypted tunnel, including when main shares another service's network namespace.
+
+The env removes the entire project or confirms remote sandbox termination before
+separate grading, which retains the ordinary fresh verifier runtime.
 
 ## Network policies
 
@@ -116,7 +131,9 @@ tool and provider-held resource remains disabled.
 
 ## Artifacts and collect hooks
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Collect hooks run in the agent's box from the task's `finalize`, which is Harbor's own ordering — after the agent phase, before collection — and declared paths plus the `/logs/artifacts/` convention dir are then carried into the grading box and restored at their original paths ("no translation", as in Harbor).
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services require a runtime that provides them. For separate grading, main's hooks and artifacts are collected during `finalize`. After harness scoring and cleanup, task `cleanup` stops main and collects sidecar evidence. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+
+`artifact_max_bytes` defaults to 32 MiB and bounds the total archive bytes across all services. Increase it for tasks whose outputs exceed that limit. Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
 Two deliberate differences from `harbor run`:
 
@@ -140,5 +157,4 @@ verifiers does not have parity with Harbor yet, so some features are missing and
 - Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
-- Sidecar artifacts and collect hooks ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))

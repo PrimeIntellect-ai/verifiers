@@ -32,10 +32,16 @@ class Artifact(BaseModel):
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
     required: bool = True
+    service: str = "main"
+    """Source service; restoration uses the same path in the grader."""
 
 
 async def collect(
-    runtime: Runtime, artifacts: list[Artifact] | None = None
+    runtime: Runtime,
+    artifacts: list[Artifact] | None = None,
+    *,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+    services: set[str] | None = None,
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
@@ -51,19 +57,32 @@ async def collect(
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
-    workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     declared = [
-        a.model_copy(update={"source": str(workdir / a.source)})
+        a.model_copy(
+            update={
+                "source": str(
+                    PurePosixPath(
+                        getattr(runtime.service(a.service).config, "workdir", "") or "/"
+                    )
+                    / a.source
+                )
+            }
+        )
         for a in artifacts or []
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
     declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
-    if convention in declared_paths:
+    main_paths = [
+        path
+        for artifact, path in zip(declared, declared_paths, strict=True)
+        if artifact.service == "main"
+    ]
+    if convention in main_paths:
         entries = declared
     else:
         sweep_excludes = [
             str(path).lstrip("/")
-            for path in declared_paths
+            for path in main_paths
             if path.is_relative_to(convention)
         ]
         entries = [
@@ -74,7 +93,7 @@ async def collect(
             )
         ]
         for artifact, path in zip(declared, declared_paths, strict=True):
-            if convention.is_relative_to(path):
+            if artifact.service == "main" and convention.is_relative_to(path):
                 artifact = artifact.model_copy(
                     update={
                         "exclude": [
@@ -85,28 +104,41 @@ async def collect(
                 )
             entries.append(artifact)
 
-    seen: set[str] = set()
+    # All services restore into one filesystem: reject ambiguous destinations.
+    seen: dict[PurePosixPath, str] = {}
     for artifact in entries:
-        if artifact.source in seen:
+        path = PurePosixPath(artifact.source)
+        if path in seen:
             raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
-        seen.add(artifact.source)
+        if any(
+            service != artifact.service
+            and (path.is_relative_to(other) or other.is_relative_to(path))
+            for other, service in seen.items()
+        ):
+            raise RuntimeError(f"artifact {artifact.source!r} overlaps another service")
+        seen[path] = artifact.service
+    entries = [a for a in entries if services is None or a.service in services]
 
     # Batch roots to save remote round trips. Leave room below the shell argument
     # limit for the command itself and further quoting by runtime transports.
-    batches: list[list[str]] = [[]]
+    batches: list[tuple[str, list[str]]] = []
     batch_bytes = 0
     for artifact in entries:
         source_bytes = len(shlex.quote(artifact.source).encode()) + 1
-        if batches[-1] and batch_bytes + source_bytes > 8 * 1024:
-            batches.append([])
+        if (
+            not batches
+            or batches[-1][0] != artifact.service
+            or batch_bytes + source_bytes > 8 * 1024
+        ):
+            batches.append((artifact.service, []))
             batch_bytes = 0
-        batches[-1].append(artifact.source)
+        batches[-1][1].append(artifact.source)
         batch_bytes += source_bytes
 
     existence: list[str] = []
-    for sources in batches:
+    for service, sources in batches:
         output = await _run(
-            runtime,
+            runtime.service(service),
             f"for source in {shlex.join(sources)}; do "
             'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
             "done",
@@ -114,7 +146,7 @@ async def collect(
         )
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
-    budget = MAX_ARTIFACT_BYTES
+    budget = max_bytes
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
@@ -124,7 +156,7 @@ async def collect(
             raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
-        archive = await _tar_out(runtime, artifact, budget)
+        archive = await _tar_out(runtime.service(artifact.service), artifact, budget)
         budget -= len(archive)
         collected[source] = archive
 
