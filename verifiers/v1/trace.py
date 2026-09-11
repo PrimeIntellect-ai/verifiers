@@ -421,6 +421,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     preceding error)."""
     metrics: dict[str, float | None] = Field(default_factory=dict)
     """Unweighted, named metrics; `None` as in `rewards`."""
+    reward_shaping: dict[str, float] = Field(default_factory=dict)
+    """Additive training-reward terms recorded by a consumer's reward shapers (a length
+    penalty, ...), keyed by shaper name. A training annotation like `MessageNode.advantages`:
+    `reward` stays the env's verdict; the trainer scores against `reward` plus these terms."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
     root_reply: str | None = None
