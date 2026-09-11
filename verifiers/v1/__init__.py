@@ -72,6 +72,7 @@ from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
 )
+from verifiers.v1.routing import RoutingData
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -250,6 +251,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Branch",
     "TurnTokens",
     "SamplingMask",
+    "RoutingData",
     "Timing",
     "TimeSpan",
     "TimeSplit",

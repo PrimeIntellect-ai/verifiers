@@ -1,9 +1,15 @@
 import base64
+import json
 
+import msgpack
 import numpy as np
+import pytest
+from renderers.client import parse_generate_response
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.clients.train import response_from_generate
+from verifiers.v1.routing import RoutingData
 from verifiers.v1.types import TurnTokens
 
 
@@ -32,6 +38,129 @@ def _routed_payload(
         "shape": list(arr.shape),
         "start": start,
     }
+
+
+def _full_routing_response(rows=4, *, prompt=None, completion=None):
+    payload = _routed_payload(rows, 0, 11, top_k=2)
+    weights = np.tile(np.array([0.12345679, 0.8765432], dtype="<f4"), (rows, 2, 1))
+    payload.update(
+        dtype="uint8",
+        format_version=1,
+        weights={
+            "data": base64.b64encode(weights.tobytes()).decode(),
+            "dtype": "float32",
+        },
+    )
+    parsed = parse_generate_response(
+        json.dumps(
+            {"choices": [{"routed_experts": payload}]}, separators=(",", ":")
+        ).encode()
+    )
+    return response_from_generate(
+        {
+            "prompt_ids": [10, 11, 12] if prompt is None else prompt,
+            "completion_ids": [20, 21] if completion is None else completion,
+            "content": "a1",
+            "routed_experts": parsed["choices"][0]["routed_experts"],
+        },
+        "test",
+    )
+
+
+@pytest.mark.parametrize(
+    "rows,completion", [(4, [20, 21]), (3, [20]), (5, [20, 21]), (3, [])]
+)
+def test_full_routing_train_response_graph_and_msgpack_round_trip(rows, completion):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    response = _full_routing_response(rows, completion=completion)
+    # Exercise the validated carrier as well as the train client's construct-only path.
+    response.tokens = TurnTokens(
+        prompt_ids=response.tokens.prompt_ids,
+        completion_ids=response.tokens.completion_ids,
+        routed_experts=response.tokens.routed_experts,
+    )
+    source = response.tokens.routed_experts
+    graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(response)
+    data = trace.branches[0].routed_experts
+    assert isinstance(data, RoutingData)
+    assert len(data) == len(trace.branches[0].token_ids) == 3 + len(completion)
+    assert data.ids[:rows].tobytes() == base64.b64decode(source["data"])
+    assert data.weights[:rows].tobytes() == base64.b64decode(source["weights"]["data"])
+    assert data.valid[:rows].all()
+    if rows < len(data):
+        assert not data.valid[-1] and not data.weights[-1].any()
+        assert not data.ids[-1].any()
+    dumped = trace.model_dump(mode="python")
+    assert all(
+        node["routed_experts"]["__routing__"]
+        for node in dumped["nodes"]
+        if node["token_ids"]
+    )
+    restored = vf.Trace.model_validate(
+        msgpack.unpackb(msgpack.packb(dumped), raw=False)
+    )
+    for name in ("ids", "weights", "valid"):
+        assert (
+            getattr(restored.branches[0].routed_experts, name).tobytes()
+            == getattr(data, name).tobytes()
+        )
+        for node in restored.nodes:
+            if node.token_ids:
+                with pytest.raises(ValueError):
+                    getattr(node.routed_experts, name).flags.writeable = True
+
+
+@pytest.mark.parametrize(
+    "rows,completion,spans",
+    [(2, [20, 21], None), (6, [20, 21], None), (2, [], None), (4, [20, 21], [(0, 4)])],
+)
+def test_full_routing_invalid_coverage_or_spans_does_not_mutate_graph(
+    rows, completion, spans
+):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    response = _full_routing_response(rows, completion=completion)
+    response.tokens.message_spans = spans
+    before = trace.model_dump(mode="python")
+    with pytest.raises(ValueError, match="capture must cover|message spans"):
+        graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(response)
+    assert trace.model_dump(mode="python") == before
+
+
+@pytest.mark.parametrize("next_mode", ["full", "legacy", "missing", "parallel"])
+def test_full_routing_reused_prefix_is_rejected_atomically(next_mode):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="u1")
+    first = graph.prepare_turn(trace, [user])
+    parallel = graph.prepare_turn(trace, [user])
+    first.commit(_full_routing_response())
+    before = trace.model_dump(mode="python")
+    if next_mode == "parallel":
+        pending, response = parallel, _full_routing_response()
+    else:
+        pending = graph.prepare_turn(
+            trace,
+            [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
+        )
+        response = _full_routing_response(
+            8, prompt=[10, 11, 12, 20, 21, 30, 31], completion=[40, 41]
+        )
+        response.tokens.message_spans = [(0, 3), None, (5, 7)]
+        if next_mode == "legacy":
+            response.tokens.routed_experts = _routed_payload(8, 0, 0)
+        elif next_mode == "missing":
+            response.tokens.routed_experts = None
+    with pytest.raises(ValueError, match="reused-prefix"):
+        pending.commit(response)
+    assert trace.model_dump(mode="python") == before
 
 
 def test_routed_experts_attributed_and_aligned_across_turns():
