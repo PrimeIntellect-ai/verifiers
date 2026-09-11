@@ -52,12 +52,25 @@ class NetworkPolicy:
     routes: list[str]
     allow_non_global: bool = False  # trusted setup only
 
+    def is_framework_route(
+        self, scheme: str, host: str, port: int, *, connect: bool = False
+    ) -> bool:
+        return any(
+            _rule_matches(route, scheme, host, port)
+            or (connect and _rule_matches(route, "http", host, port))
+            for route in self.routes
+        )
+
     def permits(
         self, scheme: str, host: str, port: int, *, connect: bool = False
     ) -> bool:
+        framework = self.is_framework_route(
+            scheme, host, port, connect=connect
+        )
         if (
             connect
             and port != 443
+            and not framework
             and not any(
                 rule == "*"
                 or (
@@ -74,7 +87,7 @@ class NetworkPolicy:
         if hostname == "localhost" or hostname.endswith(".localhost"):
             return False
         # Framework routes are invariants, not user egress, so they cannot be blocked.
-        if any(_rule_matches(route, scheme, host, port) for route in self.routes):
+        if framework:
             return True
         # The proxy dials from the host, so only framework routes may use host loopback.
         with contextlib.suppress(ValueError):
@@ -205,9 +218,8 @@ class EgressProxy:
                     ),
                     _IO_TIMEOUT,
                 )
-                framework = any(
-                    _rule_matches(route, scheme, host, port)
-                    for route in self.policy.routes
+                framework = self.policy.is_framework_route(
+                    scheme, host, port, connect=connect
                 )
                 if not framework and not self.policy.allow_non_global:
                     for *_, address in addresses:
@@ -241,17 +253,18 @@ class EgressProxy:
                 response_started = True
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await _drain(writer)
-                client_hello, server_name = await _read_client_hello(reader)
-                if server_name is None:
-                    with contextlib.suppress(ValueError):
-                        ip_address(host)
-                        server_name = host
-                if server_name is None or not self.policy.permits(
-                    "https", server_name, port, connect=True
-                ):
-                    return
-                upstream_writer.write(client_hello)
-                await _drain(upstream_writer)
+                if not self.policy.is_framework_route("http", host, port):
+                    client_hello, server_name = await _read_client_hello(reader)
+                    if server_name is None:
+                        with contextlib.suppress(ValueError):
+                            ip_address(host)
+                            server_name = host
+                    if server_name is None or not self.policy.permits(
+                        "https", server_name, port, connect=True
+                    ):
+                        return
+                    upstream_writer.write(client_hello)
+                    await _drain(upstream_writer)
                 await _relay(reader, writer, upstream_reader, upstream_writer)
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
