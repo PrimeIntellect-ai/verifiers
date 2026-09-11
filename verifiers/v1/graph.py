@@ -673,8 +673,41 @@ def _attribute_mm(
             )
 
 
+def _replace_placeholder_routing_row(
+    trace: Trace, prefix_node_ids: list[int], arr: np.ndarray, off: int
+) -> None:
+    """Replace the prefix's placeholder routing row with the one this turn's prefill forwarded."""
+    if not 1 <= off <= arr.shape[0]:
+        return
+    # Only assistant (`sampled`) nodes are affected: the model forward isn't run on  the final
+    # generated token for such turns, meaning its routing decisions are fundamentally unavailable.
+    # But, because routing needs one row per token, that row instead receives an inaccurate
+    # placeholder, attempt to fix up below.
+    node_with_placeholder = None
+    for nid in reversed(prefix_node_ids):
+        if trace.nodes[nid].token_ids:
+            node_with_placeholder = trace.nodes[nid]
+            break
+    if node_with_placeholder is None or not node_with_placeholder.sampled:
+        return
+    node_rows = node_with_placeholder.routed_experts
+    if (
+        node_rows is None
+        or node_rows.shape[0] == 0
+        or node_rows.shape[1:] != arr.shape[1:]
+    ):
+        return
+    # Row `i` of this turn's array is sequence position `start + i`, so the prefix's final position
+    # is `arr[off - 1]`. Concatenating widens the node when this turn serialized `uint16`, where an
+    # in-place write would truncate.
+    node_with_placeholder.routed_experts = np.concatenate(
+        [node_rows[:-1], arr[off - 1 : off]], axis=0
+    )
+
+
 def _attribute_routed_experts(
     trace: Trace,
+    prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
     payload: Any,
@@ -683,7 +716,8 @@ def _attribute_routed_experts(
     payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
-    the routing attributed when they were first created. A node whose slice falls outside the
+    the routing attributed when they were first created, except for the one position this turn
+    corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
     array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
     if payload is None:
@@ -693,6 +727,7 @@ def _attribute_routed_experts(
         payload["shape"]
     )
     off = path_len - int(payload.get("start", 0) or 0)
+    _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
@@ -701,8 +736,8 @@ def _attribute_routed_experts(
             # Own only this node's rows; a view would retain the turn's full-context array.
             trace.nodes[nid].routed_experts = arr[off:end].copy()
         elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
-            # The engine omits the turn's final position because no forward pass follows it.
-            # Pad only the final node's suffix instead of copying the full-context array.
+            # No forward pass follows the turn's final position, so it gets a placeholder: a
+            # copy of the previous row, appended to this node's slice of the array.
             trace.nodes[nid].routed_experts = np.concatenate(
                 [arr[off:], arr[-1:]], axis=0
             )
@@ -813,7 +848,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
-    # Track new nodes separately so routed-expert attribution does not need this full path.
+    # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     # Materialize the reused message path only for multimodal cursor attribution.
     mm_path: list[tuple[int, Message]] | None = None
@@ -874,8 +909,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
+    # The prefix goes in too, so the position the previous turn could only pad can be corrected.
     _attribute_routed_experts(
-        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.
