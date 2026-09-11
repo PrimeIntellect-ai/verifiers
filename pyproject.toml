@@ -101,7 +101,7 @@ harbor = [
     "harbor==0.21.0 ; python_full_version >= '3.12'",
 ]
 modal = [
-    "modal>=1.4.0",
+    "modal>=1.5.4",
 ]
 openenv = [
     "openenv>=0.4.1",
