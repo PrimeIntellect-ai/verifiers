@@ -35,11 +35,12 @@ class ContainerConfig(BaseConfig):
 
 
 async def _communicate(
-    *argv: str, input: bytes | None = None
+    *argv: str, input: bytes | None = None, env: dict[str, str] | None = None
 ) -> tuple[int, bytes, bytes]:
     """Run a host command to completion; a cancelled await kills it first."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
+        env=None if env is None else {**os.environ, **env},
         stdin=asyncio.subprocess.PIPE
         if input is not None
         else asyncio.subprocess.DEVNULL,
@@ -57,8 +58,10 @@ async def _communicate(
     return proc.returncode or 0, stdout, stderr
 
 
-async def cli(*argv: str, input: bytes | None = None) -> ProgramResult:
-    code, stdout, stderr = await _communicate(*argv, input=input)
+async def cli(
+    *argv: str, input: bytes | None = None, env: dict[str, str] | None = None
+) -> ProgramResult:
+    code, stdout, stderr = await _communicate(*argv, input=input, env=env)
     return ProgramResult(
         code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
     )
