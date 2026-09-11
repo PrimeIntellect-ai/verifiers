@@ -33,7 +33,9 @@ def resolve_runtime_config(
                 f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
                 "runtime has no container; use the docker or prime runtime"
             )
-        updates["image"] = task.data.image
+        image_spec = type(config).model_fields.get("image")
+        if image_spec is not None and config.image == image_spec.default:
+            updates["image"] = task.data.image
     workdir_spec = type(config).model_fields.get("workdir")
     if (
         task.data.workdir is not None

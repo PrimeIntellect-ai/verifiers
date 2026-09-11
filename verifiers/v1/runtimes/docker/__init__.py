@@ -41,6 +41,9 @@ class DockerConfig(NetworkPolicyConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
+    privileged: bool = False
+    """Grant the container elevated kernel capabilities. Intended for trusted local
+    development images that create nested namespaces; disabled by default."""
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -119,23 +122,28 @@ class DockerRuntime(Runtime):
             network = [
                 "--network",
                 "bridge",
-                "--cap-drop",
-                "NET_ADMIN",
-                "--cap-drop",
-                "NET_RAW",
                 "--security-opt",
                 "no-new-privileges",
                 "--sysctl",
                 "net.ipv6.conf.all.disable_ipv6=1",
             ]
+            if not self.config.privileged:
+                network += [
+                    "--cap-drop",
+                    "NET_ADMIN",
+                    "--cap-drop",
+                    "NET_RAW",
+                ]
             if sys.platform != "linux":
                 network += ["--add-host", f"{_PROXY_HOST}:host-gateway"]
         else:
             network = ["--network", "host"]
+        privileges = ["--privileged"] if self.config.privileged else []
         run = await docker(
             "run",
             "--detach",
             *network,
+            *privileges,
             *limits,
             "--workdir",
             self.config.workdir,
