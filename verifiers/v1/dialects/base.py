@@ -22,7 +22,14 @@ from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
+from verifiers.v1.types import (
+    Request,
+    Response,
+    Sampling,
+    SamplingConfig,
+    ToolMessage,
+    UserMessage,
+)
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]
@@ -47,6 +54,70 @@ def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
         return True
     host = url.host.lower().rstrip(".").strip("[]")
     return not policy.permits(url.scheme, host, url.port)
+
+
+def blocked_path(
+    value,
+    path: str,
+    policy: NetworkPolicyConfig,
+    blocked_item: Callable[[dict, str, NetworkPolicyConfig], str | None],
+) -> str | None:
+    """The first policy-blocked path under `value`, or None. Lists recurse per index,
+    non-dicts pass, a non-`direct` `caller` is blocked in every format, and `blocked_item`
+    applies the format's own rules to each dict."""
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if blocked := blocked_path(item, f"{path}[{index}]", policy, blocked_item):
+                return blocked
+        return None
+    if not isinstance(value, dict):
+        return None
+    caller = value.get("caller")
+    if caller is not None and not (
+        isinstance(caller, dict) and caller.get("type") == "direct"
+    ):
+        return f"{path}.caller.type"
+    return blocked_item(value, path, policy)
+
+
+def mediate_parts(
+    value,
+    path: str,
+    policy: NetworkPolicyConfig,
+    blocked: Callable[[Any, str, NetworkPolicyConfig], str | None],
+    wrappers: tuple[str, ...] = (),
+) -> tuple[Any, list[str]]:
+    """Drop the policy-blocked parts of a content list and report their paths; a non-list
+    value is kept whole or replaced by "". A part whose type is in `wrappers` is checked
+    without its content, then its content is mediated in place."""
+    if not isinstance(value, list):
+        blocked_at = blocked(value, path, policy)
+        return ("", [blocked_at]) if blocked_at else (value, [])
+
+    mediated = []
+    capabilities = []
+    for index, part in enumerate(value):
+        item_path = f"{path}[{index}]"
+        if isinstance(part, dict) and part.get("type") in wrappers:
+            if blocked_at := blocked({**part, "content": []}, item_path, policy):
+                capabilities.append(blocked_at)
+                continue
+            content, removed = mediate_parts(
+                part.get("content"), f"{item_path}.content", policy, blocked, wrappers
+            )
+            if removed:
+                part["content"] = content or ""
+                capabilities.extend(removed)
+        elif blocked_at := blocked(part, item_path, policy):
+            capabilities.append(blocked_at)
+            continue
+        mediated.append(part)
+    return mediated, capabilities
+
+
+def user_and_tool_messages(request: Request) -> list[UserMessage | ToolMessage]:
+    """The rewritable messages of a request, in order."""
+    return [m for m in request.messages if isinstance(m, (UserMessage, ToolMessage))]
 
 
 def provider_allowed_domains(
