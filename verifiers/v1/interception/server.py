@@ -613,8 +613,10 @@ class InterceptionServer(Interception):
             )
             if request_rewrites:
                 session.trace.request_rewrites.extend(request_rewrites)
-                if stopped is None:
-                    dialect.rewrite_request(body, original_request, model_request)
+            # Patch the native body whenever the model-facing request differs from what the
+            # harness sent: a fresh rewrite, or an earlier one restored over a replayed original.
+            if stopped is None and model_request != original_request:
+                dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
