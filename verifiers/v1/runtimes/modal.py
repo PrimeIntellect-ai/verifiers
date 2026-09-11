@@ -260,19 +260,9 @@ class ModalRuntime(Runtime):
             if routes is None:
                 domains, cidrs = ["*"], ["0.0.0.0/0"]
             else:
-                domains = list(
-                    dict.fromkeys(
-                        domain
-                        for domain in [
-                            *(
-                                _egress_domain(route, framework=True)
-                                for route in routes
-                            ),
-                            *(_egress_domain(rule) for rule in self.config.allow),
-                        ]
-                        if domain is not None
-                    )
-                )
+                domains = [_egress_domain(route, framework=True) for route in routes]
+                domains.extend(_egress_domain(rule) for rule in self.config.allow)
+                domains = list(dict.fromkeys(d for d in domains if d is not None))
                 cidrs = []
             # Always send both lists: leaving the setup CIDR grant would bypass domains.
             # The awaited RPC applies the policy and closes newly disallowed connections.
