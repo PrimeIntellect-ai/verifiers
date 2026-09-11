@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from harbor.agents.terminus_2 import Terminus2
 from harbor.environments.base import ExecResult
+from harbor.llms.base import ContextLengthExceededError
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
 
@@ -53,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--task", required=True)
+    parser.add_argument("--enable-summarize", action="store_true")
+    parser.add_argument("--no-interleaved-thinking", action="store_true")
     return parser.parse_args()
 
 
@@ -69,7 +72,8 @@ async def main() -> None:
         api_base=args.base_url,
         llm_kwargs={"custom_llm_provider": "openai", "api_key": args.api_key},
         record_terminal_session=False,
-        interleaved_thinking=True,
+        enable_summarize=args.enable_summarize,
+        interleaved_thinking=not args.no_interleaved_thinking,
     )
     if system_prompt:
         call = agent._llm.call
@@ -87,7 +91,10 @@ async def main() -> None:
         agent._llm.call = call_with_system_prompt
     environment = LocalEnvironment()
     await agent.setup(environment)
-    await agent.run(task, environment, AgentContext())
+    try:
+        await agent.run(task, environment, AgentContext())
+    except ContextLengthExceededError:
+        return
 
 
 if __name__ == "__main__":
