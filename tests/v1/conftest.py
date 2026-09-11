@@ -55,7 +55,7 @@ CI_MODEL = "openai/gpt-5.6-luna"
 
 
 @pytest.fixture
-def harness_runtime(request) -> str:
+def harness_runtime(request) -> str | dict:
     return request.param
 
 

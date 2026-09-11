@@ -10,14 +10,18 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 import asyncio
 import contextlib
 import logging
+import re
 import shlex
 import uuid
 from collections.abc import AsyncIterator
+from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
-from pydantic_config import BaseConfig
+from pydantic import model_validator
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -36,12 +40,49 @@ logger = logging.getLogger(__name__)
 _APP_NAME = "verifiers-v1"
 
 
-class ModalConfig(BaseConfig):
+def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
+    """Translate only domains Modal can filter without broadening the rule."""
+    parsed = urlsplit(rule if "://" in rule else f"//{rule}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        address = None
+    # Colocated tools are container-local; they need no external network grant.
+    if (
+        framework
+        and parsed.scheme in ("http", "https")
+        and (host == "localhost" or (address is not None and address.is_loopback))
+    ):
+        return None
+    if (
+        parsed.scheme not in (("https",) if framework else ("", "https"))
+        or parsed.port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or address is not None
+        or not re.fullmatch(
+            r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+            host,
+        )
+        or (framework and "*" in host)
+    ):
+        raise ValueError(
+            f"Modal egress rule {rule!r} is unsupported; use DNS names or HTTPS "
+            "origins on port 443 (only a leading *. wildcard is supported)"
+        )
+    return host
+
+
+class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
+    """Allow network access at creation. False blocks all egress, including setup;
+    it cannot be combined with execution-time allow/block policies."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
@@ -57,6 +98,22 @@ class ModalConfig(BaseConfig):
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced user-wide across every
     env-server worker process (None/<= 0 disables it)."""
+
+    @model_validator(mode="after")
+    def _validate_egress(self) -> "ModalConfig":
+        if not self.network_restricted:
+            return self
+        if not self.network_access:
+            raise ValueError(
+                "Modal allow/block policies require network_access=true for trusted setup"
+            )
+        if self.allow == ["*"]:
+            raise ValueError(
+                "Modal does not support egress deny lists; use an allowlist or allow=[]"
+            )
+        for rule in self.allow:
+            _egress_domain(rule)
+        return self
 
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
@@ -124,6 +181,14 @@ class ModalRuntime(Runtime):
                 "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
             ) from e
 
+        if self.network_restricted and not hasattr(
+            modal.Sandbox, "_experimental_set_outbound_network_policy"
+        ):
+            raise SandboxError(
+                "Modal execution-time network policies require a Modal SDK with "
+                "_experimental_set_outbound_network_policy; upgrade verifiers[modal]"
+            )
+
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
@@ -152,6 +217,16 @@ class ModalRuntime(Runtime):
         """
         import modal
 
+        # Modal requires both allowlist types at creation before they can be updated.
+        # Trusted setup runs open; prepare_execution removes the broad CIDR grant.
+        network = (
+            {
+                "outbound_domain_allowlist": ["*"],
+                "outbound_cidr_allowlist": ["0.0.0.0/0"],
+            }
+            if self.network_restricted
+            else {}
+        )
         self._sandbox = await modal.Sandbox.create.aio(
             "sleep",
             "infinity",  # keep-alive entrypoint; the harness runs via `exec`
@@ -168,8 +243,51 @@ class ModalRuntime(Runtime):
             gpu=self.config.gpu,
             region=self.config.region,
             block_network=not self.config.network_access,
+            **network,
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
+        )
+
+    async def prepare_execution(self, routes: list[str] | None) -> None:
+        """Apply TLS domain filtering after setup, retaining framework endpoints.
+
+        Modal filters TLS SNI on port 443, not HTTP Host headers or URL paths.
+        This inherits Modal's domain-fronting limitations on shared TLS endpoints.
+        """
+        if not self.network_restricted:
+            return
+        try:
+            if routes is None:
+                domains, cidrs = ["*"], ["0.0.0.0/0"]
+            else:
+                domains = list(
+                    dict.fromkeys(
+                        domain
+                        for domain in [
+                            *(
+                                _egress_domain(route, framework=True)
+                                for route in routes
+                            ),
+                            *(_egress_domain(rule) for rule in self.config.allow),
+                        ]
+                        if domain is not None
+                    )
+                )
+                cidrs = []
+            # Always send both lists: leaving the setup CIDR grant would bypass domains.
+            # The awaited RPC applies the policy and closes newly disallowed connections.
+            async with asyncio.timeout(60):
+                await self._sandbox._experimental_set_outbound_network_policy.aio(
+                    outbound_domain_allowlist=domains,
+                    outbound_cidr_allowlist=cidrs,
+                )
+        except Exception as e:
+            raise SandboxError(f"modal egress policy failed: {e}") from e
+        logger.info(
+            "modal: egress policy applied on sandbox %s (domains=%s cidrs=%s)",
+            self.info.id,
+            domains,
+            cidrs,
         )
 
     async def expose(self, port: int) -> str | None:
