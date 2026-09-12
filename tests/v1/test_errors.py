@@ -20,7 +20,21 @@ from prime_sandboxes import (
 
 import verifiers.v1 as vf
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.errors import model_error, sandbox_error
+from verifiers.v1.errors import (
+    HarnessTimeoutError,
+    ProviderError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+    SandboxDeniedError,
+    SandboxDiskFullError,
+    SandboxError,
+    SandboxNotFoundError,
+    SandboxProvisioningError,
+    SandboxTimeoutError,
+    SandboxUnavailableError,
+    model_error,
+    sandbox_error,
+)
 from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.prime import _error
@@ -63,22 +77,22 @@ def _rpc(code: Code, message: str) -> APIError:
 @pytest.mark.parametrize(
     ("cause", "expected"),
     [
-        (FileNotFoundError(errno.ENOENT, "missing"), vf.SandboxNotFoundError),
-        (OSError(errno.ENOSPC, "full"), vf.SandboxDiskFullError),
-        (TimeoutError(), vf.SandboxTimeoutError),
-        (_http(503), vf.SandboxUnavailableError),
-        (_http(429), vf.SandboxUnavailableError),
-        (httpx.ConnectError("refused"), vf.SandboxUnavailableError),
-        (_http(404), vf.SandboxNotFoundError),
-        (_http(402), vf.SandboxDeniedError),
-        (_http(409), vf.SandboxError),
-        (RuntimeError("No such file or directory"), vf.SandboxError),
-        (_sdk_http(503), vf.SandboxUnavailableError),
+        (FileNotFoundError(errno.ENOENT, "missing"), SandboxNotFoundError),
+        (OSError(errno.ENOSPC, "full"), SandboxDiskFullError),
+        (TimeoutError(), SandboxTimeoutError),
+        (_http(503), SandboxUnavailableError),
+        (_http(429), SandboxUnavailableError),
+        (httpx.ConnectError("refused"), SandboxUnavailableError),
+        (_http(404), SandboxNotFoundError),
+        (_http(402), SandboxDeniedError),
+        (_http(409), SandboxError),
+        (RuntimeError("No such file or directory"), SandboxError),
+        (_sdk_http(503), SandboxUnavailableError),
         (
             _rpc(
                 Code.UNAVAILABLE, "The sandbox is being placed on a node; retry shortly"
             ),
-            vf.SandboxUnavailableError,
+            SandboxUnavailableError,
         ),
     ],
 )
@@ -91,18 +105,18 @@ def test_sandbox_error_reads_typed_evidence_down_the_chain(cause, expected):
 @pytest.mark.parametrize(
     ("cause", "expected"),
     [
-        (SandboxFileNotFoundError("File not found: x"), vf.SandboxNotFoundError),
-        (UnauthorizedError("API key unauthorized"), vf.SandboxDeniedError),
-        (CommandTimeoutError("sb", "true", 5), vf.SandboxTimeoutError),
+        (SandboxFileNotFoundError("File not found: x"), SandboxNotFoundError),
+        (UnauthorizedError("API key unauthorized"), SandboxDeniedError),
+        (CommandTimeoutError("sb", "true", 5), SandboxTimeoutError),
         (
             SandboxImagePullError("sb", "ERROR", "IMAGE_PULL_FAILED"),
-            vf.SandboxProvisioningError,
+            SandboxProvisioningError,
         ),
         (
             SandboxNotRunningError("sb", "TERMINATED", "SANDBOX_NOT_FOUND"),
-            vf.SandboxNotFoundError,
+            SandboxNotFoundError,
         ),
-        (APIError("Sandbox x is being deleted"), vf.SandboxError),
+        (APIError("Sandbox x is being deleted"), SandboxError),
     ],
 )
 def test_prime_reads_the_sdk_types_first(cause, expected):
@@ -116,16 +130,16 @@ def test_prime_provisioning_default_covers_a_bare_creation_failure():
     error = _error(
         "prime sandbox provisioning failed",
         never_up,
-        default=vf.SandboxProvisioningError,
+        default=SandboxProvisioningError,
     )
-    assert type(error) is vf.SandboxProvisioningError
+    assert type(error) is SandboxProvisioningError
     # Typed evidence still wins over the default.
     denied = _error(
         "prime sandbox provisioning failed",
         _sdk_http(402),
-        default=vf.SandboxProvisioningError,
+        default=SandboxProvisioningError,
     )
-    assert type(denied) is vf.SandboxDeniedError
+    assert type(denied) is SandboxDeniedError
 
 
 def test_error_code_comes_from_the_class_and_round_trips():
@@ -133,7 +147,7 @@ def test_error_code_comes_from_the_class_and_round_trips():
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
     )
-    trace.record_error(vf.SandboxNotFoundError("prime exec failed: gone"))
+    trace.record_error(SandboxNotFoundError("prime exec failed: gone"))
     assert trace.last_error is not None
     assert (trace.last_error.type, trace.last_error.code) == (
         "SandboxNotFoundError",
@@ -141,7 +155,7 @@ def test_error_code_comes_from_the_class_and_round_trips():
     )
     loaded = vf.Trace.model_validate(trace.to_record())
     assert loaded.last_error is not None and loaded.last_error.code == "not_found"
-    trace.record_error(vf.ProviderError("upstream 502", status_code=502))
+    trace.record_error(ProviderError("upstream 502", status_code=502))
     assert trace.last_error is not None and trace.last_error.code is None
     assert vf.Error(type="SandboxError", message="an old record").code is None
 
@@ -162,9 +176,9 @@ def test_retry_policy_matches_the_error_family():
 async def test_subprocess_missing_path_is_not_found(tmp_path):
     runtime = SubprocessRuntime(SubprocessConfig())
     runtime.workdir = tmp_path
-    with pytest.raises(vf.SandboxNotFoundError):
+    with pytest.raises(SandboxNotFoundError):
         await runtime.read("missing.txt", max_bytes=16)
-    with pytest.raises(vf.SandboxNotFoundError):
+    with pytest.raises(SandboxNotFoundError):
         await runtime.read("missing.txt")
 
 
@@ -196,16 +210,16 @@ async def test_dead_runtime_probe_keeps_the_typed_fault():
     )
     failed = ProgramResult(exit_code=1, stdout="", stderr="boom")
     # The probe couldn't reach the box: that is the runtime's answer, not proof it's gone.
-    for error in (vf.SandboxUnavailableError("503"), vf.SandboxTimeoutError("slow")):
+    for error in (SandboxUnavailableError("503"), SandboxTimeoutError("slow")):
         with pytest.raises(type(error)):
             await harness._check_result(trace, _FailingProbe(error), failed)
     # The box said it's gone, or nothing typed says more: the box died under the harness.
     for error in (
-        vf.SandboxNotFoundError("404"),
-        vf.SandboxError("exec failed"),
+        SandboxNotFoundError("404"),
+        SandboxError("exec failed"),
         RuntimeError("raw"),
     ):
-        with pytest.raises(vf.SandboxNotFoundError, match="runtime died"):
+        with pytest.raises(SandboxNotFoundError, match="runtime died"):
             await harness._check_result(trace, _FailingProbe(error), failed)
 
 
@@ -218,7 +232,7 @@ async def _request_through(handler) -> BaseException:
     client = EvalClient(vf.EvalClientConfig(base_url="http://provider"))
     client.client = httpx.AsyncClient(transport=_mock_transport(handler))
     try:
-        with pytest.raises(vf.ProviderError) as info:
+        with pytest.raises(ProviderError) as info:
             await client._request("http://provider/v1/x", {}, httpx.Headers())
     finally:
         await client.client.aclose()
@@ -237,17 +251,17 @@ async def test_provider_error_code_names_the_transport_fault():
         raise httpx.ConnectError("connection refused", request=request)
 
     error = await _request_through(timeout)
-    assert type(error) is vf.ProviderTimeoutError
+    assert type(error) is ProviderTimeoutError
     assert (error.code, error.status_code) == ("timeout", 504)
     error = await _request_through(refused)
-    assert type(error) is vf.ProviderUnavailableError
+    assert type(error) is ProviderUnavailableError
     assert (error.code, error.status_code) == ("unavailable", 503)
     error = await _request_through(lambda request: httpx.Response(503, text="down"))
-    assert type(error) is vf.ProviderUnavailableError
+    assert type(error) is ProviderUnavailableError
     assert (error.code, error.status_code) == ("unavailable", 503)
     assert str(error) == "upstream 503: down"
     error = await _request_through(lambda request: httpx.Response(429, text="slow"))
-    assert type(error) is vf.ProviderError and error.code is None
+    assert type(error) is ProviderError and error.code is None
     assert error.status_code == 429
 
 
@@ -255,22 +269,22 @@ def test_model_error_reads_the_sdk_types():
     from openai import APIConnectionError, APIStatusError, APITimeoutError
 
     request = httpx.Request("POST", "http://provider/v1/x")
-    assert type(model_error(APITimeoutError(request))) is vf.ProviderTimeoutError
+    assert type(model_error(APITimeoutError(request))) is ProviderTimeoutError
     assert model_error(APITimeoutError(request)).status_code == 504
     assert (
         type(model_error(APIConnectionError(request=request)))
-        is vf.ProviderUnavailableError
+        is ProviderUnavailableError
     )
     gateway = APIStatusError(
         "bad gateway", response=httpx.Response(502, request=request), body=None
     )
-    assert type(model_error(gateway)) is vf.ProviderUnavailableError
+    assert type(model_error(gateway)) is ProviderUnavailableError
     assert model_error(gateway).status_code == 502
     forbidden = APIStatusError(
         "forbidden", response=httpx.Response(403, request=request), body=None
     )
-    assert type(model_error(forbidden)) is vf.ProviderError
-    assert type(model_error("malformed", status_code=502)) is vf.ProviderError
+    assert type(model_error(forbidden)) is ProviderError
+    assert type(model_error("malformed", status_code=502)) is ProviderError
 
 
 def test_the_agent_timeout_is_typed_on_the_trace():
@@ -279,7 +293,7 @@ def test_the_agent_timeout_is_typed_on_the_trace():
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
     )
     trace.record_error(
-        vf.HarnessTimeoutError("agent timeout: rollout exceeded its 60s budget")
+        HarnessTimeoutError("agent timeout: rollout exceeded its 60s budget")
     )
     assert trace.last_error is not None
     assert (trace.last_error.type, trace.last_error.code) == (
@@ -287,5 +301,5 @@ def test_the_agent_timeout_is_typed_on_the_trace():
         "agent_timeout",
     )
     assert _retryable(trace.last_error, vf.RetryConfig(include=["HarnessError"]))
-    trace.record_error(vf.ProviderTimeoutError("read timed out", status_code=504))
+    trace.record_error(ProviderTimeoutError("read timed out", status_code=504))
     assert trace.last_error is not None and trace.last_error.code == "timeout"

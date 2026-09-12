@@ -11,7 +11,7 @@ import prime_sandboxes
 import pytest
 from prime_sandboxes import APIError
 
-import verifiers.v1 as vf
+from verifiers.v1.errors import SandboxTimeoutError
 from verifiers.v1.runtimes import limiters, prime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 
@@ -125,7 +125,7 @@ async def test_the_provisioning_is_bounded_by_create_timeout_s_and_a_late_box_is
     runtime = _with_client(
         monkeypatch, PrimeConfig(create_timeout_s=0.05, workdir="/w"), client
     )
-    with pytest.raises(vf.SandboxTimeoutError, match="no box within 0.05s"):
+    with pytest.raises(SandboxTimeoutError, match="no box within 0.05s"):
         await runtime.start()
     await runtime.stop()
     assert client.deleted == ["sb-1"]  # the id was captured: the box does not leak
@@ -150,7 +150,7 @@ async def test_the_creation_pace_backlog_is_the_configs(fast, monkeypatch, tmp_p
         PrimeConfig(creates_per_min=60, creates_backlog_s=1, workdir="/w"),
         client,
     )
-    with pytest.raises(vf.SandboxTimeoutError, match="backlog of .* exceeds 1s"):
+    with pytest.raises(SandboxTimeoutError, match="backlog of .* exceeds 1s"):
         await runtime.start()
     await runtime.stop()
     assert client.deleted == []  # nothing was created
