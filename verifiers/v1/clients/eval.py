@@ -11,7 +11,7 @@ from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import model_error, upstream_error
+from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
@@ -139,14 +139,19 @@ class EvalClient(Client):
         try:
             response = await self.client.send(request, stream=stream)
         except httpx.TimeoutException as e:
-            raise model_error(e, status_code=504) from e
-        except (httpx.HTTPError, ConnectionResetError) as e:
-            raise model_error(e, status_code=503) from e
+            raise model_error(str(e), status_code=504) from e
+        except httpx.HTTPError as e:
+            raise model_error(str(e), status_code=503) from e
+        except ConnectionResetError as e:
+            raise model_error(str(e), status_code=503) from e
         if not stream:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                raise upstream_error(e.response.status_code, e.response.text) from e
+                raise model_error(
+                    f"upstream {e.response.status_code}: {e.response.text}",
+                    status_code=e.response.status_code,
+                ) from e
             return response
         if response.status_code < 400:
             return response
@@ -154,7 +159,9 @@ class EvalClient(Client):
             text = (await response.aread()).decode("utf-8", errors="replace")
         finally:
             await response.aclose()
-        raise upstream_error(response.status_code, text)
+        raise model_error(
+            f"upstream {response.status_code}: {text}", status_code=response.status_code
+        )
 
     async def relay(
         self,

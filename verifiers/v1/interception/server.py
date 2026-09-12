@@ -339,9 +339,6 @@ class InterceptionServer(Interception):
 
         return handler
 
-    def _configure_app(self, app: web.Application) -> None:
-        """Configure each server application before its router is frozen."""
-
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)
         for dialect in DIALECTS:
@@ -357,7 +354,6 @@ class InterceptionServer(Interception):
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
-        self._configure_app(app)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)

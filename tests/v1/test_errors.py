@@ -1,7 +1,7 @@
-"""Typed sandbox and provider errors: typed evidence (an exception type, an errno, an HTTP status,
-an RPC code) names the `SandboxError` or `ProviderError` subclass, the class's `code` rides onto
-the trace (the agent timeout's too), a base class in a retry policy matches its subclasses, and
-message text never counts."""
+"""Typed sandbox errors: typed evidence (an exception type, an errno, an HTTP status, an RPC
+code) names the `SandboxError` subclass, the class's `code` rides onto the trace (the agent
+timeout's too), a base class in a retry policy matches its subclasses, and message text never
+counts."""
 
 import errno
 
@@ -19,12 +19,8 @@ from prime_sandboxes import (
 )
 
 import verifiers.v1 as vf
-from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.errors import (
     HarnessTimeoutError,
-    ProviderError,
-    ProviderTimeoutError,
-    ProviderUnavailableError,
     SandboxDeniedError,
     SandboxDiskFullError,
     SandboxError,
@@ -32,7 +28,6 @@ from verifiers.v1.errors import (
     SandboxProvisioningError,
     SandboxTimeoutError,
     SandboxUnavailableError,
-    model_error,
     sandbox_error,
 )
 from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
@@ -155,7 +150,7 @@ def test_error_code_comes_from_the_class_and_round_trips():
     )
     loaded = vf.Trace.model_validate(trace.to_record())
     assert loaded.last_error is not None and loaded.last_error.code == "not_found"
-    trace.record_error(ProviderError("upstream 502", status_code=502))
+    trace.record_error(vf.ProviderError("upstream 502", status_code=502))
     assert trace.last_error is not None and trace.last_error.code is None
     assert vf.Error(type="SandboxError", message="an old record").code is None
 
@@ -223,70 +218,6 @@ async def test_dead_runtime_probe_keeps_the_typed_fault():
             await harness._check_result(trace, _FailingProbe(error), failed)
 
 
-def _mock_transport(handler) -> httpx.MockTransport:
-    return httpx.MockTransport(handler)
-
-
-async def _request_through(handler) -> BaseException:
-    """What `EvalClient._request` raises when the upstream behaves as `handler` says."""
-    client = EvalClient(vf.EvalClientConfig(base_url="http://provider"))
-    client.client = httpx.AsyncClient(transport=_mock_transport(handler))
-    try:
-        with pytest.raises(ProviderError) as info:
-            await client._request("http://provider/v1/x", {}, httpx.Headers())
-    finally:
-        await client.client.aclose()
-    return info.value
-
-
-async def test_provider_error_code_names_the_transport_fault():
-    """`EvalClient._request` types a failure before any response by its evidence: httpx's own
-    timeout is a `ProviderTimeoutError` (504 to the harness), a connection not made or kept and
-    a gateway's 502/503/504 are `ProviderUnavailableError`; any other status is the bare type."""
-
-    def timeout(request):
-        raise httpx.ReadTimeout("read timed out", request=request)
-
-    def refused(request):
-        raise httpx.ConnectError("connection refused", request=request)
-
-    error = await _request_through(timeout)
-    assert type(error) is ProviderTimeoutError
-    assert (error.code, error.status_code) == ("timeout", 504)
-    error = await _request_through(refused)
-    assert type(error) is ProviderUnavailableError
-    assert (error.code, error.status_code) == ("unavailable", 503)
-    error = await _request_through(lambda request: httpx.Response(503, text="down"))
-    assert type(error) is ProviderUnavailableError
-    assert (error.code, error.status_code) == ("unavailable", 503)
-    assert str(error) == "upstream 503: down"
-    error = await _request_through(lambda request: httpx.Response(429, text="slow"))
-    assert type(error) is ProviderError and error.code is None
-    assert error.status_code == 429
-
-
-def test_model_error_reads_the_sdk_types():
-    from openai import APIConnectionError, APIStatusError, APITimeoutError
-
-    request = httpx.Request("POST", "http://provider/v1/x")
-    assert type(model_error(APITimeoutError(request))) is ProviderTimeoutError
-    assert model_error(APITimeoutError(request)).status_code == 504
-    assert (
-        type(model_error(APIConnectionError(request=request)))
-        is ProviderUnavailableError
-    )
-    gateway = APIStatusError(
-        "bad gateway", response=httpx.Response(502, request=request), body=None
-    )
-    assert type(model_error(gateway)) is ProviderUnavailableError
-    assert model_error(gateway).status_code == 502
-    forbidden = APIStatusError(
-        "forbidden", response=httpx.Response(403, request=request), body=None
-    )
-    assert type(model_error(forbidden)) is ProviderError
-    assert type(model_error("malformed", status_code=502)) is ProviderError
-
-
 def test_the_agent_timeout_is_typed_on_the_trace():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -301,5 +232,3 @@ def test_the_agent_timeout_is_typed_on_the_trace():
         "agent_timeout",
     )
     assert _retryable(trace.last_error, vf.RetryConfig(include=["HarnessError"]))
-    trace.record_error(ProviderTimeoutError("read timed out", status_code=504))
-    assert trace.last_error is not None and trace.last_error.code == "timeout"

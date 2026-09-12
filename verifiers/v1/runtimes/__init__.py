@@ -15,7 +15,6 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
 from verifiers.v1.runtimes.durable import Box, InfraError
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
-from verifiers.v1.runtimes.pool import RuntimePool, RuntimePoolConfig
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
     PrimeRuntime,
@@ -98,8 +97,6 @@ __all__ = [
     "Runtime",
     "RuntimeConfig",
     "RuntimeInfo",
-    "RuntimePool",
-    "RuntimePoolConfig",
     "RuntimeProcess",
     "SubprocessConfig",
     "SubprocessRuntime",

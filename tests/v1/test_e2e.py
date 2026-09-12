@@ -781,41 +781,6 @@ async def test_replay_round_trip(run_v1, tmp_path):
     assert '"answer"' in raw
 
 
-async def test_interception_subclass_routes():
-    """Subclass routes share the normal server startup and shutdown lifecycle."""
-    import httpx
-    from aiohttp import web
-
-    from verifiers.v1.interception.server import InterceptionServer
-
-    configured = []
-
-    class CustomServer(InterceptionServer):
-        def _configure_app(self, app: web.Application) -> None:
-            assert not app.frozen
-            assert not app.router.frozen
-            configured.append(app)
-
-            async def custom(request: web.Request) -> web.Response:
-                return web.json_response({"ok": True})
-
-            app.router.add_get("/custom", custom)
-
-    async with httpx.AsyncClient(trust_env=False, timeout=2) as client:
-        async with CustomServer() as server:
-            response = await client.get(f"{server.base_url}/custom")
-            assert response.status_code == 200
-            assert response.json() == {"ok": True}
-            assert len(configured) == 1
-            assert configured[0] is server.runner.app
-            assert configured[0].router.frozen
-            response = await client.get(f"{server.base_url}/state")
-            assert response.status_code == 401
-
-        with pytest.raises(httpx.ConnectError):
-            await client.get(f"{server.base_url}/custom")
-
-
 async def test_interception_client_and_bearer_hooks():
     """`wrap_client` decorates the server-owned client a session is assigned; `session_of`
     resolves a bearer a subclass's route received (model or state secret) and adopts the

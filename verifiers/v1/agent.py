@@ -28,7 +28,6 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
-    RuntimePool,
     SubprocessConfig,
     provision_runtime,
     runtime_is_local,
@@ -255,11 +254,11 @@ class Interaction:
 class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
-    Built from an `AgentConfig` alone; `interception=` and `runtimes=` inject live
-    resources to borrow — their owner keeps the lifecycle. The endpoint stays config:
-    each rollout builds and closes its own `Client`, so an agent holds no transport.
-    The config's `runtime` is a *policy*: each `run` provisions a fresh box from it,
-    resolved per task; `run(runtime=...)` places the run into an existing box instead
+    Built from an `AgentConfig` alone; `interception=` injects a live resource to
+    borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
+    builds and closes its own `Client`, so an agent holds no transport. The config's
+    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
+    per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
     def __init__(
@@ -267,7 +266,6 @@ class Agent:
         config: AgentConfig,
         *,
         interception: Interception | None = None,
-        runtimes: RuntimePool | None = None,
     ) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
@@ -294,7 +292,6 @@ class Agent:
         self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
-        self.runtimes = runtimes
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
@@ -567,30 +564,17 @@ class Agent:
         }
 
     @asynccontextmanager
-    async def provision(
-        self, task: Task | None = None, *, reuse: str | None = None
-    ) -> AsyncIterator[Runtime]:
+    async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=box)`.
-        `reuse=key` instead parks the box in the agent's `runtimes` pool when the
-        context closes and gets it back on the next `provision(..., reuse=key)` whose
-        resolved config matches — one box per key: a second holder of a live key
-        waits, and re-entering a key inside its own context deadlocks. With no pool,
-        or `reuse=None`, the box is provisioned and torn down as before. A run placed
-        into the box is a borrowed-box rollout either way (`trace.agent.runtime.borrowed`)."""
+        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
-        # Keep sandbox startup task-neutral: this box may later host another task.
-        env = dict(task.runtime_env()) if task is not None else {}
-        if reuse is not None and self.runtimes is not None:
-            async with self.runtimes.lease(reuse, config, env) as runtime:
-                yield runtime
-            return
         async with provision_runtime(config) as runtime:
-            runtime.env = env
+            # Keep sandbox startup task-neutral: this box may later host another task.
+            runtime.env = dict(task.runtime_env()) if task is not None else {}
             yield runtime
 
 

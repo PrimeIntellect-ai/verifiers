@@ -280,7 +280,7 @@ class Box:
 
 Provisioning = Callable[[], AbstractAsyncContextManager[Runtime]]
 """What provisions one box: a fresh provisioning context each time it is called
-(`lambda: agent.provision(task, reuse=key)`, `lambda: provision_runtime(config)`)."""
+(`lambda: agent.provision(task)`, `lambda: provision_runtime(config)`)."""
 
 
 @asynccontextmanager
@@ -288,8 +288,7 @@ async def provisioned(open: Provisioning) -> AsyncIterator[Runtime]:
     """The runtime `open` provisions, for the block; a sandbox fault at provisioning (the
     runtime's own bound `create_timeout_s` and hold `outage_budget_s` spent, a refused
     create) is an `InfraError`, telling it from a fault of the block; the provisioning
-    context is left as `open` decides (a pool lease parks the box, a plain provisioning
-    closes it)."""
+    context is left as `open` decides."""
     cm = open()
     try:
         runtime = await cm.__aenter__()
