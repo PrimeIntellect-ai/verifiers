@@ -372,6 +372,10 @@ async def test_a_subprocess_box_runs_reads_and_writes(tmp_path):
     ) as runtime:
         bare = Box(runtime, str(tmp_path), home=str(tmp_path / ".box"))
         assert await bare.run("echo hi; echo err >&2; exit 4") == (4, "hi\nerr\n")
+        assert await bare.run("echo $VF_A-$VF_B", env={"VF_A": "a", "VF_B": "b c"}) == (
+            0,
+            "a-b c\n",
+        )
         await bare.write(str(tmp_path / "f.sh"), "echo ran", mode="755")
         assert await bare.run("./f.sh") == (0, "ran\n")
         assert await bare.read(str(tmp_path / "f.sh")) == b"echo ran"

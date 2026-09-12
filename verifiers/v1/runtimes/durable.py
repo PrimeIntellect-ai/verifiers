@@ -14,7 +14,7 @@ import logging
 import shlex
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, ClassVar
 
@@ -112,12 +112,16 @@ class Box:
             raise InfraError(f"{what} failed: {e}") from e
 
     async def run(
-        self, command: str, timeout: int | None = None, cwd: str | None = None
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> tuple[int, str]:
-        """Run `command` under bash in `cwd` (the workdir by default) within `timeout`
-        seconds (`op_timeout` by default); exit code and combined output, both filed on
-        the box first so a reply the platform lost is read back and a command it never
-        ran is sent again. An exec that failed `unavailable` may have run (its status
+        """Run `command` under bash in `cwd` (the workdir by default) with `env` on top of
+        the runtime's, within `timeout` seconds (`op_timeout` by default); exit code and
+        combined output, both filed on the box first so a reply the platform lost is
+        read back and a command it never ran is sent again. An exec that failed `unavailable` may have run (its status
         poll dropped) or never reached the box: the filed exit code decides; one whose
         status poll timed out waits for the filed exit code up to the command's bound
         and is never sent again; a command past `timeout` is killed and says so."""
@@ -138,7 +142,9 @@ class Box:
             sent += 1
             lost = polled = None
             try:
-                res = await self._op("exec", bound, lambda: self.runtime.run(argv, {}))
+                res = await self._op(
+                    "exec", bound, lambda: self.runtime.run(argv, dict(env or {}))
+                )
             except InfraError as error:
                 if isinstance(error.__cause__, SandboxUnavailableError):
                     lost = error.__cause__
