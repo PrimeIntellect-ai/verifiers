@@ -13,10 +13,11 @@ import logging
 import math
 import shlex
 import tempfile
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes import (
@@ -42,6 +43,7 @@ from verifiers.v1.errors import (
     SandboxNotFoundError,
     SandboxProvisioningError,
     SandboxTimeoutError,
+    SandboxUnavailableError,
     sandbox_error,
 )
 from verifiers.v1.runtimes.base import (
@@ -53,10 +55,11 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.aio import cancel_requested, run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
@@ -75,6 +78,11 @@ _SDK_TIMEOUTS = (
 _GONE = ("TERMINATED", "ERROR", "TIMEOUT")
 """`SandboxNotRunningError.status` values that mean the box is gone (the SDK's own set), as
 opposed to not up yet."""
+HOLD_START_S, HOLD_MAX_S = 1.0, 30.0
+"""Seconds a held operation waits before it is sent again (doubling), and the longest wait."""
+NOTICE_S = 60.0
+"""Seconds between two warnings about held operations; the holds between are logged at debug."""
+_noticed = 0.0
 
 
 def _sdk_class(e: BaseException) -> type[SandboxError] | None:
@@ -159,6 +167,20 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced user-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+    creates_backlog_s: float = Field(300, gt=0)
+    """Seconds a create may wait for its slot under `creates_per_min` before it fails (a
+    `SandboxTimeoutError`) rather than stall."""
+    create_timeout_s: float | None = Field(None, gt=0)
+    """Seconds the whole provisioning may take (the create under the pace, the boot, the
+    reachability) before it is a `SandboxTimeoutError` and the box is deleted; None leaves the
+    SDK's own budgets per phase (about six minutes each, a first-use image build apart)."""
+    outage_budget_s: float = Field(0, ge=0)
+    """Seconds an idempotent operation (a create, a read, a write) is held and sent again
+    through a platform outage (a `SandboxUnavailableError`: no route to the box, the routing
+    catalog down, a paused box being placed, the API or the file gateway dropping the
+    connection) before the error reaches the caller; the waits go 1 s doubling to 30 s. 0
+    (the default) leaves the SDK's own short retries. An exec is never sent again here: its
+    reply may have been lost after it ran (`runtimes.durable.Box.run` reads it back)."""
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":
@@ -220,6 +242,38 @@ class PrimeRuntime(Runtime):
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
+    async def _held(self, what: str, op: Callable[[], Awaitable[T]]) -> T:
+        """`op()`, an idempotent SDK call, sent again through a platform outage for up to
+        `outage_budget_s` (`HOLD_START_S` doubling to `HOLD_MAX_S` between sends); a
+        cancellation the SDK swallowed is never retried."""
+        global _noticed
+        delay, deadline = HOLD_START_S, time.monotonic() + self.config.outage_budget_s
+        while True:
+            try:
+                return await op()
+            except Exception as e:
+                if (
+                    not isinstance(_error(what, e), SandboxUnavailableError)
+                    or cancel_requested()
+                    or time.monotonic() + delay > deadline
+                ):
+                    raise
+                error = e
+            now = time.monotonic()
+            level = logging.WARNING if now - _noticed >= NOTICE_S else logging.DEBUG
+            if level == logging.WARNING:
+                _noticed = now
+            logger.log(
+                level,
+                "prime: %s on %s held %gs, the platform unavailable: %s",
+                what,
+                self.info.id,
+                delay,
+                error,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, HOLD_MAX_S)
+
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
@@ -256,57 +310,76 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
-        try:
-            async with (
-                creation_limiter(
-                    (self.config.creates_per_min or 0) / 60, "prime-sandbox"
-                )
-                or contextlib.nullcontext()
-            ):
-                # Shielded through the id capture: a cancel that aborts the POST
-                # mid-flight leaves the platform creating a sandbox this side
-                # never learned the id of — teardown() then cannot delete it
-                async def create_and_capture_id():
-                    sandbox = await self._client.create(
-                        CreateSandboxRequest(
-                            name=self.name,
-                            labels=list(
-                                dict.fromkeys([*BASE_LABELS, *self.config.labels])
-                            ),
-                            docker_image=self.config.image,
-                            vm=self.config.vm,
-                            guaranteed=self.config.guaranteed,
-                            environment_vars=self.env,
-                            **{k: v for k, v in options.items() if v is not None},
-                        )
-                    )
-                    self.info.id = sandbox.id
-                    return sandbox
+        request = CreateSandboxRequest(
+            name=self.name,
+            labels=list(dict.fromkeys([*BASE_LABELS, *self.config.labels])),
+            docker_image=self.config.image,
+            vm=self.config.vm,
+            guaranteed=self.config.guaranteed,
+            environment_vars=self.env,
+            **{k: v for k, v in options.items() if v is not None},
+        )
 
-                sandbox = await run_shielded(create_and_capture_id())
-            # The create response says whether the platform already has the image:
-            # `pending_image_build_id` set means a first-use auto-build is running and the
-            # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
-            # its own budget, separate from the normal boot attempts).
-            self.info.image_cached = sandbox.pending_image_build_id is None
-            if not self.info.image_cached:
-                logger.warning(
-                    "prime: image %s isn't cached on the platform - auto-building it "
-                    "(sandbox %s waits for the build; first use of an image can take "
-                    "~10 minutes, later runs start in seconds)",
-                    self.config.image,
-                    self.info.id,
+        # Shielded through the id capture: a cancel that aborts the POST mid-flight
+        # leaves the platform creating a sandbox this side never learned the id of —
+        # teardown() then cannot delete it
+        async def create_and_capture_id():
+            sandbox = await self._client.create(request)
+            self.info.id = sandbox.id
+            return sandbox
+
+        try:
+            async with asyncio.timeout(self.config.create_timeout_s) as bound:
+                async with (
+                    creation_limiter(
+                        (self.config.creates_per_min or 0) / 60,
+                        "prime-sandbox",
+                        self.config.creates_backlog_s,
+                    )
+                    or contextlib.nullcontext()
+                ):
+                    sandbox = await self._held(
+                        "prime sandbox create",
+                        lambda: run_shielded(create_and_capture_id()),
+                    )
+                # The create response says whether the platform already has the image:
+                # `pending_image_build_id` set means a first-use auto-build is running and the
+                # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
+                # its own budget, separate from the normal boot attempts).
+                self.info.image_cached = sandbox.pending_image_build_id is None
+                if not self.info.image_cached:
+                    logger.warning(
+                        "prime: image %s isn't cached on the platform - auto-building it "
+                        "(sandbox %s waits for the build; first use of an image can take "
+                        "~10 minutes, later runs start in seconds)",
+                        self.config.image,
+                        self.info.id,
+                    )
+                await self._held(
+                    "prime sandbox boot",
+                    lambda: self._client.wait_for_creation(
+                        self.info.id, max_attempts=180
+                    ),
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
-            logger.info(
-                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
-            )
-            await self._client.execute_command(
-                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
+                logger.info(
+                    "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
+                )
+                await self._held(
+                    "prime workdir",
+                    lambda: self._client.execute_command(
+                        self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+                    ),
+                )
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            if (
+                bound.expired()
+            ):  # the SDK may answer the cancellation with its own error
+                raise SandboxTimeoutError(
+                    f"prime sandbox provisioning failed: no box within "
+                    f"{self.config.create_timeout_s:g}s: {e}"
+                ) from e
             raise _error(
                 "prime sandbox provisioning failed", e, default=SandboxProvisioningError
             ) from e
@@ -435,12 +508,15 @@ class PrimeRuntime(Runtime):
         if max_bytes is not None and self.config.vm:
             try:
                 # VM execute_command uses bash and returns the complete output stream.
-                result = await self._client.execute_command(
-                    self.info.id,
-                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
-                    working_dir=self.config.workdir,
-                    env=self.process_env({}),
-                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                result = await self._held(
+                    f"read {path!r}",
+                    lambda: self._client.execute_command(
+                        self.info.id,
+                        f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
+                        working_dir=self.config.workdir,
+                        env=self.process_env({}),
+                        timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                    ),
                 )
             except Exception as exc:
                 raise _error(f"read {path!r}", exc) from exc
@@ -459,7 +535,12 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await self._held(
+                    f"read {path!r}",
+                    lambda: self._client.download_file(
+                        self.info.id, target, str(download)
+                    ),
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise _error(f"read {path!r}", e) from e
@@ -473,8 +554,11 @@ class PrimeRuntime(Runtime):
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
+            await self._held(
+                f"write {path!r}",
+                lambda: self._client.upload_bytes(
+                    self.info.id, target, data, filename=PurePosixPath(target).name
+                ),
             )
         except Exception as e:
             raise _error(f"write {path!r}", e) from e

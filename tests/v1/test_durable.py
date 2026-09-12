@@ -1,6 +1,6 @@
-"""The durable layer: `Box` operations over a runtime through platform outages and lost
-replies, the provisioning hold and its bound, `bare_box`; scripted runtimes, no
-sandbox."""
+"""The durable layer: `Box` operations over a runtime (lost replies read back, an exec
+held through an outage, a large output in parts, one resend of an upload, every command
+bounded), `provisioned`; scripted runtimes and one real subprocess box, no sandbox."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -14,8 +14,9 @@ from verifiers.v1.errors import (
     SandboxTimeoutError,
     SandboxUnavailableError,
 )
-from verifiers.v1.runtimes import SubprocessConfig, durable
-from verifiers.v1.runtimes.durable import Box, InfraError, Platform
+from verifiers.v1.runtimes import SubprocessConfig, durable, provision_runtime
+from verifiers.v1.runtimes.durable import Box, InfraError
+from verifiers.v1.utils import aio
 
 ROUTING = "Connect RPC failed (unavailable): The sandbox routing catalog is temporarily unavailable; retry shortly"
 
@@ -48,18 +49,14 @@ class _Outage:
 
 
 @pytest.fixture
-def platform(monkeypatch) -> Platform:
-    """A hold with fast backoff and its log lines kept on `platform.lines`."""
+def fast(monkeypatch):
+    """The exec hold's backoff made instant."""
     monkeypatch.setattr(durable, "BACKOFF_START", 0.001)
     monkeypatch.setattr(durable, "BACKOFF_MAX", 0.002)
-    lines: list[str] = []
-    held = Platform(log=lines.append)
-    held.lines = lines
-    return held
 
 
-def box(runtime, platform: Platform | None = None) -> Box:
-    return Box(runtime, "/w", home="/h", platform=platform or Platform())
+def box(runtime, **kw) -> Box:
+    return Box(runtime, "/w", home="/h", **kw)
 
 
 async def test_a_reply_lost_in_transport_is_read_back_from_the_box_or_the_command_is_sent_once_more(
@@ -78,7 +75,7 @@ async def test_a_reply_lost_in_transport_is_read_back_from_the_box_or_the_comman
 
         async def run(self, argv, env):
             self.runs += 1
-            assert argv[:2] == ["bash", "-c"] and "out-" in argv[2]
+            assert argv[:4] == ["timeout", "-k", "30", "900"] and "out-" in argv[-1]
             return SimpleNamespace(exit_code=0, stdout=self.replies.pop(0), stderr="")
 
         async def read(self, path):
@@ -98,12 +95,18 @@ async def test_a_reply_lost_in_transport_is_read_back_from_the_box_or_the_comman
         await box(Runtime({}, ["", ""])).run("true")
 
 
-async def test_a_timed_out_command_says_so_and_its_argv_carries_the_bound():
+async def test_every_command_is_bounded_and_a_timed_out_one_says_so():
+    """A command given no timeout runs under the box's `op_timeout`; one past its bound
+    is killed (`timeout -k 30`) and its output says so."""
+
+    bounds: list[str] = []
+
     class Runtime:
         info, stopped = SimpleNamespace(id="box-1"), False
 
         async def run(self, argv, env):
-            assert argv[:4] == ["timeout", "-k", "30", "7"]
+            bounds.append(argv[3])
+            assert argv[:3] == ["timeout", "-k", "30"]
             return SimpleNamespace(exit_code=124, stdout="partial", stderr="")
 
         async def read(self, path):
@@ -114,6 +117,8 @@ async def test_a_timed_out_command_says_so_and_its_argv_carries_the_bound():
         rc == 124
         and out == "partial output\n\n<command timed out after 7s and was killed>"
     )
+    await box(Runtime(), op_timeout=42).run("sleep 99")
+    assert bounds == ["7", "42"]
 
 
 async def test_a_failed_upload_is_sent_once_more(monkeypatch):
@@ -139,41 +144,13 @@ async def test_a_failed_upload_is_sent_once_more(monkeypatch):
         await box(Runtime(2)).write_bytes("/f", b"x")
 
 
-async def test_a_platform_outage_holds_a_box_operation_and_retries_it_without_a_fault(
-    platform,
-):
-    """The class decides, never the text: a `SandboxUnavailableError` (typed from the
-    SDK's exception, the HTTP status or the Connect RPC code) holds and retries; the
-    notice names the operation, its box and the platform's text."""
-    runtime = _Outage(3, "Failed to route request to sandbox box-1")
-    assert await box(runtime, platform).read("/x") == "content" and runtime.calls == 4
-    assert [line.split(";")[0] for line in platform.lines] == [
-        "[platform] sandboxes unavailable since "
-        + platform.lines[0].split("since ")[1].split(";")[0],
-        "[platform] sandboxes available again after 0s",
-    ]
-    assert platform.lines[0].endswith(
-        "; 1 operations waiting, this one read /x on box box-1: Failed to route request to sandbox box-1"
-    )
-    await box(
-        _Outage(1, "The sandbox is being placed on a node; retry shortly"), platform
-    ).write_bytes("/f", b"x")
-    # the SDK's `upload_bytes` says `Upload failed: {str(e)}` with the httpx error as its context; the class is read
-    # off the chain, so a dropped connection with no text at all is the same typed hold
-    dropped = _Outage(2, "write '/k/code.py': Upload failed: ")
-    await box(dropped, platform).write_bytes("/k/code.py", b"x")
-    assert (
-        dropped.calls == 3 and len(platform.lines) == 6
-    )  # one notice and one recovery per outage
-
-
 async def test_an_exec_the_platform_failed_reads_its_exit_code_back_or_is_held_and_sent_again(
-    platform,
+    fast,
 ):
     """An exec that failed `unavailable` may have run (its status poll dropped) or never
     reached the box: the filed exit code decides. Present: the command ran once, its
-    reply is read back. Absent: the command is held on the platform and sent again, no
-    fault."""
+    reply is read back. Absent: the command is held and sent again within the outage
+    budget, no fault; past the budget the fault surfaces with the typed cause."""
 
     class Ran:
         def __init__(self):
@@ -190,15 +167,15 @@ async def test_an_exec_the_platform_failed_reads_its_exit_code_back_or_is_held_a
             return b"7\n" if path.endswith(".rc") else b"done\n"
 
     ran = Ran()
-    assert (
-        await box(ran, platform).run("echo done; exit 7") == (7, "done\n")
-        and ran.runs == 1
-    )
+    assert await box(ran).run("echo done; exit 7") == (7, "done\n") and ran.runs == 1
     never_ran = _Outage(2, ROUTING)
-    assert await box(never_ran, platform).run("true") == (0, "")
-    assert (
-        never_ran.calls == 3
-        and len([line for line in platform.lines if "unavailable since" in line]) == 1
+    assert await box(never_ran).run("true") == (0, "")
+    assert never_ran.calls == 3
+    spent = _Outage(5, ROUTING)
+    with pytest.raises(InfraError, match="exec failed: Connect RPC failed") as info:
+        await box(spent, outage_s=0).run("true")
+    assert spent.calls == 1 and isinstance(
+        info.value.__cause__, SandboxUnavailableError
     )
 
 
@@ -209,11 +186,9 @@ async def test_an_exec_whose_status_poll_timed_out_waits_for_the_filed_exit_code
     (`prime exec failed: Request timed out: `, a `SandboxTimeoutError`) while the
     commands ran on. The exec takes the lost-reply path and waits: the exit code the
     wrapper files is read again every `POLL_S` seconds up to the command's bound, the
-    command is not sent again and nothing is held on the platform; past the bound with
-    no exit code it is the fault."""
+    command is not sent again; past the bound with no exit code it is the fault."""
     monkeypatch.setattr(durable, "POLL_S", 0.001)
     monkeypatch.setattr(durable, "HANG_GRACE", 0)
-    platform = Platform()
 
     class Runtime:
         def __init__(self, files_after: int | None):
@@ -231,47 +206,35 @@ async def test_an_exec_whose_status_poll_timed_out_waits_for_the_filed_exit_code
             return b"5\n" if path.endswith(".rc") else b"late\n"
 
     slow = Runtime(files_after=4)
-    assert await box(slow, platform).run("sleep 9; echo late; exit 5", timeout=2) == (
-        5,
-        "late\n",
-    )
-    assert (
-        slow.runs == 1 and slow.reads == 6 and platform.since is None
-    )  # four polls, then the code and output
+    assert await box(slow).run("sleep 9; echo late; exit 5", timeout=2) == (5, "late\n")
+    assert slow.runs == 1 and slow.reads == 6  # four polls, then the code and output
     never = Runtime(files_after=None)
     with pytest.raises(
         InfraError, match="status poll timed out and no exit code was filed within 1s"
     ):
-        await box(never, platform).run("true", timeout=1)
+        await box(never).run("true", timeout=1)
     assert never.runs == 1 and never.reads > 10
 
 
-async def test_a_platform_outage_past_its_budget_surfaces_the_error_and_a_bare_fault_is_never_held(
-    platform,
-):
-    """The budget is read at each hold (a run's settings may change): zero means no hold
-    at all."""
-    platform.budget = lambda: 0
-    runtime = _Outage(5, ROUTING)
+async def test_a_read_or_write_is_never_held_here_and_a_bare_fault_is_the_callers():
+    """The runtime retries its own idempotent reads and writes (`PrimeConfig.
+    outage_budget_s`); what reaches the box is the fault, typed as its cause."""
+    runtime = _Outage(1, ROUTING)
     with pytest.raises(
         InfraError,
         match="read /x failed: Connect RPC failed .unavailable.: The sandbox",
-    ):
-        await box(runtime, platform).read("/x")
-    assert runtime.calls == 1 and platform.lines == []
+    ) as info:
+        await box(runtime).read("/x")
+    assert runtime.calls == 1 and isinstance(
+        info.value.__cause__, SandboxUnavailableError
+    )
     plain = _Outage(5, "exec failed: exit 137", SandboxError)
     with pytest.raises(InfraError, match="exec failed: exec failed"):
-        await box(plain, platform).run("true")
+        await box(plain).run("true")
     assert plain.calls == 1
-    # the same texts as a bare `SandboxError` (nothing typed behind them) are the caller's fault, not the platform's
-    for text in (
-        ROUTING,
-        "The sandbox is being placed on a node; retry shortly",
-        "read '/f': Download failed: ",
-    ):
+    for text in (ROUTING, "The sandbox is being placed on a node; retry shortly"):
         with pytest.raises(InfraError):
-            await box(_Outage(1, text, SandboxError), platform).read("/f")
-    assert platform.lines == []
+            await box(_Outage(1, text, SandboxError)).read("/f")
 
 
 async def test_a_closing_box_refuses_operations_and_a_hung_operation_is_abandoned():
@@ -365,96 +328,57 @@ async def test_write_with_a_mode_runs_chmod_and_a_refused_chmod_is_the_fault():
         await box(Runtime(1)).write("/f", "x", mode="755")
 
 
-async def test_a_provisioning_during_a_platform_outage_or_behind_the_pacing_holds_and_retries_without_a_fault(
-    platform,
-):
-    """A create the platform failed `unavailable`, or one that timed out before any box
-    existed (the creation limiter refusing a backlog), is held and tried again, never a
-    fault; any other sandbox fault is an `InfraError`."""
-    pacing = "prime sandbox provisioning failed: prime-sandbox creation limiter backlog of 300.9s exceeds 300s (/tmp/x)"
-    failures = [SandboxUnavailableError(ROUTING), SandboxTimeoutError(pacing)]
+async def test_provisioned_types_a_provisioning_fault_and_leaves_the_block_its_own():
+    """A sandbox fault raised by the provisioning context is an `InfraError` with the
+    typed cause; one raised inside the block passes as it is; the context is left on
+    exit."""
     runtime = SimpleNamespace(info=SimpleNamespace(id="box-1"), stopped=False)
-    attempts = 0
+    left = []
 
     @asynccontextmanager
     async def provision():
-        nonlocal attempts
-        attempts += 1
-        if failures:
-            raise failures.pop(0)
-        yield runtime
+        try:
+            yield runtime
+        finally:
+            left.append(runtime)
 
-    async with durable.provisioned(provision, platform=platform) as leased:
+    async with durable.provisioned(provision) as leased:
         assert leased is runtime
-    assert attempts == 3 and len(platform.lines) == 2
+    assert left == [runtime]
+    with pytest.raises(SandboxError, match="inside"):
+        async with durable.provisioned(provision):
+            raise SandboxError("inside")
 
     @asynccontextmanager
     async def broken():
-        raise SandboxError("the box never came up")
+        raise SandboxTimeoutError(
+            "prime sandbox provisioning failed: no box within 480s"
+        )
         yield
 
     with pytest.raises(
-        InfraError, match="box provisioning failed: the box never came up"
-    ):
-        await durable.provision_box(broken, platform=platform)
+        InfraError, match="box provisioning failed: prime sandbox provisioning"
+    ) as info:
+        async with durable.provisioned(broken):
+            pass
+    assert isinstance(info.value.__cause__, SandboxTimeoutError)
 
 
-async def test_a_provisioning_past_its_bound_is_a_fault_and_a_box_it_makes_late_is_closed():
-    closed = []
-
-    @asynccontextmanager
-    async def slow():
-        try:
-            await asyncio.sleep(0.2)
-        except asyncio.CancelledError:
-            await asyncio.sleep(0.02)
-        try:
-            yield SimpleNamespace(info=SimpleNamespace(id="late"), stopped=False)
-        finally:
-            closed.append("late")
-
-    with pytest.raises(InfraError, match="no box within 0s"):
-        await durable.provision_box(slow, wait=0)
-    await asyncio.sleep(0.2)
-    assert closed == ["late"]
-
-
-async def test_a_bare_box_is_provisioned_from_its_config_alone_and_closed_after(
-    monkeypatch,
-):
-    provisioned, closed = [], []
-
-    @asynccontextmanager
-    async def provision_runtime(config):
-        provisioned.append(config)
-        yield SimpleNamespace(info=SimpleNamespace(id="bare-1"), stopped=False)
-        closed.append(config)
-
-    monkeypatch.setattr("verifiers.v1.runtimes.provision_runtime", provision_runtime)
-    config = SubprocessConfig()
-    async with durable.bare_box(config, workdir="/", home="/h") as bare:
-        assert isinstance(bare, Box) and (
-            bare.id,
-            bare.workdir,
-            bare.home,
-            bare.tmp,
-        ) == ("bare-1", "/", "/h", "/h/tmp")
-        assert not closed
-    assert provisioned == [config] and closed == [config]
-
-
-async def test_a_bare_subprocess_box_runs_reads_and_writes(tmp_path):
+async def test_a_subprocess_box_runs_reads_and_writes(tmp_path):
     """The durable layer over a real subprocess runtime: a command's exit code and
-    output, a file written and read."""
-    async with durable.bare_box(
-        SubprocessConfig(), workdir=str(tmp_path), home=str(tmp_path / ".box")
-    ) as bare:
+    output, a file written and read, a missing path None."""
+    async with durable.provisioned(
+        lambda: provision_runtime(SubprocessConfig())
+    ) as runtime:
+        bare = Box(runtime, str(tmp_path), home=str(tmp_path / ".box"))
         assert await bare.run("echo hi; echo err >&2; exit 4") == (4, "hi\nerr\n")
         await bare.write(str(tmp_path / "f.sh"), "echo ran", mode="755")
         assert await bare.run("./f.sh") == (0, "ran\n")
-        assert await bare.read(str(tmp_path / "f.sh")) == "echo ran"
+        assert await bare.read(str(tmp_path / "f.sh")) == b"echo ran"
         assert await bare.read(str(tmp_path / "missing")) is None
         assert (tmp_path / ".box" / "tmp").is_dir()
+        with pytest.raises(InfraError, match="write .* failed"):
+            await bare.write_bytes(str(tmp_path / "f.sh" / "under-a-file"), b"x")
 
 
 async def _swallow():
@@ -470,12 +394,12 @@ async def test_check_cancelled_raises_the_cancellation_a_library_swallowed():
     checked = []
 
     async def work():
-        durable.check_cancelled()  # nothing pending: a no-op
+        aio.check_cancelled()  # nothing pending: a no-op
         try:
             await _swallow()
         except RuntimeError:
-            checked.append(durable.cancel_requested())
-            durable.check_cancelled()
+            checked.append(aio.cancel_requested())
+            aio.check_cancelled()
         checked.append("continued")
 
     task = asyncio.create_task(work())
@@ -484,4 +408,4 @@ async def test_check_cancelled_raises_the_cancellation_a_library_swallowed():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert checked == [True]
-    assert not durable.cancel_requested()
+    assert not aio.cancel_requested()

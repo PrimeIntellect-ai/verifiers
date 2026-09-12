@@ -191,8 +191,11 @@ class SubprocessRuntime(Runtime):
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, data)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
+        except OSError as exc:
+            raise sandbox_error(f"write {path!r}", exc) from exc
 
     async def teardown(self) -> None:
         """Stop and reap background servers before their event loop closes."""

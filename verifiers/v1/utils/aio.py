@@ -29,3 +29,18 @@ async def run_shielded(coro: Awaitable[T]) -> T:
     if cancelled is not None:
         raise cancelled from (None if task.cancelled() else task.exception())
     return task.result()
+
+
+def cancel_requested() -> bool:
+    """Whether the current task holds a cancellation no handler has answered: a library
+    may swallow one (connectrpc turns a CancelledError inside a request into a
+    ConnectError CANCELED, which arrives as a `SandboxError`) and the task would
+    otherwise retry, reopen or replace a box while the run is ending."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+def check_cancelled() -> None:
+    """Raise the cancellation the current task holds, if any (`cancel_requested`)."""
+    if cancel_requested():
+        raise asyncio.CancelledError()
