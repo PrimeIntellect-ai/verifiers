@@ -251,8 +251,9 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
-            state = [block for block in blocks if block["type"] in THINKING]
-            state.sort(key=lambda block: THINKING.index(block["type"]))
+            state = [
+                block for block in blocks if block["type"] not in ("text", "tool_use")
+            ]
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -261,6 +262,7 @@ def parse_messages(body: dict) -> Messages:
                 ToolCall(
                     id=b.get("id", ""),
                     name=b.get("name", ""),
+                    namespace=b.get("toolset_name"),
                     arguments=json.dumps(b.get("input") or {}),
                 )
                 for b in blocks
@@ -303,8 +305,9 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     reasoning: list[str] = []
     calls: list[ToolCall] = []
     for block in message.content:
-        if block.type in THINKING:
-            state.append(block.model_dump())
+        if block.type not in ("text", "tool_use"):
+            # SDK-inserted defaults are absent when the native response is replayed.
+            state.append(block.model_dump(exclude_unset=True))
         if block.type == "text":
             content.append(block.text)
         elif block.type == "thinking":
@@ -314,10 +317,10 @@ def response_from_wire(message: AnthropicMessage) -> Response:
                 ToolCall(
                     id=block.id,
                     name=block.name,
+                    namespace=block.toolset_name,
                     arguments=json.dumps(block.input or {}),
                 )
             )
-    state.sort(key=lambda block: THINKING.index(block["type"]))
     finish = STOP_REASONS.get(message.stop_reason or "")
     provider_usage = message.usage
     output_details = provider_usage.model_dump().get("output_tokens_details")
@@ -563,13 +566,17 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
 
     def parse_request(self, body: RawRequest) -> Request:
         tools = [
-            Tool(
-                name=t["name"],
-                description=t.get("description", ""),
-                parameters=t.get("input_schema", {}),
+            Tool.model_validate(
+                {k: v for k, v in t.items() if k != "input_schema"}
+                | {
+                    "name": t.get("name") or t.get("mcp_server_name") or t["type"],
+                    "type": "function"
+                    if t.get("type") in (None, "custom")
+                    else t["type"],
+                    "parameters": t.get("input_schema") or {},
+                }
             )
             for t in body.get("tools") or []
-            if "input_schema" in t  # skip server tools (web_search etc.)
         ] or None
         return Request(messages=parse_messages(body), tools=tools)
 

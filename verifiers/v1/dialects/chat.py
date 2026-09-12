@@ -122,6 +122,7 @@ def parse_message(raw: dict) -> Message:
                     id=call["id"],
                     type=kind,
                     name=native["name"],
+                    namespace=native.get("namespace"),
                     arguments=native["input" if kind == "custom" else "arguments"],
                 )
             )
@@ -135,21 +136,14 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
-    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
-    # tools) parses to None, not [] — the same contract as the anthropic/responses
-    # dialects, and what keeps an empty parse from clearing `Trace.tools`.
-    if not raw:
-        return None
-    return [
-        Tool(
-            name=t["function"]["name"],
-            description=t["function"].get("description", ""),
-            parameters=t["function"].get("parameters", {}),
-            strict=t["function"].get("strict"),
+    tools = []
+    for declaration in raw or []:
+        kind = declaration.get("type", "function")
+        tool = declaration.get(kind, declaration)
+        tools.append(
+            Tool.model_validate(tool | {"type": kind, "name": tool.get("name") or kind})
         )
-        for t in raw
-        if t.get("type", "function") == "function"
-    ] or None
+    return tools or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
@@ -184,6 +178,7 @@ def message_to_wire(message: Message) -> dict:
                     "type": call.type,
                     call.type: {
                         "name": call.name,
+                        **({"namespace": call.namespace} if call.namespace else {}),
                         "input"
                         if call.type == "custom"
                         else "arguments": call.arguments,
@@ -302,8 +297,9 @@ class ChatStreamParser(StreamParser):
                 slot["type"] = kind
                 native = slot.setdefault(kind, {"name": ""})
                 delta_native = tool_call.get(kind) or {}
-                if delta_native.get("name"):
-                    native["name"] = delta_native["name"]
+                for field in ("name", "namespace"):
+                    if delta_native.get(field):
+                        native[field] = delta_native[field]
                 input_field = "input" if kind == "custom" else "arguments"
                 self.tool_inputs.setdefault(index, []).append(
                     delta_native.get(input_field) or ""

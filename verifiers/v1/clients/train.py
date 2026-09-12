@@ -38,6 +38,10 @@ T = TypeVar("T")
 
 
 def tool_to_wire(tool: Tool) -> dict:
+    if tool.type != "function" or tool.namespace:
+        raise NotImplementedError(
+            "The renderer client only supports unnamespaced function tools."
+        )
     function: dict = {
         "name": tool.name,
         "description": tool.description,
@@ -61,6 +65,7 @@ def serialize_completion(response: Response, model: str) -> dict:
                 "type": c.type,
                 c.type: {
                     "name": c.name,
+                    **({"namespace": c.namespace} if c.namespace else {}),
                     "input" if c.type == "custom" else "arguments": c.arguments,
                 },
             }

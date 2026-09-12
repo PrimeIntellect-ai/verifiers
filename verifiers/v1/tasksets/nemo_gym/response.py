@@ -70,6 +70,7 @@ def trace_to_nemo_response(
                     else "function_call",
                     "call_id": call.id,
                     "name": call.name,
+                    **({"namespace": call.namespace} if call.namespace else {}),
                     ("input" if call.type == "custom" else "arguments"): call.arguments,
                 }
                 for call in message.tool_calls or []

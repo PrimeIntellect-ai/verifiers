@@ -127,6 +127,31 @@ def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
 
     assert graph.message_hash(left) == graph.message_hash(right)
 
+    # Identical call IDs and short names can occur in different agent branches.
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="lookup")),
+    )
+    user = vf.UserMessage(content="lookup")
+    calls = [
+        vf.AssistantMessage(
+            tool_calls=[
+                vf.ToolCall(id="call_0", name="lookup", namespace=ns, arguments="{}")
+            ]
+        )
+        for ns in (None, "alpha", "beta")
+    ]
+    node_ids = [
+        graph.prepare_turn(trace, [user]).commit(_response(message))
+        for message in calls
+    ]
+    for message, node_id in zip(calls, node_ids, strict=True):
+        turn = graph.prepare_turn(
+            trace,
+            [user, message, vf.ToolMessage(content="result", tool_call_id="call_0")],
+        )
+        assert turn.prefix_node_ids == [0, node_id]
+
 
 def test_reasoning_content_participates_in_graph_prefix_matching():
     task = vf.TaskData(idx=0, prompt="use a tool")
@@ -183,8 +208,11 @@ def test_parallel_commits_reconcile_shared_prompt_prefix():
     # Both model requests leave before either response has committed its prompt.
     pending_a = graph.prepare_turn(trace, [system, user_a])
     pending_b = graph.prepare_turn(trace, [system, user_b])
-    assistant_a_id = pending_a.commit(_response(assistant_a))
-    pending_b.commit(_response(vf.AssistantMessage(content="B1")))
+    tool_a = vf.Tool(name="echo", namespace="a")
+    tool_b = vf.Tool(name="echo", namespace="b")
+    assistant_a_id = pending_a.commit(_response(assistant_a), [tool_a])
+    pending_b.commit(_response(vf.AssistantMessage(content="B1")), [tool_b])
+    assert trace.tools == [tool_a, tool_b]
 
     graph.prepare_turn(
         trace,

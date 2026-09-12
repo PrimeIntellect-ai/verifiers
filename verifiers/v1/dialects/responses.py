@@ -290,6 +290,7 @@ def fold_assistant(items: list[dict] | None) -> AssistantMessage:
                     id=item.get("call_id", ""),
                     type="custom" if kind == "custom_tool_call" else "function",
                     name=item.get("name", ""),
+                    namespace=item.get("namespace"),
                     arguments=item.get("arguments", item.get("input", "")),
                 )
             )
@@ -589,17 +590,37 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                 prompt.append(UserMessage(content=parse_content(item.get("content"))))
         if run:
             prompt.append(fold_assistant(run))
-        tools = [
-            Tool(
-                name=t["name"],
-                description=t.get("description") or "",
-                parameters=t.get("parameters") or {},
-                strict=t.get("strict"),
-            )
-            for t in body.get("tools") or []
-            if t.get("type") == "function"
-        ] or None
-        return Request(messages=prompt, tools=tools)
+        tools = []
+        declarations = []
+        for item in items:
+            if item.get("type") in ("additional_tools", "tool_search_output"):
+                declarations.extend(item.get("tools") or [])
+        # Current declarations take precedence over definitions replayed in history.
+        declarations.extend(body.get("tools") or [])
+        for group in declarations:
+            namespace = group["name"] if group.get("type") == "namespace" else None
+            for tool in group["tools"] if namespace else [group]:
+                if tool.get("type") == "mcp":
+                    # Connection credentials belong in the native request, not the trace.
+                    tool = {
+                        key: value
+                        for key, value in tool.items()
+                        if key not in ("authorization", "headers")
+                    }
+                tools.append(
+                    Tool.model_validate(
+                        tool
+                        | {
+                            "name": tool.get("name")
+                            or tool.get("server_label")
+                            or tool["type"],
+                            "namespace": namespace,
+                            "description": tool.get("description") or "",
+                            "parameters": tool.get("parameters") or {},
+                        }
+                    )
+                )
+        return Request(messages=prompt, tools=tools or None)
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)

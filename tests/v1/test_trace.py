@@ -10,7 +10,8 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.graph import MessageNode
+from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
+from verifiers.v1.graph import MessageNode, prepare_turn
 from verifiers.v1.harnesses.rlm.harness import (
     RLM_SESSION_METADATA_KEY,
     RLMHarness,
@@ -135,15 +136,53 @@ def test_custom_task_state_round_trip():
 
 
 def test_wire_trace_round_trip():
+    mcp = {
+        "type": "mcp",
+        "server_label": "alpha",
+        "server_url": "https://example.invalid/mcp",
+        "authorization": "trace-test-oauth-token",
+        "headers": {"Authorization": "Bearer trace-test-header-token"},
+    }
+    function = {
+        "type": "function",
+        "name": "echo",
+        "description": "Echo the supplied text.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
+        "strict": False,
+    }
+    request = ResponsesDialect().parse_request(
+        {
+            "tools": [
+                function,
+                {"type": "namespace", "name": "mcp__world", "tools": [function]},
+                {"type": "namespace", "name": "mcp__other", "tools": [function]},
+                {"type": "custom", "name": "patch", "format": {"type": "text"}},
+                {"type": "web_search", "search_context_size": "low"},
+                mcp,
+                mcp | {"server_label": "beta"},
+            ]
+        }
+    )
+    assistant = fold_assistant(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_0",
+                "name": "echo",
+                "namespace": "mcp__world",
+                "arguments": '{"text":"hello"}',
+            }
+        ]
+    )
     # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
     # carry node `parent` links for `num_branches` to survive.
     tr = vf.Trace[MyTask, vf.State](
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
-        tools=[vf.Tool(name="echo", description="", parameters={"type": "object"})],
+        tools=request.tools,
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
-            MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),
+            MessageNode(parent=0, message=assistant, sampled=True),
             MessageNode(parent=0, message=AssistantMessage(content="a2"), sampled=True),
         ],
     )
@@ -153,9 +192,14 @@ def test_wire_trace_round_trip():
     tr.info = {"build": "ok"}
     tr.root_reply = "root answer"
     tr.stop("done")
+    prepare_turn(tr, []).commit_prompt(request.tools)
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))
+    assert "trace-test-oauth-token" not in json.dumps(data)
+    assert "trace-test-header-token" not in json.dumps(data)
+    assert mcp["authorization"] == "trace-test-oauth-token"
+    assert mcp["headers"] == {"Authorization": "Bearer trace-test-header-token"}
     assert "reward" not in data and "is_truncated" not in data
     # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
     assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None
@@ -174,6 +218,19 @@ def test_wire_trace_round_trip():
     assert (
         rt.tools == tr.tools
     )  # the advertised tools persist (tool-use SFT reads them)
+    assert [tool.namespace for tool in rt.tools[:3]] == [
+        None,
+        "mcp__world",
+        "mcp__other",
+    ]
+    assert all(tool.parameters == function["parameters"] for tool in rt.tools[:3])
+    assert all(tool.strict is False for tool in rt.tools[:3])
+    assert rt.tools[3].type == "custom"
+    assert rt.tools[3].model_extra == {"format": {"type": "text"}}
+    assert rt.tools[4].type == "web_search"
+    assert rt.tools[4].model_extra == {"search_context_size": "low"}
+    assert [tool.name for tool in rt.tools[5:]] == ["alpha", "beta"]
+    assert rt.nodes[1].message.tool_calls[0].namespace == "mcp__world"
     assert rt.task.data.model_extra == {
         "answer": "a"
     }  # taskset extras preserved on WireTaskData

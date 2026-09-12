@@ -276,10 +276,17 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
     if harness.id != "kimi-code":
         assert trace.num_branches == 1
-    # Native MCP tools need not appear in the intercepted model request that
-    # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness.id == "codex":
+        recall = next(tool for tool in trace.tools if tool.name.endswith("recall"))
+        assert recall.namespace
+        assert "codeword" in recall.parameters["properties"]
+        assert any(
+            call.namespace == recall.namespace and call.name == recall.name
+            for message in trace.assistant_messages
+            for call in message.tool_calls or []
+        )
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
         assert all(call.acp is not None for call in trace.calls)

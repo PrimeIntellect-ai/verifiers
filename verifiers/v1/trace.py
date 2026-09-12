@@ -401,7 +401,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
-    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+    """Tools observed across requests; the latest definition wins for each identity."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph, including physical and semantic parent links."""
@@ -667,7 +667,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 if message.content:
                     lines.append(message.content)
                 lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
+                    f"[tool_call {call.namespace + '.' if call.namespace else ''}"
+                    f"{call.name}({call.arguments})]"
                     for call in message.tool_calls or []
                 )
             else:
