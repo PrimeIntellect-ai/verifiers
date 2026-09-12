@@ -10,13 +10,6 @@ the main hook that builds each task:
 `load` may also be a generator for infinite tasksets. There is a one-to-one
 mapping between taskset and task type, i.e. a taskset may only yield one task
 type.
-
-A taskset whose tasks appear over time (a queue, a feed) overrides `stream()`
-instead: an async generator that awaits its source, yields each task complete,
-and returns when the source is drained. The runner consumes `stream()` either
-way — the default streams `iter(self)`. `vf eval` takes a stream's next `-n`
-tasks and ends; consuming it for as long as it runs is a service's job, built on
-`run_stream`.
 """
 
 from __future__ import annotations
@@ -25,7 +18,7 @@ import copy
 import itertools
 import random
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Generic, Self
 
 from typing_extensions import TypeVar
@@ -67,20 +60,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
             for task in self.load()
         )
         yield from self.transform(tasks) if self.transform is not None else tasks
-
-    async def stream(self) -> AsyncIterator[TaskT]:
-        """The tasks as they become available — the read path a runner consumes.
-        The default yields `iter(self)` (system prompt and any `head`/`shuffle`
-        view applied); a taskset whose tasks appear over time overrides this (see
-        module doc) — such a taskset cannot be shuffled or resumed, and `vf eval`
-        requires `-n`: it takes the next `n` and ends."""
-        for task in self:
-            yield task
-
-    @property
-    def streaming(self) -> bool:
-        """Whether `stream()` is overridden (the tasks appear over time)."""
-        return type(self).stream is not Taskset.stream
 
     def view(self, transform: Callable[[Iterator[TaskT]], Iterator[TaskT]]) -> Self:
         """A shallow copy of this taskset iterating through `transform`, composed

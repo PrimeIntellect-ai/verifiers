@@ -31,7 +31,7 @@ from verifiers.v1.configs.task import (
     TaskConfig,
 )
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.env import Env, RunSlot
+from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import (
     EnvInfo,
@@ -141,7 +141,6 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
-from verifiers.v1.utils.aio import run_stream
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     Artifact,
@@ -320,8 +319,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "DockerConfig",
     "PrimeConfig",
     "Env",
-    "RunSlot",
-    "run_stream",
     "SingleAgentEnv",
     "EnvConfig",
     "ServeConfig",
