@@ -236,6 +236,62 @@ def build_starter_file(
     return wrapped
 
 
+# ── Axiom auditing ───────────────────────────────────────────────────────────
+
+# The axioms Mathlib itself is built on. A proof depending only on these is a
+# genuine proof; anything else means the rollout introduced its own assumption.
+TRUSTED_AXIOMS: frozenset[str] = frozenset(
+    {"propext", "Classical.choice", "Quot.sound"}
+)
+
+
+def declaration_name(expected_signature: str) -> str:
+    """Return the declared name from a ``theorem/lemma/example ... := by`` block.
+
+    Used to build the ``#print axioms <name>`` query. Returns ``""`` when no name
+    can be read (anonymous ``example``, or a signature we cannot parse), which the
+    caller treats as "no audit possible" rather than as a pass.
+    """
+    match = re.search(r"\b(?:theorem|lemma)\s+([^\s:({\[]+)", expected_signature or "")
+    return match.group(1) if match else ""
+
+
+def parse_axioms_output(output: str) -> list[str]:
+    """Extract the axiom list from a ``#print axioms <name>`` transcript.
+
+    Lean prints ``'name' depends on axioms: [a, b, c]`` or, for a proof needing
+    none, ``'name' does not depend on any axioms``. Returns the axiom names in the
+    order Lean reported them; an empty list means either no axioms or no parsable
+    ``depends on axioms`` line.
+
+    Matches the LAST such line, for the same reason ``parse_compile_output``
+    matches the last ``EXIT_CODE`` marker: our query is appended at the end of the
+    file, so anything earlier came from the rollout. Matching the first occurrence
+    would let a model inject
+
+    .. code-block:: lean
+
+        #eval IO.println "'x' depends on axioms: [propext]"
+
+    above its proof and have the audit read that instead of the real result.
+    """
+    matches = list(re.finditer(r"depends on axioms:\s*\[([^\]]*)\]", output))
+    if not matches:
+        return []
+    return [axiom.strip() for axiom in matches[-1].group(1).split(",") if axiom.strip()]
+
+
+def untrusted_axioms(
+    output: str, trusted: frozenset[str] = TRUSTED_AXIOMS
+) -> list[str]:
+    """Axioms in a ``#print axioms`` transcript that fall outside ``trusted``.
+
+    A non-empty result means the proof leans on an assumption the rollout supplied
+    (``axiom cheat : False``), so the goal was never actually proved.
+    """
+    return [axiom for axiom in parse_axioms_output(output) if axiom not in trusted]
+
+
 # ── Compile-output parsing ───────────────────────────────────────────────────
 
 

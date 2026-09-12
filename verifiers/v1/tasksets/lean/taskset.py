@@ -22,9 +22,11 @@ from verifiers.v1.task import Task, TaskData, TaskResources
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
+    declaration_name,
     expected_protected_signature,
     parse_compile_output,
     protected_signature_substring_present,
+    untrusted_axioms,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.decorators import reward
@@ -89,6 +91,26 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         result = await runtime.run(["bash", "-lc", cmd], {})
         return parse_compile_output((result.stdout or "") + (result.stderr or ""))
 
+    async def _print_axioms(self, runtime: Runtime, name: str) -> str:
+        """Compile a copy of the proof file with ``#print axioms <name>`` appended.
+
+        Written to a separate path so the rollout's file is left untouched, and
+        appended last so the real result is the final ``depends on axioms`` line in
+        the transcript.
+        """
+        content = (await runtime.read(self.config.proof_file_path)).decode(
+            "utf-8", "replace"
+        )
+        audit_path = f"{self.config.proof_file_path}.axioms.lean"
+        await runtime.write(audit_path, f"{content}\n#print axioms {name}\n".encode())
+        cmd = (
+            f"cd {shlex.quote(self.config.lean_project_path)} && "
+            f"timeout {self.config.compile_timeout} lake env lean "
+            f"{shlex.quote(audit_path)} 2>&1"
+        )
+        result = await runtime.run(["bash", "-lc", cmd], {})
+        return (result.stdout or "") + (result.stderr or "")
+
     async def setup(self, runtime: Runtime) -> None:
         content = build_starter_file(
             self.data.formal_statement,
@@ -124,7 +146,25 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         trace.info["lean_compiled"] = compiled
         trace.info["compile_exit_code"] = exit_code
         trace.info["compile_output"] = output[-4000:]
-        return 1.0 if compiled else 0.0
+        if not compiled:
+            return 0.0
+
+        # A clean compile is not a proof if the rollout supplied its own axiom:
+        # ``axiom cheat : False`` above the protected signature compiles silently
+        # and closes any goal. Audit what the declaration actually rests on.
+        name = declaration_name(expected_sig)
+        if name:
+            axioms_output = await self._print_axioms(runtime, name)
+            trace.info["lean_axioms_output"] = axioms_output[-4000:]
+            introduced = untrusted_axioms(axioms_output)
+            if introduced:
+                trace.info["lean_tampered"] = True
+                trace.info["lean_untrusted_axioms"] = introduced
+                trace.info["compile_output"] = (
+                    "proof depends on untrusted axioms: " + ", ".join(introduced)
+                )
+                return 0.0
+        return 1.0
 
     async def validate(self, runtime: Runtime) -> bool | None:
         """Compile the gold proof; rows without one have nothing to preflight."""
