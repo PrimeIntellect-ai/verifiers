@@ -207,7 +207,7 @@ def upstream_error(status: int, text: str) -> ProviderError:
     return cls(f"upstream {status}: {text}", status_code=status)
 
 
-def _chain(e: BaseException) -> Iterator[BaseException]:
+def failures(e: BaseException) -> Iterator[BaseException]:
     """`e` and the failures it wraps, outermost first, as a traceback prints them: `__cause__`,
     else the implicit `__context__` of an error raised inside another's handler without `from`
     (the prime SDK's `APIError("HTTP 503: ...")` keeps its typed status only there)."""
@@ -275,5 +275,5 @@ def sandbox_error(
     exception type, an errno, an HTTP status or a Connect RPC code, read off `e` and the failures
     it chains, never its text — else `default`. The runtime counterpart of `model_error`; runtimes
     call it at their mapping seam: `raise sandbox_error("prime exec failed", e) from e`."""
-    cls = next((c for c in map(_sandbox_class, _chain(e)) if c is not None), default)
+    cls = next((c for c in map(_sandbox_class, failures(e)) if c is not None), default)
     return cls(f"{message}: {e}")

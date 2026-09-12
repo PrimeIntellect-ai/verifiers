@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, TypeVar
 from urllib.parse import urlsplit
 
+import httpx
 from prime_sandboxes import (
     APITimeoutError,
     CommandTimeoutError,
@@ -44,6 +45,7 @@ from verifiers.v1.errors import (
     SandboxProvisioningError,
     SandboxTimeoutError,
     SandboxUnavailableError,
+    failures,
     sandbox_error,
 )
 from verifiers.v1.runtimes.base import (
@@ -80,6 +82,10 @@ _GONE = ("TERMINATED", "ERROR", "TIMEOUT")
 opposed to not up yet."""
 HOLD_START_S, HOLD_MAX_S = 1.0, 30.0
 """Seconds a held operation waits before it is sent again (doubling), and the longest wait."""
+NOT_PLACED = "sandbox_not_placed"
+"""The gateway's error code (the `error` field of its 503 body) for a box the routing holds no
+placement for: transient while a box comes up; on a box that has answered an exec, the box is
+lost and never routed again (a flywheel builder's box served 28 calls, then held 44 minutes)."""
 NOTICE_S = 60.0
 """Seconds between two warnings about held operations; the holds between are logged at debug."""
 _noticed = 0.0
@@ -110,6 +116,21 @@ def _error(
     if cls is not None:
         return cls(f"{what}: {e}")
     return sandbox_error(what, e, default=default)
+
+
+def placement_lost(e: BaseException) -> bool:
+    """Whether a failure (or one it chains) is the gateway's 503 whose body names `NOT_PLACED`."""
+    for failure in failures(e):
+        if (
+            isinstance(failure, httpx.HTTPStatusError)
+            and failure.response.status_code == 503
+        ):
+            try:
+                body = failure.response.json()
+            except ValueError:
+                return False
+            return isinstance(body, dict) and body.get("error") == NOT_PLACED
+    return False
 
 
 @dataclass
@@ -233,6 +254,8 @@ class PrimeRuntime(Runtime):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        self.placed = False
+        """The box has answered an exec: a placement lost from now on is the box lost, not an outage."""
 
     @property
     def supports_live_processes(self) -> bool:
@@ -245,13 +268,18 @@ class PrimeRuntime(Runtime):
     async def _held(self, what: str, op: Callable[[], Awaitable[T]]) -> T:
         """`op()`, an idempotent SDK call, sent again through a platform outage for up to
         `outage_budget_s` (`HOLD_START_S` doubling to `HOLD_MAX_S` between sends); a
-        cancellation the SDK swallowed is never retried."""
+        cancellation the SDK swallowed is never retried; a `placed` box the gateway no longer
+        routes to (`NOT_PLACED`) is gone at once, a `SandboxNotFoundError`."""
         global _noticed
         delay, deadline = HOLD_START_S, time.monotonic() + self.config.outage_budget_s
         while True:
             try:
                 return await op()
             except Exception as e:
+                if self.placed and placement_lost(e):
+                    raise SandboxNotFoundError(
+                        f"{what}: box {self.info.id} lost its placement ({NOT_PLACED}): {e}"
+                    ) from e
                 if (
                     not isinstance(_error(what, e), SandboxUnavailableError)
                     or cancel_requested()
@@ -370,6 +398,7 @@ class PrimeRuntime(Runtime):
                         self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
                     ),
                 )
+                self.placed = True
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's

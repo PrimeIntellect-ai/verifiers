@@ -7,11 +7,12 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import httpx
 import prime_sandboxes
 import pytest
 from prime_sandboxes import APIError
 
-from verifiers.v1.errors import SandboxTimeoutError
+from verifiers.v1.errors import SandboxNotFoundError, SandboxTimeoutError
 from verifiers.v1.runtimes import limiters, prime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 
@@ -65,6 +66,55 @@ async def test_an_idempotent_call_is_held_through_an_outage_within_the_budget(fa
     with pytest.raises(APIError):
         await runtime._held("read", refused)
     assert bare == 1  # a bare fault is never held
+
+
+def _not_placed(placed: bool = True) -> APIError:
+    """The SDK's shape for an upload the gateway refused with its 503 `sandbox_not_placed` body."""
+    request = httpx.Request("POST", "https://gw.invalid/ns/job/upload")
+    response = httpx.Response(
+        503, json={"error": prime.NOT_PLACED, "sandboxId": "box-1"}, request=request
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as status:
+        try:
+            raise APIError(
+                f"Upload failed: HTTP 503 POST {request.url}: {response.text}"
+            ) from status
+        except APIError as e:
+            return e
+
+
+async def test_a_placement_lost_on_a_box_that_answered_is_the_box_gone_at_once(fast):
+    """`sandbox_not_placed` on a box that has answered an exec is never routed again: not an outage to hold
+    through (r8: two holds of 900 s, then the kernel stop's read held 14 minutes more, 44 minutes for a lost
+    box), a `SandboxNotFoundError` at once; before the box has answered it is the usual hold."""
+    runtime = PrimeRuntime(PrimeConfig(outage_budget_s=5))
+    runtime.info.id = "box-1"
+    calls = 0
+
+    async def lost():
+        nonlocal calls
+        calls += 1
+        raise _not_placed()
+
+    assert prime.placement_lost(_not_placed()) and not prime.placement_lost(
+        _unavailable()
+    )
+    assert not runtime.placed
+    started = time.monotonic()
+    with pytest.raises(
+        APIError
+    ):  # while the box comes up the gateway may not route yet: held to the budget
+        await asyncio.wait_for(runtime._held("write", lost), 30)
+    assert calls > 3
+    runtime.placed, calls = True, 0
+    with pytest.raises(
+        SandboxNotFoundError, match="box box-1 lost its placement"
+    ) as gone:
+        await runtime._held("write", lost)
+    assert calls == 1 and isinstance(gone.value.__cause__, APIError)
+    assert time.monotonic() - started < 20
 
 
 async def test_a_cancelled_task_is_not_held(fast):

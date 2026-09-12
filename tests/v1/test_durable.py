@@ -143,6 +143,18 @@ async def test_a_failed_upload_is_sent_once_more(monkeypatch):
     with pytest.raises(InfraError, match="write /f failed"):
         await box(Runtime(2)).write_bytes("/f", b"x")
 
+    class Gone(Runtime):
+        async def write(self, path, data):
+            self.writes += 1
+            raise SandboxNotFoundError("write '/f': box box-1 lost its placement")
+
+    gone = Gone(2)
+    with pytest.raises(
+        InfraError, match="lost its placement"
+    ):  # a box that is gone gets nothing twice
+        await box(gone).write_bytes("/f", b"x")
+    assert gone.writes == 1
+
 
 async def test_an_exec_the_platform_failed_reads_its_exit_code_back_or_is_held_and_sent_again(
     fast,

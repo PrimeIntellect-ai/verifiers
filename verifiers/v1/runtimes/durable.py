@@ -257,7 +257,7 @@ class Box:
 
     async def write_bytes(self, path: str, data: bytes) -> None:
         """Write `data` at `path`; an upload the platform drops without a reason is sent
-        once more."""
+        once more, never to a box that is gone."""
         for attempt in (1, 2):
             try:
                 return await self._op(
@@ -265,8 +265,8 @@ class Box:
                     self.op_timeout,
                     lambda: self.runtime.write(path, data),
                 )
-            except InfraError:
-                if attempt == 2:
+            except InfraError as error:
+                if attempt == 2 or isinstance(error.__cause__, SandboxNotFoundError):
                     raise
                 await asyncio.sleep(3)
 
