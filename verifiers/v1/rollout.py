@@ -13,6 +13,7 @@ from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
+    HarnessTimeoutError,
     RolloutError,
     TaskError,
     ToolsetError,
@@ -386,7 +387,7 @@ class Rollout:
             # harness's own I/O with no expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.fail(
-                    HarnessError(
+                    HarnessTimeoutError(
                         f"agent timeout: rollout exceeded its "
                         f"{self._timeouts.agent:g}s budget"
                     )

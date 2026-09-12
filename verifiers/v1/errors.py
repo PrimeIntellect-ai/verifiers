@@ -30,7 +30,6 @@ from collections.abc import AsyncIterator, Iterator
 from typing import ClassVar
 
 import httpx
-from openai import OpenAIError
 
 
 class RolloutError(Exception):
@@ -52,8 +51,31 @@ class ProviderError(RolloutError):
         self.status_code = status_code
 
 
+class ProviderTimeoutError(ProviderError):
+    """The client's own bound ran out with no response from the provider."""
+
+    code = "timeout"
+
+
+class ProviderUnavailableError(ProviderError):
+    """The provider could not be reached (no connection, a reset), or a gateway answered
+    502, 503 or 504 in its place."""
+
+    code = "unavailable"
+
+
+GATEWAY_STATUSES = frozenset({502, 503, 504})
+"""The statuses a gateway answers for a provider that did not: `ProviderUnavailableError`."""
+
+
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
+
+
+class HarnessTimeoutError(HarnessError):
+    """The rollout ran past its agent time budget (`TimeoutConfig.rollout`)."""
+
+    code = "agent_timeout"
 
 
 class ToolsetError(RolloutError):
@@ -136,7 +158,7 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
 
 
-def _provider_status(e: OpenAIError | str) -> int:
+def _provider_status(e: BaseException | str) -> int:
     """The HTTP status to surface for an SDK error: the provider's own for an HTTP status error, a
     retryable 5xx for a transport/timeout fault, else 502."""
     from openai import APIConnectionError, APIStatusError, APITimeoutError
@@ -150,19 +172,39 @@ def _provider_status(e: OpenAIError | str) -> int:
     return 502
 
 
+def _provider_class(e: BaseException | str, status: int) -> type[ProviderError]:
+    """The `ProviderError` subclass a failure's own type names: the SDK's or httpx's timeout, a
+    connection the SDK or httpx could not make or keep, a gateway status in the SDK's answer."""
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+
+    if isinstance(e, (APITimeoutError, httpx.TimeoutException)):
+        return ProviderTimeoutError
+    if isinstance(e, (APIConnectionError, httpx.TransportError, ConnectionResetError)):
+        return ProviderUnavailableError
+    if isinstance(e, APIStatusError) and status in GATEWAY_STATUSES:
+        return ProviderUnavailableError
+    return ProviderError
+
+
 def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
+    e: BaseException | str, *, status_code: int | None = None
 ) -> ProviderError:
-    """Map a provider failure to a `ProviderError`. `status_code` is the HTTP status surfaced to
-    the harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error
-    when not given. Accepts an SDK error (the renderer) or the provider's raw error body (the
-    httpx proxy)."""
+    """Map a provider failure to a `ProviderError` — the subclass its type names, with its `code`
+    (`_provider_class`), else the bare one. `status_code` is the HTTP status surfaced to the
+    harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when
+    not given. Accepts an SDK error (the renderer), an httpx transport failure (the proxy) or
+    the provider's raw error body."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
-    return ProviderError(
-        text,
-        status_code=status_code if status_code is not None else _provider_status(e),
-    )
+    status = status_code if status_code is not None else _provider_status(e)
+    return _provider_class(e, status)(text, status_code=status)
+
+
+def upstream_error(status: int, text: str) -> ProviderError:
+    """The provider's own error status as the harness sees it; a gateway's 502, 503 or 504 is a
+    `ProviderUnavailableError`."""
+    cls = ProviderUnavailableError if status in GATEWAY_STATUSES else ProviderError
+    return cls(f"upstream {status}: {text}", status_code=status)
 
 
 def _chain(e: BaseException) -> Iterator[BaseException]:
