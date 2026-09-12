@@ -41,7 +41,11 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    TrainClientConfig,
+    resolve_api_key,
+)
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -648,7 +652,7 @@ class InterceptionServer(Interception):
             return self._fail(session, dialect, error)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
-        if streaming:
+        if streaming and not isinstance(session.ctx.client, TrainClientConfig):
             return await self._stream(
                 request,
                 session,
@@ -663,6 +667,13 @@ class InterceptionServer(Interception):
             )
 
         def serve(response: Response) -> web.Response:
+            if streaming:
+                # Training generates a complete response with token metadata.
+                # Commit it through the normal path, then frame it for SSE clients.
+                return web.Response(
+                    body=b"".join(dialect.stream_events(response.raw or {})),
+                    content_type="text/event-stream",
+                )
             served = _completion_response(response.raw)
             if idempotent is not None:
                 idempotent.response = _capture_response(served)
