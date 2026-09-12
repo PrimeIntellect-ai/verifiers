@@ -13,6 +13,15 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.durable import (
+    PLATFORM,
+    Box,
+    InfraError,
+    Platform,
+    bare_box,
+    provision_box,
+    provisioned,
+)
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.pool import RuntimePool, RuntimePoolConfig
 from verifiers.v1.runtimes.prime import (
@@ -80,14 +89,18 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 
 __all__ = [
+    "PLATFORM",
     "BaseRuntimeInfo",
+    "Box",
     "DockerConfig",
     "DockerRuntime",
     "DockerRuntimeInfo",
+    "InfraError",
     "ModalConfig",
     "ModalRuntime",
     "ModalRuntimeInfo",
     "NetworkPolicyConfig",
+    "Platform",
     "PrimeConfig",
     "PrimeRuntime",
     "PrimeRuntimeInfo",
@@ -101,8 +114,11 @@ __all__ = [
     "SubprocessConfig",
     "SubprocessRuntime",
     "SubprocessRuntimeInfo",
+    "bare_box",
     "make_runtime",
+    "provision_box",
     "provision_runtime",
+    "provisioned",
     "runtime_is_local",
     "set_base_sandbox_labels",
 ]
