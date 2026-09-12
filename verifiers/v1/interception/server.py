@@ -265,7 +265,24 @@ class InterceptionServer(Interception):
         if client is None:
             client = self.clients[key] = resolve_client(config)
             self.stack.push_async_callback(client.close)
+        return self.wrap_client(client, config)
+
+    def wrap_client(self, client: Client, config: BaseClientConfig) -> Client:
+        """The client a session of `config` gets, over the server-owned `client` (`clients`):
+        a subclass returns a decorator of it (admission, a hold); the default is the client
+        itself. Called at each registration; the owned client is closed with the server,
+        a decorator is not."""
         return client
+
+    def session_of(self, bearer: str) -> RolloutSession | None:
+        """The session behind a bearer a subclass's own route received: its model secret
+        (what the program in the box holds) or its state secret; None for neither. The
+        handler task is adopted, so a rollout that concludes cancels it before a late reply
+        lands on the sealed trace."""
+        session = self.sessions.get(bearer) or self.state_sessions.get(bearer)
+        if session is not None:
+            session.adopt(asyncio.current_task())
+        return session
 
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and

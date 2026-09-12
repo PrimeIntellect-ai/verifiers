@@ -5,10 +5,13 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import asyncio
 import subprocess
 import sys
 
 import pytest
+
+import verifiers.v1 as vf
 
 mark = pytest.mark
 
@@ -811,3 +814,45 @@ async def test_interception_subclass_routes():
 
         with pytest.raises(httpx.ConnectError):
             await client.get(f"{server.base_url}/custom")
+
+
+async def test_interception_client_and_bearer_hooks():
+    """`wrap_client` decorates the server-owned client a session is assigned; `session_of`
+    resolves a bearer a subclass's route received (model or state secret) and adopts the
+    handler task."""
+    from verifiers.v1.clients import ModelContext
+    from verifiers.v1.clients.client import Client
+    from verifiers.v1.interception.server import InterceptionServer
+    from verifiers.v1.session import RolloutSession
+
+    class Wrapped(Client):
+        def __init__(self, client, config):
+            self.client, self.config = client, config
+
+        async def get_response(self, dialect, *args, **kwargs):
+            return await self.client.get_response(dialect, *args, **kwargs)
+
+    class CustomServer(InterceptionServer):
+        def wrap_client(self, client, config):
+            return Wrapped(client, config)
+
+    config = vf.EvalClientConfig(base_url="http://provider.invalid/v1")
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="p")),
+        agent=vf.AgentInfo(config=vf.AgentConfig(model="m", client=config)),
+    )
+    session = RolloutSession(ctx=ModelContext(model="m", client=config), trace=trace)
+    async with CustomServer() as server:
+        async with server.acquire(session) as (_, model_secret, state_secret):
+            assert isinstance(session.client, Wrapped)
+            assert session.client.client is next(iter(server.clients.values()))
+            assert session.client.config == config
+
+            async def resolve(bearer):  # a handler task: adopted, cancelled at release
+                return server.session_of(bearer), asyncio.current_task()
+
+            found, task = await asyncio.create_task(resolve(model_secret))
+            assert found is session and task in session.tasks
+            assert (await asyncio.create_task(resolve(state_secret)))[0] is session
+            assert (await asyncio.create_task(resolve("nobody")))[0] is None
+        assert (await asyncio.create_task(resolve(model_secret)))[0] is None
