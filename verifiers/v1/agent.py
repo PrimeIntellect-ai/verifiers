@@ -608,7 +608,6 @@ class _EpisodeAgent(Agent):
         config: AgentConfig,
         *,
         interception: Interception | None,
-        runtimes: RuntimePool | None,
         name: str,
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
@@ -618,7 +617,7 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
-        super().__init__(config, interception=interception, runtimes=runtimes)
+        super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name

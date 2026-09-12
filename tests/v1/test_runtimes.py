@@ -1,8 +1,7 @@
 """`RuntimePool`: the boxes `Agent.provision(task, reuse=key)` keeps between contexts —
 hit/miss on key, config, TTL and liveness (probed under the new env); a box started with
 no lease's env, each lease's env its own per-exec overlay; teardown on error, a cancelled
-probe, caller stop, `discard`, `max_idle` and pool close (a lease queued behind it
-refused); one box per key, its gate dropped when unused. Subprocess runtimes (a directory
+probe, caller stop, `discard` and pool close (a lease queued behind it refused); one box per key, its gate dropped when unused. Subprocess runtimes (a directory
 each), no model."""
 
 import asyncio
@@ -169,15 +168,6 @@ async def test_idle_boxes_reach_the_atexit_backstop() -> None:
         assert any(r.info.id == str(workdir) for r in _LIVE)
         cleanup_at_exit()
         assert not workdir.exists()
-
-
-async def test_max_idle_stops_the_oldest_box() -> None:
-    async with pool(max_idle=1) as runtimes:
-        async with runtimes.lease("a", SUBPROCESS, {}) as a:
-            pass
-        async with runtimes.lease("b", SUBPROCESS, {}) as b:
-            pass
-        assert a.stopped and not b.stopped
 
 
 async def test_one_box_per_key_serialises_leases() -> None:

@@ -12,9 +12,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self
 
-from pydantic import Field
-from pydantic_config import BaseConfig
-
 from verifiers.v1.runtimes.base import Runtime
 
 if TYPE_CHECKING:
@@ -25,14 +22,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RuntimePoolConfig(BaseConfig):
+@dataclass(frozen=True)
+class RuntimePoolConfig:
     """The idle budget of the boxes kept between `Agent.provision(task, reuse=key)` contexts."""
 
-    ttl: float = Field(600, gt=0)
+    ttl: float = 600
     """Seconds an idle box is kept after its `provision` context closes, then it is stopped."""
-    max_idle: int | None = Field(16, ge=1)
-    """Idle boxes kept at once (the oldest is stopped first); None = no cap. Leased boxes
-    are bounded by the caller's own concurrency, not here."""
+
+    def __post_init__(self) -> None:
+        if self.ttl <= 0:
+            raise ValueError("ttl must be positive")
 
 
 @dataclass
@@ -53,7 +52,7 @@ class _Gate:
 class RuntimePool:
     """Live boxes kept between `Agent.provision(..., reuse=key)` contexts: one box per
     key, reused while its config still matches, it is alive, and its idle time is under
-    `ttl`. A key is exclusive — a second `lease` of a leased key waits for the first to
+    `ttl` (leased boxes are bounded by the caller's own concurrency). A key is exclusive — a second `lease` of a leased key waits for the first to
     end, so a box never hosts two rollouts at once (leasing a key inside its own context
     therefore deadlocks). Idle boxes are held strongly, so `cleanup_at_exit` still frees
     them on a hard exit; `async with pool:` runs the TTL sweeper and stops every idle box
@@ -133,7 +132,6 @@ class RuntimePool:
                 return
             runtime.env = {}  # parked: no lease's env is kept on the box
             self._idle[key] = _Idle(runtime, config, time.monotonic())
-            await self._trim()
 
     @asynccontextmanager
     async def _lock(self, key: str) -> AsyncIterator[None]:
@@ -177,14 +175,6 @@ class RuntimePool:
         logger.info("runtime pool: replacing box %s for %r", entry.runtime.name, key)
         await entry.runtime.stop()
         return None
-
-    async def _trim(self) -> None:
-        """Stop the oldest idle boxes past `max_idle`."""
-        cap = self.config.max_idle
-        if cap is None or len(self._idle) <= cap:
-            return
-        oldest = sorted(self._idle, key=lambda key: self._idle[key].since)
-        await self._evict(oldest[: len(self._idle) - cap])
 
     async def _evict(self, keys: list[str]) -> None:
         """Stop the idle boxes under `keys` (each popped first, so a concurrent lease
