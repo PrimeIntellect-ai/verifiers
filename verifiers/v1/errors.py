@@ -78,9 +78,17 @@ class SandboxError(RolloutError):
 
 
 class SandboxNotFoundError(SandboxError):
-    """The path, or the box itself, is gone."""
+    """The path, or the box itself, is gone; `SandboxGoneError` narrows it to the box."""
 
     code = "not_found"
+
+
+class SandboxGoneError(SandboxNotFoundError):
+    """The box itself is gone (terminated, out of memory, its placement lost), never a path:
+    what a read may take as a missing path (`durable.Box.read` answers None) it may not
+    take from this."""
+
+    code = "gone"
 
 
 class SandboxTimeoutError(SandboxError):

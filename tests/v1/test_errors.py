@@ -15,6 +15,7 @@ from prime_sandboxes import (
     SandboxFileNotFoundError,
     SandboxImagePullError,
     SandboxNotRunningError,
+    SandboxOOMError,
     UnauthorizedError,
 )
 
@@ -24,6 +25,7 @@ from verifiers.v1.errors import (
     SandboxDeniedError,
     SandboxDiskFullError,
     SandboxError,
+    SandboxGoneError,
     SandboxNotFoundError,
     SandboxProvisioningError,
     SandboxTimeoutError,
@@ -109,12 +111,15 @@ def test_sandbox_error_reads_typed_evidence_down_the_chain(cause, expected):
         ),
         (
             SandboxNotRunningError("sb", "TERMINATED", "SANDBOX_NOT_FOUND"),
-            SandboxNotFoundError,
+            SandboxGoneError,
         ),
+        (SandboxOOMError("sb", "ERROR", "OOM_KILLED"), SandboxGoneError),
         (APIError("Sandbox x is being deleted"), SandboxError),
     ],
 )
 def test_prime_reads_the_sdk_types_first(cause, expected):
+    """The box itself gone (terminated, out of memory) is `SandboxGoneError`, a not-found that
+    names the box; a path the box has not (`SandboxFileNotFoundError`) the bare not-found."""
     assert type(_error("prime exec failed", cause)) is expected
 
 

@@ -10,6 +10,7 @@ import pytest
 
 from verifiers.v1.errors import (
     SandboxError,
+    SandboxGoneError,
     SandboxNotFoundError,
     SandboxTimeoutError,
     SandboxUnavailableError,
@@ -286,6 +287,52 @@ async def test_box_read_treats_a_typed_missing_path_as_absent_and_any_other_faul
     )
     with pytest.raises(InfraError, match="read /f failed: No such file or directory"):
         await box(Runtime(SandboxError("No such file or directory"))).read("/f")
+
+
+async def test_a_box_that_is_gone_is_the_fault_at_read_and_never_a_missing_path(
+    monkeypatch,
+):
+    """The runtime names a lost box `SandboxGoneError` (its placement lost, terminated), a
+    `SandboxNotFoundError` too: `read` answers None only for the path the box said it has
+    not (r8 20:55: a lost box read as "no such path" for a file that stood, and its caller
+    polled on); `read_big` says `no such path` only when the box answered, and asks no
+    part twice of a box that is gone."""
+    monkeypatch.setattr(durable, "READ_PART", 8)
+    gone = SandboxGoneError(
+        "read '/f': box box-1 lost its placement (sandbox_not_placed): HTTP 503"
+    )
+
+    class Runtime:
+        def __init__(self, error):
+            self.error, self.reads, self.commands = error, 0, []
+            self.info, self.stopped = SimpleNamespace(id="box-1"), False
+
+        async def read(self, path):
+            self.reads += 1
+            raise self.error
+
+        async def run(self, argv, env):
+            self.commands.append(argv[-1])
+            return SimpleNamespace(exit_code=0, stdout="0\n", stderr="")
+
+    lost = Runtime(gone)
+    with pytest.raises(
+        InfraError, match="read /f failed: .*lost its placement"
+    ) as info:
+        await box(lost).read("/f")
+    assert info.value.__cause__ is gone
+    with pytest.raises(InfraError, match="lost its placement") as info:
+        await box(lost).read_big("/f", 4)
+    assert info.value.__cause__ is gone
+    with pytest.raises(InfraError, match="lost its placement"):
+        await box(lost).read_big("/f", 20)
+    assert lost.reads == 3  # one read each: nothing asked twice of a box that is gone
+    assert (
+        any("split -b 8" in c for c in lost.commands) and "rm -f" in lost.commands[-1]
+    )
+    missing = Runtime(SandboxNotFoundError("read '/f': no such file"))
+    with pytest.raises(InfraError, match="read /f failed: no such path"):
+        await box(missing).read_big("/f", 4)
 
 
 async def test_a_large_output_is_read_back_in_parts(monkeypatch):

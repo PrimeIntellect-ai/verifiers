@@ -21,6 +21,7 @@ from typing import Any, ClassVar
 from verifiers.v1.errors import (
     RolloutError,
     SandboxError,
+    SandboxGoneError,
     SandboxNotFoundError,
     SandboxTimeoutError,
     SandboxUnavailableError,
@@ -214,19 +215,25 @@ class Box:
             await asyncio.sleep(POLL_S)
 
     async def read(self, path: str) -> bytes | None:
-        """The file's bytes, or None when the box has no such path."""
+        """The file's bytes, or None when the box answered that it has no such path; a
+        box that is gone (a `SandboxGoneError`: its placement lost, terminated) is the
+        fault, never None (r8 20:55: a lost box read as "no such path" for a file that
+        stood, and the caller polled a box that would never answer)."""
         try:
             return await self._op(
                 f"read {path}", self.op_timeout, lambda: self.runtime.read(path)
             )
         except InfraError as e:
-            if isinstance(e.__cause__, SandboxNotFoundError):
+            if isinstance(e.__cause__, SandboxNotFoundError) and not isinstance(
+                e.__cause__, SandboxGoneError
+            ):
                 return None
             raise
 
     async def read_big(self, path: str, size: int) -> bytes:
         """A file of `size` bytes, in parts when it is larger than one transport call
-        carries."""
+        carries; `no such path` only when the box answered so (a box that is gone is
+        `read`'s own fault), and a part is never asked twice of a box that is gone."""
         if size <= READ_PART:
             data = await self.read(path)
             if data is None:
@@ -245,6 +252,8 @@ class Box:
                 try:
                     data += await self.read(part) or b""
                 except InfraError as error:
+                    if isinstance(error.__cause__, SandboxGoneError):
+                        raise
                     logger.warning("read of %s failed (%s); retrying once", part, error)
                     await asyncio.sleep(2)
                     data += await self.read(part) or b""

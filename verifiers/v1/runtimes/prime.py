@@ -41,6 +41,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     SandboxDeniedError,
     SandboxError,
+    SandboxGoneError,
     SandboxNotFoundError,
     SandboxProvisioningError,
     SandboxTimeoutError,
@@ -104,7 +105,7 @@ def _sdk_class(e: BaseException) -> type[SandboxError] | None:
     if isinstance(e, SandboxOOMError) or (
         isinstance(e, SandboxNotRunningError) and e.status in _GONE
     ):
-        return SandboxNotFoundError
+        return SandboxGoneError
     return None
 
 
@@ -269,7 +270,9 @@ class PrimeRuntime(Runtime):
         """`op()`, an idempotent SDK call, sent again through a platform outage for up to
         `outage_budget_s` (`HOLD_START_S` doubling to `HOLD_MAX_S` between sends); a
         cancellation the SDK swallowed is never retried; a `placed` box the gateway no longer
-        routes to (`NOT_PLACED`) is gone at once, a `SandboxNotFoundError`."""
+        routes to (`NOT_PLACED`) is gone at once, a `SandboxGoneError` (never the bare
+        not-found a missing path is: r8 20:55, a read of a file that stood answered None on a
+        lost box)."""
         global _noticed
         delay, deadline = HOLD_START_S, time.monotonic() + self.config.outage_budget_s
         while True:
@@ -277,7 +280,7 @@ class PrimeRuntime(Runtime):
                 return await op()
             except Exception as e:
                 if self.placed and placement_lost(e):
-                    raise SandboxNotFoundError(
+                    raise SandboxGoneError(
                         f"{what}: box {self.info.id} lost its placement ({NOT_PLACED}): {e}"
                     ) from e
                 if (

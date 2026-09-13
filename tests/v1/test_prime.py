@@ -12,7 +12,11 @@ import prime_sandboxes
 import pytest
 from prime_sandboxes import APIError
 
-from verifiers.v1.errors import SandboxNotFoundError, SandboxTimeoutError
+from verifiers.v1.errors import (
+    SandboxGoneError,
+    SandboxNotFoundError,
+    SandboxTimeoutError,
+)
 from verifiers.v1.runtimes import limiters, prime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 
@@ -88,7 +92,8 @@ def _not_placed(placed: bool = True) -> APIError:
 async def test_a_placement_lost_on_a_box_that_answered_is_the_box_gone_at_once(fast):
     """`sandbox_not_placed` on a box that has answered an exec is never routed again: not an outage to hold
     through (r8: two holds of 900 s, then the kernel stop's read held 14 minutes more, 44 minutes for a lost
-    box), a `SandboxNotFoundError` at once; before the box has answered it is the usual hold."""
+    box), a `SandboxGoneError` at once (a not-found that names the box, so a read never takes it for a
+    missing path); before the box has answered it is the usual hold."""
     runtime = PrimeRuntime(PrimeConfig(outage_budget_s=5))
     runtime.info.id = "box-1"
     calls = 0
@@ -109,11 +114,12 @@ async def test_a_placement_lost_on_a_box_that_answered_is_the_box_gone_at_once(f
         await asyncio.wait_for(runtime._held("write", lost), 30)
     assert calls > 3
     runtime.placed, calls = True, 0
-    with pytest.raises(
-        SandboxNotFoundError, match="box box-1 lost its placement"
-    ) as gone:
+    with pytest.raises(SandboxGoneError, match="box box-1 lost its placement") as gone:
         await runtime._held("write", lost)
     assert calls == 1 and isinstance(gone.value.__cause__, APIError)
+    assert isinstance(
+        gone.value, SandboxNotFoundError
+    )  # gone is not-found, not the reverse
     assert time.monotonic() - started < 20
 
 
