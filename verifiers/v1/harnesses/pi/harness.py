@@ -51,6 +51,8 @@ class PiHarnessConfig(HarnessConfig):
         "chat_completions"
     )
     """Model API transport."""
+    supports_developer_role: bool | None = None
+    """Override Pi's chat-completions role detection for custom model endpoints."""
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
@@ -120,6 +122,13 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 else {}
             ),
         }
+        if (
+            self.config.transport == "chat_completions"
+            and self.config.supports_developer_role is not None
+        ):
+            model_config["compat"] = {
+                "supportsDeveloperRole": self.config.supports_developer_role
+            }
         models = {
             "providers": {
                 provider: {
