@@ -131,15 +131,18 @@ def _capture_response(response: web.Response) -> ReplayResponse:
         data = bytes(body)
     else:
         raise TypeError("coalesced interception responses must have a byte body")
-    return ReplayResponse(status=response.status, body=data)
+    return ReplayResponse(
+        status=response.status,
+        body=data,
+        content_type=response.headers["Content-Type"],
+    )
 
 
 def _replay_response(response: ReplayResponse) -> web.Response:
     return web.Response(
         body=response.body,
         status=response.status,
-        content_type="application/json",
-        charset="utf-8",
+        headers={"Content-Type": response.content_type},
     )
 
 
