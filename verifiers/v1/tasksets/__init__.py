@@ -1,4 +1,10 @@
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.inspect import (
+    InspectConfig,
+    InspectData,
+    InspectTask,
+    InspectTaskset,
+)
 from verifiers.v1.tasksets.lean import (
     LeanConfig,
     LeanDatasetConfig,
@@ -18,6 +24,10 @@ from verifiers.v1.tasksets.openenv import (
 __all__ = [
     "HarborConfig",
     "HarborTaskset",
+    "InspectConfig",
+    "InspectData",
+    "InspectTask",
+    "InspectTaskset",
     "LeanConfig",
     "LeanDatasetConfig",
     "LeanTask",
