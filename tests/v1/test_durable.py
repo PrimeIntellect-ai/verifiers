@@ -1,9 +1,9 @@
 """The durable layer: `Box` operations over a runtime (lost replies read back, an exec
 held through an outage, a large output in parts, one resend of an upload, every command
-bounded), `provisioned`; scripted runtimes and one real subprocess box, no sandbox."""
+bounded, a hang probed, a filed file read whole); scripted runtimes and one real
+subprocess box, no sandbox."""
 
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -218,15 +218,20 @@ async def test_an_exec_whose_status_poll_timed_out_waits_for_the_filed_exit_code
                 raise SandboxNotFoundError(f"read {path!r}: no such file")
             return b"5\n" if path.endswith(".rc") else b"late\n"
 
+        async def alive(self):
+            return True
+
     slow = Runtime(files_after=4)
     assert await box(slow).run("sleep 9; echo late; exit 5", timeout=2) == (5, "late\n")
     assert slow.runs == 1 and slow.reads == 6  # four polls, then the code and output
     never = Runtime(files_after=None)
     with pytest.raises(
-        InfraError, match="status poll timed out and no exit code was filed within 1s"
-    ):
+        InfraError,
+        match="status poll timed out and no exit code was filed within 1s.* while the box answers",
+    ) as info:
         await box(never).run("true", timeout=1)
     assert never.runs == 1 and never.reads > 10
+    assert info.value.hung and isinstance(info.value.__cause__, SandboxTimeoutError)
 
 
 async def test_a_read_or_write_is_never_held_here_and_a_bare_fault_is_the_callers():
@@ -250,7 +255,14 @@ async def test_a_read_or_write_is_never_held_here_and_a_bare_fault_is_the_caller
             await box(_Outage(1, text, SandboxError)).read("/f")
 
 
-async def test_a_closing_box_refuses_operations_and_a_hung_operation_is_abandoned():
+async def test_a_closing_box_refuses_operations_and_a_hung_operation_is_probed(
+    monkeypatch,
+):
+    """An operation past its bound is abandoned; one probe of the box then names the
+    hang: a box that answers makes it the command's own (`hung`), a box gone, refusing
+    or silent within `PROBE_S` makes it the platform's."""
+    monkeypatch.setattr(durable, "PROBE_S", 0.02)
+
     class Runtime:
         info, stopped = SimpleNamespace(id="box-1"), True
 
@@ -263,11 +275,51 @@ async def test_a_closing_box_refuses_operations_and_a_hung_operation_is_abandone
     class Hung:
         info, stopped = SimpleNamespace(id="box-1"), False
 
+        def __init__(self, probe):
+            self.probe, self.probed = probe, 0
+
         async def read(self, path):
             await asyncio.sleep(60)
 
-    with pytest.raises(InfraError, match="read /f hung past 0.01s"):
-        await Box(Hung(), "/w", op_timeout=0.01).read("/f")
+        async def run(self, argv, env):
+            await asyncio.sleep(60)
+
+        async def alive(self):
+            self.probed += 1
+            return await self.probe()
+
+    async def answers():
+        return True
+
+    async def gone():
+        return False
+
+    async def refused():
+        raise SandboxUnavailableError("exec failed: unavailable")
+
+    async def silent():
+        await asyncio.sleep(60)
+
+    own = Hung(answers)
+    with pytest.raises(
+        InfraError, match="read /f hung past 0.01s while the box answers"
+    ) as info:
+        await Box(own, "/w", op_timeout=0.01).read("/f")
+    assert info.value.hung and own.probed == 1
+    assert isinstance(info.value.__cause__, TimeoutError)
+    for probe in (gone, refused, silent):
+        lost = Hung(probe)
+        with pytest.raises(
+            InfraError, match="read /f hung past 0.01s and the box does not answer"
+        ) as info:
+            await Box(lost, "/w", op_timeout=0.01).read("/f")
+        assert not info.value.hung and lost.probed == 1
+    monkeypatch.setattr(durable, "HANG_GRACE", 0)
+    with pytest.raises(
+        InfraError, match="exec hung past 1s while the box answers"
+    ) as info:
+        await box(Hung(answers)).run("sleep 60", timeout=1)
+    assert info.value.hung
 
 
 async def test_box_read_treats_a_typed_missing_path_as_absent_and_any_other_fault_as_infra():
@@ -363,81 +415,53 @@ async def test_a_large_output_is_read_back_in_parts(monkeypatch):
     assert "rm -f" in commands[-1] and ".part.*" in commands[-1]
 
 
-async def test_write_with_a_mode_runs_chmod_and_a_refused_chmod_is_the_fault():
+async def test_a_file_the_exec_filed_is_read_again_until_it_is_whole(monkeypatch):
+    """`read(path, size=)`: the platform's read answered None for a file the same exec
+    had just written (r8 20:55), or fewer bytes than the file has (r8 01:51); a read
+    short of `size` is asked again, `FILED_READS` in all, before None is the answer; a
+    box that is gone is the fault at once."""
+    monkeypatch.setattr(durable, "POLL_S", 0)
+    monkeypatch.setattr(durable, "FILED_READS", 3)
+
     class Runtime:
-        def __init__(self, rc):
-            self.rc, self.writes, self.commands = rc, [], []
+        def __init__(self, answers):
+            self.answers, self.reads = list(answers), 0
             self.info, self.stopped = SimpleNamespace(id="box-1"), False
 
-        async def write(self, path, data):
-            self.writes.append((path, data))
+        async def read(self, path):
+            self.reads += 1
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
 
-        async def run(self, argv, env):
-            self.commands.append(argv[-1])
-            return SimpleNamespace(
-                exit_code=self.rc,
-                stdout=f"{self.rc}\nnope\n" if self.rc else "0\n",
-                stderr="",
-            )
-
-    fine = Runtime(0)
-    await box(fine).write("/f", "x", mode="755")
-    assert fine.writes == [("/f", b"x")] and "chmod 755 /f" in fine.commands[-1]
-    with pytest.raises(InfraError, match="chmod /f failed"):
-        await box(Runtime(1)).write("/f", "x", mode="755")
-
-
-async def test_provisioned_types_a_provisioning_fault_and_leaves_the_block_its_own():
-    """A sandbox fault raised by the provisioning context is an `InfraError` with the
-    typed cause; one raised inside the block passes as it is; the context is left on
-    exit."""
-    runtime = SimpleNamespace(info=SimpleNamespace(id="box-1"), stopped=False)
-    left = []
-
-    @asynccontextmanager
-    async def provision():
-        try:
-            yield runtime
-        finally:
-            left.append(runtime)
-
-    async with durable.provisioned(provision) as leased:
-        assert leased is runtime
-    assert left == [runtime]
-    with pytest.raises(SandboxError, match="inside"):
-        async with durable.provisioned(provision):
-            raise SandboxError("inside")
-
-    @asynccontextmanager
-    async def broken():
-        raise SandboxTimeoutError(
-            "prime sandbox provisioning failed: no box within 480s"
-        )
-        yield
-
-    with pytest.raises(
-        InfraError, match="box provisioning failed: prime sandbox provisioning"
-    ) as info:
-        async with durable.provisioned(broken):
-            pass
-    assert isinstance(info.value.__cause__, SandboxTimeoutError)
+    missing = SandboxNotFoundError("read '/x': no such file")
+    late = Runtime([missing, missing, b"patch"])
+    assert await box(late).read("/x", size=5) == b"patch" and late.reads == 3
+    assert await box(Runtime([missing] * 3)).read("/x", size=5) is None
+    short = Runtime([b"pat", b"patch"])
+    assert await box(short).read("/x", size=5) == b"patch" and short.reads == 2
+    assert await box(Runtime([b"pat", b"pat", b"patch!"])).read("/x", size=5) is None
+    assert await box(Runtime([b"patch"])).read("/x") == b"patch", "no size: one read"
+    gone = Runtime([SandboxGoneError("read '/x': box box-1 lost its placement")])
+    with pytest.raises(InfraError, match="lost its placement"):
+        await box(gone).read("/x", size=5)
+    assert gone.reads == 1
 
 
 async def test_a_subprocess_box_runs_reads_and_writes(tmp_path):
     """The durable layer over a real subprocess runtime: a command's exit code and
-    output, a file written and read, a missing path None."""
-    async with durable.provisioned(
-        lambda: provision_runtime(SubprocessConfig())
-    ) as runtime:
+    output, a file written and read (whole, by size), a missing path None."""
+    async with provision_runtime(SubprocessConfig()) as runtime:
         bare = Box(runtime, str(tmp_path), home=str(tmp_path / ".box"))
         assert await bare.run("echo hi; echo err >&2; exit 4") == (4, "hi\nerr\n")
         assert await bare.run("echo $VF_A-$VF_B", env={"VF_A": "a", "VF_B": "b c"}) == (
             0,
             "a-b c\n",
         )
-        await bare.write(str(tmp_path / "f.sh"), "echo ran", mode="755")
-        assert await bare.run("./f.sh") == (0, "ran\n")
-        assert await bare.read(str(tmp_path / "f.sh")) == b"echo ran"
+        await bare.write(str(tmp_path / "f.sh"), "echo ran")
+        assert await bare.run("bash f.sh") == (0, "ran\n")
+        assert await bare.read(str(tmp_path / "f.sh"), size=8) == b"echo ran"
         assert await bare.read(str(tmp_path / "missing")) is None
         assert (tmp_path / ".box" / "tmp").is_dir()
         with pytest.raises(InfraError, match="write .* failed"):

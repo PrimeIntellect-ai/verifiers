@@ -6,17 +6,16 @@ belongs here, beside the read-back; a read or write is retried by the runtime it
 `PrimeConfig.outage_budget_s`); an upload the platform dropped is sent again; a large
 file is read in parts. Every command has a bound (`op_timeout` when the caller gives
 none). Any fault the layer gives up on is an `InfraError` with the typed fault as its
-cause. `provisioned` enters a provisioning context and types its fault the same way."""
+cause; an operation that hangs is told apart by one probe of the box (`hung`: the box
+answers, the command's own hang; else the platform's)."""
 
 import asyncio
-import contextlib
 import logging
 import shlex
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Any, ClassVar
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from verifiers.v1.errors import (
     RolloutError,
@@ -53,15 +52,22 @@ hung; the bound of a command run without one."""
 OUTAGE_BUDGET = 600
 """Seconds an exec whose reply the platform lost is held and sent again before the
 error reaches its caller."""
+PROBE_S = 30.0
+"""Seconds the box gets to answer the probe at a hung operation."""
+FILED_READS = 3
+"""Times a file an exec just filed is read before a short or missing answer is final."""
 
 
 class InfraError(RolloutError):
     """The machinery's own fault around a box: an operation the durable layer gave up on
     (its outage budget spent, a hang past its bound, a transport that failed twice),
-    with the typed fault as its cause; `retryable` False marks a subclass that is a
-    verdict about the work, never a transient fault."""
+    with the typed fault as its cause. `hung`: the operation hung while the box answered
+    a probe, so the hang is the command's own (an infinite loop, a server left in the
+    foreground), not the platform's."""
 
-    retryable: ClassVar[bool] = True
+    def __init__(self, message: str = "", *, hung: bool = False) -> None:
+        super().__init__(message)
+        self.hung = hung
 
 
 class Box:
@@ -93,7 +99,8 @@ class Box:
 
     async def _op(self, what: str, seconds: float | None, op: Callable[[], Any]) -> Any:
         """One operation within `seconds`; a fault is an `InfraError`, the typed fault
-        its cause; none is started on a runtime whose teardown began."""
+        its cause (a hang past `seconds` probed, `_hung`); none is started on a runtime
+        whose teardown began."""
         check_cancelled()
         if self.runtime.stopped:
             raise InfraError(f"{what} refused: box {self.id} is closing")
@@ -101,16 +108,26 @@ class Box:
             async with asyncio.timeout(seconds) as clock:
                 return await op()
         except TimeoutError as e:
-            raise InfraError(
-                f"{what} hung past {seconds}s (platform-side); abandoned"
-            ) from e
+            raise await self._hung(f"{what} hung past {seconds}s") from e
         except SandboxError as e:
             check_cancelled()
             if clock.expired():
-                raise InfraError(
-                    f"{what} hung past {seconds}s (platform-side); abandoned"
-                ) from e
+                raise await self._hung(f"{what} hung past {seconds}s") from e
             raise InfraError(f"{what} failed: {e}") from e
+
+    async def _hung(self, message: str) -> InfraError:
+        """The fault of an operation that hung, after one probe of the box within
+        `PROBE_S`: a box that answers makes the hang the command's own (`hung`); one
+        that is gone, refuses or stays silent makes it the platform's."""
+        check_cancelled()
+        try:
+            async with asyncio.timeout(PROBE_S):
+                answers = await self.runtime.alive()
+        except (SandboxError, TimeoutError):
+            answers = False
+        if answers:
+            return InfraError(f"{message} while the box answers", hung=True)
+        return InfraError(f"{message} and the box does not answer; abandoned")
 
     async def run(
         self,
@@ -171,7 +188,7 @@ class Box:
                 rc, out = filed
                 break
             if polled is not None:
-                raise InfraError(
+                raise await self._hung(
                     f"exec: the status poll timed out and no exit code was filed within {bound}s: {polled}"
                 ) from polled
             if lost is not None:
@@ -214,21 +231,30 @@ class Box:
                 return None
             await asyncio.sleep(POLL_S)
 
-    async def read(self, path: str) -> bytes | None:
+    async def read(self, path: str, size: int | None = None) -> bytes | None:
         """The file's bytes, or None when the box answered that it has no such path; a
         box that is gone (a `SandboxGoneError`: its placement lost, terminated) is the
         fault, never None (r8 20:55: a lost box read as "no such path" for a file that
-        stood, and the caller polled a box that would never answer)."""
-        try:
-            return await self._op(
-                f"read {path}", self.op_timeout, lambda: self.runtime.read(path)
-            )
-        except InfraError as e:
-            if isinstance(e.__cause__, SandboxNotFoundError) and not isinstance(
-                e.__cause__, SandboxGoneError
-            ):
-                return None
-            raise
+        stood, and the caller polled a box that would never answer). With `size`, the
+        bytes an exec just filed (its `stat`'s): a read that answers short or None is
+        asked again, `FILED_READS` in all `POLL_S` apart, before None is the answer (r8
+        01:51: a bundle read short unbundled as `premature end of pack file`)."""
+        for tried in range(1, (FILED_READS if size is not None else 1) + 1):
+            try:
+                data = await self._op(
+                    f"read {path}", self.op_timeout, lambda: self.runtime.read(path)
+                )
+            except InfraError as e:
+                if not isinstance(e.__cause__, SandboxNotFoundError) or isinstance(
+                    e.__cause__, SandboxGoneError
+                ):
+                    raise
+                data = None
+            if size is None or (data is not None and len(data) == size):
+                return data
+            if tried < FILED_READS:
+                await asyncio.sleep(POLL_S)
+        return None
 
     async def read_big(self, path: str, size: int) -> bytes:
         """A file of `size` bytes, in parts when it is larger than one transport call
@@ -279,34 +305,8 @@ class Box:
                     raise
                 await asyncio.sleep(3)
 
-    async def write(self, path: str, content: str, mode: str = "644") -> None:
+    async def write(self, path: str, content: str) -> None:
         await self.write_bytes(path, content.encode())
-        if mode != "644":
-            rc, out = await self.run(f"chmod {mode} {shlex.quote(path)}", cwd="/")
-            if rc != 0:
-                raise InfraError(f"chmod {path} failed: {out}")
 
 
-Provisioning = Callable[[], AbstractAsyncContextManager[Runtime]]
-"""What provisions one box: a fresh provisioning context each time it is called
-(`lambda: agent.provision(task)`, `lambda: provision_runtime(config)`)."""
-
-
-@asynccontextmanager
-async def provisioned(open: Provisioning) -> AsyncIterator[Runtime]:
-    """The runtime `open` provisions, for the block; a sandbox fault at provisioning (the
-    runtime's own bound `create_timeout_s` and hold `outage_budget_s` spent, a refused
-    create) is an `InfraError`, telling it from a fault of the block; the provisioning
-    context is left as `open` decides."""
-    cm = open()
-    try:
-        runtime = await cm.__aenter__()
-    except SandboxError as e:
-        check_cancelled()
-        raise InfraError(f"box provisioning failed: {e}") from e
-    async with contextlib.AsyncExitStack() as stack:
-        stack.push_async_exit(cm)
-        yield runtime
-
-
-__all__ = ["Box", "InfraError", "Provisioning", "provisioned"]
+__all__ = ["Box", "InfraError"]

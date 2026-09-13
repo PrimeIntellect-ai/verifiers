@@ -5,7 +5,6 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
-import asyncio
 import subprocess
 import sys
 
@@ -781,10 +780,10 @@ async def test_replay_round_trip(run_v1, tmp_path):
     assert '"answer"' in raw
 
 
-async def test_interception_client_and_bearer_hooks():
-    """`wrap_client` decorates the server-owned client a session is assigned; `session_of`
-    resolves a bearer a subclass's route received (model or state secret) and adopts the
-    handler task."""
+async def test_interception_client_hook_and_loopback_url():
+    """`wrap_client` decorates the server-owned client a session is assigned; `register`
+    stamps the server's loopback URL on the session (for a harness whose model loop runs
+    in this process)."""
     from verifiers.v1.clients import ModelContext
     from verifiers.v1.clients.client import Client
     from verifiers.v1.interception.server import InterceptionServer
@@ -807,17 +806,9 @@ async def test_interception_client_and_bearer_hooks():
         agent=vf.AgentInfo(config=vf.AgentConfig(model="m", client=config)),
     )
     session = RolloutSession(ctx=ModelContext(model="m", client=config), trace=trace)
-    async with CustomServer() as server:
-        async with server.acquire(session) as (_, model_secret, state_secret):
-            assert isinstance(session.client, Wrapped)
-            assert session.client.client is next(iter(server.clients.values()))
-            assert session.client.config == config
-
-            async def resolve(bearer):  # a handler task: adopted, cancelled at release
-                return server.session_of(bearer), asyncio.current_task()
-
-            found, task = await asyncio.create_task(resolve(model_secret))
-            assert found is session and task in session.tasks
-            assert (await asyncio.create_task(resolve(state_secret)))[0] is session
-            assert (await asyncio.create_task(resolve("nobody")))[0] is None
-        assert (await asyncio.create_task(resolve(model_secret)))[0] is None
+    assert session.local_url is None
+    async with CustomServer() as server, server.acquire(session) as (base_url, _, _):
+        assert isinstance(session.client, Wrapped)
+        assert session.client.client is next(iter(server.clients.values()))
+        assert session.client.config == config
+        assert session.local_url == f"http://127.0.0.1:{server.port}" == base_url

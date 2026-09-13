@@ -130,6 +130,10 @@ class RolloutSession:
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
     multiplexes shares one keepalive connection pool instead of opening its own."""
+    local_url: str | None = None
+    """The interception server's URL on this host's loopback, assigned at `register`: where
+    a harness whose model loop runs in this process posts, while the slot's `base_url` (a
+    tunnel behind a remote runtime) stays the box's."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary

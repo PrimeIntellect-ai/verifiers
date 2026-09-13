@@ -274,20 +274,11 @@ class InterceptionServer(Interception):
         a decorator is not."""
         return client
 
-    def session_of(self, bearer: str) -> RolloutSession | None:
-        """The session behind a bearer a subclass's own route received: its model secret
-        (what the program in the box holds) or its state secret; None for neither. The
-        handler task is adopted, so a rollout that concludes cancels it before a late reply
-        lands on the sealed trace."""
-        session = self.sessions.get(bearer) or self.state_sessions.get(bearer)
-        if session is not None:
-            session.adopt(asyncio.current_task())
-        return session
-
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
-        assign the session its server-owned model client."""
+        assign the session its server-owned model client and this server's loopback URL."""
         session.client = self._client(session.ctx.client)
+        session.local_url = f"http://127.0.0.1:{self.port}"
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session

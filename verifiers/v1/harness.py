@@ -290,6 +290,10 @@ class HarnessSession:
         self.mcp_urls = mcp_urls
         self.data = data
         self.tool_interception_url = tool_interception_url
+        self.local_endpoint: str | None = None
+        """The model endpoint at the interception's loopback (`RolloutSession.local_url`),
+        assigned by the rollout: for a harness whose model loop runs in this process;
+        `endpoint` stays what the box reaches."""
         self._closed = False
 
     async def turn(self, messages: Messages | None = None) -> None:

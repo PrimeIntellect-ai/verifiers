@@ -333,6 +333,10 @@ class Rollout:
                         harness_data,
                         **session_kwargs,
                     )
+                    if self._session.local_url is not None:
+                        self._harness_session.local_endpoint = (
+                            f"{self._session.local_url}/v1"
+                        )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False

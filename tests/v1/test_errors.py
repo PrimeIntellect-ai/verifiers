@@ -160,19 +160,6 @@ def test_error_code_comes_from_the_class_and_round_trips():
     assert vf.Error(type="SandboxError", message="an old record").code is None
 
 
-def test_retry_policy_matches_the_error_family():
-    unavailable = vf.Error(type="SandboxUnavailableError", message="m")
-    denied = vf.Error(type="SandboxDeniedError", message="m")
-    assert _retryable(unavailable, vf.RetryConfig(include=["SandboxError"]))
-    assert not _retryable(
-        denied, vf.RetryConfig(include=["SandboxError"], exclude=["SandboxDeniedError"])
-    )
-    assert not _retryable(unavailable, vf.RetryConfig(include=["SandboxDeniedError"]))
-    unknown = vf.Error(type="ValueError", message="m")
-    assert _retryable(unknown, vf.RetryConfig(include=["ValueError"]))
-    assert not _retryable(unknown, vf.RetryConfig(include=["Exception"]))
-
-
 async def test_subprocess_missing_path_is_not_found(tmp_path):
     runtime = SubprocessRuntime(SubprocessConfig())
     runtime.workdir = tmp_path
@@ -236,4 +223,4 @@ def test_the_agent_timeout_is_typed_on_the_trace():
         "HarnessTimeoutError",
         "agent_timeout",
     )
-    assert _retryable(trace.last_error, vf.RetryConfig(include=["HarnessError"]))
+    assert _retryable(trace.last_error, vf.RetryConfig(include=["HarnessTimeoutError"]))
