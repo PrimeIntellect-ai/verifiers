@@ -1,10 +1,12 @@
-"""A task-building flywheel as a flow: build → (lint, tests, N solves) → review → decide.
+"""A task-building flywheel as a flow: build → (lint, selftest, N solves) → review → decide.
 
     uv run python -m verifiers.v1.flow check examples.flow.flywheel:Flywheel
     uv run python -m verifiers.v1.flow run examples.flow.flywheel:Flywheel rows.jsonl runs/demo config.json
 
-`rows.jsonl` holds one `{"repo": ..., "brief": ...}` per line; `config.json` pins the
-model and, for a real run, `{"type": "prime", "vm": true}` runtimes on the seats.
+`rows.jsonl` holds one `{"brief": ...}` per line; `config.json` pins the model and,
+for a real run, `{"type": "prime", "vm": true}` runtimes on the seats. Lint, selftest
+and review run in the builder's live runtime; solvers get fresh runtimes and pull the
+builder's tree in `SolveTask.setup` however the taskset chooses (git, tarball, image).
 """
 
 from typing import Literal
@@ -62,7 +64,7 @@ class BuildTask(FlowTask[BriefData]):
 
 
 class SolveTask(FlowTask[BriefData]):
-    """A solver attempt; scored by the task's own hidden test."""
+    """A solver attempt in a fresh runtime; scored by the task's own hidden test."""
 
     @classmethod
     def from_build(cls, up: Upstream, item: int) -> "SolveTask":
@@ -83,17 +85,17 @@ class SolveTask(FlowTask[BriefData]):
 
 
 class ReviewTask(FlowTask[BriefData]):
-    """The reviewer reads lint output, the test transcript and the solve rate, then decides."""
+    """The reviewer sees the lint and self-test exit codes and the solve rate, then decides."""
 
     @classmethod
     def from_upstream(cls, up: Upstream) -> "ReviewTask":
-        rate = up.aggregate.pass_rate
         return cls(
             BriefData(
                 workdir=WORKDIR,
                 prompt=(
                     f"Review the task in {WORKDIR}. Lint exit code: {up.lint.exit_code}. "
-                    f"Self-test exit code: {up.selftest.exit_code}. Solver pass rate: {rate:.2f}. "
+                    f"Self-test exit code: {up.selftest.exit_code}. "
+                    f"Solver pass rate: {up.aggregate['pass_rate']:.2f}. "
                     "Call submit_outcome with accept, revise, or reject."
                 ),
             )
@@ -114,32 +116,26 @@ class Flywheel(Flow[FlywheelConfig]):
     build = agent(
         "builder",
         BuildTask.from_row,
-        workdir=WORKDIR,
-        snapshot="git",
         outcomes={"ready": ("lint", "selftest", "solve"), "blocked": END},
         max_visits=3,
         on_exhausted=END,
     )
     lint = run(
-        ["sh", "-c", "test -s README.md"],
-        runtime="fork:build",
-        workdir=WORKDIR,
+        ["sh", "-c", f"cd {WORKDIR} && test -s README.md"],
+        runtime="inherit:build",
         exit_codes={0: "ok", "*": "bad"},
-        outcomes={"ok": "review", "bad": "review"},
+        outcomes={"*": "review"},
     )
     selftest = run(
-        ["sh", "-c", "test -x tests/test.sh || test -f tests/test.sh"],
-        runtime="fork:build",
-        workdir=WORKDIR,
+        ["sh", "-c", f"cd {WORKDIR} && test -f tests/test.sh"],
+        runtime="inherit:build",
         exit_codes={0: "ok", "*": "bad"},
-        outcomes={"ok": "review", "bad": "review"},
+        outcomes={"*": "review"},
     )
     solve = expand(
         "solver",
         SolveTask.from_build,
         over=lambda up: range(up.config.n_rollouts),
-        runtime="fork:build",
-        workdir=WORKDIR,
         max_active=2,
         join=at_least(2),
         then="aggregate",
@@ -148,15 +144,7 @@ class Flywheel(Flow[FlywheelConfig]):
     review = agent(
         "reviewer",
         ReviewTask.from_upstream,
-        runtime="fork:build",
-        workdir=WORKDIR,
+        runtime="inherit:build",
         outcomes={"accept": "decide", "revise": "build", "reject": END},
-        max_visits=3,
-        on_exhausted=END,
     )
-    decide = fn(
-        decide,
-        outcomes={"ship": END, "rework": "build"},
-        max_visits=3,
-        on_exhausted=END,
-    )
+    decide = fn(decide, outcomes={"ship": END, "rework": "build"})

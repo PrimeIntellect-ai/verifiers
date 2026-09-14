@@ -23,7 +23,7 @@ class FlowConfig(BaseConfig):
     client: ClientConfig | None = None
     """Endpoint for seats that pin none."""
     max_concurrent_rows: int = 4
-    pools: dict[str, int] = Field(default_factory=lambda: {"sandboxes": 8})
+    pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
     """Named capacity pools: max concurrently running node instances per pool."""
 
 

@@ -1,5 +1,5 @@
-"""The walker: one row at a time, ready nodes run under pools, every instance lands in
-the ledger, sandbox state moves between nodes as git snapshots or a held live box."""
+"""The walker: one row at a time, ready nodes run under pools, every node instance
+lands in the ledger, and a node may run in the live runtime an earlier node used."""
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ from verifiers.v1.flow.nodes import (
 )
 from verifiers.v1.flow.outcome import FlowTaskConfig, outcome_of
 from verifiers.v1.flow.pools import Pools
-from verifiers.v1.flow.snapshot import GitBus, SnapshotRef
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_runtime
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -48,7 +47,6 @@ class RunResult(BaseModel):
     stdout: str
     stderr: str
     outcome: str
-    files: dict[str, str] = {}
 
 
 class EvalResult(BaseModel):
@@ -59,7 +57,8 @@ class EvalResult(BaseModel):
 
 
 class Upstream:
-    """What a node sees of the row: prior results by node name, their outcomes, the row, the config."""
+    """What a node sees of its row: finished results by node name, their outcomes,
+    the input row and the flow config."""
 
     def __init__(
         self,
@@ -106,17 +105,14 @@ class _Done:
 
 
 class Engine:
-    def __init__(
-        self, flow: Flow, run_dir: Path, *, pools: Pools | None = None
-    ) -> None:
-        self.flow = flow
+    def __init__(self, flow: Flow, run_dir: Path) -> None:
         self.graph: Graph = flow.graph
         self.config = flow.config
         self.run_dir = run_dir
         run_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(run_dir)
-        self.pools = pools or Pools(self.config.pools)
-        self.bus = GitBus(run_dir / "repo.git")
+        self.pools = Pools(self.config.pools)
+        # Any change to the graph shape or the config invalidates every ledger key.
         self.identity = digest(
             self.graph.structural_hash(), self.config.model_dump(mode="json")
         )[:16]
@@ -155,7 +151,7 @@ class _Row:
         self.pending: set[str] = set()
         self.running: dict[asyncio.Task, str] = {}
         self.done: dict[str, _Done] = {}
-        self.boxes: dict[str, Runtime] = {}
+        self.runtimes: dict[str, Runtime] = {}  # live runtimes other nodes inherit
         self.stack = AsyncExitStack()
         self.error: str | None = None
 
@@ -220,6 +216,8 @@ class _Row:
                 self.running[task] = name
 
     def _ready(self, name: str) -> bool:
+        """A join fires per its policy over predecessors that have fired; a
+        predecessor that no live node can still reach counts as dead, not awaited."""
         preds = self.g.preds.get(name, set())
         if not preds:
             return True
@@ -240,15 +238,9 @@ class _Row:
         self.done[name] = done
         node = self.g.nodes[name]
         if done.failed:
-            self._route(
-                node, node.on_error, "error", done.record.error or "node failed"
-            )
+            self._route(node, node.on_error, "error", done.record.error or "failed")
         elif node.outcomes is not None:
-            target = (
-                node.outcomes.get(done.outcome or "")
-                or node.outcomes.get("*")
-                or node.on_unmatched
-            )
+            target = node.outcomes.get(done.outcome or "") or node.outcomes.get("*")
             self._route(
                 node, target, done.outcome, f"unmatched outcome {done.outcome!r}"
             )
@@ -294,7 +286,7 @@ class _Row:
         error: str | None = None
         for attempt in range(1, node.retries + 2):
             try:
-                outcome, value, extra = await self._run_kind(node, visit, up, key)
+                outcome, value, extra = await self._run_kind(node, visit, up)
                 record = self._record(
                     node,
                     visit,
@@ -377,14 +369,14 @@ class _Row:
         return record.payload
 
     async def _run_kind(
-        self, node: Node, visit: int, up: Upstream, key: str
+        self, node: Node, visit: int, up: Upstream
     ) -> tuple[str | None, Any, dict]:
         if isinstance(node, AgentNode):
-            return await self._run_agent(node, visit, up)
+            return await self._run_agent(node, up)
         if isinstance(node, ExpandNode):
             return await self._run_expand(node, visit, up)
         if isinstance(node, RunNode):
-            return await self._run_command(node, visit, up, key)
+            return await self._run_command(node, visit)
         if isinstance(node, FnNode):
             return await self._run_fn(node, up)
         if isinstance(node, EvalNode):
@@ -394,27 +386,21 @@ class _Row:
     # -- kinds ----------------------------------------------------------------------
 
     async def _run_agent(
-        self, node: AgentNode, visit: int, up: Upstream
+        self, node: AgentNode, up: Upstream
     ) -> tuple[str | None, Trace, dict]:
-        allowed = list(node.outcomes or {})
-        allowed = [name for name in allowed if name != "*"]
+        allowed = [name for name in node.outcomes or {} if name != "*"]
         task = node.make_task(up)
         self._declare_outcomes(node, task, allowed)
-        trace, snapshot, box_id = await self._rollout(node, task, visit=visit)
-        if allowed:
-            outcome, summary = outcome_of(trace, allowed)
-        else:
-            outcome, summary = "completed", ""
+        trace = await self._rollout(node, task)
+        if not trace.ok:
+            raise FlowError(
+                [f"{node.name}: rollout failed: {[e.message for e in trace.errors]}"]
+            )
+        outcome, summary = outcome_of(trace, allowed) if allowed else ("completed", "")
         return (
             outcome,
             trace,
-            {
-                "summary": summary,
-                "trace_id": trace.id,
-                "reward": trace.reward,
-                "snapshot": snapshot,
-                "box_id": box_id,
-            },
+            {"summary": summary, "trace_id": trace.id, "reward": trace.reward},
         )
 
     async def _run_expand(
@@ -430,30 +416,23 @@ class _Row:
                 if (
                     existing
                     and existing.terminal == "completed"
-                    and (t := self.e.ledger.trace(existing.trace_id or ""))
+                    and (trace := self.e.ledger.trace(existing.trace_id or ""))
                 ):
-                    return i, t  # type: ignore[return-value]
-                task = node.make_task(up, item)
-                trace, _, box_id = await self._rollout(node, task, visit=visit, index=i)
+                    return i, trace  # type: ignore[return-value]
+                trace = await self._rollout(node, node.make_task(up, item))
                 if not trace.ok:
-                    raise FlowError(
-                        [
-                            f"{node.name}[{i}]: rollout failed: {[e.message for e in trace.errors]}"
-                        ]
-                    )
-                self.e.ledger.put(
-                    self._record(
-                        node,
-                        visit,
-                        None,
-                        [],
-                        terminal="completed",
-                        outcome="completed",
-                        trace_id=trace.id,
-                        reward=trace.reward,
-                        box_id=box_id,
-                    ).model_copy(update={"index": i})
+                    raise FlowError([f"{node.name}[{i}]: rollout failed"])
+                record = self._record(
+                    node,
+                    visit,
+                    None,
+                    [],
+                    terminal="completed",
+                    outcome="completed",
+                    trace_id=trace.id,
+                    reward=trace.reward,
                 )
+                self.e.ledger.put(record.model_copy(update={"index": i}))
                 return i, trace
 
         tasks = [asyncio.create_task(one(i, item)) for i, item in enumerate(items)]
@@ -480,73 +459,55 @@ class _Row:
         return "completed", traces, {"trace_ids": [t.id for t in traces]}
 
     async def _run_command(
-        self, node: RunNode, visit: int, up: Upstream, key: str
+        self, node: RunNode, visit: int
     ) -> tuple[str | None, RunResult, dict]:
-        outcome_file = f"/tmp/flow-outcome-{key[:12]}.json"
+        outcome_file = f"/tmp/flow-outcome-{self.key}-{node.name}-{visit}.json"
         async with self.e.pools.hold(node.pools), AsyncExitStack() as local:
-            box, workdir = await self._box(node, local, task=None)
-            env = {**node.env, "FLOW_OUTCOME": outcome_file}
-            argv = node.argv
-            if workdir:
-                argv = ["sh", "-c", 'cd "$0" && exec "$@"', workdir, *argv]
-            result = await box.run(argv, env)
+            runtime = await self._runtime(node, local)
+            result = await runtime.run(
+                node.argv, {**node.env, "FLOW_OUTCOME": outcome_file}
+            )
             outcome = await self._command_outcome(
-                box, node, result.exit_code, outcome_file
+                runtime, node, result.exit_code, outcome_file
             )
-            files = {}
-            for path in node.collect:
-                try:
-                    files[path] = (await box.read(path)).decode(errors="replace")
-                except Exception as exc:  # noqa: BLE001 — a missing declared file is reported in the record
-                    files[path] = f"<unreadable: {exc}>"
-            if node.outcomes is None and result.exit_code != 0:
-                raise FlowError(
-                    [
-                        f"{node.name}: exit {result.exit_code}: {result.stderr.strip()[-500:]}"
-                    ]
-                )
-            snapshot = (
-                await self._snapshot(node, box, workdir, visit)
-                if node.snapshot
-                else None
+        if node.outcomes is None and result.exit_code != 0:
+            raise FlowError(
+                [
+                    f"{node.name}: exit {result.exit_code}: {result.stderr.strip()[-500:]}"
+                ]
             )
-            box_id = self._hold(node, box, local)
         value = RunResult(
             exit_code=result.exit_code,
             stdout=result.stdout,
             stderr=result.stderr,
             outcome=outcome,
-            files=files,
         )
-        return outcome, value, {"snapshot": snapshot, "box_id": box_id}
+        return outcome, value, {}
 
     async def _command_outcome(
-        self, box: Runtime, node: RunNode, exit_code: int, outcome_file: str
+        self, runtime: Runtime, node: RunNode, exit_code: int, outcome_file: str
     ) -> str:
         try:
-            written = json.loads((await box.read(outcome_file)).decode())
+            written = json.loads((await runtime.read(outcome_file)).decode())
         except Exception:  # noqa: BLE001 — no outcome file: the exit-code map decides
             written = None
         if isinstance(written, dict) and isinstance(written.get("outcome"), str):
             return written["outcome"]
         codes = node.exit_codes
+        fallback = "completed" if exit_code == 0 else "failed"
         return (
             codes.get(exit_code)
             or codes.get(str(exit_code))
             or codes.get("*")
-            or ("completed" if exit_code == 0 else "failed")
+            or fallback
         )
 
     async def _run_fn(self, node: FnNode, up: Upstream) -> tuple[str | None, Any, dict]:
         value = node.func(up)
         if inspect.isawaitable(value):
             value = await value
-        outcome = (
-            value
-            if node.outcomes is not None and isinstance(value, str)
-            else "completed"
-        )
-        return outcome, value, {}
+        routes = node.outcomes is not None and isinstance(value, str)
+        return (value if routes else "completed"), value, {}
 
     async def _run_eval(
         self, node: EvalNode, visit: int, up: Upstream
@@ -557,35 +518,28 @@ class _Row:
         cfg = node.config(up) if callable(node.config) else node.config
         if isinstance(cfg, dict):
             cfg = EvalConfig.model_validate(cfg)
-        cfg = cfg.model_copy(
-            update={"output_dir": str(self.e.run_dir / "eval" / f"{node.name}@{visit}")}
-        )
+        output_dir = str(self.e.run_dir / "eval" / f"{node.name}@{visit}")
+        cfg = cfg.model_copy(update={"output_dir": output_dir})
         async with self.e.pools.hold(node.pools):
             try:
                 episodes = await run_eval(cfg)
             except Exception:  # infra failure is a routable outcome when declared
                 if node.outcomes and "infra_failed" in node.outcomes:
-                    return (
-                        "infra_failed",
-                        EvalResult(
-                            episodes=0,
-                            ok=0,
-                            mean_reward=None,
-                            output_dir=cfg.output_dir,
-                        ),
-                        {},
+                    empty = EvalResult(
+                        episodes=0, ok=0, mean_reward=None, output_dir=output_dir
                     )
+                    return "infra_failed", empty, {}
                 raise
         rewards = [t.reward for ep in episodes for t in ep.traces if t.ok]
         value = EvalResult(
             episodes=len(episodes),
             ok=sum(ep.ok for ep in episodes),
             mean_reward=sum(rewards) / len(rewards) if rewards else None,
-            output_dir=str(cfg.output_dir),
+            output_dir=output_dir,
         )
         return "completed", value, {"reward": value.mean_reward}
 
-    # -- boxes, rollouts, snapshots ---------------------------------------------------
+    # -- runtimes -------------------------------------------------------------------
 
     def _declare_outcomes(self, node: Node, task: Task, allowed: list[str]) -> None:
         if not allowed:
@@ -598,126 +552,57 @@ class _Row:
             )
         task.config = task.config.model_copy(update={"outcomes": allowed})
 
-    async def _rollout(
-        self,
-        node: AgentNode | ExpandNode,
-        task: Task,
-        *,
-        visit: int,
-        index: int | None = None,
-    ) -> tuple[Trace, SnapshotRef | None, str | None]:
+    async def _rollout(self, node: AgentNode | ExpandNode, task: Task) -> Trace:
+        """Run the seat on `task`, in its own runtime unless the node inherits one
+        or a later node inherits this one's."""
         agent = make_agent(self.e.seat(node.seat))
-        held = node.name in self.g.held
         async with agent, self.e.pools.hold(node.pools), AsyncExitStack() as local:
-            if node.runtime_ref is None and not node.snapshot and not held:
+            if node.inherits is None and node.name not in self.g.held:
                 trace = await agent.run(task)
-                box, workdir = None, None
             else:
-                box, workdir = await self._box(node, local, task=task, agent=agent)
-                trace = await agent.run(task, runtime=box)
-            if not trace.ok and index is None:
-                raise FlowError(
-                    [
-                        f"{node.name}: rollout failed: {[e.message for e in trace.errors]}"
-                    ]
-                )
-            snapshot = (
-                await self._snapshot(node, box, workdir, visit, index)
-                if node.snapshot and box
-                else None
-            )
-            box_id = self._hold(node, box, local) if box else None
+                runtime = await self._runtime(node, local, agent=agent, task=task)
+                trace = await agent.run(task, runtime=runtime)
         await self.e.ledger.append(trace, env=self.g.name)
-        return trace, snapshot, box_id
+        return trace
 
-    async def _box(
-        self, node: Node, local: AsyncExitStack, *, task: Task | None, agent: Any = None
-    ) -> tuple[Runtime, str | None]:
-        """The box a node runs in: a held live box, a fresh box restored from a
-        snapshot, or a fresh box from the node's or seat's runtime config."""
-        ref = node.runtime_ref
-        if ref and ref[0] == "inherit":
-            box = self.boxes.get(ref[1])
-            if box is None:
+    async def _runtime(
+        self,
+        node: Node,
+        local: AsyncExitStack,
+        *,
+        agent: Any = None,
+        task: Task | None = None,
+    ) -> Runtime:
+        """The runtime a node runs in: an inherited live one, or a fresh one that
+        lives for the node, or for the row when a later node inherits it."""
+        if node.inherits is not None:
+            runtime = self.runtimes.get(node.inherits)
+            if runtime is None:
                 raise FlowError(
                     [
-                        f"{node.name}: inherit:{ref[1]} but its box is not live (resume needs attach)"
+                        f"{node.name}: inherit:{node.inherits} but its runtime is not live"
                     ]
                 )
-            return box, self._workdir(node, box, task)
-        stack = self.stack if node.name in self.g.held else local
+            return runtime
+        held = node.name in self.g.held
+        stack = self.stack if held else local
         if agent is not None:
-            box = await stack.enter_async_context(agent.provision(task))
+            runtime = await stack.enter_async_context(agent.provision(task))
         else:
-            box = await stack.enter_async_context(
+            runtime = await stack.enter_async_context(
                 provision_runtime(self._runtime_config(node))
             )
-        workdir = self._workdir(node, box, task)
-        if ref and ref[0] == "fork":
-            snap = self.done[ref[1]].record.snapshot
-            if snap is None:
-                raise FlowError(
-                    [f"{node.name}: fork:{ref[1]} but it recorded no snapshot"]
-                )
-            if workdir is None:
-                raise FlowError(
-                    [
-                        f"{node.name}: fork needs a workdir (node.workdir or the runtime's)"
-                    ]
-                )
-            await self.e.bus.restore(box, snap, workdir=workdir)
-        return box, workdir
+        if held:
+            self.runtimes[node.name] = runtime
+        return runtime
 
     def _runtime_config(self, node: Node) -> RuntimeConfig:
         if not isinstance(node.runtime, str):
             return node.runtime
-        ref = node.runtime_ref
-        if ref:
-            return self._runtime_config(self.g.nodes[ref[1]])
         seat = getattr(node, "seat", None)
         if seat:
             return self.e.seat(seat).runtime
         raise FlowError([f"{node.name}: no runtime config to provision from"])
-
-    def _workdir(self, node: Node, box: Runtime, task: Task | None) -> str | None:
-        return (
-            node.workdir
-            or (task.data.workdir if task else None)
-            or getattr(box.config, "workdir", None)
-        )
-
-    async def _snapshot(
-        self,
-        node: Node,
-        box: Runtime,
-        workdir: str | None,
-        visit: int,
-        index: int | None = None,
-    ) -> SnapshotRef:
-        if workdir is None:
-            raise FlowError(
-                [
-                    f"{node.name}: snapshot needs a workdir (node.workdir or the runtime's)"
-                ]
-            )
-        ref = f"refs/heads/flow/{self.key}/{node.name}@{visit}" + (
-            f".{index}" if index is not None else ""
-        )
-        base = None
-        if (
-            (r := node.runtime_ref)
-            and (prev := self.done.get(r[1]))
-            and prev.record.snapshot
-        ):
-            base = prev.record.snapshot.head_sha
-        return await self.e.bus.snapshot(box, workdir=workdir, ref=ref, base_sha=base)
-
-    def _hold(self, node: Node, box: Runtime, local: AsyncExitStack) -> str | None:
-        if node.name in self.g.held:
-            self.boxes[node.name] = (
-                box  # provisioned on the row stack; lives until the row ends
-            )
-        return getattr(box.info, "id", None)
 
 
 def _payload(value: Any) -> Any:

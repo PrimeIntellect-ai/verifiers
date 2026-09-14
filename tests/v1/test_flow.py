@@ -1,5 +1,5 @@
 """The flow engine on model-free nodes: compile checks, routing, fan-out and joins,
-bounded cycles, ledger resume, command nodes, and the git state bus."""
+bounded cycles, ledger resume, and command nodes."""
 
 from typing import Literal
 
@@ -8,8 +8,6 @@ from pydantic import BaseModel
 
 import verifiers.v1 as vf
 from verifiers.v1.flow import END, Engine, Flow, FlowError, Upstream, at_least, fn, run
-from verifiers.v1.flow.snapshot import GitBus, SnapshotError
-from verifiers.v1.runtimes import provision_runtime
 
 
 def noop(up: Upstream) -> None:
@@ -46,12 +44,13 @@ def test_compile_rejects_cycle_without_max_visits():
             a = fn(noop, outcomes={"again": "a", "done": END})
 
 
-def test_compile_rejects_fork_of_unsnapshotted_node_and_boxless_run():
-    with pytest.raises(FlowError, match="declares no snapshot"):
+def test_compile_checks_inherited_runtimes():
+    with pytest.raises(FlowError, match="not on every path"):
 
         class Bad(Flow):
-            a = run(["true"], runtime=vf.SubprocessConfig(), then="b")
-            b = run(["true"], runtime="fork:a")
+            a = fn(noop, outcomes={"x": "b", "y": "c"})
+            b = run(["true"], runtime=vf.SubprocessConfig(), then="c")
+            c = run(["true"], runtime="inherit:b")
 
     with pytest.raises(FlowError, match="run node needs a runtime"):
 
@@ -106,7 +105,7 @@ async def test_walk_routes_fans_out_joins_bounds_cycles_and_resumes(tmp_path):
         right = fn(right_fn, outcomes={"skip": END, "go": "merge"})
         merge = fn(
             merge_fn, then="loop"
-        )  # all-join: waits for left, sees right end without firing
+        )  # all-join: left fires, right ends without firing
         loop = fn(
             loop_fn,
             outcomes={"again": "loop", "done": END},
@@ -145,7 +144,8 @@ async def test_at_least_join_fires_before_all_predecessors(tmp_path):
         a = fn(const("a"), then="pick")
         b = fn(const("b"), then="pick")
         pick = fn(
-            lambda up: sorted(n for n in ("a", "b") if up.outcome(n)), join=at_least(1)
+            lambda up: sorted(n for n in ("a", "b") if up.outcome(n)),
+            join=at_least(1),
         )
 
     (result,) = await Engine(Quorum(), tmp_path / "run").run([{"id": 1}])
@@ -190,37 +190,22 @@ async def test_run_node_failure_routes_on_error(tmp_path):
     assert result.records["recover"].payload is None
 
 
-async def test_git_bus_round_trip_and_write_once_refs(tmp_path):
-    bus = GitBus(tmp_path / "repo.git")
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "a.txt").write_text("one")
-    async with provision_runtime(vf.SubprocessConfig()) as box:
-        first = await bus.snapshot(
-            box, workdir=str(src), ref="refs/heads/flow/r/build@1"
+async def test_inherited_runtime_is_the_same_live_runtime(tmp_path):
+    marker = tmp_path / "marker.txt"
+
+    class Shared(Flow):
+        write = run(
+            ["sh", "-c", f'echo "$FLOW_OUTCOME" > {marker}'],
+            runtime=vf.SubprocessConfig(),
+            then="read",
         )
-        (src / "a.txt").write_text("two")
-        (src / "b.txt").write_text("new")
-        second = await bus.snapshot(
-            box,
-            workdir=str(src),
-            ref="refs/heads/flow/r/build@2",
-            base_sha=first.head_sha,
-        )
-        assert second.base_sha == first.head_sha and second.head_sha != first.head_sha
-        with pytest.raises(SnapshotError, match="push_raced"):
-            await bus.snapshot(box, workdir=str(src), ref="refs/heads/flow/r/build@2")
+        read = run(["cat", str(marker)], runtime="inherit:write")
 
-        fresh = tmp_path / "fresh"
-        await bus.restore(box, second, workdir=str(fresh))
-        assert (fresh / "a.txt").read_text() == "two" and (
-            fresh / "b.txt"
-        ).read_text() == "new"
-
-        # A box that holds the base commit receives only the delta.
-        await bus.restore(box, first, workdir=str(fresh))
-        assert (fresh / "a.txt").read_text() == "one" and not (fresh / "b.txt").exists()
-
-        moved = second.model_copy(update={"head_sha": first.head_sha})
-        with pytest.raises(SnapshotError, match="source_moved"):
-            await bus.restore(box, moved, workdir=str(tmp_path / "other"))
+    (result,) = await Engine(Shared(), tmp_path / "run").run([{"id": 1}])
+    assert result.ok, result.error
+    assert (
+        result.records["read"]
+        .payload["stdout"]
+        .strip()
+        .startswith("/tmp/flow-outcome-")
+    )

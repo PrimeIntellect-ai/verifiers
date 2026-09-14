@@ -40,13 +40,8 @@ class Graph:
 
     @property
     def held(self) -> set[str]:
-        """Nodes whose box must stay alive after they finish (someone inherits it)."""
-        return {
-            ref
-            for node in self.nodes.values()
-            if (r := node.runtime_ref) and r[0] == "inherit"
-            for ref in [r[1]]
-        }
+        """Nodes whose runtime must stay alive after they finish (someone inherits it)."""
+        return {node.inherits for node in self.nodes.values() if node.inherits}
 
     def reachable(self, start: str, *, without: str | None = None) -> set[str]:
         seen: set[str] = set()
@@ -64,7 +59,9 @@ class Graph:
             name: {
                 "kind": node.kind,
                 "edges": node.edges(),
-                "runtime": str(node.runtime_ref or node.runtime),
+                "runtime": str(
+                    node.inherits and f"inherit:{node.inherits}" or node.runtime
+                ),
             }
             for name, node in self.nodes.items()
         }
@@ -81,7 +78,9 @@ class Graph:
                 name: {
                     "kind": node.kind,
                     "edges": node.edges(),
-                    "runtime": str(node.runtime_ref or node.runtime),
+                    "runtime": str(
+                        node.inherits and f"inherit:{node.inherits}" or node.runtime
+                    ),
                 }
                 for name, node in self.nodes.items()
             },
@@ -161,18 +160,16 @@ def bounded_cycles(graph: Graph) -> list[str]:
 
 
 def runtime_refs(graph: Graph) -> list[str]:
+    """A run node needs a runtime to provision from; an inherited runtime must come
+    from an agent or run node that lies on every path to the inheriting node."""
     errors = []
     for node in graph.nodes.values():
-        ref = node.runtime_ref
-        if ref is None:
-            if isinstance(node, RunNode) and node.runtime == "fresh":
+        source = node.inherits
+        if source is None:
+            if isinstance(node, RunNode) and isinstance(node.runtime, str):
                 errors.append(
-                    f"{node.name}: a run node needs a runtime config or inherit:/fork:"
+                    f"{node.name}: a run node needs a runtime config or inherit:<node>"
                 )
-            continue
-        mode, source = ref
-        if mode not in ("inherit", "fork"):
-            errors.append(f"{node.name}: unknown runtime mode {mode!r}")
             continue
         if source not in graph.nodes:
             errors.append(f"{node.name}: runtime {node.runtime!r} names unknown node")
@@ -181,15 +178,11 @@ def runtime_refs(graph: Graph) -> list[str]:
             graph.entry
         ) or node.name in graph.reachable(graph.entry, without=source):
             errors.append(
-                f"{node.name}: runtime {node.runtime!r} but {source!r} is not on every path to it"
-            )
-        if mode == "fork" and graph.nodes[source].snapshot is None:
-            errors.append(
-                f"{node.name}: fork:{source} but {source!r} declares no snapshot"
+                f"{node.name}: {node.runtime!r} but {source!r} is not on every path to it"
             )
         if graph.nodes[source].kind not in ("agent", "run"):
             errors.append(
-                f"{node.name}: cannot {mode} the box of a {graph.nodes[source].kind} node"
+                f"{node.name}: cannot inherit the runtime of a {graph.nodes[source].kind} node"
             )
     return errors
 
@@ -216,11 +209,7 @@ def fn_outcomes(graph: Graph) -> list[str]:
             errors.append(
                 f"{node.name}: outcomes {sorted(extra)} not in the return Literal"
             )
-        if (
-            "*" not in node.outcomes
-            and node.on_unmatched is None
-            and (missing := literal - declared)
-        ):
+        if "*" not in node.outcomes and (missing := literal - declared):
             errors.append(
                 f"{node.name}: return values {sorted(missing)} have no outcome edge"
             )

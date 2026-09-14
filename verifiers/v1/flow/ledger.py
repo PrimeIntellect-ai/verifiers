@@ -14,11 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.cli.output import TRACES_FILE, append_trace, read_episodes
-from verifiers.v1.flow.snapshot import SnapshotRef
 from verifiers.v1.trace import Trace, WireTrace
 
 
@@ -30,15 +29,13 @@ class NodeRecord(BaseModel):
     index: int | None = None
     kind: str
     terminal: str
-    """`completed` | `error` | `exhausted` | `unmatched`."""
+    """`completed` | `error` | `exhausted`."""
     outcome: str | None = None
     summary: str = ""
     payload: Any = None
     trace_id: str | None = None
-    trace_ids: list[str] = []
+    trace_ids: list[str] = Field(default_factory=list)
     reward: float | None = None
-    snapshot: SnapshotRef | None = None
-    box_id: str | None = None
     attempt: int = 1
     error: str | None = None
     started_at: str
@@ -89,15 +86,6 @@ class Ledger:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(record.model_dump_json(indent=1))
         os.replace(tmp, path)
-
-    def records(self, row: str) -> list[NodeRecord]:
-        row_dir = self.nodes_dir / row
-        if not row_dir.exists():
-            return []
-        return [
-            NodeRecord.model_validate_json(p.read_text())
-            for p in sorted(row_dir.glob("*.json"))
-        ]
 
     async def append(self, trace: Trace, env: str) -> None:
         await append_trace(self.run_dir, trace, self.lock, env=env)

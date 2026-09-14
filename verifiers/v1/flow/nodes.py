@@ -2,8 +2,9 @@
 
 A node is work in a runtime that produces a record. `then=` continues
 unconditionally (a tuple starts every named node in parallel); `outcomes=` routes
-on a name the node emits; `on_error`/`on_exhausted`/`on_unmatched` are the reserved
-failure edges. Cycles are legal only through outcome edges and need `max_visits`.
+on a name the node emits (`"*"` is the default); `on_error` and `on_exhausted` are
+the reserved failure edges. Cycles are legal only through outcome edges and must
+pass through a node with `max_visits`.
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ END = _End()
 
 Target = str | tuple[str, ...] | _End
 RuntimeSpec = str | RuntimeConfig
-"""`"fresh"`, `"inherit:<node>"` (same live box), `"fork:<node>"` (fresh box
-restored from that node's snapshot), or an explicit runtime config."""
+"""`"fresh"` (provision from the seat's config), `"inherit:<node>"` (the same live
+runtime that node ran in), or an explicit runtime config."""
 
 
 @dataclass(frozen=True)
@@ -54,10 +55,7 @@ class Node:
     through a node that sets it."""
     on_error: Target | None = None
     on_exhausted: Target | None = None
-    on_unmatched: Target | None = None
     runtime: RuntimeSpec = "fresh"
-    snapshot: Literal["git"] | None = None
-    workdir: str | None = None
     retries: int = 0
     pools: tuple[str, ...] = ()
 
@@ -66,11 +64,10 @@ class Node:
         return type(self).__name__.removesuffix("Node").lower()
 
     @property
-    def runtime_ref(self) -> tuple[str, str] | None:
-        """`("inherit" | "fork", node)` for a string runtime that names a node."""
-        if isinstance(self.runtime, str) and ":" in self.runtime:
-            mode, _, ref = self.runtime.partition(":")
-            return mode, ref
+    def inherits(self) -> str | None:
+        """The node whose live runtime this one runs in, for `"inherit:<node>"`."""
+        if isinstance(self.runtime, str) and self.runtime.startswith("inherit:"):
+            return self.runtime.removeprefix("inherit:")
         return None
 
     def edges(self) -> dict[str, list[str]]:
@@ -80,7 +77,7 @@ class Node:
             out["then"] = _names(self.then)
         for outcome, target in (self.outcomes or {}).items():
             out[f"outcome:{outcome}"] = _names(target)
-        for label in ("on_error", "on_exhausted", "on_unmatched"):
+        for label in ("on_error", "on_exhausted"):
             target = getattr(self, label)
             if target is not None:
                 out[label] = _names(target)
@@ -102,7 +99,7 @@ def _names(target: Target) -> list[str]:
 class AgentNode(Node):
     seat: str
     make_task: Callable[..., Any]
-    pools: tuple[str, ...] = ("sandboxes",)
+    pools: tuple[str, ...] = ("runtimes",)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -110,8 +107,7 @@ class RunNode(Node):
     argv: list[str]
     env: dict[str, str] = field(default_factory=dict)
     exit_codes: dict[int | str, str] = field(default_factory=dict)
-    collect: tuple[str, ...] = ()
-    pools: tuple[str, ...] = ("sandboxes",)
+    pools: tuple[str, ...] = ("runtimes",)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -122,7 +118,7 @@ class FnNode(Node):
 @dataclass(frozen=True, kw_only=True)
 class EvalNode(Node):
     config: Any  # EvalConfig | dict | Callable[[Upstream], EvalConfig]
-    pools: tuple[str, ...] = ("sandboxes",)
+    pools: tuple[str, ...] = ("runtimes",)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -131,7 +127,7 @@ class ExpandNode(Node):
     make_task: Callable[..., Any]
     over: Callable[..., Iterable[Any]]
     max_active: int | None = None
-    pools: tuple[str, ...] = ("sandboxes",)
+    pools: tuple[str, ...] = ("runtimes",)
 
 
 def agent(
@@ -153,11 +149,10 @@ def run(
     then: Target | None = None,
     outcomes: dict[str, Target] | None = None,
     exit_codes: dict[int | str, str] | None = None,
-    collect: Iterable[str] = (),
     env: dict[str, str] | None = None,
     **kw: Any,
 ) -> RunNode:
-    """A command in a box, no model. Its outcome is the JSON `{"outcome": ...}` it
+    """A command in a runtime, no model. Its outcome is the JSON `{"outcome": ...}` it
     writes to `$FLOW_OUTCOME`, else `exit_codes` (`"*"` is the default key)."""
     return RunNode(
         argv=argv,
@@ -165,7 +160,6 @@ def run(
         then=then,
         outcomes=outcomes,
         exit_codes=exit_codes or {},
-        collect=tuple(collect),
         env=env or {},
         **kw,
     )

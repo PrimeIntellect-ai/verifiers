@@ -3,8 +3,7 @@
     from verifiers.v1.flow import Flow, FlowConfig, agent, run, fn, expand, END
 
 A node is work in a runtime that produces a record. Edges are declared, joins are
-explicit, every node instance has a ledger entry, and sandbox state moves between
-nodes as write-once git commits.
+explicit, and every node instance has a ledger entry the next run attaches to.
 """
 
 from verifiers.v1.flow.compile import FlowError, Graph
@@ -32,7 +31,6 @@ from verifiers.v1.flow.outcome import (
     outcome_of,
 )
 from verifiers.v1.flow.pools import Pools
-from verifiers.v1.flow.snapshot import GitBus, SnapshotError, SnapshotRef
 
 __all__ = [
     "ALL",
@@ -45,7 +43,6 @@ __all__ = [
     "FlowError",
     "FlowTask",
     "FlowTaskConfig",
-    "GitBus",
     "Graph",
     "Join",
     "Ledger",
@@ -56,8 +53,6 @@ __all__ = [
     "Pools",
     "RowResult",
     "RunResult",
-    "SnapshotError",
-    "SnapshotRef",
     "Upstream",
     "agent",
     "at_least",
