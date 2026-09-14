@@ -27,7 +27,7 @@ chmod +x "{dir}/pool"
 
 
 class PoolHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "1.0.15"
+    version: PinnedVersion = "1.0.16"
     """Pool release to install, pinned for reproducibility."""
 
 
