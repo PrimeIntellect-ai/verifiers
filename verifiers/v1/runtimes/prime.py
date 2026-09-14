@@ -7,6 +7,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
+import base64
 import contextlib
 import logging
 import math
@@ -75,7 +76,8 @@ class PrimeConfig(NetworkPolicyConfig):
     platform auto-builds what the sandbox needs from it (a VM image for `vm` sandboxes,
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -148,8 +150,8 @@ class PrimeRuntime(Runtime):
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
-        self.config = config
-        self.info = PrimeRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
 
     @property
@@ -294,17 +296,20 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            # The shared SDK client coalesces concurrent VM job polls into batches.
-            # Rollout cancellation remains the practical execution timeout; this
-            # long SDK deadline is only a final safety bound.
-            result = await self._client.run_background_job(
+            # Poll directly so rollout cancellation owns the execution timeout.
+            job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
-                poll_interval=1,
             )
+            delay = 0.1
+            while True:
+                result = await self._client.get_background_job(self.info.id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -366,6 +371,21 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and self.config.vm:
+            try:
+                # VM execute_command uses bash and returns the complete output stream.
+                result = await self._client.execute_command(
+                    self.info.id,
+                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
+                    working_dir=self.config.workdir,
+                    env=self.process_env({}),
+                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
+                )
+            except Exception as exc:
+                raise SandboxError(f"read {path!r}: {exc}") from exc
+            if result.exit_code:
+                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            return base64.b64decode(result.stdout)
         if max_bytes is not None:
             return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.

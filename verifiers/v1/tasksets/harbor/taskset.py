@@ -27,15 +27,17 @@ import tempfile
 import time
 from collections.abc import Iterator
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from verifiers.v1.configs.harness import RuntimeSkills
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
@@ -54,7 +56,13 @@ REWARD_JSON_ADAPTER = TypeAdapter(
 )
 
 
+class HarborTaskConfig(TaskConfig):
+    mcp_servers: list[dict] = Field(default_factory=list)
+    """Task-declared connections, bound from HarborData during construction."""
+
+
 class HarborConfig(TasksetConfig):
+    task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
     tag, integer revision, or sha256 digest. Legacy registries selected with `repo`,
@@ -148,6 +156,8 @@ class HarborData(TaskData):
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
+    mcp_servers: list[dict] = Field(default_factory=list)
+    """Task-declared MCP servers, preserved for served-task reconstruction."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -160,10 +170,24 @@ class HarborData(TaskData):
     grades in the agent's box."""
 
 
-class HarborTask(Task[HarborData]):
+class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
+
+    def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
+        super().__init__(data, config)
+        # Each reconstructed row gets its own connections without mutating worker config.
+        self.config = self.config.model_copy(update={"mcp_servers": data.mcp_servers})
+
+    @classmethod
+    def toolsets(cls, config: HarborTaskConfig):
+        from .toolset import HarborMCPConfig, HarborMCPToolset
+
+        return super().toolsets(config) + [
+            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            for server in config.mcp_servers
+        ]
 
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
@@ -251,31 +275,38 @@ class HarborTask(Task[HarborData]):
         if not self.scoring_deferred:
             trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
-    async def stage_verifier(self, runtime: Runtime) -> None:
-        # An artifact under /tests must not replace the task package's verifier.
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        if any(
+            PurePosixPath(root).is_relative_to("/tests")
+            for root in trace.state.artifacts
+        ):
+            raise TaskError("Harbor artifacts cannot restore into /tests")
         await self.stage_tests(runtime, wipe=True)
         self.verifier_staged = True
 
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
-        """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
+        """Use a dedicated verifier image's tests, or stage the task package's tests.
 
         Raises rather than scoring stale state: a leftover reward file — planted by
         the agent or shipped in the image — must be gone before `test.sh` runs, so a
         removal that fails must not fall through to reading it.
-
-        `wipe` for a box we did not watch being built: a fresh container of the task's
-        image can ship its own `/tests`, and a leftover file there would be graded as
-        though it came from the package.
         """
-        await runtime.write(
-            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
-        )
-        stage = (
-            f"{'rm -rf /tests && ' if wipe else ''}"
+        # Harbor's dedicated verifier image owns the complete test suite and its
+        # dependencies. Mixing it with packaged tests can retain obsolete helpers.
+        stage = "test -f /tests/test.sh"
+        if self.data.verifier is None or self.data.verifier.image is None:
+            await runtime.write(
+                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+            )
+            stage = (
+                f"{'rm -rf /tests && ' if wipe else ''}"
+                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            )
+        command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
+            f"mkdir -p /logs/verifier && {stage}"
         )
-        result = await runtime.run(["sh", "-c", stage], {})
+        result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
@@ -364,6 +395,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
             "skills": [],
+            "mcp_servers": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -536,9 +568,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         if task
         else []
     )
-    # Older registry entries stored one author in [metadata].
-    if not authors and meta.get("author_name"):
-        authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     if harbor_config.ignore_timeouts:
         agent_timeout = scoring_timeout = None
     else:
@@ -588,7 +617,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         skills=[RuntimeSkills(runtime=environment.skills_dir)]
         if environment.skills_dir
         else [],
-        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        **environment.model_dump(
+            include={"env", "healthcheck", "mcp_servers"}, mode="json"
+        ),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -703,9 +734,7 @@ def parse_verifier_environment(
             "the task never declared",
             task_dir.name,
         )
-    unsupported = [
-        field for field in ("mcp_servers", "tpu") if getattr(environment, field, None)
-    ]
+    unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
             f"{task_dir.name}: verifier environment declares "

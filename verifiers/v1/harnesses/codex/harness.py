@@ -6,7 +6,7 @@ import logging
 import re
 from collections import Counter
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
@@ -45,6 +45,16 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
+        failure = (
+            result.response_metadata.get("jetbrains", {})
+            .get("air", {})
+            .get("sessionFailure")
+        )
+        if failure and failure["phase"] == "active":
+            raise RuntimeError(f"Codex {failure['category']}: {failure['safeMessage']}")
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -99,6 +109,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            client_capabilities={
+                "_meta": {
+                    "jetbrains": {
+                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                    }
+                }
+            },
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

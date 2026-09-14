@@ -1,8 +1,8 @@
 diff --git a/docs/v1/evaluation.md b/docs/v1/evaluation.md
-index 60168ed0d..20fb45c66 100644
+index 5edd504b6..ae86573c1 100644
 --- a/docs/v1/evaluation.md
 +++ b/docs/v1/evaluation.md
-@@ -66,11 +66,13 @@ The names of these tools are set by the respective harness. Consult the relevant
+@@ -70,11 +70,13 @@ The names of these tools are set by the respective harness. Consult the relevant
  
  ## Skills
  
@@ -220,7 +220,7 @@ index 3c31679ee..66917eb8c 100644
          session_meta = {
              "claudeCode": {
 diff --git a/verifiers/v1/harnesses/codex/harness.py b/verifiers/v1/harnesses/codex/harness.py
-index 7c0b10c4f..b26e62c18 100644
+index 56e4c4f8b..92a9e6704 100644
 --- a/verifiers/v1/harnesses/codex/harness.py
 +++ b/verifiers/v1/harnesses/codex/harness.py
 @@ -22,7 +22,6 @@ PACKAGES_DIR = f"{CODEX_DIR}/acp"
@@ -231,15 +231,15 @@ index 7c0b10c4f..b26e62c18 100644
  INSTALL = r"""
  set -e
  export PATH="/var/tmp/vf-node/bin:$PATH"
-@@ -48,7 +47,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
-     SUPPORTS_SKILLS = True
+@@ -58,7 +57,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
+             raise RuntimeError(f"Codex {failure['category']}: {failure['safeMessage']}")
  
      async def setup(self, runtime: Runtime) -> None:
 -        await self.install_skills(runtime, SKILLS_DIR)
          await ensure_node(runtime)
          logger.info(
              "codex: ensuring Codex %s and codex-acp %s are installed",
-@@ -120,6 +118,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
+@@ -137,6 +135,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
          mcp_urls: dict[str, str],
      ) -> dict[str, str]:
          home = self.trace_home(trace)
@@ -509,7 +509,7 @@ index ae7003e2c..8e5d33288 100644
              args += ["--append-system-prompt", system_prompt]
  
 diff --git a/verifiers/v1/harnesses/rlm/harness.py b/verifiers/v1/harnesses/rlm/harness.py
-index 24807170a..4fc0a0e51 100644
+index 3fccdf3b0..95faa1b32 100644
 --- a/verifiers/v1/harnesses/rlm/harness.py
 +++ b/verifiers/v1/harnesses/rlm/harness.py
 @@ -2,6 +2,7 @@
@@ -529,7 +529,7 @@ index 24807170a..4fc0a0e51 100644
  from verifiers.v1.runtimes import Runtime
  from verifiers.v1.task import TaskData
  from verifiers.v1.trace import Trace
-@@ -114,11 +115,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
+@@ -130,11 +131,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
      APPENDS_SYSTEM_PROMPT = True
      SUPPORTS_MCP = True
      SUPPORTS_SKILLS = True
@@ -547,7 +547,7 @@ index 24807170a..4fc0a0e51 100644
          binary = f"{directory}/bin/rlm"
          checkout = f"{directory}/checkout"
          ready = f"{directory}/.ready"
-@@ -129,7 +134,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
+@@ -145,7 +150,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
              "{ apt-get update -qq && apt-get install -y -qq git; } && "
              f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
              f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
@@ -557,7 +557,7 @@ index 24807170a..4fc0a0e51 100644
              f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
              f"touch {ready})"
          )
-@@ -240,6 +247,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
+@@ -261,6 +268,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
  
      async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
          await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
@@ -568,7 +568,7 @@ index 24807170a..4fc0a0e51 100644
  
      @staticmethod
      def _home(trace: Trace) -> str:
-@@ -247,4 +258,4 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
+@@ -268,4 +279,4 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
  
      def _install_dir(self) -> str:
          cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
@@ -597,7 +597,7 @@ index f8bc9ba5a..740237e52 100644
      """Execution-time destinations requested by this task. `*` leaves the runtime
      allowlist unchanged; a concrete list replaces a wildcard or retains entries also
 diff --git a/verifiers/v1/tasksets/harbor/taskset.py b/verifiers/v1/tasksets/harbor/taskset.py
-index 48c945360..900f75bdf 100644
+index e949b0a35..22af763c8 100644
 --- a/verifiers/v1/tasksets/harbor/taskset.py
 +++ b/verifiers/v1/tasksets/harbor/taskset.py
 @@ -32,6 +32,7 @@ from typing import Annotated
@@ -605,35 +605,35 @@ index 48c945360..900f75bdf 100644
  from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
  
 +from verifiers.v1.configs.harness import RuntimeSkills
+ from verifiers.v1.configs.task import TaskConfig
  from verifiers.v1.configs.taskset import TasksetConfig
  from verifiers.v1.errors import SandboxError, TaskError
- from verifiers.v1.runtimes import Runtime
-@@ -362,6 +363,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
+@@ -393,6 +394,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
              "upload_environment": data.upload_environment if fresh else False,
              "env": dict(verifier.env),
              "healthcheck": verifier.healthcheck,
 +            "skills": [],
+             "mcp_servers": [],
              "network_allow": list(verifier.network_allow),
              "network_block": [],
-         }
-@@ -583,6 +585,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
+@@ -612,6 +614,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
          tags=meta.get("tags", []),
          task_dir=str(task_dir),
          upload_environment=upload_environment,
 +        skills=[RuntimeSkills(runtime=environment.skills_dir)]
 +        if environment.skills_dir
 +        else [],
-         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
-         verifier_env=parsed.verifier.env,
-         artifacts=artifacts,
-@@ -699,9 +704,7 @@ def parse_verifier_environment(
+         **environment.model_dump(
+             include={"env", "healthcheck", "mcp_servers"}, mode="json"
+         ),
+@@ -729,9 +734,7 @@ def parse_verifier_environment(
+             "the task never declared",
              task_dir.name,
          )
-     unsupported = [
--        field
--        for field in ("mcp_servers", "skills_dir", "tpu")
--        if getattr(environment, field, None)
-+        field for field in ("mcp_servers", "tpu") if getattr(environment, field, None)
-     ]
+-    unsupported = [
+-        field for field in ("skills_dir", "tpu") if getattr(environment, field, None)
+-    ]
++    unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
      if environment.os != TaskOS.LINUX or unsupported:
          raise ValueError(
+             f"{task_dir.name}: verifier environment declares "

@@ -194,7 +194,9 @@ class ACPSession:
             self.connection = agent_process[0]
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
-                client_capabilities=ClientCapabilities(),
+                client_capabilities=ClientCapabilities.model_validate(
+                    config["client_capabilities"]
+                ),
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(

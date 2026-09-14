@@ -55,7 +55,7 @@ CI_MODEL = "openai/gpt-5.6-luna"
 
 
 @pytest.fixture
-def harness_runtime(request) -> str:
+def harness_runtime(request) -> str | dict:
     return request.param
 
 
@@ -188,6 +188,7 @@ def _eval_config(
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
+        push=False,
     )
 
 
