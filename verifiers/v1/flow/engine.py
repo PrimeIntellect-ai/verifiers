@@ -21,6 +21,7 @@ from verifiers.v1.agent import make_agent
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.flow.compile import FlowError, Graph
 from verifiers.v1.flow.flow import Flow
+from verifiers.v1.flow.gate import Workers
 from verifiers.v1.flow.ledger import Ledger, NodeRecord, digest, now, row_key
 from verifiers.v1.flow.nodes import (
     AgentNode,
@@ -39,6 +40,7 @@ from verifiers.v1.flow.outcome import (
     parse_outcome,
 )
 from verifiers.v1.flow.pools import Pools
+from verifiers.v1.interception import InterceptionServer
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import (
     Runtime,
@@ -143,6 +145,7 @@ class Engine:
             )
         self._stack = AsyncExitStack()
         self._outcome_tools: dict[str, dict[str, SharedToolServer]] = {}
+        self._inference: InterceptionServer | None = None  # the shared gate, when on
         # Any change to the graph shape or the config invalidates every ledger key.
         self.identity = digest(
             self.graph.structural_hash(), self.config.model_dump(mode="json")
@@ -174,6 +177,14 @@ class Engine:
 
         async with self._stack:
             self._outcome_tools.clear()  # run 1's servers exited with its stack
+            self._inference = None
+            if self.config.inference_concurrency is not None:
+                self._inference = await self._stack.enter_async_context(
+                    Workers(
+                        self.config.inference_concurrency,
+                        requires_tunnel=self._gate_needs_tunnel(),
+                    )
+                )
             tasks: list[asyncio.Task] = []
             try:
                 async for row in _aiter(rows):
@@ -208,6 +219,15 @@ class Engine:
         if cfg.client is None and self.config.client is not None:
             update["client"] = self.config.client
         return cfg.model_copy(update=update) if update else cfg
+
+    def _gate_needs_tunnel(self) -> bool:
+        """Whether the shared gate server must be reachable from inside boxes:
+        any seat on a remote runtime, and it tunnels."""
+        return any(
+            not runtime_is_local(self.seat(node.seat).runtime)
+            for node in self.graph.nodes.values()
+            if isinstance(node, (AgentNode, ExpandNode))
+        )
 
 
 class _Row:
@@ -667,7 +687,7 @@ class _Row:
         `submit_outcome` tool when its harness speaks MCP and its task's state
         carries `outcome`; otherwise the task sets `state.outcome` itself (in
         `finalize`) or the last reply ends with an `Outcome:` line."""
-        agent = make_agent(self.e.seat(node.seat))
+        agent = make_agent(self.e.seat(node.seat), interception=self.e._inference)
         tools = None
         if node.outcomes and agent.harness.SUPPORTS_MCP:
             if "outcome" in state_cls(type(task)).model_fields:

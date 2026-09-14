@@ -24,6 +24,9 @@ class FlowConfig(BaseConfig):
     """Endpoint for seats that pin none."""
     max_concurrent_rows: int = Field(default=4, gt=0)
     """Rows that may run at once; zero or negative would hang the gate forever."""
+    inference_concurrency: int | None = Field(default=None, gt=0)
+    """Model requests (nested harness calls included) allowed upstream at once; None
+    leaves each rollout its own unbounded client, byte-identical to before."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
     """Named capacity pools: max concurrently running node instances per pool.
     Zero-capacity pools would deadlock node execution, so sizes must be positive."""
