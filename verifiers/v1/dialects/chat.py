@@ -26,6 +26,7 @@ from verifiers.v1.dialects.base import (
     blocked_url,
     parse_sse_event,
 )
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -246,6 +247,19 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        error = chunk.get("error")
+        if error is not None or any(
+            choice.get("finish_reason") == "error"
+            for choice in chunk.get("choices") or []
+        ):
+            code = error.get("code") if isinstance(error, dict) else None
+            detail = json.dumps(error) if error is not None else "finish_reason=error"
+            raise model_error(
+                f"upstream Chat Completions stream failed: {detail}",
+                status_code=code
+                if isinstance(code, int) and 400 <= code < 600
+                else 502,
+            )
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
