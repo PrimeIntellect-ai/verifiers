@@ -445,6 +445,13 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
+            self.trace.ok = False
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(self._timeouts.finalize):
+                    await invoke(
+                        self.task.cleanup,
+                        {"trace": self.trace, "runtime": self.runtime},
+                    )
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -509,7 +516,6 @@ class Rollout:
                     await self._harness_session.close()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
-            trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()
             for span in (
@@ -529,16 +535,32 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
+                try:
+                    async with (
+                        boundary(TaskError, "task cleanup"),
+                        asyncio.timeout(self._timeouts.finalize),
+                    ):
+                        await invoke(
+                            self.task.cleanup, {"trace": trace, "runtime": runtime}
+                        )
+                except Exception as error:  # noqa: BLE001 - record cleanup failures before grading
+                    self.fail(error)
+                    trace.ok = False
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
-                except Exception:
+                except Exception as error:
+                    # Custom project owners can require confirmed teardown before grading.
+                    if self._runtime_factory is not None:
+                        self.fail(error)
+                        trace.ok = False
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
+            trace.is_completed = True
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
