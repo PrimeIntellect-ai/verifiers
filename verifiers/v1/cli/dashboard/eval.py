@@ -292,10 +292,10 @@ def _push_footer(push: "PushState | None") -> Group | None:
         line.append(f"  not closed out: {push.error}", style="red")
     elif push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
-    elif push.incomplete and push.url:
-        # Closed out, but the uploader lost records: what landed is there, say what didn't.
-        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-        line.append(f"  incomplete: {push.incomplete}", style="red")
+    elif (incomplete := push.incomplete) and push.url:
+        label = "Traces pushed" if push.finished else "Pushing traces"
+        line = Text(f"{label} ({push.url})", style="white", overflow="fold")
+        line.append(f"  incomplete: {incomplete}", style="red")
     elif not push.finished:
         line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
     else:
