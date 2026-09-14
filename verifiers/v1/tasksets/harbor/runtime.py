@@ -31,8 +31,10 @@ class HarborComposeRuntime(DockerRuntime):
         self.task = task
         self._setup_timeout = setup_timeout
         self._main_overrides = config.model_dump(
-            include={"image", "workdir"}, exclude_unset=True, exclude_none=True
+            include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
         )
+        if task.data.image is not None:
+            self._main_overrides["image"] = config.image
         self._temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
