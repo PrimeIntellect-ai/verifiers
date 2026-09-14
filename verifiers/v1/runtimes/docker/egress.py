@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
 import hmac
 import secrets
 import socket
@@ -133,6 +134,9 @@ class EgressProxy:
         )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
+        self._authorization_origins: dict[
+            tuple[tuple[str, str, int], bytes], tuple[str, str, int]
+        ] = {}
         self._handlers: set[asyncio.Task] = set()
         self.server: asyncio.Server | None = None
         self.port = 0
@@ -244,7 +248,7 @@ class EgressProxy:
             connect = method == "CONNECT"
             if callback is not None:
                 scheme, host, port = callback.scheme, callback.host, callback.port
-                forward_authorization = (
+                forward_cookies = (
                     scheme,
                     host,
                     port,
@@ -370,8 +374,6 @@ class EgressProxy:
                     b"upgrade",
                     *connection_fields,
                 }
-                if callback is not None and not forward_authorization:
-                    excluded.add(b"authorization")
                 origin_rewrites = (
                     {
                         f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
@@ -383,6 +385,19 @@ class EgressProxy:
                 for name, value in request.headers:
                     if name.lower() in excluded:
                         continue
+                    if callback is not None and name.lower() == b"authorization":
+                        # Bind each credential to the origin where it was supplied,
+                        # allowing a redirected server to establish its own auth.
+                        credential = (
+                            callback.credential_origin,
+                            hashlib.sha256(value).digest(),
+                        )
+                        origin = (scheme, host, port)
+                        if (
+                            self._authorization_origins.setdefault(credential, origin)
+                            != origin
+                        ):
+                            continue
                     if callback is not None and name.lower() == b"cookie":
                         # Callback cookie names carry their capability token. Strip
                         # it upstream; unscoped cookies cannot cross origins.
@@ -391,7 +406,7 @@ class EgressProxy:
                             cookie.removeprefix(prefix)
                             for part in value.split(b";")
                             if (cookie := part.strip()).startswith(prefix)
-                            or forward_authorization
+                            or forward_cookies
                         )
                         if not value:
                             continue
