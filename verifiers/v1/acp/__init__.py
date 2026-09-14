@@ -58,6 +58,7 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
+    client_capabilities: JsonObject | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -265,6 +266,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "client_capabilities": self.config.client_capabilities or {},
         }
         async with self._lock:
             if self._closed:
