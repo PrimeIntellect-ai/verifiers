@@ -135,18 +135,43 @@ async def _server(
     try:
         address = await asyncio.to_thread(address_queue.get, timeout=600)
         client = EnvClient(address=address)
+
+        async def wait_for_exit() -> int:
+            # ZMQ queues requests after a peer disappears; it does not turn the
+            # server's exit into a receive error. This process owns its lifetime.
+            while (exitcode := proc.exitcode) is None:
+                await asyncio.sleep(0.1)
+            return exitcode
+
+        server_exit = asyncio.create_task(wait_for_exit())
         try:
             await client.wait_for_server_startup(timeout=600)
 
             async def run(slot: RunSlot) -> Episode:
                 async with semaphore or contextlib.nullcontext():
                     slot.started = time.time()
-                    episode = await client.run(
-                        client=config.client,
-                        model=config.model,
-                        sampling=config.sampling,
-                        task_data=slot.task.data.model_dump(mode="json"),
+                    request = asyncio.create_task(
+                        client.run(
+                            client=config.client,
+                            model=config.model,
+                            sampling=config.sampling,
+                            task_data=slot.task.data.model_dump(mode="json"),
+                        )
                     )
+                    try:
+                        done, _ = await asyncio.wait(
+                            (request, server_exit), return_when=asyncio.FIRST_COMPLETED
+                        )
+                        # Preserve a reply that completed alongside process exit.
+                        if request not in done:
+                            raise RuntimeError(
+                                "env server process exited unexpectedly "
+                                f"(exit code {server_exit.result()}); see {log_file}"
+                            )
+                        episode = request.result()
+                    finally:
+                        request.cancel()
+                        await asyncio.gather(request, return_exceptions=True)
                 slot.traces = list(episode.traces)
                 slot.episode = cast(Episode, episode)
                 slot.done = True
@@ -155,6 +180,9 @@ async def _server(
 
             yield run
         finally:
+            server_exit.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_exit
             await client.close()
     finally:
         proc.terminate()
