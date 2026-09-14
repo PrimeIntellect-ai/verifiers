@@ -20,9 +20,12 @@ from verifiers.v1.dialects.base import (
     RawRequest,
     StreamParser,
     append_user_notice,
+    blocked_path,
     blocked_url,
+    mediate_parts,
     parse_sse_event,
     provider_allowed_domains,
+    user_and_tool_messages,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -129,20 +132,11 @@ def parse_content(content) -> str | list[ContentPart]:
 
 
 def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
-                return blocked
-        return None
-    if not isinstance(value, dict):
-        return None
+    return blocked_path(value, path, policy, _blocked_block)
 
+
+def _blocked_block(value: dict, path: str, policy: NetworkPolicyConfig) -> str | None:
     kind = value.get("type")
-    caller = value.get("caller")
-    if caller is not None and not (
-        isinstance(caller, dict) and caller.get("type") == "direct"
-    ):
-        return f"{path}.caller.type"
     if kind in ("image", "document"):
         source_path = f"{path}.source"
         source = value.get("source") or {}
@@ -178,31 +172,7 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
 
 
 def mediate_content(value, path: str, policy: NetworkPolicyConfig):
-    if not isinstance(value, list):
-        blocked = blocked_content_path(value, path, policy)
-        return ("", [blocked]) if blocked else (value, [])
-
-    mediated = []
-    capabilities = []
-    for index, block in enumerate(value):
-        item_path = f"{path}[{index}]"
-        if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
-            if blocked := blocked_content_path(
-                {**block, "content": []}, item_path, policy
-            ):
-                capabilities.append(blocked)
-                continue
-            content, removed = mediate_content(
-                block.get("content"), f"{item_path}.content", policy
-            )
-            if removed:
-                block["content"] = content or ""
-                capabilities.extend(removed)
-        elif blocked := blocked_content_path(block, item_path, policy):
-            capabilities.append(blocked)
-            continue
-        mediated.append(block)
-    return mediated, capabilities
+    return mediate_parts(value, path, policy, blocked_content_path, _CONTENT_WRAPPERS)
 
 
 def content_to_wire(content) -> str | list[dict]:
@@ -577,12 +547,8 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         return response_from_wire(response)
 
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        original = [
-            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        rewritten = [
-            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
+        original = user_and_tool_messages(before)
+        rewritten = user_and_tool_messages(after)
         targets: list[tuple[dict, dict | None]] = []
         for native in body.get("messages", []):
             if native.get("role") == "assistant":

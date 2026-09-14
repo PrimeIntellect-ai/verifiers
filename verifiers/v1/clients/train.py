@@ -17,7 +17,7 @@ from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.dialects.chat import message_to_wire, tool_calls_to_wire
 from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
@@ -55,17 +55,7 @@ def serialize_completion(response: Response, model: str) -> dict:
     if response.message.reasoning_content is not None:
         message["reasoning_content"] = response.message.reasoning_content
     if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": c.type,
-                c.type: {
-                    "name": c.name,
-                    "input" if c.type == "custom" else "arguments": c.arguments,
-                },
-            }
-            for c in response.message.tool_calls
-        ]
+        message["tool_calls"] = tool_calls_to_wire(response.message.tool_calls)
     usage: dict | None = None
     if response.usage:
         # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
