@@ -65,6 +65,10 @@ class HarborComposeRuntime(DockerRuntime):
         services = yaml.safe_load((environment / "docker-compose.yaml").read_text())[
             "services"
         ]
+        if any(service.get("container_name") for service in services.values()):
+            raise SandboxError(
+                "Remove container_name so Compose can name each rollout's services"
+            )
         owner = "main"
         seen: set[str] = set()
         while services.get(owner, {}).get("network_mode", "").startswith("service:"):
@@ -116,14 +120,11 @@ class HarborComposeRuntime(DockerRuntime):
                 for arg in ("-f", str(path))
             ),
         ]
-        self._compose_env = {
-            **self.env,
-            **ComposeInfraEnvVars(
-                main_image_name=self.name,
-                context_dir=str(environment),
-                prebuilt_image_name=self.config.image,
-            ).to_env_dict(),
-        }
+        self._compose_env = ComposeInfraEnvVars(
+            main_image_name=self.name,
+            context_dir=str(environment),
+            prebuilt_image_name=self.config.image,
+        ).to_env_dict()
         await self._compose("config", "--quiet")
         self._created = True
         # The CLI is killed on cancellation; the rollout then removes the project.
