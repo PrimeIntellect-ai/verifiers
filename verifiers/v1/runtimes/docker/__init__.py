@@ -173,25 +173,27 @@ class DockerRuntime(ContainerRuntime):
             raise SandboxError(f"{self.engine} run failed: {run.stderr.strip()}")
         self.info.id = run.stdout.strip()[:12]  # `run -d` prints the container id
         inspected = await cli(
-            self.engine, "inspect", "--format", "{{json .Config.Env}}", self._container
+            self.engine, "inspect", "--format", "{{json .Config}}", self._container
         )
         if inspected.exit_code != 0:
             raise SandboxError(
                 f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
             )
-        self._image_env = dict(
-            entry.split("=", 1) for entry in json.loads(inspected.stdout) or []
-        )
-        # Docker creates a missing `--workdir` (as root) for `exec`; Podman refuses one.
+        container = json.loads(inspected.stdout)
+        self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
+        # Create missing workdirs for either engine, owned by the image's execution user.
         made = await cli(
             self.engine,
             "exec",
             "--user",
             "0",
             self._container,
-            "mkdir",
-            "-p",
+            "sh",
+            "-c",
+            'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
+            "vf-workdir",
             self.config.workdir,
+            container["User"] or "0",
         )
         if made.exit_code != 0:
             raise SandboxError(

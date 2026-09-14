@@ -467,7 +467,14 @@ class EgressProxy:
                                     if key.lower() == b"path":
                                         scope = content
                                     elif key.lower() != b"domain" and not (
-                                        scheme == "https" and key.lower() == b"secure"
+                                        scheme == "https"
+                                        and (
+                                            key.lower() in (b"secure", b"partitioned")
+                                            or (
+                                                key.lower() == b"samesite"
+                                                and content.strip().lower() == b"none"
+                                            )
+                                        )
                                     ):
                                         parts.append(attribute)
                                 if not scope.startswith(b"/"):

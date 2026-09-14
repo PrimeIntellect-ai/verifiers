@@ -31,7 +31,7 @@ class ApptainerConfig(ContainerConfig):
 
     @model_validator(mode="after")
     def validate_workdir(self) -> Self:
-        if (
+        if self.workdir is not None and (
             not self.workdir.startswith("/")
             or Path(self.workdir) == Path("/")
             or ".." in Path(self.workdir).parts
