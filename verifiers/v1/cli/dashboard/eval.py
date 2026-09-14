@@ -500,9 +500,9 @@ def _breakdown(
 def _stage(trace: Trace) -> str:
     """The stage a live (not-yet-done) rollout is in, derived from its trace's timing
     spans — the engine opens and closes each span exactly at the stage transitions, so
-    the current stage is the latest span started but not yet ended. A completed trace
-    whose slot isn't done is waiting on its episode's other traces (and the env's
-    `score()`) — that's scoring."""
+    the current stage is the latest span started but not yet ended. Once all spans close,
+    a live trace is finishing cleanup. A completed trace whose slot isn't done is
+    waiting on its episode's other traces (and the env's `score()`) — that's scoring."""
     if trace.is_completed:
         return "scoring"
     for stage, span in (
@@ -515,7 +515,7 @@ def _stage(trace: Trace) -> str:
         if span.start and not span.end:
             break
     else:
-        stage = "boot"  # trace minted, first span not yet opened (an instant)
+        stage = "finalize" if trace.timing.boot.end else "boot"
     # A boot stuck on a first-use platform image build reads differently from a
     # normal boot — it can sit there for ~10 minutes (prime runtime only).
     if stage == "boot" and getattr(trace.agent.runtime, "image_cached", None) is False:

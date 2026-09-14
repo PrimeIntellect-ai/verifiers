@@ -1,6 +1,7 @@
 """Modal VM ownership for Harbor Compose, preserving Docker networking."""
 
 import asyncio
+import atexit
 
 from verifiers.v1.runtimes import ModalRuntime
 from verifiers.v1.runtimes.base import SERVICE_PORT
@@ -21,6 +22,11 @@ class ModalComposeVM(ModalRuntime):
             cpu=self.config.cpu,
             memory=int(self.config.memory * 1024),
             region=self.config.region,
+            # Seed both allowlist types so prepare_execution can update them.
+            outbound_domain_allowlist=["*"] if self.network_restricted else None,
+            outbound_cidr_allowlist=(
+                ["0.0.0.0/0"] if self.network_restricted else None
+            ),
             timeout=24 * 60 * 60,
             encrypted_ports=[SERVICE_PORT],
             experimental_options={"vm_runtime": True},
@@ -30,8 +36,10 @@ class ModalComposeVM(ModalRuntime):
         sandbox = self._sandbox
         if sandbox is None:
             return
-        # Preserve the handle for the cleanup backstop until termination is confirmed.
+        # Keep cleanup alive after a timeout even if the rollout releases this runtime.
+        atexit.register(self.cleanup)
         async with asyncio.timeout(60):
             await sandbox.terminate.aio()
             await sandbox.wait.aio(raise_on_termination=False)
         self._sandbox = None
+        atexit.unregister(self.cleanup)
