@@ -6,7 +6,7 @@ import logging
 import re
 from collections import Counter
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
@@ -46,6 +46,16 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
+        failure = (
+            result.response_metadata.get("jetbrains", {})
+            .get("air", {})
+            .get("sessionFailure")
+        )
+        if failure and failure["phase"] == "active":
+            raise RuntimeError(f"Codex {failure['category']}: {failure['safeMessage']}")
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -101,6 +111,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            client_capabilities={
+                "_meta": {
+                    "jetbrains": {
+                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                    }
+                }
+            },
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
@@ -120,12 +137,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
-        created = await runtime.run(["mkdir", "-p", home], {})
-        if created.exit_code != 0:
-            raise RuntimeError(
-                f"failed to create Codex home: {created.stderr.strip()[-500:]}"
-            )
-
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(

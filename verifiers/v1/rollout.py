@@ -107,14 +107,12 @@ class Rollout:
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                runtime_config
+                NetworkPolicyConfig(allow=[])
+                if isinstance(runtime_config, ModalConfig)
+                and not runtime_config.network_access
+                else runtime_config
                 if isinstance(runtime_config, NetworkPolicyConfig)
-                else NetworkPolicyConfig(
-                    allow=[]
-                    if isinstance(runtime_config, ModalConfig)
-                    and not runtime_config.network_access
-                    else ["*"]
-                )
+                else NetworkPolicyConfig()
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,

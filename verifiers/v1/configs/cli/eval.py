@@ -48,12 +48,28 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # TODO: fetch the id from the Prime SDK once runs are registered there.
-    _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+    attach: str | None = None
+    """Stream into a run the launcher already created on the platform instead of opening a
+    new one — its evaluation id. Hosted evaluations pass the sandbox's `$EVALUATION_ID`
+    here; the platform owns that run's record and status, and a run that cannot be
+    attached to is an error rather than a local fallback. Requires `push`."""
+
+    _id: str | None = PrivateAttr(default=None)
 
     @property
     def id(self) -> str:
+        """The run's one id, assigned by `open_run` from the prime-runs handle: the
+        platform's evaluation id online, the SDK's local id otherwise. The run mints
+        none of its own, so the run dir, every trace and the dashboard agree."""
+        if self._id is None:
+            raise RuntimeError("the run has no id until `open_run` has opened it")
         return self._id
+
+    def assign_id(self, run_id: str) -> None:
+        """Called once by `open_run`, before the first rollout."""
+        if self._id is not None and self._id != run_id:
+            raise RuntimeError(f"the run already has id {self._id!r}")
+        self._id = run_id
 
 
 class EvalConfig(BaseConfig):
@@ -134,4 +150,12 @@ class EvalConfig(BaseConfig):
             self.run.name = default_run_name(self.env, self.model)
         if self.run.dir is None:
             self.run.dir = self.run.name
+        return self
+
+    @model_validator(mode="after")
+    def attach_needs_push(self):
+        if self.run.attach and not self.push:
+            raise ValueError(
+                "run.attach names a run on the platform, so it needs push (drop --no-push)"
+            )
         return self

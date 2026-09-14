@@ -5,6 +5,9 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import subprocess
+import sys
+
 import pytest
 
 mark = pytest.mark
@@ -50,6 +53,12 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pytest.param(
+        "bash",
+        {"type": "modal", "allow": []},
+        marks=[mark.bash, mark.modal],
+        id="bash-harness-in-modal-framework-only",
+    ),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -81,9 +90,7 @@ ACP_RESUME_PLACEMENTS = [
         marks=[mark.pi, mark.docker],
         id="pi-responses-acp-in-docker",
     ),
-    pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
     pytest.param(
         "prime-agent",
@@ -414,7 +421,9 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime=harness_runtime
+        if isinstance(harness_runtime, dict)
+        else {"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
         max_tokens=8192,
@@ -673,6 +682,37 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
     for trace in traces:
         assert trace.ok
         assert trace.metrics["duet"] == 1.0
+
+
+# `_request` parks a cancelled run's fire-and-forget cancel in `_cancel_tasks` with a
+# `discard` done-callback. One loop turn later the sends have finished but the callbacks
+# are still queued behind us, so `close()` meets a set of finished tasks.
+CLOSE_WITH_FINISHED_CANCELS = """
+import asyncio, uuid
+from verifiers.v1.serve.client import EnvClient
+
+async def main():
+    client = EnvClient("tcp://127.0.0.1:1")
+    for _ in range(3):
+        task = asyncio.get_running_loop().create_task(client._send_cancel(uuid.uuid4().hex))
+        client._cancel_tasks.add(task)
+        task.add_done_callback(client._cancel_tasks.discard)
+    await asyncio.sleep(0)
+    assert all(task.done() for task in client._cancel_tasks) and client._cancel_tasks
+    await client.close()
+
+asyncio.run(main())
+"""
+
+
+def test_env_client_close_drains_finished_cancels():
+    """`close()` returns once every fire-and-forget cancel has run, also when all of them
+    finished before it looked: the state Ctrl-C leaves behind in served mode. A child
+    process bounds the check, since a `close()` that never yields to the loop never lets
+    an in-loop timeout fire either."""
+    subprocess.run(
+        [sys.executable, "-c", CLOSE_WITH_FINISHED_CANCELS], check=True, timeout=30
+    )
 
 
 @pytest.mark.e2e

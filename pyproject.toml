@@ -11,7 +11,7 @@ dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -33,6 +34,7 @@ dependencies = [
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.39",
+    "prime-runs>=0.1.2",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -99,7 +101,7 @@ harbor = [
     "harbor==0.21.0 ; python_full_version >= '3.12'",
 ]
 modal = [
-    "modal>=1.4.0",
+    "modal>=1.5.4",
 ]
 openenv = [
     "openenv>=0.4.1",
@@ -145,6 +147,7 @@ ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
+prime-runs = false
 prime-pydantic-config = false
 renderers = false
 
@@ -236,7 +239,6 @@ markers = [
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "pi: v1 e2e cases on the pi harness",
-    "pool: v1 e2e cases on the pool harness",
     "codex: v1 e2e cases on the codex harness",
     "asyncio: marks tests as async tests",
 ]

@@ -41,7 +41,11 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    TrainClientConfig,
+    resolve_api_key,
+)
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -127,15 +131,18 @@ def _capture_response(response: web.Response) -> ReplayResponse:
         data = bytes(body)
     else:
         raise TypeError("coalesced interception responses must have a byte body")
-    return ReplayResponse(status=response.status, body=data)
+    return ReplayResponse(
+        status=response.status,
+        body=data,
+        content_type=response.headers["Content-Type"],
+    )
 
 
 def _replay_response(response: ReplayResponse) -> web.Response:
     return web.Response(
         body=response.body,
         status=response.status,
-        content_type="application/json",
-        charset="utf-8",
+        headers={"Content-Type": response.content_type},
     )
 
 
@@ -490,13 +497,16 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        streaming = dialect.streaming(body)
+        relay_streaming = streaming and not isinstance(
+            session.ctx.client, TrainClientConfig
+        )
+        req_hash = await _request_digest(raw) if not relay_streaming else b""
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        streaming = dialect.streaming(body)
         try:
             acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
@@ -507,7 +517,7 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries: one logical non-streaming call must commit at most
+        # Graph atomicity under retries: one logical buffered call must commit at most
         # one turn. An explicit key identifies that call directly; otherwise only the SDK's
         # retry marker activates body-digest replay, since an unmarked repeated body can be a
         # legitimate later turn.
@@ -517,14 +527,14 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming and acp is None:
+            if relay_streaming and acp is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
                     ),
                     status=400,
                 )
-            if not streaming:
+            if not relay_streaming:
                 replay_key = f"explicit:{idempotency_key}"
             # This key identifies the harness-to-interception hop. The server owns its
             # replay semantics, and the body has since been rewritten with rollout model
@@ -534,7 +544,7 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
-        elif not streaming:
+        elif not relay_streaming:
             replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
         if replay_key is not None:
@@ -640,7 +650,9 @@ class InterceptionServer(Interception):
 
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
-            model_request = dialect.parse_request(body)
+            # Restricted mediation can mutate the body without reporting policy paths.
+            if request_rewrites or session.network_policy.network_restricted:
+                model_request = dialect.parse_request(body)
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools
             )
@@ -650,7 +662,7 @@ class InterceptionServer(Interception):
             return self._fail(session, dialect, error)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
-        if streaming:
+        if relay_streaming:
             return await self._stream(
                 request,
                 session,
@@ -665,7 +677,15 @@ class InterceptionServer(Interception):
             )
 
         def serve(response: Response) -> web.Response:
-            served = _completion_response(response.raw)
+            if streaming:
+                # Training generates a complete response with token metadata.
+                # Commit it through the normal path, then frame it for SSE clients.
+                served = web.Response(
+                    body=b"".join(dialect.stream_events(response.raw or {})),
+                    content_type="text/event-stream",
+                )
+            else:
+                served = _completion_response(response.raw)
             if idempotent is not None:
                 idempotent.response = _capture_response(served)
                 idempotent.completed_at = time.monotonic()

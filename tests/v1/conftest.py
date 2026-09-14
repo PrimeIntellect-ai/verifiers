@@ -24,7 +24,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
-harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `openclaw` / `codex` /
+harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
@@ -55,7 +55,7 @@ CI_MODEL = "openai/gpt-5.6-luna"
 
 
 @pytest.fixture
-def harness_runtime(request) -> str:
+def harness_runtime(request) -> str | dict:
     return request.param
 
 
@@ -188,6 +188,7 @@ def _eval_config(
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
+        push=False,
     )
 
 
