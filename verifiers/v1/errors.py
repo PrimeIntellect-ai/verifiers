@@ -199,6 +199,10 @@ def _http_class(status: int) -> type[SandboxError] | None:
         return SandboxDeniedError
     if status in (408, 504):
         return SandboxTimeoutError
+    if status == 507:
+        return SandboxDiskFullError  # the box's disk, not the platform: a hold through it waits for nothing
+    if status in (413, 422):
+        return SandboxError  # the request itself the box refuses: the same request again is the same refusal
     if status == 429 or status >= 500:
         return SandboxUnavailableError
     return None

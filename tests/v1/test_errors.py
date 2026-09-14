@@ -79,6 +79,13 @@ def _rpc(code: Code, message: str) -> APIError:
         (TimeoutError(), SandboxTimeoutError),
         (_http(503), SandboxUnavailableError),
         (_http(429), SandboxUnavailableError),
+        (
+            _http(507),
+            SandboxDiskFullError,
+        ),  # a box out of disk is no outage: no hold (r9: a turn frozen 30 min)
+        (_sdk_http(507), SandboxDiskFullError),
+        (_http(413), SandboxError),
+        (_http(422), SandboxError),
         (httpx.ConnectError("refused"), SandboxUnavailableError),
         (_http(404), SandboxNotFoundError),
         (_http(402), SandboxDeniedError),
