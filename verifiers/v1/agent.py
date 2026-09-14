@@ -389,6 +389,7 @@ class Agent:
         task: Task,
         *,
         runtime: Runtime | None = None,
+        runtime_factory: Callable[[RuntimeConfig], Runtime] | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
@@ -402,14 +403,17 @@ class Agent:
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        attempts' errors. `runtime_factory` constructs a fresh, unstarted runtime
+        owned by each attempt, for tasks that need a custom runtime topology."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        if runtime is not None and runtime_factory is not None:
+            raise ValueError("Choose a borrowed runtime or a runtime factory")
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, collect_artifacts, runtime_factory
             )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
@@ -442,6 +446,7 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
+        runtime_factory: Callable[[RuntimeConfig], Runtime] | None = None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
@@ -453,6 +458,7 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            runtime_factory=runtime_factory,
             **params,
         )
         try:
@@ -657,6 +663,7 @@ class _EpisodeAgent(Agent):
         task: Task,
         *,
         runtime: Runtime | None = None,
+        runtime_factory: Callable[[RuntimeConfig], Runtime] | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
@@ -665,6 +672,7 @@ class _EpisodeAgent(Agent):
             trace = await super().run(
                 task,
                 runtime=runtime,
+                runtime_factory=runtime_factory,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,

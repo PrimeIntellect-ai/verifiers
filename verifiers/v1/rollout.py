@@ -26,6 +26,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
+    register,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
@@ -69,6 +70,7 @@ class Rollout:
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
+        runtime_factory: Callable[[RuntimeConfig], Runtime] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> None:
@@ -83,6 +85,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._runtime_factory = runtime_factory
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
@@ -182,7 +185,12 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
+            self.runtime = (
+                self._runtime_factory(self.runtime_config)
+                if self._runtime_factory is not None
+                else make_runtime(self.runtime_config, name=self.trace.id)
+            )
+            register(self.runtime)
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
