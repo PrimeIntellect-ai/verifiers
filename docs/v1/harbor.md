@@ -85,7 +85,9 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 With the default Harbor env, tasks containing `environment/docker-compose.yaml`
 run their topology through Harbor on an unrestricted local Docker runtime. Compose
 preserves service entrypoints, commands, dependencies, health checks and networking;
-the agent executes in `main`. The env removes the entire project after the rollout.
+the agent executes in a single `main` container. Host networking is unsupported.
+Runtime defaults preserve the authored image and working directory; task settings
+and non-default runtime overrides take precedence. The rollout removes the project.
 GPU and restricted-network Compose runs are rejected. Separate graders still use
 the ordinary verifier runtime; sidecar artifacts and collect hooks are unsupported.
 
