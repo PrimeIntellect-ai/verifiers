@@ -552,7 +552,11 @@ class Rollout:
             if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
-                except Exception:
+                except Exception as error:
+                    # Custom project owners can require confirmed teardown before grading.
+                    if self._runtime_factory is not None:
+                        self.fail(error)
+                        trace.ok = False
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
