@@ -23,7 +23,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
-Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
+Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
