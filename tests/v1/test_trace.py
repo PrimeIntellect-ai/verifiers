@@ -175,7 +175,8 @@ def test_custom_task_state_round_trip(tmp_path):
     assert tr.state.artifacts["/artifact.bin"] == b"\xff\x00\xfe"
 
 
-def test_wire_trace_round_trip():
+@pytest.mark.parametrize("history_type", ["additional_tools", "tool_search_output"])
+def test_wire_trace_round_trip(history_type):
     mcp = {
         "type": "mcp",
         "server_label": "alpha",
@@ -190,8 +191,19 @@ def test_wire_trace_round_trip():
         "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
         "strict": False,
     }
+    stale = function | {"parameters": {"type": "object"}, "strict": True}
     request = ResponsesDialect().parse_request(
         {
+            "input": [
+                {
+                    "type": history_type,
+                    "call_id": "search",
+                    "tools": [
+                        stale,
+                        {"type": "namespace", "name": "mcp__world", "tools": [stale]},
+                    ],
+                }
+            ],
             "tools": [
                 function,
                 {"type": "namespace", "name": "mcp__world", "tools": [function]},
@@ -200,9 +212,12 @@ def test_wire_trace_round_trip():
                 {"type": "web_search", "search_context_size": "low"},
                 mcp,
                 mcp | {"server_label": "beta"},
-            ]
+            ],
         }
     )
+    assert request.tools is not None and len(request.tools) == 7
+    assert all(tool.parameters == function["parameters"] for tool in request.tools[:3])
+    assert all(tool.strict is False for tool in request.tools[:3])
     assistant = fold_assistant(
         [
             {
