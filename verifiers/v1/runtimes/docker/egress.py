@@ -18,6 +18,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_match
 
 HOST_ALIAS = "vf.host.internal"
 _CALLBACK_PREFIX = "/.vf-host/"
+_MAX_CALLBACK_CREDENTIALS = 4096
 _HEADER_TIMEOUT = 10
 _IO_TIMEOUT = 300
 
@@ -392,6 +393,13 @@ class EgressProxy:
                             callback.credential_origin,
                             hashlib.sha256(value).digest(),
                         )
+                        # Eviction could authorize an old credential at a new origin.
+                        if (
+                            credential not in self._authorization_origins
+                            and len(self._authorization_origins)
+                            >= _MAX_CALLBACK_CREDENTIALS
+                        ):
+                            raise ValueError("callback authorization capacity exceeded")
                         origin = (scheme, host, port)
                         if (
                             self._authorization_origins.setdefault(credential, origin)
