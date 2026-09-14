@@ -19,6 +19,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
+from verifiers.v1.routing import RoutingData, concatenate_routing
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
@@ -332,14 +333,40 @@ class Branch(BaseModel):
         return [mapping.get(t, 0) for t in self.token_ids]
 
     @property
-    def routed_experts(self) -> np.ndarray | None:
-        """uint8 `[tokens, layers, top_k]` routing; partial data returns None."""
+    def routed_experts(self) -> RoutingData | np.ndarray | None:
+        """Routing [T,L,K]. Full mode rejects gaps/mixed modes; legacy partial data is None."""
+        full = any(isinstance(n.routed_experts, RoutingData) for n in self.nodes)
+        if full:
+            for node in self.nodes:
+                data = node.routed_experts
+                if data is None:
+                    continue
+                if not isinstance(data, RoutingData):
+                    raise ValueError(  # noqa: TRY004 - invalid mixed-mode evidence
+                        "cannot mix full routing and legacy IDs-only routing"
+                    )
+                if len(data) != len(node.token_ids):
+                    raise ValueError("full routing node must match its token span")
         nodes = [n for n in self.nodes if n.token_ids]
         if not nodes or any(n.routed_experts is None for n in nodes):
+            if full:
+                raise ValueError("full routing branch has missing routing rows")
             return None
-        merged = np.concatenate([n.routed_experts for n in nodes], axis=0)
+        if full and sum(n.sampled for n in self.nodes) > 1:
+            raise ValueError("full routing replay does not support multi-turn branches")
+        merged = concatenate_routing([n.routed_experts for n in nodes])
         total = sum(len(n.token_ids) for n in nodes)
-        return merged if merged.shape[0] == total else None
+        if isinstance(merged, RoutingData) and len(merged) and not merged.valid[-1]:
+            terminal = nodes[-1]
+            if (
+                not terminal.sampled
+                or len(terminal.mask) != len(terminal.token_ids)
+                or not terminal.mask[-1]
+            ):
+                raise ValueError(
+                    "invalid final routing row must belong to a sampled terminal token"
+                )
+        return merged if len(merged) == total else None
 
     @property
     def sampling_mask(self) -> SamplingMask | None:
