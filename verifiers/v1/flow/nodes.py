@@ -34,7 +34,10 @@ runtime that node ran in), or an explicit runtime config."""
 class Join:
     kind: Literal["all", "any", "at_least"] = "all"
     k: int | Callable[..., int] = 0
-    """For `at_least`: the count, or a callable of `Upstream` (a config-dependent K)."""
+    """For `at_least`: the count, or a callable of `Upstream` (a config-dependent K).
+    A quorum that fires before all its predecessors have finished is RE-TRIGGERED
+    when a straggler later fires: the node runs a further visit and its `then`
+    targets execute again — consumers must be idempotent or guard on outcomes."""
 
 
 ALL = Join("all")
@@ -113,6 +116,10 @@ class RunNode(Node):
 @dataclass(frozen=True, kw_only=True)
 class FnNode(Node):
     func: Callable[..., Any | Awaitable[Any]]
+    over: Callable[..., Iterable[Any]] | None = None
+    """With `over`, the function runs once per item of `over(upstream)` as
+    `func(upstream, item)`, joined by `join` — dynamic fan-out without a model."""
+    max_active: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -158,11 +165,13 @@ def fn(
     *,
     then: Target | None = None,
     outcomes: dict[str, Target] | None = None,
+    over: Callable[..., Iterable[Any]] | None = None,
     **kw: Any,
 ) -> FnNode:
     """Host-side Python (sync or async) over `Upstream`; with `outcomes`, its return
-    value routes."""
-    return FnNode(func=func, then=then, outcomes=outcomes, **kw)
+    value routes. With `over=`, it runs once per item of `over(upstream)` as
+    `func(upstream, item)`, joined by `join` — dynamic fan-out without a model."""
+    return FnNode(func=func, then=then, outcomes=outcomes, over=over, **kw)
 
 
 def expand(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -22,9 +22,22 @@ class FlowConfig(BaseConfig):
     """Model for seats that pin none."""
     client: ClientConfig | None = None
     """Endpoint for seats that pin none."""
-    max_concurrent_rows: int = 4
+    max_concurrent_rows: int = Field(default=4, gt=0)
+    """Rows that may run at once; zero or negative would hang the gate forever."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
-    """Named capacity pools: max concurrently running node instances per pool."""
+    """Named capacity pools: max concurrently running node instances per pool.
+    Zero-capacity pools would deadlock node execution, so sizes must be positive."""
+
+    @field_validator("pools")
+    @classmethod
+    def _pools_positive(cls, pools: dict[str, int]) -> dict[str, int]:
+        empty = {name: size for name, size in pools.items() if size < 1}
+        if empty:
+            raise ValueError(
+                f"pool sizes must be >= 1 (got {empty}); a zero-capacity pool "
+                "deadlocks every node that holds it"
+            )
+        return pools
 
 
 ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)

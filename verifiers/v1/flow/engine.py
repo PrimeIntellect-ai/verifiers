@@ -52,6 +52,8 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger("verifiers.flow")
 
+_MISSING = object()  # a completed record/item whose value cannot be rehydrated: re-run it
+
 
 class RunResult(BaseModel):
     exit_code: int
@@ -70,11 +72,13 @@ class Upstream:
         config: Any,
         results: dict[str, Any],
         outcomes: dict[str, str | None],
+        items: dict[str, dict[int, Any]] | None = None,
     ) -> None:
         self.row = row
         self.config = config
         self._results = results
         self._outcomes = outcomes
+        self._items = items or {}
 
     def __getattr__(self, name: str) -> Any:
         results = self.__dict__.get("_results") or {}
@@ -86,6 +90,12 @@ class Upstream:
 
     def outcome(self, name: str) -> str | None:
         return self._outcomes.get(name)
+
+    def items(self, name: str) -> dict[int, Any]:
+        """A fan-out node's per-item results keyed by ORIGINAL index — stable when
+        the join drops failed items and across ledger resume (the positional
+        `up.<name>` list is not). A copy: mutating it cannot alter row state."""
+        return dict(self._items.get(name, {}))
 
 
 @dataclass
@@ -116,6 +126,21 @@ class Engine:
         run_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(run_dir)
         self.pools = Pools(self.config.pools)
+        declared = {
+            pool
+            for node in self.graph.nodes.values()
+            for pool in node.pools
+            if pool not in self.config.pools
+        }
+        if declared:
+            raise FlowError(
+                [
+                    (
+                        f"nodes declare unknown pools {sorted(declared)}; "
+                        f"config.pools has {sorted(self.config.pools)}"
+                    )
+                ]
+            )
         self._stack = AsyncExitStack()
         self._outcome_tools: dict[str, dict[str, SharedToolServer]] = {}
         # Any change to the graph shape or the config invalidates every ledger key.
@@ -134,10 +159,30 @@ class Engine:
 
         async def one(row: Any) -> RowResult:
             async with gate:
-                return await _Row(self, row).run()
+                try:
+                    key = row_key(row)
+                except Exception:  # noqa: BLE001 — an unkeyable row is a failed row
+                    return RowResult(
+                        row="<unkeyable>", ok=False, error=f"row cannot be keyed: {row!r}"
+                    )
+                try:
+                    return await _Row(self, row, key).run()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — a crashed row is a failed row, never a poisoned run
+                    return RowResult(row=key, ok=False, error=f"{type(exc).__name__}: {exc}")
 
         async with self._stack:
-            tasks = [asyncio.create_task(one(row)) async for row in _aiter(rows)]
+            self._outcome_tools.clear()  # run 1's servers exited with its stack
+            tasks: list[asyncio.Task] = []
+            try:
+                async for row in _aiter(rows):
+                    tasks.append(asyncio.create_task(one(row)))
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             return list(await asyncio.gather(*tasks))
 
     async def outcome_tools(
@@ -166,17 +211,19 @@ class Engine:
 
 
 class _Row:
-    def __init__(self, engine: Engine, row: Any) -> None:
+    def __init__(self, engine: Engine, row: Any, key: str | None = None) -> None:
         self.e = engine
         self.g = engine.graph
         self.row = row
-        self.key = row_key(row)
+        self.key = key or row_key(row)
         self.visits: dict[str, int] = {}
         self.fired: dict[str, dict[str, str | None]] = {}
         self.pending: set[str] = set()
         self.running: dict[asyncio.Task, str] = {}
         self.done: dict[str, _Done] = {}
         self.runtimes: dict[str, Runtime] = {}  # live runtimes other nodes inherit
+        self.attached: set[str] = set()  # nodes restored from the ledger, not re-run
+        self.items: dict[str, dict[int, Any]] = {}  # fan-out results by original index
         self.stack = AsyncExitStack()
         self.error: str | None = None
 
@@ -184,27 +231,36 @@ class _Row:
 
     async def run(self) -> RowResult:
         async with self.stack:
-            self.pending.add(self.g.entry)
-            while self.pending or self.running:
-                self._start_ready()
-                if not self.running:
-                    logger.info(
-                        "%s: %s can never fire; ending row",
-                        self.key,
-                        sorted(self.pending),
+            try:
+                self.pending.add(self.g.entry)
+                while self.pending or self.running:
+                    self._start_ready()
+                    if not self.running:
+                        if self.pending and self.error is None:
+                            self.error = (
+                                f"stuck: {sorted(self.pending)} can never fire"
+                            )
+                        break
+                    finished, _ = await asyncio.wait(
+                        self.running, return_when=asyncio.FIRST_COMPLETED
                     )
-                    break
-                finished, _ = await asyncio.wait(
-                    self.running, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in finished:
-                    name = self.running.pop(task)
-                    self._complete(name, task.result())
-                if self.error:
-                    for task in self.running:
-                        task.cancel()
-                    await asyncio.gather(*self.running, return_exceptions=True)
-                    break
+                    for task in finished:
+                        name = self.running.pop(task)
+                        self._complete(name, task.result())
+                    if self.error:
+                        for task in self.running:
+                            task.cancel()
+                        await asyncio.gather(
+                            *self.running, return_exceptions=True
+                        )
+                        break
+            finally:
+                # A cancelled row (external cancel, producer death) must not leave
+                # in-flight node tasks running past the row: they would write the
+                # ledger — and touch runtimes — after the caller saw cancellation.
+                for task in self.running:
+                    task.cancel()
+                await asyncio.gather(*self.running, return_exceptions=True)
         records = {d.node: d.record for d in self.done.values()}
         return RowResult(
             row=self.key, ok=self.error is None, records=records, error=self.error
@@ -242,11 +298,23 @@ class _Row:
 
     def _ready(self, name: str) -> bool:
         """A join fires per its policy over predecessors that have fired; a
-        predecessor that no live node can still reach counts as dead, not awaited."""
+        predecessor that no live node can still reach counts as dead, not awaited.
+        A cycle's bounded node (`max_visits`) is re-entered by any one of the
+        predecessors it cycles through; its join is over the others."""
         preds = self.g.preds.get(name, set())
         if not preds:
             return True
+        if not self.fired.get(name) and not self.visits.get(name):
+            # Never activated: the flow entry. Its predecessors are cycle back-edges
+            # (compile guarantees every node is reachable from it), which re-trigger
+            # the node but never gate its first visit.
+            return True
         fired = set(self.fired.get(name, {}))
+        if self.g.nodes[name].max_visits is not None:
+            back = {p for p in preds if p in self.g.reachable(name)}
+            if fired & back:
+                return True
+            preds, fired = preds - back, fired - back
         live = set(self.running.values()) | (self.pending - {name})
         reach: set[str] = set()
         for source in live:
@@ -256,8 +324,32 @@ class _Row:
         if join.kind == "any":
             return bool(fired)
         if join.kind == "at_least":
-            return len(fired) >= join.k or (bool(fired) and not alive)
+            if not fired:
+                return False
+            if callable(join.k):
+                try:
+                    k = join.k(self._upstream())
+                except AttributeError:
+                    # k reads an upstream that has not landed yet: not ready now;
+                    # it resolves as the pred fires, or dead-completes when it dies.
+                    return False
+            else:
+                k = join.k
+            if k < 1:
+                raise FlowError(
+                    [f"{name}: at_least quorum k={k} < 1 needs at least one pred"]
+                )
+            return len(fired) >= k or not alive
         return bool(fired) and not alive
+
+    def _upstream(self) -> Upstream:
+        return Upstream(
+            self.row,
+            self.e.config,
+            {n: d.value for n, d in self.done.items()},
+            {n: d.outcome for n, d in self.done.items()},
+            self.items,
+        )
 
     def _complete(self, name: str, done: _Done) -> None:
         self.done[name] = done
@@ -294,24 +386,29 @@ class _Row:
     async def _execute(
         self, node: Node, visit: int, fired: dict[str, str | None]
     ) -> _Done:
-        up = Upstream(
-            self.row,
-            self.e.config,
-            {n: d.value for n, d in self.done.items()},
-            {n: d.outcome for n, d in self.done.items()},
+        up = self._upstream()
+        upstream_keys = sorted(
+            _attach_material(self.done[p]) for p in fired if p in self.done
         )
-        upstream_keys = sorted(self.done[p].record.key for p in fired if p in self.done)
         key = digest(self.e.identity, self.key, node.name, visit, upstream_keys)[:24]
         existing = self.e.ledger.get(self.key, node.name, visit)
-        if existing and existing.key == key and existing.terminal == "completed":
+        if (
+            existing
+            and existing.key == key
+            and existing.terminal == "completed"
+            and (value := self._rehydrate(node, existing)) is not _MISSING
+        ):
             logger.info("%s: %s@%s attached to ledger", self.key, node.name, visit)
-            return _Done(node.name, existing, self._rehydrate(node, existing))
+            self.attached.add(node.name)
+            return _Done(node.name, existing, value)
 
         started = now()
         error: str | None = None
         for attempt in range(1, node.retries + 2):
             try:
-                outcome, value, extra = await self._run_kind(node, visit, up)
+                outcome, value, extra = await self._run_kind(
+                    node, visit, up, upstream_keys
+                )
                 record = self._record(
                     node,
                     visit,
@@ -379,28 +476,49 @@ class _Row:
         )
 
     def _rehydrate(self, node: Node, record: NodeRecord) -> Any:
-        if isinstance(node, ExpandNode):
-            return [self.e.ledger.trace(tid) for tid in record.trace_ids]
+        if isinstance(node, ExpandNode) or (isinstance(node, FnNode) and node.over):
+            per: dict[int, Any] = {}
+            for i, rec in self.e.ledger.item_records(
+                self.key, node.name, record.visit
+            ).items():
+                if rec.terminal != "completed":
+                    continue
+                value = self._rehydrate_item(node, rec)
+                if value is not _MISSING:
+                    per[i] = value
+            self.items.setdefault(node.name, {}).update(per)
+            if isinstance(node, ExpandNode):
+                traces = [self.e.ledger.trace(tid) for tid in record.trace_ids]
+                if any(t is None for t in traces):
+                    return _MISSING  # a trace is gone: attach nothing, re-run
+                return traces
+            return record.payload
         if isinstance(node, AgentNode):
-            return self.e.ledger.trace(record.trace_id or "")
+            trace = self.e.ledger.trace(record.trace_id or "")
+            return _MISSING if trace is None else trace
         if isinstance(node, RunNode):
             return RunResult.model_validate(record.payload)
         if isinstance(node, FnNode):
-            hint = typing.get_type_hints(node.func).get("return")
+            try:
+                hint = typing.get_type_hints(node.func).get("return")
+            except NameError:
+                hint = None  # a local string annotation is not resolvable on resume
             if isinstance(hint, type) and issubclass(hint, BaseModel):
                 return hint.model_validate(record.payload)
         return record.payload
 
     async def _run_kind(
-        self, node: Node, visit: int, up: Upstream
+        self, node: Node, visit: int, up: Upstream, upstream_keys: list[str]
     ) -> tuple[str | None, Any, dict]:
         if isinstance(node, AgentNode):
             return await self._run_agent(node, up)
         if isinstance(node, ExpandNode):
-            return await self._run_expand(node, visit, up)
+            return await self._run_expand(node, visit, up, upstream_keys)
         if isinstance(node, RunNode):
             return await self._run_command(node)
         if isinstance(node, FnNode):
+            if node.over is not None:
+                return await self._run_expand(node, visit, up, upstream_keys)
             return await self._run_fn(node, up)
         raise FlowError([f"{node.name}: unknown node kind {node.kind}"])
 
@@ -422,46 +540,59 @@ class _Row:
         )
 
     async def _run_expand(
-        self, node: ExpandNode, visit: int, up: Upstream
-    ) -> tuple[str | None, list[Trace], dict]:
+        self, node: ExpandNode | FnNode, visit: int, up: Upstream, upstream_keys: list[str]
+    ) -> tuple[str | None, list[Any], dict]:
+        """One item at a time over `node.over(up)` under `max_active`, joined by
+        `join`, each item a ledger record at its original index. An agent expand
+        rolls a seat per item; a fn with `over` runs host code per item — no model,
+        no runtime. Per-item keys bind identity + visit + the upstream material +
+        the item, so any upstream change re-rolls the items and a record can never
+        be confused with a neighbouring item."""
         items = list(node.over(up))
         gate = asyncio.Semaphore(node.max_active or max(len(items), 1))
         k = node.join.k(up) if callable(node.join.k) else node.join.k
+        if node.join.kind == "at_least" and k < 1:
+            raise FlowError(
+                [f"{node.name}: at_least quorum k={k} < 1 needs at least one item"]
+            )
         need = {"all": len(items), "any": 1, "at_least": k}[node.join.kind]
 
-        async def one(i: int, item: Any) -> tuple[int, Trace]:
+        async def one(i: int, item: Any) -> tuple[int, Any]:
             async with gate:
+                key = digest(
+                    self.e.identity, self.key, node.name, visit, upstream_keys, item
+                )[:24]
                 existing = self.e.ledger.get(self.key, node.name, visit, i)
                 if (
                     existing
                     and existing.terminal == "completed"
-                    and (trace := self.e.ledger.trace(existing.trace_id or ""))
+                    and existing.key == key
+                    and (value := self._rehydrate_item(node, existing)) is not _MISSING
                 ):
-                    return i, trace  # type: ignore[return-value]
-                trace = await self._rollout(node, node.make_task(up, item))
-                if not trace.ok:
-                    raise FlowError([f"{node.name}[{i}]: rollout failed"])
+                    self.items.setdefault(node.name, {})[i] = value
+                    return i, value  # attached to the ledger
+                value, extra = await self._expand_item(node, up, item, i)
                 record = self._record(
                     node,
                     visit,
-                    None,
-                    [],
+                    key,
+                    upstream_keys,
                     terminal="completed",
                     outcome="completed",
-                    trace_id=trace.id,
-                    reward=trace.reward,
+                    **extra,
                 )
                 self.e.ledger.put(record.model_copy(update={"index": i}))
-                return i, trace
+                self.items.setdefault(node.name, {})[i] = value
+                return i, value
 
         tasks = [asyncio.create_task(one(i, item)) for i, item in enumerate(items)]
-        got: dict[int, Trace] = {}
+        got: dict[int, Any] = {}
         failures: list[str] = []
         try:
             for fut in asyncio.as_completed(tasks):
                 try:
-                    i, trace = await fut
-                    got[i] = trace
+                    i, value = await fut
+                    got[i] = value
                 except Exception as exc:  # noqa: BLE001 — one item's failure is counted, not fatal
                     failures.append(str(exc))
                 if len(got) >= need:
@@ -474,8 +605,30 @@ class _Row:
             raise FlowError(
                 [f"{node.name}: {len(got)}/{need} items succeeded: {failures[:3]}"]
             )
-        traces = [got[i] for i in sorted(got)]
-        return "completed", traces, {"trace_ids": [t.id for t in traces]}
+        values = [got[i] for i in sorted(got)]
+        if isinstance(node, ExpandNode):
+            return "completed", values, {"trace_ids": [t.id for t in values]}
+        return "completed", values, {}
+
+    async def _expand_item(
+        self, node: ExpandNode | FnNode, up: Upstream, item: Any, i: int
+    ) -> tuple[Any, dict]:
+        if isinstance(node, FnNode):
+            async with self.e.pools.hold(node.pools):  # declared pools gate fn items
+                value = node.func(up, item)
+                if inspect.isawaitable(value):
+                    value = await value
+            return value, {"payload": _payload(value)}
+        trace = await self._rollout(node, node.make_task(up, item))
+        if not trace.ok:
+            raise FlowError([f"{node.name}[{i}]: rollout failed"])
+        return trace, {"trace_id": trace.id, "reward": trace.reward}
+
+    def _rehydrate_item(self, node: ExpandNode | FnNode, record: NodeRecord) -> Any:
+        if isinstance(node, FnNode):
+            return record.payload  # a fn item's payload is its value (None included)
+        trace = self.e.ledger.trace(record.trace_id or "")
+        return trace if trace is not None else _MISSING
 
     async def _run_command(self, node: RunNode) -> tuple[str | None, RunResult, dict]:
         async with self.e.pools.hold(node.pools), AsyncExitStack() as local:
@@ -499,9 +652,10 @@ class _Row:
         return outcome, value, {}
 
     async def _run_fn(self, node: FnNode, up: Upstream) -> tuple[str | None, Any, dict]:
-        value = node.func(up)
-        if inspect.isawaitable(value):
-            value = await value
+        async with self.e.pools.hold(node.pools):
+            value = node.func(up)
+            if inspect.isawaitable(value):
+                value = await value
         routes = node.outcomes is not None and isinstance(value, str)
         return (value if routes else "completed"), value, {}
 
@@ -547,6 +701,19 @@ class _Row:
         if node.inherits is not None:
             runtime = self.runtimes.get(node.inherits)
             if runtime is None:
+                if node.inherits in self.attached:
+                    raise FlowError(
+                        [
+                            (
+                                f"{node.name}: inherit:{node.inherits} but that node "
+                                "was restored from the ledger; a live runtime cannot "
+                                "be replayed or reconnected across resume — delete "
+                                f"its record to re-run {node.inherits} and re-provision "
+                                "as a deliberate operator choice: re-running repeats "
+                                "any external effects and can change accepted results"
+                            )
+                        ]
+                    )
                 raise FlowError(
                     [
                         f"{node.name}: inherit:{node.inherits} but its runtime is not live"
@@ -581,6 +748,18 @@ async def _aiter(rows: Iterable[Any] | AsyncIterable[Any]) -> AsyncIterable[Any]
     else:
         for row in rows:
             yield row
+
+
+def _attach_material(done: _Done) -> str:
+    """What binds a downstream key to an upstream instance: the upstream's record
+    key and what it produced — its payload, or the trace ids of a rollout (traces
+    are referenced, not embedded)."""
+    record = done.record
+    if record.trace_id:
+        return f"{record.key}:{record.trace_id}"
+    if record.trace_ids:
+        return f"{record.key}:{digest(record.trace_ids)}"
+    return f"{record.key}:{digest(done.value)[:16]}"
 
 
 def _payload(value: Any) -> Any:
