@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -103,9 +104,21 @@ class Harness(ABC, Generic[ConfigT]):
             if isinstance(skill, dict):
                 result = await runtime.run(
                     [
-                        "sh",
+                        "bash",
+                        "-e",
+                        "-o",
+                        "pipefail",
                         "-c",
-                        '[ -d "$1" ] && mkdir -p "$2" && if ! [ "$1" -ef "$2" ]; then cp -a "$1/." "$2/"; fi',
+                        r"""
+[ -d "$1" ]
+source=$(CDPATH= cd -- "$1/." && pwd -P)
+mkdir -p -- "$2"
+target=$(CDPATH= cd -- "$2/." && pwd -P)
+[ "$source" != "$target" ] || exit 0
+# A source such as "." must not copy the destination back into itself.
+exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
+tar -C "$source" --exclude="$exclude" -cf - . | tar -xpf - -C "$target"
+""",
                         "vf-skills",
                         skill["runtime"],
                         target_dir,
@@ -122,14 +135,23 @@ class Harness(ABC, Generic[ConfigT]):
             skill = skill.resolve()
             if not skill.is_dir():
                 raise ValueError(f"skill {str(skill)!r} is not a folder")
+            uploads = []
             executables = []
-            for file in sorted(skill.rglob("*")):
+            for file in skill.rglob("*"):
                 if not file.is_file():
                     continue
                 target = f"{target_dir}/{file.relative_to(skill).as_posix()}"
-                await runtime.write(target, file.read_bytes())
+                uploads.append((target, file.read_bytes()))
                 if os.access(file, os.X_OK):
                     executables.append(target)
+            # Finish this source before the next one overwrites matching files.
+            results = await asyncio.gather(
+                *(runtime.write(target, data) for target, data in uploads),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
             if executables:
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})

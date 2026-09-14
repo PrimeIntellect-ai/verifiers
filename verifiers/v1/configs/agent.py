@@ -14,7 +14,7 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for different phases of an agent's run."""
 
     setup: float | None = None  # one shared budget: task setup + provisioning
-    """Timeout (in seconds) for the task + harness setup hooks."""
+    """Timeout (in seconds) for task/harness setup through session preparation."""
     rollout: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None

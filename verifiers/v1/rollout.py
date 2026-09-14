@@ -43,7 +43,7 @@ class RolloutTimeouts:
     """Per-stage rollout timeouts, each bounding one rollout stage."""
 
     setup: float | None = None
-    """Timeout (in seconds) for the task + harness setup hooks."""
+    """Timeout (in seconds) for task/harness setup through session preparation."""
     agent: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None
@@ -219,7 +219,7 @@ class Rollout:
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
-            # Task setup and harness provisioning share one setup-stage deadline.
+            # Setup hooks and harness session preparation share one deadline.
             setup_deadline = (
                 None
                 if self._timeouts.setup is None
@@ -269,7 +269,10 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-            async with boundary(HarnessError, "opening harness session"):
+            async with (
+                boundary(HarnessError, "opening harness session"),
+                asyncio.timeout_at(setup_deadline),
+            ):
                 harness_data = self.trace.task.data
                 if (
                     self._session.request_interceptors
