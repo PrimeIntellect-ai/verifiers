@@ -42,6 +42,7 @@ from verifiers.v1.types import (
     ToolMessage,
     UserMessage,
 )
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import (
     cap_remote_agent_timeout,
     resolve_runtime_config,
@@ -456,7 +457,15 @@ class Agent:
         except BaseException:
             # A cancellation mid-run (or a lifetime bug raised to the caller) means
             # close() never runs — free the run's servers and owned runtime first.
-            await run.abort()
+            # run_shielded: a task unwinding a pending cancellation re-raises
+            # CancelledError at its next await, which would otherwise cut abort()
+            # at its first await (kernel session close) — before runtime.stop() —
+            # and leak the sandbox. The shield absorbs re-delivered cancels and lets
+            # abort() finish. The cancellation is re-raised after; under repeated
+            # cancellation the raised CancelledError object may differ from the
+            # first (the task still ends cancelled — outcome preserved, no
+            # object-identity claim).
+            await run_shielded(run.abort())
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
