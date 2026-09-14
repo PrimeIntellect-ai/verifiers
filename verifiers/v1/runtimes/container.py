@@ -133,18 +133,18 @@ async def _abort_process_startup(
     )
     try:
         with contextlib.suppress(Exception):
-            if await proc.poll() is None:
-                await asyncio.wait_for(
-                    runtime._run_host(
-                        *runtime._exec({}),
-                        "sh",
-                        "-c",
-                        cleanup,
-                        "vf-process-cleanup",
-                        pidfile,
-                    ),
-                    timeout=5,
-                )
+            # An exited CLI client may have left its inner process running.
+            await asyncio.wait_for(
+                runtime._run_host(
+                    *runtime._exec({}),
+                    "sh",
+                    "-c",
+                    cleanup,
+                    "vf-process-cleanup",
+                    pidfile,
+                ),
+                timeout=5,
+            )
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.kill(), 5)

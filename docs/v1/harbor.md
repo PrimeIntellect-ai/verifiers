@@ -100,10 +100,11 @@ tasks are unsupported.
 
 The runtime's CPU and memory settings size the entire remote sandbox, so allow room
 for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
-All service images must be Docker-pullable inside the sandbox; Prime-only VM image
-references cannot serve as inner container images. Prime VM ports cannot be
-published externally. Modal publishes main's runtime service port through its
-encrypted tunnel, including when main shares another service's network namespace.
+Prebuilt service images must be Docker-pullable inside the sandbox; services with a
+`build` stanza are built there. Prime-only VM image references cannot serve as inner
+container images. Prime VM ports cannot be published externally. Modal publishes
+main's runtime service port through its encrypted tunnel, including when main shares
+another service's network namespace.
 
 The rollout removes the entire project or confirms remote sandbox termination before
 separate grading, which retains the ordinary fresh verifier runtime.

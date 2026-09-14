@@ -1,6 +1,7 @@
 """Prime VM ownership and command transport for Harbor Compose."""
 
 import asyncio
+import atexit
 import shlex
 
 from verifiers.v1.errors import SandboxError
@@ -56,8 +57,11 @@ class PrimeComposeVM(PrimeRuntime):
     async def teardown(self) -> None:
         from prime_sandboxes import APIError, AsyncSandboxClient
 
+        # Keep cleanup alive after a timeout even if the rollout releases this runtime.
+        atexit.register(self.cleanup)
         await super().teardown()
         if self.info.id is None:
+            atexit.unregister(self.cleanup)
             return
         # PrimeRuntime logs deletion failures; separate grading must instead wait
         # for confirmed solver teardown before creating its fresh verifier.
@@ -67,8 +71,9 @@ class PrimeComposeVM(PrimeRuntime):
                     sandbox = await client.get(self.info.id)
                 except APIError as error:
                     if str(error).startswith("HTTP 404:"):
-                        return
+                        break
                     raise
                 if str(sandbox.status) == "TERMINATED":
-                    return
+                    break
                 await asyncio.sleep(1)
+        atexit.unregister(self.cleanup)

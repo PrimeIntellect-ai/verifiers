@@ -40,6 +40,9 @@ class HarborComposeRuntime(DockerRuntime):
                 "Harbor Compose on local Docker requires public networking"
             )
         super().__init__(config, host=host)
+        if host is not None:
+            # Expose provisioning updates to the trace while the host is still starting.
+            host.info = self.info
         self.task = task
         self._setup_timeout = setup_timeout
         self._main_overrides = config.model_dump(
@@ -84,7 +87,6 @@ class HarborComposeRuntime(DockerRuntime):
         project_dir = str(environment)
         if self._host is not None:
             await self._host.start()
-            self.info.id = self._host.info.id
             async with asyncio.timeout(60):
                 while (await self._run_host("docker", "info")).exit_code:
                     await asyncio.sleep(1)
