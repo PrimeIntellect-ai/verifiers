@@ -24,7 +24,6 @@ from verifiers.v1.flow.flow import Flow
 from verifiers.v1.flow.ledger import Ledger, NodeRecord, digest, now, row_key
 from verifiers.v1.flow.nodes import (
     AgentNode,
-    EvalNode,
     ExpandNode,
     FnNode,
     Node,
@@ -33,9 +32,21 @@ from verifiers.v1.flow.nodes import (
     _End,
     _names,
 )
-from verifiers.v1.flow.outcome import FlowTaskConfig, outcome_of
+from verifiers.v1.flow.outcome import (
+    OutcomeTools,
+    OutcomeToolsConfig,
+    outcome_of,
+    parse_outcome,
+)
 from verifiers.v1.flow.pools import Pools
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_runtime
+from verifiers.v1.mcp import SharedToolServer, serve_shared
+from verifiers.v1.runtimes import (
+    Runtime,
+    RuntimeConfig,
+    provision_runtime,
+    runtime_is_local,
+)
+from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 
@@ -47,13 +58,6 @@ class RunResult(BaseModel):
     stdout: str
     stderr: str
     outcome: str
-
-
-class EvalResult(BaseModel):
-    episodes: int
-    ok: int
-    mean_reward: float | None
-    output_dir: str
 
 
 class Upstream:
@@ -112,6 +116,8 @@ class Engine:
         run_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(run_dir)
         self.pools = Pools(self.config.pools)
+        self._stack = AsyncExitStack()
+        self._outcome_tools: dict[str, dict[str, SharedToolServer]] = {}
         # Any change to the graph shape or the config invalidates every ledger key.
         self.identity = digest(
             self.graph.structural_hash(), self.config.model_dump(mode="json")
@@ -128,7 +134,23 @@ class Engine:
             async with gate:
                 return await _Row(self, row).run()
 
-        return list(await asyncio.gather(*(one(row) for row in rows)))
+        async with self._stack:
+            return list(await asyncio.gather(*(one(row) for row in rows)))
+
+    async def outcome_tools(
+        self, node: AgentNode | ExpandNode
+    ) -> dict[str, SharedToolServer]:
+        """One `submit_outcome` server per node that declares outcomes, started on
+        first use and shared by every rollout of that node."""
+        if node.name not in self._outcome_tools:
+            allowed = [name for name in node.outcomes or {} if name != "*"]
+            toolset = OutcomeTools(OutcomeToolsConfig(allowed=allowed))
+            local = runtime_is_local(self.seat(node.seat).runtime)
+            servers = await self._stack.enter_async_context(
+                serve_shared([toolset], harness_is_local=local)
+            )
+            self._outcome_tools[node.name] = servers
+        return self._outcome_tools[node.name]
 
     def seat(self, name: str) -> AgentConfig:
         cfg: AgentConfig = getattr(self.config, name)
@@ -360,8 +382,6 @@ class _Row:
             return self.e.ledger.trace(record.trace_id or "")
         if isinstance(node, RunNode):
             return RunResult.model_validate(record.payload)
-        if isinstance(node, EvalNode):
-            return EvalResult.model_validate(record.payload)
         if isinstance(node, FnNode):
             hint = typing.get_type_hints(node.func).get("return")
             if isinstance(hint, type) and issubclass(hint, BaseModel):
@@ -376,11 +396,9 @@ class _Row:
         if isinstance(node, ExpandNode):
             return await self._run_expand(node, visit, up)
         if isinstance(node, RunNode):
-            return await self._run_command(node, visit)
+            return await self._run_command(node)
         if isinstance(node, FnNode):
             return await self._run_fn(node, up)
-        if isinstance(node, EvalNode):
-            return await self._run_eval(node, visit, up)
         raise FlowError([f"{node.name}: unknown node kind {node.kind}"])
 
     # -- kinds ----------------------------------------------------------------------
@@ -388,15 +406,12 @@ class _Row:
     async def _run_agent(
         self, node: AgentNode, up: Upstream
     ) -> tuple[str | None, Trace, dict]:
-        allowed = [name for name in node.outcomes or {} if name != "*"]
-        task = node.make_task(up)
-        self._declare_outcomes(node, task, allowed)
-        trace = await self._rollout(node, task)
+        trace = await self._rollout(node, node.make_task(up))
         if not trace.ok:
             raise FlowError(
                 [f"{node.name}: rollout failed: {[e.message for e in trace.errors]}"]
             )
-        outcome, summary = outcome_of(trace, allowed) if allowed else ("completed", "")
+        outcome, summary = outcome_of(trace) if node.outcomes else ("completed", "")
         return (
             outcome,
             trace,
@@ -458,18 +473,13 @@ class _Row:
         traces = [got[i] for i in sorted(got)]
         return "completed", traces, {"trace_ids": [t.id for t in traces]}
 
-    async def _run_command(
-        self, node: RunNode, visit: int
-    ) -> tuple[str | None, RunResult, dict]:
-        outcome_file = f"/tmp/flow-outcome-{self.key}-{node.name}-{visit}.json"
+    async def _run_command(self, node: RunNode) -> tuple[str | None, RunResult, dict]:
         async with self.e.pools.hold(node.pools), AsyncExitStack() as local:
             runtime = await self._runtime(node, local)
-            result = await runtime.run(
-                node.argv, {**node.env, "FLOW_OUTCOME": outcome_file}
-            )
-            outcome = await self._command_outcome(
-                runtime, node, result.exit_code, outcome_file
-            )
+            result = await runtime.run(node.argv, node.env)
+        outcome, _ = parse_outcome(result.stdout)
+        if outcome is None:
+            outcome = "completed" if result.exit_code == 0 else "failed"
         if node.outcomes is None and result.exit_code != 0:
             raise FlowError(
                 [
@@ -484,24 +494,6 @@ class _Row:
         )
         return outcome, value, {}
 
-    async def _command_outcome(
-        self, runtime: Runtime, node: RunNode, exit_code: int, outcome_file: str
-    ) -> str:
-        try:
-            written = json.loads((await runtime.read(outcome_file)).decode())
-        except Exception:  # noqa: BLE001 — no outcome file: the exit-code map decides
-            written = None
-        if isinstance(written, dict) and isinstance(written.get("outcome"), str):
-            return written["outcome"]
-        codes = node.exit_codes
-        fallback = "completed" if exit_code == 0 else "failed"
-        return (
-            codes.get(exit_code)
-            or codes.get(str(exit_code))
-            or codes.get("*")
-            or fallback
-        )
-
     async def _run_fn(self, node: FnNode, up: Upstream) -> tuple[str | None, Any, dict]:
         value = node.func(up)
         if inspect.isawaitable(value):
@@ -509,59 +501,29 @@ class _Row:
         routes = node.outcomes is not None and isinstance(value, str)
         return (value if routes else "completed"), value, {}
 
-    async def _run_eval(
-        self, node: EvalNode, visit: int, up: Upstream
-    ) -> tuple[str | None, EvalResult, dict]:
-        from verifiers.v1.cli.eval.runner import run_eval
-        from verifiers.v1.configs.cli.eval import EvalConfig
-
-        cfg = node.config(up) if callable(node.config) else node.config
-        if isinstance(cfg, dict):
-            cfg = EvalConfig.model_validate(cfg)
-        output_dir = str(self.e.run_dir / "eval" / f"{node.name}@{visit}")
-        cfg = cfg.model_copy(update={"output_dir": output_dir})
-        async with self.e.pools.hold(node.pools):
-            try:
-                episodes = await run_eval(cfg)
-            except Exception:  # infra failure is a routable outcome when declared
-                if node.outcomes and "infra_failed" in node.outcomes:
-                    empty = EvalResult(
-                        episodes=0, ok=0, mean_reward=None, output_dir=output_dir
-                    )
-                    return "infra_failed", empty, {}
-                raise
-        rewards = [t.reward for ep in episodes for t in ep.traces if t.ok]
-        value = EvalResult(
-            episodes=len(episodes),
-            ok=sum(ep.ok for ep in episodes),
-            mean_reward=sum(rewards) / len(rewards) if rewards else None,
-            output_dir=output_dir,
-        )
-        return "completed", value, {"reward": value.mean_reward}
-
     # -- runtimes -------------------------------------------------------------------
-
-    def _declare_outcomes(self, node: Node, task: Task, allowed: list[str]) -> None:
-        if not allowed:
-            return
-        if not isinstance(task.config, FlowTaskConfig):
-            raise FlowError(
-                [
-                    f"{node.name}: outcomes need a FlowTask (its config carries the outcome tool)"
-                ]
-            )
-        task.config = task.config.model_copy(update={"outcomes": allowed})
 
     async def _rollout(self, node: AgentNode | ExpandNode, task: Task) -> Trace:
         """Run the seat on `task`, in its own runtime unless the node inherits one
-        or a later node inherits this one's."""
+        or a later node inherits this one's. A node with outcomes gets the
+        `submit_outcome` tool; its task's state must carry `outcome` to receive it."""
+        tools = None
+        if node.outcomes:
+            tools = await self.e.outcome_tools(node)
+            if "outcome" not in state_cls(type(task)).model_fields:
+                logger.warning(
+                    "%s: %s has no `outcome` state field; routing falls back to an "
+                    "`Outcome:` line in the last reply",
+                    node.name,
+                    type(task).__name__,
+                )
         agent = make_agent(self.e.seat(node.seat))
         async with agent, self.e.pools.hold(node.pools), AsyncExitStack() as local:
             if node.inherits is None and node.name not in self.g.held:
-                trace = await agent.run(task)
+                trace = await agent.run(task, tools=tools)
             else:
                 runtime = await self._runtime(node, local, agent=agent, task=task)
-                trace = await agent.run(task, runtime=runtime)
+                trace = await agent.run(task, runtime=runtime, tools=tools)
         await self.e.ledger.append(trace, env=self.g.name)
         return trace
 

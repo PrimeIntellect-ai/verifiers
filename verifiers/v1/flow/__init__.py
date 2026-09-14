@@ -7,7 +7,7 @@ explicit, and every node instance has a ledger entry the next run attaches to.
 """
 
 from verifiers.v1.flow.compile import FlowError, Graph
-from verifiers.v1.flow.engine import Engine, EvalResult, RowResult, RunResult, Upstream
+from verifiers.v1.flow.engine import Engine, RowResult, RunResult, Upstream
 from verifiers.v1.flow.flow import Flow, FlowConfig
 from verifiers.v1.flow.ledger import Ledger, NodeRecord
 from verifiers.v1.flow.nodes import (
@@ -18,17 +18,15 @@ from verifiers.v1.flow.nodes import (
     Node,
     agent,
     at_least,
-    evaluate,
     expand,
     fn,
     run,
 )
 from verifiers.v1.flow.outcome import (
-    FlowTask,
-    FlowTaskConfig,
     OutcomeState,
     OutcomeTools,
     outcome_of,
+    parse_outcome,
 )
 from verifiers.v1.flow.pools import Pools
 
@@ -37,12 +35,9 @@ __all__ = [
     "ANY",
     "END",
     "Engine",
-    "EvalResult",
     "Flow",
     "FlowConfig",
     "FlowError",
-    "FlowTask",
-    "FlowTaskConfig",
     "Graph",
     "Join",
     "Ledger",
@@ -56,9 +51,9 @@ __all__ = [
     "Upstream",
     "agent",
     "at_least",
-    "evaluate",
     "expand",
     "fn",
     "outcome_of",
+    "parse_outcome",
     "run",
 ]

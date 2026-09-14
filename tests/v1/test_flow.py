@@ -1,5 +1,5 @@
 """The flow engine on model-free nodes: compile checks, routing, fan-out and joins,
-bounded cycles, ledger resume, and command nodes."""
+bounded cycles, ledger resume, command nodes, and inherited runtimes."""
 
 from typing import Literal
 
@@ -152,25 +152,24 @@ async def test_at_least_join_fires_before_all_predecessors(tmp_path):
     assert result.ok and result.records["pick"].payload in (["a"], ["b"], ["a", "b"])
 
 
-async def test_run_node_routes_on_outcome_file_and_exit_code(tmp_path):
+async def test_run_node_routes_on_outcome_line_or_exit_code(tmp_path):
     class Commands(Flow):
         say = run(
-            ["sh", "-c", 'printf \'{"outcome": "loud"}\' > "$FLOW_OUTCOME"'],
+            ["sh", "-c", "echo hello; echo 'Outcome: loud'"],
             runtime=vf.SubprocessConfig(),
             outcomes={"loud": "check", "*": END},
         )
         check = run(
             ["sh", "-c", "exit 3"],
             runtime=vf.SubprocessConfig(),
-            exit_codes={0: "pass", "*": "fail"},
-            outcomes={"pass": END, "fail": "note"},
+            outcomes={"completed": END, "failed": "note"},
         )
         note = fn(lambda up: up.check.exit_code)
 
     (result,) = await Engine(Commands(), tmp_path / "run").run([{"id": 1}])
     assert result.ok, result.error
     assert result.records["say"].outcome == "loud"
-    assert result.records["check"].outcome == "fail"
+    assert result.records["check"].outcome == "failed"
     assert result.records["note"].payload == 3
 
 
@@ -195,7 +194,7 @@ async def test_inherited_runtime_is_the_same_live_runtime(tmp_path):
 
     class Shared(Flow):
         write = run(
-            ["sh", "-c", f'echo "$FLOW_OUTCOME" > {marker}'],
+            ["sh", "-c", f"echo shared > {marker}"],
             runtime=vf.SubprocessConfig(),
             then="read",
         )
@@ -203,9 +202,4 @@ async def test_inherited_runtime_is_the_same_live_runtime(tmp_path):
 
     (result,) = await Engine(Shared(), tmp_path / "run").run([{"id": 1}])
     assert result.ok, result.error
-    assert (
-        result.records["read"]
-        .payload["stdout"]
-        .strip()
-        .startswith("/tmp/flow-outcome-")
-    )
+    assert result.records["read"].payload["stdout"].strip() == "shared"

@@ -106,19 +106,12 @@ class AgentNode(Node):
 class RunNode(Node):
     argv: list[str]
     env: dict[str, str] = field(default_factory=dict)
-    exit_codes: dict[int | str, str] = field(default_factory=dict)
     pools: tuple[str, ...] = ("runtimes",)
 
 
 @dataclass(frozen=True, kw_only=True)
 class FnNode(Node):
     func: Callable[..., Any | Awaitable[Any]]
-
-
-@dataclass(frozen=True, kw_only=True)
-class EvalNode(Node):
-    config: Any  # EvalConfig | dict | Callable[[Upstream], EvalConfig]
-    pools: tuple[str, ...] = ("runtimes",)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -138,7 +131,8 @@ def agent(
     outcomes: dict[str, Target] | None = None,
     **kw: Any,
 ) -> AgentNode:
-    """One verifiers Agent (the config field `seat`) on the Task `make_task(upstream)` builds."""
+    """One verifiers Agent (the config field `seat`) on the Task `make_task(upstream)`
+    returns. With `outcomes`, the agent gets a `submit_outcome` tool."""
     return AgentNode(seat=seat, make_task=make_task, then=then, outcomes=outcomes, **kw)
 
 
@@ -148,20 +142,13 @@ def run(
     runtime: RuntimeSpec,
     then: Target | None = None,
     outcomes: dict[str, Target] | None = None,
-    exit_codes: dict[int | str, str] | None = None,
     env: dict[str, str] | None = None,
     **kw: Any,
 ) -> RunNode:
-    """A command in a runtime, no model. Its outcome is the JSON `{"outcome": ...}` it
-    writes to `$FLOW_OUTCOME`, else `exit_codes` (`"*"` is the default key)."""
+    """A command in a runtime, no model. Its outcome is the last `Outcome: <name>`
+    line on stdout; without one, exit 0 is `completed` and anything else `failed`."""
     return RunNode(
-        argv=argv,
-        runtime=runtime,
-        then=then,
-        outcomes=outcomes,
-        exit_codes=exit_codes or {},
-        env=env or {},
-        **kw,
+        argv=argv, runtime=runtime, then=then, outcomes=outcomes, env=env or {}, **kw
     )
 
 
@@ -172,20 +159,9 @@ def fn(
     outcomes: dict[str, Target] | None = None,
     **kw: Any,
 ) -> FnNode:
-    """Host-side Python over `Upstream`; with `outcomes`, its return value routes."""
+    """Host-side Python (sync or async) over `Upstream`; with `outcomes`, its return
+    value routes."""
     return FnNode(func=func, then=then, outcomes=outcomes, **kw)
-
-
-def evaluate(
-    config: Any,
-    *,
-    then: Target | None = None,
-    outcomes: dict[str, Target] | None = None,
-    **kw: Any,
-) -> EvalNode:
-    """An existing taskset + env end to end through `run_eval`, scoring intact.
-    Outcomes: `completed` | `infra_failed`."""
-    return EvalNode(config=config, then=then, outcomes=outcomes, **kw)
 
 
 def expand(
@@ -198,7 +174,8 @@ def expand(
     max_active: int | None = None,
     **kw: Any,
 ) -> ExpandNode:
-    """The same agent node once per item of `over(upstream)`, joined by `join`."""
+    """The same agent node once per item of `over(upstream)`, built by
+    `make_task(upstream, item)` and joined by `join`."""
     return ExpandNode(
         seat=seat,
         make_task=make_task,
