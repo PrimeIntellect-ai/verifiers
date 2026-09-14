@@ -620,6 +620,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                         }
                     )
                 )
+        tools = list({(t.namespace, t.name, t.type): t for t in tools}.values())
         return Request(messages=prompt, tools=tools or None)
 
     def parse_response(self, response: OpenAIResponse) -> Response:
