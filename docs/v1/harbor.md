@@ -82,6 +82,8 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 
 ## Docker Compose
 
+Select `runtime.type = "docker"` to run Compose tasks locally.
+
 With the default Harbor env, tasks containing `environment/docker-compose.yaml`
 run their topology through Harbor on an unrestricted local Docker runtime. Compose
 preserves service entrypoints, commands, dependencies, health checks and networking;
