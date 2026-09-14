@@ -44,7 +44,7 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
     mounts = getattr(config, "mounts", {})
     if not mounts:
         return
-    workdir = getattr(config, "workdir", None) or "/"
+    workdir = getattr(config, "workdir", None) or "/app"
     for source in [ARTIFACTS_DIR, *sources]:
         path = posixpath.join(workdir, source)
         path = posixpath.normpath("/" + path.lstrip("/"))
