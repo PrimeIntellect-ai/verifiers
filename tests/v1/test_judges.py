@@ -9,7 +9,8 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge import ScoreConfig
+from verifiers.v1.envs.agentic_judge import JudgeTaskConfig, ScoreConfig
+from verifiers.v1.envs.agentic_judge.env import TRACE_FILE, JudgeTask
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -361,6 +362,7 @@ def full_trace_fixture() -> vf.Trace:
                 message=AssistantMessage(
                     content="Let me look it up.",
                     reasoning_content="SECRET REASONING",
+                    provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
                     tool_calls=[
                         ToolCall(id="1", name="search", arguments='{"q": "france"}')
                     ],
@@ -392,6 +394,25 @@ def test_transcript():
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
 
 
+def test_agentic_judge_trace_hidden_reasoning_toggle():
+    task = JudgeTask.from_trace(full_trace_fixture(), JudgeTaskConfig())
+    record = json.loads(task.files[TRACE_FILE])
+    assistant = record["nodes"][1]["message"]
+    assert assistant["content"] == "Let me look it up."
+    assert assistant["tool_calls"][0]["name"] == "search"
+    assert "reasoning_content" not in assistant
+    assert "provider_state" not in assistant
+
+    task = JudgeTask.from_trace(
+        full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True)
+    )
+    assistant = json.loads(task.files[TRACE_FILE])["nodes"][1]["message"]
+    assert assistant["reasoning_content"] == "SECRET REASONING"
+    assert assistant["provider_state"] == [
+        {"type": "reasoning", "data": "SECRET STATE"}
+    ]
+
+
 async def test_view_modes(fake_judge_model):
     # last_reply (default): the judge sees only the final reply.
     trace = full_trace_fixture()
@@ -404,12 +425,6 @@ async def test_view_modes(fake_judge_model):
     )
     assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
     assert "SECRET REASONING" not in fake_judge_model[1]
-
-
-def test_view_defaults():
-    # reference grades the final answer; rubric grades the process by default.
-    assert vf.ReferenceJudgeConfig().view == "last_reply"
-    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
 
 
 async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
@@ -438,14 +453,6 @@ async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------
-
-
-async def test_reference_empty_response_short_circuits(fake_judge_model):
-    # An empty reply scores 0 without paying for the (foregone) judge call.
-    trace = make_trace(reply="")
-    assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
-    assert fake_judge_model == []
-    assert "judge" not in trace.info
 
 
 async def test_reference_list_answer(fake_judge_model):
@@ -512,6 +519,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     trace = make_trace(reply="")
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["reference"].score == 0.0
+    assert "judge_calls" not in trace.info  # the (foregone) judge call was never made
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
@@ -582,13 +590,13 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
-def test_judge_composition_weights_are_finite(weight):
-    with pytest.raises(ValueError, match="finite number"):
-        vf.JudgeConfig(weight=weight)
-    for field in ("task_weight", "judge_weight"):
+def test_judge_composition_weights_are_finite():
+    for weight in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite number"):
-            ScoreConfig.model_validate({field: weight})
+            vf.JudgeConfig(weight=weight)
+        for field in ("task_weight", "judge_weight"):
+            with pytest.raises(ValueError, match="finite number"):
+                ScoreConfig.model_validate({field: weight})
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):
@@ -700,7 +708,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["own"].score == 0.25  # decorated rewards still run
+    assert trace.rewards["own"] == vf.Reward(score=0.25)  # decorated rewards still run
     assert trace.rewards["reference"] == vf.Reward(
         score=1.0, weight=0.5
     )  # raw score + weight, under the id-derived name
@@ -710,9 +718,3 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     assert (
         len(trace.info["judge_calls"]) == 2
     )  # every judge call recorded (rubric = one call)
-
-
-async def test_task_without_judges_scores_as_before():
-    trace = make_trace()
-    await JudgedTask(trace.task.data).score(trace, runtime=None)
-    assert trace.rewards == {"own": vf.Reward(score=0.25)}

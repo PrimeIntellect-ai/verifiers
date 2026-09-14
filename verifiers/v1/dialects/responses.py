@@ -315,7 +315,10 @@ def fold_assistant(items: list[dict] | None) -> AssistantMessage:
 def response_from_wire(response: OpenAIResponse) -> Response:
     """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
     assistant message)."""
-    data = response.model_dump()
+    # Copy the output snapshot without traversing echoed tools or request settings.
+    data = response.model_dump(
+        include={"id", "created_at", "model", "status", "error", "output"}
+    )
     status = data.get("status")
     if status not in (None, "completed", "incomplete"):
         error = data.get("error") or {}

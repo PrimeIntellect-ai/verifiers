@@ -29,8 +29,7 @@ CHAT_PROGRAM = (
     '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, compaction, core)
-MCP_CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
 
 
 async def launch_chat_program(
@@ -45,7 +44,6 @@ async def launch_chat_program(
     system_prompt: str | None,
     prompt: str | Messages | None,
     *,
-    source_with_mcp: str | None = None,
     extra_args: Sequence[str] = (),
     env: dict[str, str] | None = None,
     activate: bool = True,
@@ -60,7 +58,6 @@ async def launch_chat_program(
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
     if mcp_urls:
-        source = source_with_mcp or source
         args.append(
             "--mcp-config="
             + json.dumps(

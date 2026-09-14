@@ -4,16 +4,17 @@ import argparse
 import asyncio
 import json
 import subprocess
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI, omit
+from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
-        CompactionFailed,
         Compactor,
         bound_tool_message,
         compactable,
@@ -191,7 +192,29 @@ async def chat(
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    return await client.chat.completions.create(**kwargs)
+    raw_stream = await client.chat.completions.create(
+        **kwargs, stream=True, stream_options={"include_usage": True}
+    )
+    # Accumulate native deltas without auto-parsing tool arguments or treating
+    # finish_reason="length" as an exception: compaction owns that decision.
+    async with AsyncChatCompletionStream(
+        raw_stream=raw_stream, response_format=omit, input_tools=[]
+    ) as response:
+        completion = None
+        async for event in response:
+            if event.type == "chunk":
+                completion = event.snapshot
+        if (
+            completion is None
+            or not completion.choices
+            or any(choice.finish_reason is None for choice in completion.choices)
+        ):
+            raise RuntimeError("model stream ended before a completion finished")
+        for choice in completion.choices:
+            # Some providers repeat the role in each delta. The SDK concatenates
+            # these strings, but the role is metadata, not incremental content.
+            choice.message.role = "assistant"
+        return completion
 
 
 async def run_tool_hook(
@@ -225,10 +248,6 @@ async def run_chat_loop(
     while True:
         try:
             completion, messages = await compactor.complete(messages)
-        except CompactionFailed:
-            # The context is exhausted and could not be summarized: end the run
-            # cleanly with what the conversation holds - still a trainable sample.
-            return
         except APIStatusError as error:
             # Null cannot compact, so context exhaustion ends it with the transcript so far.
             if args.bash or not is_context_overflow(error):
@@ -309,10 +328,7 @@ async def run_chat_loop(
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):
-            try:
-                messages = await compactor.compact(messages)
-            except CompactionFailed:
-                return
+            messages = await compactor.compact(messages)
 
 
 def parse_args() -> argparse.Namespace:
@@ -361,35 +377,37 @@ async def main() -> None:
     if args.search:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
-    if config.get("mcpServers"):
-        mcp_tools, dispatch, servers = await asyncio.wait_for(
-            connect_mcp(config, reserved), timeout=None if args.bash else 60
+    async with AsyncExitStack() as mcp_stack:
+        if config.get("mcpServers"):
+            mcp_tools, dispatch, servers = await asyncio.wait_for(
+                connect_mcp(config, mcp_stack, reserved),
+                timeout=None if args.bash else 60,
+            )
+        else:
+            mcp_tools, dispatch, servers = [], {}, {}
+        tools += mcp_tools
+        messages = (
+            [{"role": "system", "content": args.system_prompt}]
+            if args.system_prompt
+            else []
         )
-    else:
-        mcp_tools, dispatch, servers = [], {}, {}
-    tools += mcp_tools
-    messages = (
-        [{"role": "system", "content": args.system_prompt}]
-        if args.system_prompt
-        else []
-    )
-    if initial:
-        messages.extend(initial)
-    elif args.prompt:
-        messages.append({"role": "user", "content": args.prompt})
-    compactor = Compactor(
-        client,
-        args.model,
-        tools,
-        args.compaction,
-        args.summarize_at_tokens,
-    )
-    if compactor.enabled and compactor.threshold is None:
-        compactor.threshold = await discover_threshold(client, args.model)
-    # The initial conversation is the floor for checkpoint fallbacks: a first-turn
-    # checkpoint must never retry from an empty base.
-    compactor.note_good(messages)
-    await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
+        if initial:
+            messages.extend(initial)
+        elif args.prompt:
+            messages.append({"role": "user", "content": args.prompt})
+        compactor = Compactor(
+            client,
+            args.model,
+            tools,
+            args.compaction,
+            args.summarize_at_tokens,
+        )
+        if compactor.enabled and compactor.threshold is None:
+            compactor.threshold = await discover_threshold(client, args.model)
+        # The initial conversation is the floor for checkpoint fallbacks: a first-turn
+        # checkpoint must never retry from an empty base.
+        compactor.note_good(messages)
+        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
     if tool_client is not None:
         await tool_client.aclose()
 

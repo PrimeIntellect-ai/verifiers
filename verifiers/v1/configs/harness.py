@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
+
+PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
+"""A release/tag a harness pins its program install to."""
 
 
 class HarnessConfig(BaseConfig):

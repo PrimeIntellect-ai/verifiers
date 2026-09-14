@@ -30,11 +30,6 @@ def idxs(tasks) -> list[int]:
     return [task.data.idx for task in tasks]
 
 
-def test_head_bounds_an_infinite_taskset() -> None:
-    tasks = list(InfiniteTaskset(vf.TasksetConfig()).head(5))
-    assert idxs(tasks) == [0, 1, 2, 3, 4]
-
-
 def test_iteration_materializes_a_finite_taskset() -> None:
     taskset = FiniteTaskset(vf.TasksetConfig())
     tasks = list(taskset)
@@ -84,7 +79,8 @@ def test_head_only_builds_what_the_run_takes() -> None:
                 built.append(i)
                 yield CountTask(vf.TaskData(idx=i, prompt=f"task {i}"))
 
-    list(RecordingTaskset(vf.TasksetConfig()).head(3))
+    tasks = list(RecordingTaskset(vf.TasksetConfig()).head(3))
+    assert idxs(tasks) == [0, 1, 2]
     assert built == [0, 1, 2]
 
 

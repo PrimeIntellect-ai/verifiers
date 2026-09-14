@@ -3,13 +3,13 @@
 import hashlib
 import json
 import logging
-import shlex
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -36,9 +36,9 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && exit 0
+[ -x "$prefix/bin/prime-agent" ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
-export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
+export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
 ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
@@ -83,6 +83,7 @@ repacked="$(npm pack "$download_dir/package-root/package" \
 PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
     --no-fund --no-audit --loglevel=error --progress=false \
     "$download_dir/repacked/$repacked"
+[ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
 """
 
 
@@ -157,26 +158,19 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
-        lock = f"{PRIME_AGENT_DIR}/install.lock"
-        guarded = (
-            f"mkdir -p {PRIME_AGENT_DIR} && "
-            f'"$(command -v flock || command -v lockf)" {lock} '
-            f"sh -c {shlex.quote(INSTALL)}"
-        )
-        result = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=PRIME_AGENT_DIR,
+            install=INSTALL,
+            env={
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
             },
+            label="prime-agent",
         )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent install failed: {result.stderr.strip()[-500:]}"
-            )
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -261,35 +255,23 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
 
-        wrapper = f"{root}/prime-agent"
-        await runtime.write(
-            wrapper,
-            (
-                "#!/bin/sh\n"
-                "set -eu\n"
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"\n'
-                f'exec {shlex.join(args)} "$@"\n'
-            ).encode(),
-        )
-        executable = await runtime.run(["chmod", "700", wrapper], {})
-        if executable.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent wrapper chmod failed: {executable.stderr.strip()[-500:]}"
-            )
-
         return ACPConfig(
             env=self._env(trace, secret),
-            command=[wrapper],
+            # Expand the sandbox's PATH while keeping every agent argument literal.
+            command=[
+                "/bin/sh",
+                "-eu",
+                "-c",
+                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                "prime-agent",
+                *args,
+            ],
             prompt=prompt,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self._root(trace)
-        removed = await runtime.run(["rm", "-rf", root], {})
-        if removed.exit_code != 0:
-            raise RuntimeError(
-                f"prime-agent state cleanup failed: {removed.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, root, "prime-agent state")
 
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"

@@ -1,11 +1,12 @@
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-import httpx2
-from mcp import Client
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+from anyio import CancelScope
+
+if TYPE_CHECKING:
+    from mcp import Client
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
@@ -14,13 +15,21 @@ T = TypeVar("T")
 
 
 @asynccontextmanager
-async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
+async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
     """Open one fresh MCP client in the caller's task.
 
     The client negotiates the newest protocol and falls back for older servers.
     Teardown failures after the body completes are suppressed so closing noise cannot
     fail or replay a call whose result is already available.
     """
+    # Bundled chat programs also run without tools; load MCP only when it is used.
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
+
     stack = AsyncExitStack()
     try:
         http_client = await stack.enter_async_context(
@@ -39,38 +48,105 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator[Client]:
             await stack.aclose()
 
 
-async def with_retry(call: Callable[[], Awaitable[T]]) -> T:
-    """Run one client operation with the existing at-least-once retries."""
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
-        reraise=True,
-    ):
-        with attempt:
-            return await call()
-    raise RuntimeError("retrying stopped without returning or raising")
+class MCPConnection:
+    """One rollout-owned client, with operations serialized across reconnects.
+
+    The SDK's AnyIO contexts enter and exit in the owner task, even when discovery
+    runs under wait_for or a tool call is cancelled by another task.
+    """
+
+    def __init__(self, spec: dict[str, Any]):
+        # Bundled programs without MCP should not import the retry machinery.
+        from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+
+        self.spec = spec
+        self.task: asyncio.Task[None] | None = None
+        self.ready: asyncio.Future[Client] | None = None
+        self.cancel_scope: CancelScope | None = None
+        self.lock = asyncio.Lock()
+        self.run = AsyncRetrying(
+            stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
+            reraise=True,
+        ).wraps(self._run)
+
+    async def serve(
+        self, ready: asyncio.Future["Client"], cancel_scope: CancelScope
+    ) -> None:
+        stack = AsyncExitStack()
+        try:
+            stack.enter_context(cancel_scope)
+            client = await stack.enter_async_context(mcp_client(self.spec))
+            ready.set_result(client)
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:  # noqa: BLE001 - deliver owner failures to the caller
+            if not ready.done():
+                ready.set_exception(error)
+        finally:
+            if not ready.done():
+                ready.cancel()
+            # Owner teardown must not replace the caller's error with cancellation.
+            with suppress(asyncio.CancelledError):
+                await stack.aclose()
+
+    async def _run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
+        await self.lock.acquire()
+        try:
+            if self.task is None or self.task.done():
+                self.ready = asyncio.get_running_loop().create_future()
+                self.cancel_scope = CancelScope()
+                self.task = asyncio.create_task(
+                    self.serve(self.ready, self.cancel_scope)
+                )
+            assert self.ready is not None
+            client = await self.ready
+            return await operation(client)
+        except BaseException as error:
+            await self.aclose(abort=isinstance(error, asyncio.CancelledError))
+            raise
+        finally:
+            self.lock.release()
+
+    async def aclose(self, *, abort: bool = False) -> None:
+        if self.task is None:
+            return
+        task, self.task = self.task, None
+        cancel_scope = self.cancel_scope
+        assert cancel_scope is not None
+        caller = asyncio.current_task()
+        assert caller is not None
+        # Stack cleanup can follow cancellation while awaiting a model or local tool.
+        if abort or caller.cancelling():
+            cancel_scope.cancel()
+        else:
+            task.cancel()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancel_scope.cancel()
+            await asyncio.shield(task)
+            raise
 
 
 async def connect_mcp(
-    config: dict[str, Any], reserved: set[str] | None = None
+    config: dict[str, Any], stack: AsyncExitStack, reserved: set[str] | None = None
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, tuple[str, str]],
-    dict[str, dict[str, Any]],
+    dict[str, MCPConnection],
 ]:
     """Enumerate MCP tools and return their schemas, dispatch map, and servers."""
     tool_schemas: list[dict[str, Any]] = []
     dispatch: dict[str, tuple[str, str]] = {}
-    servers: dict[str, dict[str, Any]] = {}
+    servers: dict[str, MCPConnection] = {}
     reserved = reserved or set()
     for name, spec in config.get("mcpServers", {}).items():
-        servers[name] = spec
-
-        async def list_tools(spec: dict[str, Any] = spec):
-            async with mcp_client(spec) as client:
-                return (await client.list_tools()).tools
-
-        for tool in await with_retry(list_tools):
+        server = servers[name] = MCPConnection(spec)
+        stack.push_async_callback(server.aclose)
+        result = await server.run(lambda client: client.list_tools())
+        for tool in result.tools:
             full = f"{name}_{tool.name}" if name else tool.name
             if full in reserved or full in dispatch:
                 raise ValueError(
@@ -111,17 +187,15 @@ def mcp_content_to_chat_content(
 
 
 async def call_mcp(
-    servers: dict[str, dict[str, Any]],
+    servers: dict[str, MCPConnection],
     dispatch: dict[str, tuple[str, str]],
     name: str,
     arguments: dict[str, Any],
 ) -> str | list[dict[str, Any]]:
-    """Call one MCP tool with a fresh client per retry attempt."""
+    """Reuse the rollout's client, reconnecting before retrying a failed call."""
     server_name, raw = dispatch[name]
 
-    async def call():
-        async with mcp_client(servers[server_name]) as client:
-            return await client.call_tool(raw, arguments)
-
-    result = await with_retry(call)
+    result = await servers[server_name].run(
+        lambda client: client.call_tool(raw, arguments)
+    )
     return mcp_content_to_chat_content(result.content)

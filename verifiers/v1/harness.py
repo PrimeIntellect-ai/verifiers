@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -99,23 +100,32 @@ class Harness(ABC, Generic[ConfigT]):
         """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
         the program's fixed skill discovery location, which a supporting harness's
         `setup` passes."""
+        uploads = []
+        executables = []
         for skill in self.config.skills:
             # Resolve so `.`/`..` entries get their real folder name (and can't
             # place files outside `dest`).
             skill = skill.resolve()
             if not skill.is_dir():
                 raise ValueError(f"skill {str(skill)!r} is not a folder")
-            executables = []
-            for file in sorted(skill.rglob("*")):
+            for file in skill.rglob("*"):
                 if not file.is_file():
                     continue
                 target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
-                await runtime.write(target, file.read_bytes())
+                uploads.append((target, file.read_bytes()))
                 if os.access(file, os.X_OK):
                     executables.append(target)
-            if executables:
-                # `write` moves bytes, not modes; restore the execute bits scripts need.
-                await runtime.run(["chmod", "+x", *executables], {})
+        # Settle every upload before returning or surfacing an error.
+        results = await asyncio.gather(
+            *(runtime.write(target, data) for target, data in uploads),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        if executables:
+            # `write` moves bytes, not modes; restore the execute bits scripts need.
+            await runtime.run(["chmod", "+x", *executables], {})
 
     async def _check_result(
         self, trace: Trace, runtime: Runtime, result: ProgramResult
