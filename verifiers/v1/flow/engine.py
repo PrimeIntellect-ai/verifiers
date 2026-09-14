@@ -426,7 +426,8 @@ class _Row:
     ) -> tuple[str | None, list[Trace], dict]:
         items = list(node.over(up))
         gate = asyncio.Semaphore(node.max_active or max(len(items), 1))
-        need = {"all": len(items), "any": 1, "at_least": node.join.k}[node.join.kind]
+        k = node.join.k(up) if callable(node.join.k) else node.join.k
+        need = {"all": len(items), "any": 1, "at_least": k}[node.join.kind]
 
         async def one(i: int, item: Any) -> tuple[int, Trace]:
             async with gate:

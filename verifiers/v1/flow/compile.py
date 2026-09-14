@@ -223,7 +223,7 @@ def seats_exist(graph: Graph) -> list[str]:
         seat = getattr(node, "seat", None)
         if seat is None:
             continue
-        if seat not in fields or not isinstance(fields[seat].default, AgentConfig):
+        if seat not in fields or fields[seat].annotation is not AgentConfig:
             errors.append(
                 f"{node.name}: seat {seat!r} is not an AgentConfig field on {graph.config_type.__name__}"
             )
@@ -237,6 +237,7 @@ def join_arity(graph: Graph) -> list[str]:
         for node in graph.nodes.values()
         if node.join.kind == "at_least"
         and not isinstance(node, ExpandNode)
+        and isinstance(node.join.k, int)
         and node.join.k > len(preds[node.name])
     ]
 

@@ -33,14 +33,15 @@ runtime that node ran in), or an explicit runtime config."""
 @dataclass(frozen=True)
 class Join:
     kind: Literal["all", "any", "at_least"] = "all"
-    k: int = 0
+    k: int | Callable[..., int] = 0
+    """For `at_least`: the count, or a callable of `Upstream` (a config-dependent K)."""
 
 
 ALL = Join("all")
 ANY = Join("any")
 
 
-def at_least(k: int) -> Join:
+def at_least(k: int | Callable[..., int]) -> Join:
     return Join("at_least", k)
 
 
