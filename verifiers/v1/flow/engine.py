@@ -510,18 +510,21 @@ class _Row:
     async def _rollout(self, node: AgentNode | ExpandNode, task: Task) -> Trace:
         """Run the seat on `task`, in its own runtime unless the node inherits one
         or a later node inherits this one's. A node with outcomes gets the
-        `submit_outcome` tool; its task's state must carry `outcome` to receive it."""
+        `submit_outcome` tool when its harness speaks MCP and its task's state
+        carries `outcome`; otherwise the task sets `state.outcome` itself (in
+        `finalize`) or the last reply ends with an `Outcome:` line."""
+        agent = make_agent(self.e.seat(node.seat))
         tools = None
-        if node.outcomes:
-            tools = await self.e.outcome_tools(node)
-            if "outcome" not in state_cls(type(task)).model_fields:
+        if node.outcomes and agent.harness.SUPPORTS_MCP:
+            if "outcome" in state_cls(type(task)).model_fields:
+                tools = await self.e.outcome_tools(node)
+            else:
                 logger.warning(
                     "%s: %s has no `outcome` state field; routing falls back to an "
                     "`Outcome:` line in the last reply",
                     node.name,
                     type(task).__name__,
                 )
-        agent = make_agent(self.e.seat(node.seat))
         async with agent, self.e.pools.hold(node.pools), AsyncExitStack() as local:
             if node.inherits is None and node.name not in self.g.held:
                 trace = await agent.run(task, tools=tools)
