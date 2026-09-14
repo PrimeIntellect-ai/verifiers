@@ -1,30 +1,38 @@
 """Compose owns the project; DockerRuntime executes in its main container."""
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import DockerConfig, DockerRuntime, Runtime, RuntimeConfig
-from verifiers.v1.runtimes.base import SERVICE_PORT, register
+from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.runtimes.container import cli
 from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
-from verifiers.v1.utils.aio import run_shielded
 
 
 class HarborComposeRuntime(DockerRuntime):
-    def __init__(self, config: DockerConfig, task: HarborTask):
+    def __init__(
+        self,
+        config: DockerConfig,
+        task: HarborTask,
+        *,
+        setup_timeout: float | None = None,
+    ):
         if config.network_restricted or config.gpu:
             raise ValueError("This Compose adapter supports public-network CPU tasks")
         super().__init__(config)
         self.task = task
+        self._setup_timeout = setup_timeout
+        self._main_overrides = config.model_dump(
+            include={"image", "workdir"}, exclude_unset=True, exclude_none=True
+        )
         self._temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
@@ -39,6 +47,10 @@ class HarborComposeRuntime(DockerRuntime):
         return result.stdout
 
     async def start(self) -> None:
+        async with asyncio.timeout(self._setup_timeout):
+            await self._start()
+
+    async def _start(self) -> None:
         import yaml
         from harbor.environments.docker import (
             COMPOSE_PREBUILT_PATH,
@@ -46,7 +58,7 @@ class HarborComposeRuntime(DockerRuntime):
         )
         from harbor.environments.docker.compose_env import ComposeInfraEnvVars
 
-        environment = Path(self.task.data.task_dir) / "environment"
+        environment = Path(self.task.data.task_dir).resolve() / "environment"
         directory = Path(self._temporary.name)
         services = yaml.safe_load((environment / "docker-compose.yaml").read_text())[
             "services"
@@ -58,10 +70,11 @@ class HarborComposeRuntime(DockerRuntime):
                 raise SandboxError("Cyclic Compose network_mode service chain")
             seen.add(owner)
             owner = services[owner]["network_mode"].split(":", 1)[1]
-        main: dict[str, object] = {
-            "image": self.config.image,
-            "working_dir": self.config.workdir,
-        }
+        if services.get(owner, {}).get("network_mode") == "host":
+            raise SandboxError("Harbor Compose requires an isolated service network")
+        main: dict[str, object] = dict(self._main_overrides)
+        if "workdir" in main:
+            main["working_dir"] = main.pop("workdir")
         if self.config.cpu is not None:
             main["cpus"] = self.config.cpu
         if self.config.memory is not None:
@@ -76,6 +89,12 @@ class HarborComposeRuntime(DockerRuntime):
             }
         override = directory / "main.json"
         override.write_text(json.dumps(overlay))
+        base = yaml.safe_load(COMPOSE_PREBUILT_PATH.read_text())
+        if "image" in services["main"] or "build" in services["main"]:
+            # A template default must not replace an authored image or skip its build.
+            base["services"]["main"].pop("image", None)
+        base_file = directory / "base.json"
+        base_file.write_text(json.dumps(base))
         env_file = write_env_compose_file(directory / "env.json", self.env)
         self._compose_argv = [
             "docker",
@@ -87,7 +106,7 @@ class HarborComposeRuntime(DockerRuntime):
             *(
                 arg
                 for path in (
-                    COMPOSE_PREBUILT_PATH,
+                    base_file,
                     environment / "docker-compose.yaml",
                     override,
                     env_file,
@@ -105,22 +124,29 @@ class HarborComposeRuntime(DockerRuntime):
         }
         await self._compose("config", "--quiet")
         self._created = True
-        # Finish an interrupted Compose launch before deleting its partial project.
-        await run_shielded(self._compose("up", "--detach", "--wait"))
-        self._container = (
-            await self._compose("ps", "--all", "--quiet", "main")
-        ).strip()
+        # The CLI is killed on cancellation; the rollout then removes the project.
+        await self._compose("up", "--detach", "--wait")
+        containers = (await self._compose("ps", "--all", "--quiet", "main")).split()
+        if len(containers) != 1:
+            raise SandboxError("Harbor Compose requires exactly one main container")
+        self._container = containers[0]
         self.info.id = self._container
         inspected = await cli(
-            "docker", "inspect", "--format", "{{json .Config.Env}}", self._container
+            "docker", "inspect", "--format", "{{json .Config}}", self._container
         )
         if inspected.exit_code:
             raise SandboxError(
                 f"Compose container inspection failed: {inspected.stderr}"
             )
-        self._image_env = dict(
-            entry.split("=", 1) for entry in json.loads(inspected.stdout) or []
+        container = json.loads(inspected.stdout)
+        self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
+        self.config = self.config.model_copy(
+            update={
+                "image": container["Image"],
+                "workdir": container["WorkingDir"] or "/",
+            }
         )
+        self.info.image, self.info.workdir = self.config.image, self.config.workdir
         published = await self._compose("port", owner, str(SERVICE_PORT))
         self._service_url = f"http://{published.strip()}"
         self._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
@@ -145,17 +171,9 @@ class HarborComposeRuntime(DockerRuntime):
         self._temporary.cleanup()
 
 
-@asynccontextmanager
-async def harbor_compose_runtime(
-    config: RuntimeConfig, task: HarborTask
-) -> AsyncIterator[Runtime]:
+def make_harbor_compose_runtime(
+    config: RuntimeConfig, *, task: HarborTask, setup_timeout: float | None = None
+) -> Runtime:
     if not isinstance(config, DockerConfig):
         raise TypeError("Harbor Compose currently requires local Docker")
-    runtime = HarborComposeRuntime(config, task)
-    runtime.env = task.runtime_env()
-    register(runtime)
-    try:
-        await runtime.start()
-        yield runtime
-    finally:
-        await runtime.stop()
+    return HarborComposeRuntime(config, task, setup_timeout=setup_timeout)

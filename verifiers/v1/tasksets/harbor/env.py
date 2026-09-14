@@ -10,8 +10,7 @@ box is alive), a fresh box is provisioned from the task's verifier declaration,
 No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """
 
-import asyncio
-from contextlib import AsyncExitStack
+from functools import partial
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -21,7 +20,7 @@ from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnvConfig,
 )
 from verifiers.v1.runtimes import Runtime, RuntimeConfig
-from verifiers.v1.tasksets.harbor.runtime import harbor_compose_runtime
+from verifiers.v1.tasksets.harbor.runtime import make_harbor_compose_runtime
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
     verifier_box_data,
@@ -42,21 +41,17 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         separate = task.data.verifier is not None
         if separate:
             self.verifier_config(task)
-        async with AsyncExitStack() as boxes:
-            runtime = None
-            if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
-                # Harbor owns the topology before a rollout borrows its main service.
-                config = resolve_runtime_config(self.config.agent.runtime, task)
-                timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
-                async with asyncio.timeout(timeouts.setup):
-                    runtime = await boxes.enter_async_context(
-                        harbor_compose_runtime(config, task)
-                    )
-            await agents.agent.run(
-                task.defer_scoring() if separate else task,
-                runtime=runtime,
-                collect_artifacts=separate,
+        factory = None
+        if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
+            timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
+            factory = partial(
+                make_harbor_compose_runtime, task=task, setup_timeout=timeouts.setup
             )
+        await agents.agent.run(
+            task.defer_scoring() if separate else task,
+            runtime_factory=factory,
+            collect_artifacts=separate,
+        )
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
