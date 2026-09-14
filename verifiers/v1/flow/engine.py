@@ -8,7 +8,7 @@ import inspect
 import json
 import logging
 import typing
-from collections.abc import Iterable
+from collections.abc import AsyncIterable, Iterable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,7 +127,9 @@ class Engine:
         )
         (run_dir / "config.json").write_text(self.config.model_dump_json(indent=1))
 
-    async def run(self, rows: Iterable[Any]) -> list[RowResult]:
+    async def run(self, rows: Iterable[Any] | AsyncIterable[Any]) -> list[RowResult]:
+        """Run every row; rows from an async iterable start as they arrive, so a
+        producer (a miner, a queue) can feed the flow while it runs."""
         gate = asyncio.Semaphore(self.config.max_concurrent_rows)
 
         async def one(row: Any) -> RowResult:
@@ -135,7 +137,8 @@ class Engine:
                 return await _Row(self, row).run()
 
         async with self._stack:
-            return list(await asyncio.gather(*(one(row) for row in rows)))
+            tasks = [asyncio.create_task(one(row)) async for row in _aiter(rows)]
+            return list(await asyncio.gather(*tasks))
 
     async def outcome_tools(
         self, node: AgentNode | ExpandNode
@@ -565,6 +568,15 @@ class _Row:
         if seat:
             return self.e.seat(seat).runtime
         raise FlowError([f"{node.name}: no runtime config to provision from"])
+
+
+async def _aiter(rows: Iterable[Any] | AsyncIterable[Any]) -> AsyncIterable[Any]:
+    if isinstance(rows, AsyncIterable):
+        async for row in rows:
+            yield row
+    else:
+        for row in rows:
+            yield row
 
 
 def _payload(value: Any) -> Any:
