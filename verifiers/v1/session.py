@@ -96,7 +96,7 @@ class RolloutLimits:
 
 @dataclass
 class IdempotentRequest:
-    """One non-streaming model request shared by its original call and retries."""
+    """One buffered model request shared by its original call and retries."""
 
     binding: tuple[str, bytes]
     response: "ReplayResponse | None" = None
@@ -110,6 +110,7 @@ class ReplayResponse:
 
     status: int
     body: bytes
+    content_type: str
 
 
 @dataclass

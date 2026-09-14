@@ -7,7 +7,7 @@ import re
 import shlex
 from collections import Counter
 
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
@@ -52,6 +52,16 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_POST_TOOL_INTERCEPTION = True
     TOOL_INTERCEPTION_EXEMPTIONS = frozenset({"exec", "wait"})
     TOOL_INTERCEPTION_VERSION = CODEX_VERSION
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
+        failure = (
+            result.response_metadata.get("jetbrains", {})
+            .get("air", {})
+            .get("sessionFailure")
+        )
+        if failure and failure["severity"] == "error":
+            raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -107,6 +117,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from CODEX_CONFIG.
             mcp_urls={},
             system_prompt=system_prompt,
+            client_capabilities={
+                "_meta": {
+                    "jetbrains": {
+                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                    }
+                }
+            },
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

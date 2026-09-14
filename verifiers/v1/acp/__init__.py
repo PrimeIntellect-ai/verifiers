@@ -81,6 +81,7 @@ class ACPConfig:
     tool_interception: tuple[str, str] | None = None
     tool_interception_socket: bool = False
     code_mode_host: str | None = None
+    client_capabilities: JsonObject | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -336,6 +337,7 @@ class ACPHarnessSession(HarnessSession):
             ),
             "toolInterceptionSocket": self.config.tool_interception_socket,
             "codeModeHost": self.config.code_mode_host,
+            "client_capabilities": self.config.client_capabilities or {},
         }
         async with self._lock:
             if self._closed:
