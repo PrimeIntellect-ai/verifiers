@@ -13,6 +13,7 @@ from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.flow.compile import Graph
+    from verifiers.v1.flow.preflight import Check
 
 
 class FlowConfig(BaseConfig):
@@ -71,3 +72,10 @@ class Flow(Generic[ConfigT]):
     @property
     def name(self) -> str:
         return type(self).__name__
+
+    async def preflight(self, *, contact: bool = True) -> list[Check]:
+        """The run's prerequisites as typed `Check`s (see `verifiers.v1.flow.preflight`);
+        the producer decides what a refusal means — the engine never calls this."""
+        from verifiers.v1.flow.preflight import preflight
+
+        return await preflight(self.config, contact=contact)
