@@ -32,7 +32,6 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from verifiers.v1.configs.harness import RuntimeSkills
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
@@ -614,9 +613,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
-        skills=[RuntimeSkills(runtime=environment.skills_dir)]
-        if environment.skills_dir
-        else [],
+        skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),

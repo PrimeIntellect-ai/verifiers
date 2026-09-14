@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
+from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
@@ -15,20 +15,12 @@ PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""
 
 
-class RuntimeSkills(BaseModel):
-    """A directory of skill folders already present inside the agent runtime."""
-
-    runtime: str
-
-
-SkillSource = Path | RuntimeSkills
+SkillSource = Path | Annotated[dict[Literal["runtime"], str], Field(min_length=1)]
 
 
 def skill_destination(skill: SkillSource, dest: str) -> str:
     """Runtime roots merge into `dest`; host folders keep their resolved name."""
-    return (
-        dest if isinstance(skill, RuntimeSkills) else f"{dest}/{skill.resolve().name}"
-    )
+    return dest if isinstance(skill, dict) else f"{dest}/{skill.resolve().name}"
 
 
 class HarnessConfig(BaseConfig):
