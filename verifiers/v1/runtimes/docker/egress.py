@@ -121,7 +121,7 @@ class _Callback:
     port: int
     authority: str
     host_alias: str
-    forward_authorization: bool
+    credential_origin: tuple[str, str, int]
 
 
 class EgressProxy:
@@ -142,7 +142,7 @@ class EgressProxy:
         url: str,
         host_alias: str = HOST_ALIAS,
         *,
-        forward_authorization: bool = True,
+        credential_origin: tuple[str, str, int] | None = None,
     ) -> str:
         """Route one framework-owned host-loopback HTTP(S) origin through this proxy."""
         parsed = urlsplit(url)
@@ -152,7 +152,12 @@ class EgressProxy:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
         callback = _Callback(
-            parsed.scheme, host, port, authority, host_alias, forward_authorization
+            parsed.scheme,
+            host,
+            port,
+            authority,
+            host_alias,
+            credential_origin or (parsed.scheme, host, port),
         )
         token = self._callback_tokens.get(callback)
         if token is None:
@@ -239,6 +244,11 @@ class EgressProxy:
             connect = method == "CONNECT"
             if callback is not None:
                 scheme, host, port = callback.scheme, callback.host, callback.port
+                forward_authorization = (
+                    scheme,
+                    host,
+                    port,
+                ) == callback.credential_origin
             elif connect:
                 parsed = urlsplit(f"//{target}")
                 host, port = parsed.hostname or "", parsed.port or 443
@@ -360,7 +370,7 @@ class EgressProxy:
                     b"upgrade",
                     *connection_fields,
                 }
-                if callback is not None and not callback.forward_authorization:
+                if callback is not None and not forward_authorization:
                     excluded.add(b"authorization")
                 origin_rewrites = (
                     {
@@ -381,7 +391,7 @@ class EgressProxy:
                             cookie.removeprefix(prefix)
                             for part in value.split(b";")
                             if (cookie := part.strip()).startswith(prefix)
-                            or callback.forward_authorization
+                            or forward_authorization
                         )
                         if not value:
                             continue
@@ -482,18 +492,12 @@ class EgressProxy:
                                     "http",
                                     "https",
                                 ) and is_loopback_host(redirect_host):
-                                    redirect_port = redirected.port or (
-                                        443 if redirected.scheme == "https" else 80
-                                    )
+                                    # Returning to the initial origin reuses its
+                                    # cookie scope without sharing credentials with peers.
                                     value = self.callback_url(
                                         destination,
                                         callback.host_alias,
-                                        forward_authorization=(
-                                            callback.forward_authorization
-                                            and redirected.scheme == scheme
-                                            and redirect_host == callback.host
-                                            and redirect_port == callback.port
-                                        ),
+                                        credential_origin=callback.credential_origin,
                                     ).encode("latin-1")
                             headers.append((name, value))
                         response = replace(response, headers=headers)
