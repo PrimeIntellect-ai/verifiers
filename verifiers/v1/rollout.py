@@ -528,11 +528,14 @@ class Rollout:
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
         logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
             trace.id,
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
             trace.last_error.type if trace.last_error else trace.stop_condition,
+            (" err=" + (trace.last_error.message or "")[:300].replace("\n", " "))
+            if trace.last_error
+            else "",
         )
         return trace
