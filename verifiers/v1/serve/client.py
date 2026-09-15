@@ -178,19 +178,21 @@ class EnvClient:
         model: str,
         sampling: SamplingConfig,
         task_data: dict,
-        on_update: Callable[[EpisodeAssembly], None] | None = None,
+        on_update: Callable[[EpisodeAssembly, dict], None] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
-        rollout runs: `on_update` sees the assembly after every delta (raw trace dicts,
-        the current turn included), so a caller can watch the episode take shape."""
+        rollout runs: `on_update` sees the assembly and the delta just applied after
+        every delta (raw trace dicts, the current turn included), so a caller can
+        watch the episode take shape or persist the stream."""
         assembly = EpisodeAssembly()
 
         def on_delta(data: bytes) -> None:
-            assembly.apply(unpack(data))
+            delta = unpack(data)
+            assembly.apply(delta)
             if on_update is not None:
-                on_update(assembly)
+                on_update(assembly, delta)
 
         response = await self._request(
             RunRequest(
