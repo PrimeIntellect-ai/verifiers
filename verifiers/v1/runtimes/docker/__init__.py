@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 class DockerConfig(NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -178,8 +179,8 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 class DockerRuntime(Runtime):
     def __init__(self, config: DockerConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = DockerRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = DockerRuntimeInfo(**self.config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._proxy: EgressProxy | None = None
         self._proxy_host_ip: str | None = None
@@ -506,19 +507,28 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
             "--workdir",
             self.config.workdir,
             self._container,
-            "cat",
+            *argv,
+            "--",
             path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        except BaseException:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            await run_shielded(proc.communicate())
+            raise
         if proc.returncode != 0:
             raise SandboxError(
                 f"read {path!r}: {stderr.decode(errors='replace').strip()}"
