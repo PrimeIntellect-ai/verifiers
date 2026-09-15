@@ -2,7 +2,7 @@
 
 GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`evaluate`) with a
 teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
-`verifiers.v1.gepa.adapter.GEPAAdapter`. Like `EvalConfig`, it owns an `env` field (the
+`verifiers.v1.gepa.adapter.GEPAAdapter`. It owns an `env` field (the
 environment: its taskset, seats, limits) and adds the optimization loop's own knobs (model,
 reflection model, train/val split, budget). There is no `[serve]` block here — GEPA
 always runs in-process, since its adapter protocol is itself synchronous (see
@@ -15,7 +15,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
+from verifiers.v1.configs.cli.run import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
@@ -24,7 +24,7 @@ from verifiers.v1.types import SamplingConfig
 class GEPAConfig(BaseConfig):
     """The GEPA run plus its environment. `model` runs the rollouts under optimization;
     `reflection_model` (defaults to `model`) proposes new system prompts from the reflective
-    dataset. `model` defaults to the same id as `EvalConfig`."""
+    dataset."""
 
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment under optimization — the same `[env]` block as an eval's
@@ -55,7 +55,7 @@ class GEPAConfig(BaseConfig):
     """Tasks held out to score each candidate system prompt for the pareto frontier."""
     shuffle: bool = Field(True, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before splitting into train/val — v1 tasksets have no generic train/val
-    split, so GEPA carves one out of `Taskset.select` the way `run_eval` samples (fixed
+    split, so GEPA carves one out of `Taskset.select` the way an eval samples (fixed
     seed, so the split is reproducible across runs)."""
     seed: int = 0
     """Seed for GEPA's optimizer (candidate selection / minibatch sampling). Task shuffling
