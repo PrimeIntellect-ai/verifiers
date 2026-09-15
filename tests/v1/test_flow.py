@@ -249,7 +249,6 @@ async def test_crashed_row_is_a_failed_row(tmp_path):
 
     (result,) = await Engine(Crash(), tmp_path / "run").run([{"id": 1}])
     assert not result.ok and "ZeroDivisionError" in (result.error or "")
-    assert result.fault == "turn"
 
 
 async def test_inherited_runtime_is_the_same_live_runtime(tmp_path):

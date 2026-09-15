@@ -1,5 +1,6 @@
 """Client interfaces for model inference and relay."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -68,6 +69,46 @@ class Client(ABC):
 
     async def close(self) -> None:
         pass
+
+
+class LimitedClient(Client):
+    """A client whose every request holds one permit of a shared semaphore while it
+    is upstream; a streamed reply holds its permit until it closes."""
+
+    def __init__(self, client: Client, gate: asyncio.Semaphore) -> None:
+        self.client, self.gate = client, gate
+
+    async def get_response(self, dialect: Dialect, *args, **kwargs) -> Response:
+        async with self.gate:
+            return await self.client.get_response(dialect, *args, **kwargs)
+
+    async def relay(self, dialect: Dialect, *args, **kwargs) -> RelayReply:
+        await self.gate.acquire()
+        try:
+            reply = await self.client.relay(dialect, *args, **kwargs)
+        except BaseException:
+            self.gate.release()
+            raise
+        closed = False
+
+        async def close() -> None:
+            nonlocal closed
+            if not closed:
+                closed = True
+                try:
+                    await reply.close()
+                finally:
+                    self.gate.release()
+
+        return RelayReply(
+            content_type=reply.content_type, chunks=reply.chunks, close=close
+        )
+
+    async def relay_aux(self, dialect: Dialect, *args, **kwargs) -> dict:
+        return await self.client.relay_aux(dialect, *args, **kwargs)
+
+    async def close(self) -> None:
+        await self.client.close()
 
 
 def resolve_client(config: BaseClientConfig) -> Client:

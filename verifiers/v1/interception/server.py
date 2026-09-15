@@ -39,7 +39,7 @@ from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
-from verifiers.v1.clients import Client, resolve_client
+from verifiers.v1.clients import Client, LimitedClient, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -241,8 +241,11 @@ class InterceptionServer(Interception):
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
         state_service_secrets: Collection[str] = (),
+        max_inflight: int | None = None,
     ) -> None:
         super().__init__()
+        self.gate = asyncio.Semaphore(max_inflight) if max_inflight else None
+        """Bounds model requests in flight across every session, nested calls included."""
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
@@ -270,8 +273,11 @@ class InterceptionServer(Interception):
         key = config.model_dump_json()
         client = self.clients.get(key)
         if client is None:
-            client = self.clients[key] = resolve_client(config)
+            client = resolve_client(config)
             self.stack.push_async_callback(client.close)
+            if self.gate is not None:
+                client = LimitedClient(client, self.gate)
+            self.clients[key] = client
         return client
 
     def register(self, session: RolloutSession) -> tuple[str, str]:

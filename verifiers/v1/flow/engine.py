@@ -20,9 +20,7 @@ from pydantic_core import to_jsonable_python
 from verifiers.v1.agent import make_agent
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.flow.compile import FlowError, Graph
-from verifiers.v1.flow.faults import FaultKind, fault_kind
 from verifiers.v1.flow.flow import Flow
-from verifiers.v1.flow.gate import Workers
 from verifiers.v1.flow.ledger import Ledger, NodeRecord, digest, now, row_key
 from verifiers.v1.flow.nodes import (
     AgentNode,
@@ -42,6 +40,7 @@ from verifiers.v1.flow.outcome import (
     parse_outcome,
 )
 from verifiers.v1.flow.pools import Pools
+from verifiers.v1.interception import InterceptionServer
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import (
     Runtime,
@@ -106,8 +105,6 @@ class RowResult:
     ok: bool
     records: dict[str, NodeRecord] = field(default_factory=dict)
     error: str | None = None
-    fault: FaultKind | None = None
-    """What failed the row; None when it succeeded."""
 
 
 @dataclass
@@ -120,12 +117,6 @@ class _Done:
     @property
     def outcome(self) -> str | None:
         return self.record.outcome
-
-
-class _RolloutFailed(FlowError):
-    def __init__(self, message: str, fault: FaultKind) -> None:
-        super().__init__([message])
-        self.fault = fault
 
 
 class Engine:
@@ -150,7 +141,7 @@ class Engine:
             )
         self._stack = AsyncExitStack()
         self._outcome_tools: dict[str, dict[str, SharedToolServer]] = {}
-        self._inference: Workers | None = None
+        self._inference: InterceptionServer | None = None
         # Any change to the graph shape or the config invalidates every ledger key.
         self.identity = digest(
             self.graph.structural_hash(), self.config.model_dump(mode="json")
@@ -177,7 +168,6 @@ class Engine:
                         row=_row_key_or_repr(row),
                         ok=False,
                         error=f"{type(exc).__name__}: {exc}",
-                        fault=fault_kind(exc),
                     )
 
         async with self._stack:
@@ -185,9 +175,9 @@ class Engine:
             self._inference = None
             if self.config.inference_concurrency is not None:
                 self._inference = await self._stack.enter_async_context(
-                    Workers(
-                        self.config.inference_concurrency,
+                    InterceptionServer(
                         requires_tunnel=self._any_remote_seat(),
+                        max_inflight=self.config.inference_concurrency,
                     )
                 )
             tasks: list[asyncio.Task] = []
@@ -249,7 +239,6 @@ class _Row:
         self.items: dict[str, dict[int, Any]] = {}  # fan-out results by item index
         self.stack = AsyncExitStack()
         self.error: str | None = None
-        self.fault: FaultKind | None = None
 
     # -- the loop -----------------------------------------------------------------
 
@@ -279,11 +268,7 @@ class _Row:
                 await asyncio.gather(*self.running, return_exceptions=True)
         records = {d.node: d.record for d in self.done.values()}
         return RowResult(
-            row=self.key,
-            ok=self.error is None,
-            records=records,
-            error=self.error,
-            fault=None if self.error is None else self.fault,
+            row=self.key, ok=self.error is None, records=records, error=self.error
         )
 
     def _start_ready(self) -> None:
@@ -433,16 +418,12 @@ class _Row:
                     **extra,
                 )
                 self.e.ledger.put(record)
-                self.fault = None
                 logger.info("%s: %s@%s -> %s", self.key, node.name, visit, outcome)
                 return _Done(node.name, record, value)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a node failure is data: recorded, then routed or retried
                 error = f"{type(exc).__name__}: {exc}"
-                self.fault = (
-                    exc.fault if isinstance(exc, _RolloutFailed) else fault_kind(exc)
-                )
                 logger.warning(
                     "%s: %s@%s attempt %s failed: %s",
                     self.key,
@@ -545,9 +526,8 @@ class _Row:
     ) -> tuple[str | None, Trace, dict]:
         trace = await self._rollout(node, node.make_task(up))
         if not trace.ok:
-            raise _RolloutFailed(
-                f"{node.name}: rollout failed: {[e.message for e in trace.errors]}",
-                fault_kind(trace.errors[-1] if trace.errors else None),
+            raise FlowError(
+                [f"{node.name}: rollout failed: {[e.message for e in trace.errors]}"]
             )
         outcome, summary = outcome_of(trace) if node.outcomes else ("completed", "")
         return (
@@ -634,10 +614,7 @@ class _Row:
             return value, {"payload": _payload(value)}
         trace = await self._rollout(node, node.each(up, item))
         if not trace.ok:
-            raise _RolloutFailed(
-                f"{node.name}[{i}]: rollout failed",
-                fault_kind(trace.errors[-1] if trace.errors else None),
-            )
+            raise FlowError([f"{node.name}[{i}]: rollout failed"])
         return trace, {"trace_id": trace.id, "reward": trace.reward}
 
     async def _run_command(self, node: RunNode) -> tuple[str | None, RunResult, dict]:
