@@ -37,6 +37,7 @@ async def test_chat_harness_preserves_streamed_reasoning():
                 {
                     "index": 0,
                     "delta": {
+                        "role": "assistant",
                         "reasoning": text,
                         "reasoning_content": text,
                         "reasoning_details": [
@@ -76,6 +77,7 @@ async def test_chat_harness_preserves_streamed_reasoning():
         completion = await chat(client, "test-model", [], [])
 
     message = completion.choices[0].message.model_dump(exclude_none=True)
+    assert message["role"] == "assistant"
     assert message["reasoning"] == "Plan: call ls"
     assert message["reasoning_content"] == "Plan: call ls"
     assert message["reasoning_details"] == [

@@ -181,11 +181,19 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
-_REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+_STREAMED_MESSAGE_FIELDS = (
+    "role",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+)
 
 
-def _accumulate_reasoning(accumulated: dict, delta: dict) -> None:
-    """Merge reasoning text and structured blocks from chat completion deltas."""
+def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
+    """Accumulate message fields whose stream semantics differ from the SDK defaults."""
+    if role := delta.get("role"):
+        accumulated["role"] = role
+
     for field_name in ("reasoning", "reasoning_content"):
         if value := delta.get(field_name):
             accumulated[field_name] = accumulated.get(field_name, "") + value
@@ -244,15 +252,17 @@ async def chat(
         raw_stream=raw_stream, response_format=omit, input_tools=[]
     ) as response:
         completion = None
-        reasoning: dict[int, dict] = {}
+        message_overrides: dict[int, dict] = {}
         async for event in response:
             if event.type == "chunk":
                 completion = event.snapshot
                 for choice in event.chunk.choices:
                     delta = choice.delta.model_dump(exclude_none=True)
-                    if any(delta.get(field_name) for field_name in _REASONING_FIELDS):
-                        _accumulate_reasoning(
-                            reasoning.setdefault(choice.index, {}), delta
+                    if any(
+                        delta.get(field_name) for field_name in _STREAMED_MESSAGE_FIELDS
+                    ):
+                        _accumulate_streamed_message(
+                            message_overrides.setdefault(choice.index, {}), delta
                         )
         if (
             completion is None
@@ -261,10 +271,9 @@ async def chat(
         ):
             raise RuntimeError("model stream ended before a completion finished")
         for choice in completion.choices:
-            # Some providers repeat the role in each delta. The SDK concatenates
-            # these strings, but the role is metadata, not incremental content.
-            choice.message.role = "assistant"
-            for field_name, value in reasoning.get(choice.index, {}).items():
+            overrides = message_overrides.setdefault(choice.index, {})
+            overrides.setdefault("role", "assistant")
+            for field_name, value in overrides.items():
                 setattr(choice.message, field_name, value)
         return completion
 
