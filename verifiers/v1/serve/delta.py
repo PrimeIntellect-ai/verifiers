@@ -234,8 +234,15 @@ class EpisodeAssembly:
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
+        # a later `links` delta grows a node's semantic_parents in place, so the node
+        # is copied: the delta stays as it was when the caller received it
+        if "nodes" in delta:
+            trace["nodes"].extend(
+                {**node, "semantic_parents": list(node.get("semantic_parents") or [])}
+                for node in delta["nodes"]
+            )
         for field in LIST_FIELDS:
-            if field in delta:
+            if field in delta and field != "nodes":
                 trace[field].extend(delta[field])
         trace.update(delta.get("set") or {})
         # a committed turn absorbs the preview; an explicit preview replaces it

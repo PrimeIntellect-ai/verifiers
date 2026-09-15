@@ -2,6 +2,7 @@
 the episode the worker finished with."""
 
 import asyncio
+import copy
 
 import pytest
 
@@ -198,9 +199,11 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
     assert any("links" in delta for delta in deltas)
     assert deltas[-1]["set"]["stop_condition"] == "agent_completed"
 
+    handed = copy.deepcopy(deltas)
     assembly = EpisodeAssembly()
     for delta in deltas:
         assembly.apply(delta)
+    assert deltas == handed, "assembling never mutates a delta the caller holds"
     head = dump(episode, exclude={"traces"})
     summaries = [
         TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))
