@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
 import os
+import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -32,7 +32,7 @@ from verifiers.v1.configs.agent import (
     declared_agent_configs,
     resolve_agent,
 )
-from verifiers.v1.flow.config import RUNTIMES, FlowConfig
+from verifiers.v1.flow.config import ROWS, RUNTIMES, FlowConfig
 from verifiers.v1.flow.ledger import (
     SHORT,
     STEP_KEY,
@@ -55,8 +55,6 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
-from verifiers.v1.types import Usage
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.retries import backoff
 
@@ -104,10 +102,6 @@ class Run:
         self.label = f"flow-{run_dir.name}-{where}"[:LABEL_MAX]
         self.rows: dict[str, RowState] = {}
         """Every row seen so far, by key, and where it stands."""
-        self.steps: set[str] = set()
-        """`<row>/<path>` in flight."""
-        self.usage: Usage | None = None
-        """Provider usage summed over every agent step so far."""
         self.interception: Interception | None = None  # live inside `_serving`
         self._draining = asyncio.Event()
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
@@ -115,14 +109,12 @@ class Run:
     # -- rows -----------------------------------------------------------------------
 
     async def stream(self, flow: Flow, rows: Iterable[Any]) -> AsyncIterator[RowResult]:
-        """Run `flow(ctx, row)` for every row, at most `max_concurrent_rows` at once,
-        yielding each result as its row finishes. A row that raises is a failed row."""
-        source = self._note_source(flow)
-        self.ledger.event("run", source=source, label=self.label)
-        gate = asyncio.Semaphore(self.config.max_concurrent_rows)
+        """Run `flow(ctx, row)` for every row, `pools["rows"]` at once, yielding each
+        result as its row finishes. A row that raises is a failed row."""
+        self.ledger.event("run", source=self._source(flow), label=self.label)
 
         async def one(row: Any) -> RowResult:
-            async with gate:
+            async with self.pools.hold((ROWS,)):
                 return await self._row(flow, row)
 
         async with self._serving():
@@ -166,11 +158,6 @@ class Run:
             client=cfg.client,
             sampling=cfg.sampling,
         )
-
-    async def record(self, trace: Trace) -> None:
-        """A finished rollout: into the run's `traces.jsonl`, its usage onto the run's."""
-        await self.ledger.append(trace)
-        self.usage = Usage.aggregate(u for u in (self.usage, trace.usage) if u)
 
     async def _row(self, flow: Flow, row: Any) -> RowResult:
         try:
@@ -218,21 +205,19 @@ class Run:
             finally:
                 self.interception = None
 
-    def _note_source(self, flow: Flow) -> str | None:
-        """Record the flow's source hash and the run's label; a resume under changed
-        code attaches to the steps whose inputs still match, so say so once. The hash,
-        None if unavailable (an unhashable flow keeps what was recorded)."""
-        file = self.run_dir / "run.json"
-        previous = json.loads(file.read_text()) if file.exists() else {}
+    def _source(self, flow: Flow) -> str | None:
+        """The flow's source hash, for the `run` event; a resume under changed code
+        attaches to the steps whose inputs still match, so say so once. None when the
+        source is unavailable."""
         try:
             source = digest(inspect.getsource(flow))[:SHORT]
         except (OSError, TypeError):
-            source = previous.get("source")
-        if source is not None and previous.get("source") not in (None, source):
+            return None
+        runs = [e for e in self.ledger.events() if e["type"] == "run"]
+        if runs and runs[-1].get("source") not in (None, source):
             logger.warning(
                 "%s: the flow's source changed since this run was written", self.run_dir
             )
-        file.write_text(json.dumps({"source": source, "label": self.label}, indent=1))
         return source
 
 
@@ -338,8 +323,11 @@ class Ctx:
         config = self.seat(seat).runtime
         if task is not None:
             config = resolve_runtime_config(config, task, set())
-        async with self.run.pools.hold((RUNTIMES,)), provision_runtime(config) as box:
-            box.env = dict(task.runtime_env()) if task is not None else {}
+        env = task.runtime_env() if task is not None else None
+        async with (
+            self.run.pools.hold((RUNTIMES,)),
+            provision_runtime(config, env=env) as box,
+        ):
             yield box
 
     async def _step(
@@ -363,56 +351,52 @@ class Ctx:
         if run._draining.is_set():
             raise Stopped(path)
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
-        run.steps.add(tag)
         self._event("step_started", path=path, index=index)
         started, attempts = now(), 0
-        try:
-            while True:
-                attempts += 1
-                try:
-                    async with asyncio.timeout(timeout):
-                        value = await work.execute(self)
-                        fields = work.dump(self, value)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    error = f"{type(exc).__name__}: {exc}"
-                    logger.warning("%s: attempt %d failed: %s", tag, attempts, error)
-                    if attempts > retries or isinstance(exc, Oversized):
-                        run.ledger.put(
-                            self._record(
-                                path,
-                                index,
-                                work,
-                                key,
-                                "error",
-                                started,
-                                attempts,
-                                error=error,
-                            )
+        while True:
+            attempts += 1
+            try:
+                async with asyncio.timeout(timeout):
+                    value = await work.execute(self)
+                    fields = work.dump(self, value)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                logger.warning("%s: attempt %d failed: %s", tag, attempts, error)
+                if attempts > retries or isinstance(exc, Oversized):
+                    run.ledger.put(
+                        self._record(
+                            path,
+                            index,
+                            work,
+                            key,
+                            "error",
+                            started,
+                            attempts,
+                            error=error,
                         )
-                        self._event("step_failed", path=path, index=index, error=error)
-                        raise StepFailed(f"{path}: {error}") from exc
-                    delay = backoff(attempts - 1)
-                    self._event(
-                        "step_retrying",
-                        path=path,
-                        index=index,
-                        attempt=attempts,
-                        error=error,
-                        backoff=delay,
                     )
-                    await asyncio.sleep(delay)
-                    continue
-                run.ledger.put(
-                    self._record(
-                        path, index, work, key, "completed", started, attempts, **fields
-                    )
+                    self._event("step_failed", path=path, index=index, error=error)
+                    raise StepFailed(f"{path}: {error}") from exc
+                delay = backoff(attempts - 1)
+                self._event(
+                    "step_retrying",
+                    path=path,
+                    index=index,
+                    attempt=attempts,
+                    error=error,
+                    backoff=delay,
                 )
-                self._event("step_completed", path=path, index=index)
-                return value
-        finally:
-            run.steps.discard(tag)
+                await asyncio.sleep(delay)
+                continue
+            run.ledger.put(
+                self._record(
+                    path, index, work, key, "completed", started, attempts, **fields
+                )
+            )
+            self._event("step_completed", path=path, index=index)
+            return value
 
     def _key(self, path: str, work: Work) -> str:
         """The step's key: its place in this row and the content of its work."""
@@ -452,3 +436,20 @@ class Ctx:
 
 Flow = Callable[[Ctx, Any], Awaitable[Any]]
 """A flow: `async def flow(ctx, row) -> value`."""
+
+
+def drain_on_interrupt(run: Run) -> None:
+    """Route SIGINT and SIGTERM to `run` from inside its loop: the first drains (steps
+    in flight finish and record, rows return stopped), the second cancels the task."""
+    loop, task = asyncio.get_running_loop(), asyncio.current_task()
+    assert task is not None
+
+    def interrupt() -> None:
+        if run.draining:
+            task.cancel()
+        else:
+            logger.warning("draining: in-flight steps finish; Ctrl-C again cancels")
+            run.drain()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, interrupt)

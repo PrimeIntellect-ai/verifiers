@@ -2,7 +2,7 @@
 attempt the request; a reviewer judges the folder and can send the builder back;
 the attempts are judged against the accepted folder.
 
-    python -m verifiers.v1.flow examples.flow.flywheel:flywheel rows.jsonl runs/first config.json
+    python -m verifiers.v1.flow examples.flow.flywheel:flywheel rows.jsonl runs/first @ config.toml
 """
 
 from __future__ import annotations
@@ -107,4 +107,4 @@ async def flywheel(ctx: Ctx, row: dict) -> dict:
     return await ctx.step("bank", fn(bank, judgments))
 
 
-flywheel.config = FlywheelConfig  # type: ignore[attr-defined]
+__all__ = ["FlywheelConfig", "flywheel"]

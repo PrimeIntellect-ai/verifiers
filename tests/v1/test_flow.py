@@ -28,7 +28,7 @@ async def test_steps_attach_on_resume_under_scopes_and_config_changes(tmp_path):
         return [*out, await ctx.step("build", fn(work, "again"))]
 
     (first,) = await Run(tmp_path, Cfg()).run(flow, [{"id": 1}])
-    changed = Cfg(max_concurrent_rows=1, pools={"runtimes": 1})
+    changed = Cfg(pools={"rows": 1, "runtimes": 1})
     (again,) = await Run(tmp_path, changed).run(flow, [{"id": 1}])
     assert first.value == again.value == ["start", "build0", "build1", "again"]
     assert len(calls) == 4  # the resume ran nothing

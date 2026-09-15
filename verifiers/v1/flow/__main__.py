@@ -1,7 +1,8 @@
 """`python -m verifiers.v1.flow [-v] <module:flow> <rows.jsonl> <run_dir> [@ config.toml] [--<field> <value> ...]`
 
-The flow is an async function `flow(ctx, row)`; its config class is read off its
-`config` attribute, else `FlowConfig`, and parsed like every v1 CLI: `@ file.toml`
+The flow is an async function `flow(ctx, row)`; its config is the `FlowConfig`
+subclass its module exports via `__all__` (as a harness or taskset module exports its
+class), else `FlowConfig`, and is parsed like every v1 CLI: `@ file.toml`
 loads a file, `--author.model x` sets a field, `-h` after the positionals lists them.
 Ctrl-C once drains (in-flight steps finish and record), twice cancels. The same
 command against the same run directory resumes. `-v` streams every progress event
@@ -14,19 +15,32 @@ import asyncio
 import importlib
 import json
 import logging
-import signal
 import sys
 from pathlib import Path
+from types import ModuleType
 
 from pydantic_config import cli
 
 from verifiers.v1.flow.config import FlowConfig
-from verifiers.v1.flow.run import Run
+from verifiers.v1.flow.run import Run, drain_on_interrupt
 
 USAGE = (
     "usage: python -m verifiers.v1.flow [-v] <module:flow> <rows.jsonl> <run_dir> "
     "[@ config.toml] [--<field> <value> ...]"
 )
+
+
+def config_type(module: ModuleType) -> type[FlowConfig]:
+    """The `FlowConfig` subclass `module` exports via `__all__`, else `FlowConfig`."""
+    for name in getattr(module, "__all__", ()):
+        obj = getattr(module, name, None)
+        if (
+            isinstance(obj, type)
+            and issubclass(obj, FlowConfig)
+            and obj is not FlowConfig
+        ):
+            return obj
+    return FlowConfig
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,10 +56,10 @@ def main(argv: list[str] | None = None) -> None:
     if verbose and not logger.handlers:
         logger.addHandler(logging.StreamHandler())  # stderr, bare messages
 
-    module, _, name = target.partition(":")
-    flow = getattr(importlib.import_module(module), name)
-    config_cls: type[FlowConfig] = getattr(flow, "config", FlowConfig)
-    config = cli(config_cls, args=rest, prog="flow")
+    module_name, _, name = target.partition(":")
+    module = importlib.import_module(module_name)
+    flow = getattr(module, name)
+    config = cli(config_type(module), args=rest, prog="flow")
     rows = [
         json.loads(line)
         for line in Path(rows_file).read_text().splitlines()
@@ -54,22 +68,7 @@ def main(argv: list[str] | None = None) -> None:
     run = Run(Path(run_dir), config)
 
     async def main_async() -> bool:
-        loop = asyncio.get_running_loop()
-        task = asyncio.current_task()
-        assert task is not None
-
-        def interrupt() -> None:
-            if run.draining:
-                task.cancel()
-            else:
-                print(
-                    "draining: in-flight steps finish; Ctrl-C again cancels",
-                    file=sys.stderr,
-                )
-                run.drain()
-
-        loop.add_signal_handler(signal.SIGINT, interrupt)
-        loop.add_signal_handler(signal.SIGTERM, interrupt)
+        drain_on_interrupt(run)
         ok = True
         async for result in run.stream(flow, rows):
             print(

@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -98,10 +99,9 @@ def digest(*parts: Any) -> str:
 
 
 def row_key(row: Any) -> str:
-    key = getattr(row, "key", None)
-    if isinstance(key, str) and key:
-        return key
-    return digest(row)[:SHORT]
+    """A row's key: its `key` field or attribute when it has one, else a digest."""
+    key = row.get("key") if isinstance(row, Mapping) else getattr(row, "key", None)
+    return key if isinstance(key, str) and key else digest(row)[:SHORT]
 
 
 class Ledger:

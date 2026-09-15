@@ -82,7 +82,7 @@ class AgentWork(Work[Trace]):
         held = () if self.runtime is not None else (RUNTIMES,)
         async with run.pools.hold(held), agent:
             trace = await agent.run(self.task, runtime=self.runtime)
-        await run.record(trace)
+        await run.ledger.append(trace)
         if not trace.ok:
             last = trace.last_error
             raise RolloutFailed(
