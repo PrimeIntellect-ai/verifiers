@@ -1,267 +1,223 @@
-"""The flow engine on model-free nodes: compile checks, routing, fan-out and joins,
-bounded cycles, ledger resume, command nodes, and inherited runtimes."""
+"""The flow core on host functions and subprocess commands: memoized steps, scopes,
+retry classification, spreads, runtime scopes, drain, and streaming."""
 
-from typing import Literal
-
-import pytest
-from pydantic import BaseModel
+import asyncio
 
 import verifiers.v1 as vf
-from verifiers.v1.flow import (
-    END,
-    Engine,
-    Flow,
-    FlowError,
-    Upstream,
-    at_least,
-    expand,
-    fn,
-    run,
-)
+from verifiers.v1.errors import ProviderError, SandboxError
+from verifiers.v1.flow import Ctx, FlowConfig, Run, command, fn
 
 
-def noop(up: Upstream) -> None:
-    return None
+def config(**kw) -> FlowConfig:
+    kw.setdefault("outage_backoff_s", 0.01)
+    kw.setdefault("outage_hold_s", 0.5)
+    return FlowConfig(**kw)
 
 
-def test_compile_rejects_unknown_target():
-    with pytest.raises(FlowError, match="unknown node"):
-
-        class Bad(Flow):
-            a = fn(noop, then="missing")
+def one() -> int:
+    return 1
 
 
-def test_compile_rejects_unreachable_node():
-    with pytest.raises(FlowError, match="unreachable"):
-
-        class Bad(Flow):
-            a = fn(noop)
-            b = fn(noop)
+def two() -> int:
+    return 2
 
 
-def test_compile_rejects_cycle_without_outcome_edge():
-    with pytest.raises(FlowError, match="no outcome edge"):
-
-        class Bad(Flow):
-            a = fn(noop, then="b", max_visits=3)
-            b = fn(noop, then="a", max_visits=3)
-
-
-def test_compile_rejects_cycle_without_max_visits():
-    with pytest.raises(FlowError, match="no node with max_visits"):
-
-        class Bad(Flow):
-            a = fn(noop, outcomes={"again": "a", "done": END})
-
-
-def test_compile_checks_inherited_runtimes():
-    with pytest.raises(FlowError, match="not on every path"):
-
-        class Bad(Flow):
-            a = fn(noop, outcomes={"x": "b", "y": "c"})
-            b = run(["true"], runtime=vf.SubprocessConfig(), then="c")
-            c = run(["true"], runtime="inherit:b")
-
-    with pytest.raises(FlowError, match="run node needs a runtime"):
-
-        class Bad2(Flow):
-            a = run(["true"], runtime="fresh")
-
-
-def test_compile_checks_fn_literal_outcomes():
-    def decide(up: Upstream) -> Literal["x", "y"]:
-        return "x"
-
-    with pytest.raises(FlowError, match="have no outcome edge"):
-
-        class Bad(Flow):
-            a = fn(decide, outcomes={"x": END})
-
-
-def test_compile_rejects_degenerate_counts():
-    with pytest.raises(FlowError, match="allows no visit"):
-
-        class Bad(Flow):
-            a = fn(noop, outcomes={"again": "a", "done": END}, max_visits=0)
-
-
-class Score(BaseModel):
-    total: int
-
-
-async def test_walk_routes_fans_out_joins_bounds_cycles_and_resumes(tmp_path):
+async def test_steps_attach_on_resume_and_scopes_separate_repeats(tmp_path):
     calls: list[str] = []
 
-    def start_fn(up: Upstream) -> str:
-        calls.append("start")
-        return "go"
+    def work(tag: str) -> str:
+        calls.append(tag)
+        return tag
 
-    def left_fn(up: Upstream) -> int:
-        calls.append("left")
-        return 1
+    async def flow(ctx: Ctx, row) -> list[str]:
+        out = [await ctx.step("start", fn(work, "start"))]
+        for i in range(2):
+            with ctx.scope(f"visit{i}"):
+                out.append(await ctx.step("build", fn(work, f"build{i}")))
+        out.append(await ctx.step("build", fn(work, "again")))
+        return out
 
-    def right_fn(up: Upstream) -> Literal["skip", "go"]:
-        calls.append("right")
-        return "skip"
-
-    def merge_fn(up: Upstream) -> Score:
-        calls.append("merge")
-        return Score(total=up.left)
-
-    def loop_fn(up: Upstream) -> Literal["again", "done"]:
-        calls.append("loop")
-        return "again"
-
-    def wrap_fn(up: Upstream) -> dict:
-        calls.append("wrap")
-        return {"total": up.merge.total, "loop": up.outcome("loop")}
-
-    class Demo(Flow):
-        start = fn(start_fn, then=("left", "right"))
-        left = fn(left_fn, then="merge")
-        right = fn(right_fn, outcomes={"skip": END, "go": "merge"})
-        merge = fn(merge_fn, then="loop")  # all-join: right ends without firing
-        loop = fn(
-            loop_fn,
-            outcomes={"again": "loop", "done": END},
-            max_visits=2,
-            on_exhausted="wrap",
-        )
-        wrap = fn(wrap_fn)
-
-    (result,) = await Engine(Demo(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert calls == ["start", "left", "right", "merge", "loop", "loop", "wrap"]
-    assert result.records["merge"].payload == {"total": 1}
-    assert result.records["loop"].terminal == "exhausted"
-    assert result.records["wrap"].payload == {"total": 1, "loop": "exhausted"}
-
-    # A second run over the same ledger attaches to every instance and runs nothing.
-    (again,) = await Engine(Demo(), tmp_path / "run").run([{"id": 1}])
-    assert again.ok and len(calls) == 7
-    assert again.records["wrap"].payload == {"total": 1, "loop": "exhausted"}
+    (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert first.ok and first.value == ["start", "build0", "build1", "again"]
+    (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert again.value == first.value and len(calls) == 4
 
 
-async def test_at_least_join_fires_before_all_predecessors(tmp_path):
-    def const(value: str):
-        return lambda up: value
+async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
+    attempts: list[int] = []
 
-    class Quorum(Flow):
-        start = fn(const("x"), then=("a", "b"))
-        a = fn(const("a"), then="pick")
-        b = fn(const("b"), then="pick")
-        pick = fn(
-            lambda up: sorted(n for n in ("a", "b") if up.outcome(n)),
-            join=at_least(1),
-        )
+    def flaky() -> None:
+        attempts.append(1)
+        raise ValueError("no")
 
-    (result,) = await Engine(Quorum(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok and result.records["pick"].payload in (["a"], ["b"], ["a", "b"])
+    async def flow(ctx: Ctx, row) -> int:
+        if row["id"] == 2:
+            return await ctx.step("fine", fn(two))
+        return await ctx.step("flaky", fn(flaky), retries=2)
 
-
-async def test_revise_edge_re_enters_a_bounded_node_without_waiting_on_it(tmp_path):
-    """build ∥ solve, review revises build once, judge joins review and solve."""
-    calls: list[str] = []
-
-    def review_fn(up: Upstream) -> Literal["revise", "accept"]:
-        calls.append("review")
-        return "revise" if calls.count("review") == 1 else "accept"
-
-    def judge_fn(up: Upstream) -> dict:
-        return {"review": up.outcome("review"), "solve": up.solve}
-
-    class Pipeline(Flow):
-        screen = fn(lambda up: "ok", then=("build", "solve"))
-        build = fn(lambda up: calls.append("build"), then="review", max_visits=3)
-        review = fn(review_fn, outcomes={"revise": "build", "accept": "judge"})
-        solve = fn(lambda up: "solved", then="judge")
-        judge = fn(judge_fn)
-
-    (result,) = await Engine(Pipeline(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert calls == ["build", "review", "build", "review"]
-    assert result.records["judge"].payload == {"review": "accept", "solve": "solved"}
+    results = await Run(tmp_path, config()).run(flow, [{"id": 1}, {"id": 2}])
+    failed = [r for r in results if not r.ok]
+    assert (
+        len(attempts) == 3 and len(failed) == 1 and "ValueError: no" in failed[0].error
+    )
+    assert [r.value for r in results if r.ok] == [2]
 
 
-async def test_fn_expand_keeps_item_indices_and_resumes(tmp_path):
-    seen: list[int] = []
+async def test_infrastructure_failures_hold_and_retry_without_consuming_retries(
+    tmp_path,
+):
+    seen = 0
 
-    def square(up: Upstream, item: int) -> int:
-        seen.append(item)
-        if item == 2:
+    def flapping_box() -> int:
+        nonlocal seen
+        seen += 1
+        if seen < 3:
+            raise SandboxError("box gone")
+        return seen
+
+    async def flow(ctx: Ctx, row) -> int:
+        return await ctx.step("s", fn(flapping_box))
+
+    run = Run(tmp_path, config())
+    (result,) = await run.run(flow, [{"id": 1}])
+    assert result.ok and result.value == 3 and not run.status()["holding"]
+
+
+async def test_infrastructure_hold_budget_and_timeouts_fail_the_step(tmp_path):
+    def down() -> None:
+        raise SandboxError("down")
+
+    async def slow() -> None:
+        await asyncio.sleep(1)
+
+    async def flow(ctx: Ctx, row) -> None:
+        if row["id"] == 1:
+            await ctx.step("down", fn(down))
+        await ctx.step("slow", fn(slow), timeout=0.01)
+
+    results = await Run(tmp_path, config(outage_hold_s=0.05)).run(
+        flow, [{"id": 1}, {"id": 2}]
+    )
+    errors = sorted(r.error for r in results)
+    assert all("held 0.05s" in e for e in errors)
+    assert any("SandboxError: down" in e for e in errors) and any(
+        "TimeoutError" in e for e in errors
+    )
+
+
+async def test_permanent_failures_stop_at_once(tmp_path):
+    calls: list[int] = []
+
+    def denied() -> None:
+        calls.append(1)
+        raise ProviderError("forbidden", status_code=403)
+
+    async def flow(ctx: Ctx, row) -> None:
+        await ctx.step("s", fn(denied), retries=3)
+
+    (result,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert not result.ok and len(calls) == 1
+
+
+async def test_spread_starts_only_what_the_quorum_needs_and_resumes_the_same_quorum(
+    tmp_path,
+):
+    started: list[int] = []
+
+    async def item(i: int) -> int:
+        started.append(i)
+        await asyncio.sleep(0.01 * (i + 1))
+        if i == 0:
             raise ValueError("bad item")
-        return item * item
+        return i * i
 
-    class Squares(Flow):
-        each = expand(square, over=lambda up: [1, 2, 3], join=at_least(2), then="total")
-        total = fn(lambda up: {"list": up.each, "items": up.items("each")})
+    async def flow(ctx: Ctx, row) -> dict[int, int]:
+        return await ctx.spread("sq", [fn(item, i) for i in range(5)], at_least=2)
 
-    (result,) = await Engine(Squares(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert result.records["total"].payload == {
-        "list": [1, 9],
-        "items": {"0": 1, "2": 9},
-    }
-    (again,) = await Engine(Squares(), tmp_path / "run").run([{"id": 1}])
-    assert again.ok and sorted(seen) == [1, 2, 3]
+    (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert first.ok and first.value == {1: 1, 2: 4} and sorted(started) == [0, 1, 2]
+    (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert again.value == first.value and len(started) == 3
 
 
-async def test_run_node_routes_on_outcome_line_or_exit_code(tmp_path):
-    class Commands(Flow):
-        say = run(
-            ["sh", "-c", "echo hello; echo 'Outcome: loud'"],
-            runtime=vf.SubprocessConfig(),
-            outcomes={"loud": "check", "*": END},
-        )
-        check = run(
-            ["sh", "-c", "exit 3"],
-            runtime=vf.SubprocessConfig(),
-            outcomes={"completed": END, "failed": "note"},
-        )
-        note = fn(lambda up: up.check.exit_code)
-
-    (result,) = await Engine(Commands(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert result.records["say"].outcome == "loud"
-    assert result.records["check"].outcome == "failed"
-    assert result.records["note"].payload == 3
-
-
-async def test_run_node_failure_routes_on_error(tmp_path):
-    class Failing(Flow):
-        boom = run(
-            ["sh", "-c", "exit 1"],
-            runtime=vf.SubprocessConfig(),
-            then=END,
-            on_error="recover",
-        )
-        recover = fn(lambda up: up.outcome("boom"))
-
-    (result,) = await Engine(Failing(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert result.records["boom"].terminal == "error"
-    assert result.records["recover"].payload is None
-
-
-async def test_crashed_row_is_a_failed_row(tmp_path):
-    class Crash(Flow):
-        a = fn(lambda up: 1 / 0)
-
-    (result,) = await Engine(Crash(), tmp_path / "run").run([{"id": 1}])
-    assert not result.ok and "ZeroDivisionError" in (result.error or "")
-
-
-async def test_inherited_runtime_is_the_same_live_runtime(tmp_path):
+async def test_commands_share_a_runtime_scope_and_attach_on_resume(tmp_path):
     marker = tmp_path / "marker.txt"
 
-    class Shared(Flow):
-        write = run(
-            ["sh", "-c", f"echo shared > {marker}"],
-            runtime=vf.SubprocessConfig(),
-            then="read",
+    class Cfg(FlowConfig):
+        worker: vf.AgentConfig = vf.AgentConfig(
+            harness={"id": "null"}, runtime=vf.SubprocessConfig()
         )
-        read = run(["cat", str(marker)], runtime="inherit:write")
 
-    (result,) = await Engine(Shared(), tmp_path / "run").run([{"id": 1}])
-    assert result.ok, result.error
-    assert result.records["read"].payload["stdout"].strip() == "shared"
+    async def flow(ctx: Ctx, row) -> tuple[str, int]:
+        async with ctx.runtime("worker") as box:
+            await ctx.step(
+                "write", command(["sh", "-c", f"echo shared > {marker}"], runtime=box)
+            )
+            read = await ctx.step("read", command(["cat", str(marker)], runtime=box))
+        return read.stdout.strip(), read.exit_code
+
+    (first,) = await Run(tmp_path / "run", Cfg(outage_backoff_s=0.01)).run(
+        flow, [{"id": 1}]
+    )
+    assert first.ok and first.value == ("shared", 0)
+    marker.unlink()
+    (again,) = await Run(tmp_path / "run", Cfg(outage_backoff_s=0.01)).run(
+        flow, [{"id": 1}]
+    )
+    assert again.value == ("shared", 0)  # both commands attached; nothing ran
+
+
+async def test_drain_stops_before_the_next_step_and_a_resume_finishes(tmp_path):
+    async def flow(ctx: Ctx, row) -> int:
+        a = await ctx.step("a", fn(one))
+        ctx.run.drain()
+        return a + await ctx.step("b", fn(two))
+
+    async def undrained(ctx: Ctx, row) -> int:
+        return await ctx.step("a", fn(one)) + await ctx.step("b", fn(two))
+
+    run = Run(tmp_path, config())
+    (stopped,) = await run.run(flow, [{"id": 1}])
+    assert (
+        stopped.stopped
+        and not stopped.ok
+        and run.status()["rows"] == {stopped.row: "stopped"}
+    )
+    (done,) = await Run(tmp_path, config()).run(undrained, [{"id": 1}])
+    assert done.ok and done.value == 3
+    assert (
+        run.ledger.get(done.row, "a#0") is not None
+        and run.ledger.get(done.row, "b#0") is not None
+    )
+
+
+async def test_concurrent_branches_keep_their_own_scopes(tmp_path):
+    calls: list[str] = []
+
+    def work(tag: str) -> str:
+        calls.append(tag)
+        return tag
+
+    async def flow(ctx: Ctx, row) -> list[str]:
+        async def branch(label: str) -> str:
+            with ctx.scope(label):
+                await asyncio.sleep(0.01 if label == "a" else 0)
+                return await ctx.step("x", fn(work, label))
+
+        return list(await asyncio.gather(branch("a"), branch("b")))
+
+    (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert first.value == again.value == ["a", "b"] and sorted(calls) == ["a", "b"]
+
+
+async def test_stream_yields_rows_as_they_finish(tmp_path):
+    async def flow(ctx: Ctx, row) -> float:
+        await asyncio.sleep(row["t"])
+        return row["t"]
+
+    order = [
+        r.value
+        async for r in Run(tmp_path, config()).stream(flow, [{"t": 0.05}, {"t": 0.0}])
+    ]
+    assert order == [0.0, 0.05]

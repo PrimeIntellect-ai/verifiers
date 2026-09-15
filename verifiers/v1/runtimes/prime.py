@@ -474,3 +474,22 @@ class PrimeRuntime(Runtime):
                 del _shared_clients[loop]
                 with contextlib.suppress(Exception):
                     await client.aclose()
+
+
+async def sweep_sandboxes(labels: list[str]) -> int:
+    """Delete every sandbox carrying all of `labels`; the count deleted. A run calls
+    this at a resume so the boxes a crashed launch left stop costing."""
+    from prime_sandboxes import AsyncSandboxClient
+
+    client = AsyncSandboxClient()
+    try:
+        response = await client.bulk_delete(labels=labels)
+    finally:
+        await client.aclose()
+    if response.failed:
+        logger.warning(
+            "prime: %d sandboxes not deleted: %s",
+            len(response.failed),
+            response.failed[:3],
+        )
+    return len(response.succeeded)
