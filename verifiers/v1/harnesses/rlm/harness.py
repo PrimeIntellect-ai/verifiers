@@ -32,7 +32,7 @@ BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
 SKILLS_DIR = "/task/rlm-skills"
-RLM_STATE_DIR = ".vf-rlm"
+RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
 
