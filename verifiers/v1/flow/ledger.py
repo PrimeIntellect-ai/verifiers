@@ -19,8 +19,12 @@ from typing import Any, Literal
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
-from verifiers.v1.cli.output import TRACES_FILE, append_trace, type_adapter
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1.cli.output import (
+    TRACES_FILE,
+    append_trace,
+    read_episodes,
+    read_jsonl,
+)
 from verifiers.v1.flow.work import WorkKind
 from verifiers.v1.trace import Trace, WireTrace
 
@@ -147,7 +151,7 @@ class Ledger:
 
     def events(self) -> list[dict[str, Any]]:
         """The run's events, oldest first."""
-        return _read_jsonl(self.events_file)
+        return read_jsonl(self.events_file)
 
     async def append(self, trace: Trace) -> None:
         await append_trace(self.run_dir, trace, self.lock, env="flow")
@@ -158,33 +162,7 @@ class Ledger:
         if self._traces is None:
             self._traces = {
                 trace.id: trace
-                for episode in self._episodes()
+                for episode in read_episodes(self.run_dir, WireTrace)
                 for trace in episode.traces
             }
         return self._traces.get(trace_id)
-
-    def _episodes(self) -> list[WireEpisode]:
-        episodes = []
-        for row in _read_jsonl(self.run_dir / TRACES_FILE):
-            episode = WireEpisode.model_validate({**row, "traces": []})
-            episode.traces = [
-                type_adapter(WireTrace).validate_python(t) for t in row["traces"]
-            ]
-            episodes.append(episode)
-        return episodes
-
-
-def _read_jsonl(file: Path) -> list[dict[str, Any]]:
-    """The objects in a JSON-lines file, oldest first. A torn last line (a process
-    killed mid-write) is skipped rather than blocking every resume; a torn line
-    anywhere else is corruption and raises."""
-    lines = [line for line in file.read_text().splitlines() if line.strip()]
-    rows: list[dict[str, Any]] = []
-    for i, line in enumerate(lines):
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            if i < len(lines) - 1:
-                raise
-            logger.warning("%s ends in a torn line; skipping it", file)
-    return rows
