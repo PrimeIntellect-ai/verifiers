@@ -71,11 +71,8 @@ RowState = Literal["running", "ok", "failed", "stopped"]
 
 
 class StepFailed(Exception):
-    """A step used up its retries, or failed in a way no retry mends."""
-
-    def __init__(self, path: str, error: str) -> None:
-        super().__init__(f"{path}: {error}")
-        self.path, self.error = path, error
+    """A step used up its retries, or failed in a way no retry mends: `<path>: <error>`,
+    the cause chained. What a flow catches to route on a failed step."""
 
 
 class Stopped(Exception):
@@ -88,16 +85,6 @@ class RowResult:
     state: RowState
     value: Any = None
     error: str | None = None
-
-
-@dataclass
-class RunStatus:
-    rows: dict[str, RowState]
-    steps: list[str]
-    """`<row>/<path>` in flight."""
-    draining: bool
-    usage: Usage | None
-    """Provider usage summed over every agent step so far."""
 
 
 class Run:
@@ -116,8 +103,11 @@ class Run:
         where = digest(str(run_dir.resolve()))[:SHORT]
         self.label = f"flow-{run_dir.name}-{where}"[:LABEL_MAX]
         self.rows: dict[str, RowState] = {}
-        self.steps: set[str] = set()  # `<row>/<path>` in flight
+        """Every row seen so far, by key, and where it stands."""
+        self.steps: set[str] = set()
+        """`<row>/<path>` in flight."""
         self.usage: Usage | None = None
+        """Provider usage summed over every agent step so far."""
         self.interception: Interception | None = None  # live inside `_serving`
         self._draining = asyncio.Event()
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
@@ -163,13 +153,9 @@ class Run:
             self.ledger.event("drain")
             self._draining.set()
 
-    def status(self) -> RunStatus:
-        return RunStatus(
-            rows=dict(self.rows),
-            steps=sorted(self.steps),
-            draining=self._draining.is_set(),
-            usage=self.usage,
-        )
+    @property
+    def draining(self) -> bool:
+        return self._draining.is_set()
 
     def seat(self, name: str) -> AgentConfig:
         """The seat with the run's defaults filled in: the identity its steps key on."""
@@ -336,14 +322,9 @@ class Ctx:
             if isinstance(exc, Stopped):
                 raise exc
         if failed:
-            errors = [
-                exc.error
-                if isinstance(exc, StepFailed)
-                else f"{type(exc).__name__}: {exc}"
-                for exc in failed
-            ]
+            errors = [str(exc) for exc in failed]
             raise StepFailed(
-                path, f"{len(failed)}/{len(works)} items failed: {errors[:3]}"
+                f"{path}: {len(failed)}/{len(works)} items failed: {errors[:3]}"
             )
         return dict(enumerate(results))  # type: ignore[arg-type]
 
@@ -411,7 +392,7 @@ class Ctx:
                             )
                         )
                         self._event("step_failed", path=path, index=index, error=error)
-                        raise StepFailed(path, error) from exc
+                        raise StepFailed(f"{path}: {error}") from exc
                     delay = backoff(attempts - 1)
                     self._event(
                         "step_retrying",

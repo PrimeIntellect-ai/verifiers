@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> None:
         assert task is not None
 
         def interrupt() -> None:
-            if run.status().draining:
+            if run.draining:
                 task.cancel()
             else:
                 print(

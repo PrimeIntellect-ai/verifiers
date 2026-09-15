@@ -24,7 +24,6 @@ from verifiers.v1.flow.run import (
     RowResult,
     RowState,
     Run,
-    RunStatus,
     StepFailed,
     Stopped,
 )
@@ -50,7 +49,6 @@ __all__ = [
     "RowResult",
     "RowState",
     "Run",
-    "RunStatus",
     "StepFailed",
     "StepRecord",
     "Stopped",

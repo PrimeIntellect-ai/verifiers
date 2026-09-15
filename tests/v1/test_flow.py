@@ -253,7 +253,7 @@ async def test_drain_stops_before_the_next_step_and_a_resume_finishes(tmp_path):
 
     run = Run(tmp_path, config())
     (stopped,) = await run.run(flow, [{"id": 1}])
-    assert stopped.state == "stopped" and run.status().rows == {stopped.row: "stopped"}
+    assert stopped.state == "stopped" and run.rows == {stopped.row: "stopped"}
     (done,) = await Run(tmp_path, config()).run(undrained, [{"id": 1}])
     assert done.state == "ok" and done.value == 3
     assert (
