@@ -360,14 +360,14 @@ class Ctx:
             else:
                 self._event("step_attached", path=path, index=index)
                 return value
+        if run._draining.is_set():
+            raise Stopped(path)
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
         run.steps.add(tag)
         self._event("step_started", path=path, index=index)
         started, attempts = now(), 0
         try:
             while True:
-                if run._draining.is_set():
-                    raise Stopped(path)
                 attempts += 1
                 try:
                     async with asyncio.timeout(timeout):
