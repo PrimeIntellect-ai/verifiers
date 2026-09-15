@@ -54,10 +54,8 @@ _TEMPLATE_LOCK_DIR = CACHE_DIR / "e2b-template-locks"
 # unprivileged `user`, which breaks root-only setup steps (package installs, restores).
 _USER = "root"
 
-# `run_program` and `open_process` hold a stream open for the whole rollout; on a long
-# one it can drop (proxy idle, transient network). Reconnecting resumes the same pid —
-# never a re-run — so a bounded number of attempts, backing off from
-# `_WAIT_RECONNECT_BACKOFF` seconds and doubling per attempt, is safe.
+# `run_program` can reconnect to the same pid without losing its file-backed output.
+# Live process streams cannot reconnect safely: E2B does not replay missed bytes.
 _WAIT_RECONNECTS = 4
 _WAIT_RECONNECT_BACKOFF = 0.25
 
@@ -169,8 +167,12 @@ class E2BRuntimeInfo(E2BConfig, BaseRuntimeInfo):
     template: str | None = None
 
 
-async def _queue_stream(queue: asyncio.Queue[bytes | None]) -> AsyncIterator[bytes]:
+async def _queue_stream(
+    queue: asyncio.Queue[bytes | SandboxError | None],
+) -> AsyncIterator[bytes]:
     while (chunk := await queue.get()) is not None:
+        if isinstance(chunk, SandboxError):
+            raise chunk
         yield chunk
 
 
@@ -210,11 +212,12 @@ class E2BProcess(RuntimeProcess):
             "stdout": bytearray(),
             "stderr": bytearray(),
         }
-        self._stdout_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-        self._stderr_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._stdout_queue: asyncio.Queue[bytes | SandboxError | None] = asyncio.Queue()
+        self._stderr_queue: asyncio.Queue[bytes | SandboxError | None] = asyncio.Queue()
         self.stdout = _queue_stream(self._stdout_queue)
         self.stderr = _queue_stream(self._stderr_queue)
         self._wait_task: asyncio.Task[int] | None = None
+        self._exit_code: int | None = None
 
     def _payload(self, stream: str, chunk: str) -> bytes:
         """Recover the raw bytes of a chunk and drop everything through the marker."""
@@ -249,35 +252,16 @@ class E2BProcess(RuntimeProcess):
         from e2b import CommandExitException
 
         try:
-            for attempt in range(_WAIT_RECONNECTS):
-                try:
-                    return (await self._handle.wait()).exit_code
-                except CommandExitException as e:
-                    return e.exit_code
-                except Exception as e:
-                    if attempt == _WAIT_RECONNECTS - 1:
-                        raise SandboxError(
-                            f"e2b live process connection failed: {e}"
-                        ) from e
-                    await asyncio.sleep(_WAIT_RECONNECT_BACKOFF * 2**attempt)
-                    # Resume the live stream on the same pid. Output written during
-                    # the gap is not replayed; the drops seen in practice are idle
-                    # ones, when nothing is in flight.
-                    try:
-                        self._handle = _byte_handle(
-                            await self._sandbox.commands.connect(
-                                self._handle.pid,
-                                timeout=0,
-                                on_stdout=self.on_stdout,
-                                on_stderr=self.on_stderr,
-                            )
-                        )
-                    except Exception as reconnect_error:
-                        raise SandboxError(
-                            f"e2b live process connection failed: {e}; "
-                            f"reconnect failed: {reconnect_error}"
-                        ) from reconnect_error
-            raise AssertionError("unreachable")
+            self._exit_code = (await self._handle.wait()).exit_code
+        except CommandExitException as e:
+            self._exit_code = e.exit_code
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                await self.kill()
+            error = SandboxError(f"e2b live process connection failed: {e}")
+            self._stdout_queue.put_nowait(error)
+            self._stderr_queue.put_nowait(error)
+            raise error from e
         finally:
             # A process that died before printing its marker produced only pre-marker
             # output — the shell's own diagnosis of why it never started. Flush it so
@@ -289,6 +273,7 @@ class E2BProcess(RuntimeProcess):
                 if pending := self._prefix[stream]:
                     queue.put_nowait(bytes(pending))
                 queue.put_nowait(None)
+        return self._exit_code
 
     async def write(self, data: bytes) -> None:
         try:
@@ -298,7 +283,7 @@ class E2BProcess(RuntimeProcess):
 
     async def wait(self) -> int:
         assert self._wait_task is not None
-        return await self._wait_task
+        return await asyncio.shield(self._wait_task)
 
     async def terminate(self) -> None:
         await self._signal("TERM")
@@ -307,14 +292,14 @@ class E2BProcess(RuntimeProcess):
         await self._signal("KILL")
 
     async def _signal(self, signal: str) -> None:
-        if self._wait_task is not None and self._wait_task.done():
+        if self._exit_code is not None:
             return
         try:
             await self._sandbox.commands.run(
                 f"kill -{signal} {self._handle.pid}", user=_USER
             )
         except Exception as e:
-            if self._wait_task is None or not self._wait_task.done():
+            if self._exit_code is None:
                 raise SandboxError(f"e2b live process signal failed: {e}") from e
 
 
@@ -375,7 +360,9 @@ class E2BRuntime(Runtime):
         cpu_count, memory_mb = _template_resources(self.config.cpu, self.config.memory)
         name = self._template_name()
         async with _template_lock(name):
-            if not await AsyncTemplate.exists(name):
+            # An alias is registered before its build finishes; an explicit tag
+            # exists only when it resolves to a ready build.
+            if not await AsyncTemplate.exists(f"{name}:default"):
                 logger.info(
                     "e2b: building template %s from image %s", name, self.config.image
                 )
