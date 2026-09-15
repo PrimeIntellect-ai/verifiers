@@ -5,7 +5,7 @@ settings that still exercise the path, then assert on the resulting `Trace`(s) â
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
 without one the `e2e`-marked tests skip (config parsing still runs).
 
-`run_v1` mirrors the eval CLI (`run_eval`, in-process); `run_v1_server` drives the same env
+`run_v1` runs the env in-process (`tests/v1/runner.py`); `run_v1_server` drives the same env
 through an env-server worker pool, the path prime-rl trains through. Placement coverage (harness x harness runtime x tool
 server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
 combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
@@ -41,8 +41,7 @@ from pathlib import Path
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.configs.cli.eval import EvalConfig
+from tests.v1.runner import RunnerConfig, run_episodes
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.loaders import harness_config_type
@@ -134,8 +133,8 @@ def _eval_config(
     runtime: dict | None = None,
     env: dict | None = None,
     reasoning_effort: str | None = None,
-) -> EvalConfig:
-    """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
+) -> RunnerConfig:
+    """Build the smallest `RunnerConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one).
@@ -179,7 +178,7 @@ def _eval_config(
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
         # Agent runs retry locally; interactions retry with their whole episode.
         seat_cfg.setdefault("retries", retries)
-    return EvalConfig(
+    return RunnerConfig(
         env={
             "taskset": taskset_cfg,
             **env_cfg,
@@ -190,21 +189,19 @@ def _eval_config(
             "max_tokens": max_tokens,
             "reasoning_effort": reasoning_effort,
         },
-        rich=None,
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
-        push=False,
     )
 
 
 @pytest.fixture
 def run_v1():
-    """Run a v1 taskset end-to-end in-process (`run_eval`) and return its traces."""
+    """Run a v1 taskset end-to-end in-process and return its traces."""
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        records = await run_eval(config)
+        records = await run_episodes(config)
         # The runner answers durability envelopes; the tests assert on traces.
         return [t for r in records for t in r.traces]
 

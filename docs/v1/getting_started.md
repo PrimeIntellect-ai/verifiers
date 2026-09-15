@@ -9,7 +9,7 @@ cd verifiers
 uv sync
 ```
 
-You can now run tasksets directly, e.g. `uv run vf-eval <taskset-id>`, and scaffold new ones with `uv run vf-init <name>`.
+Scaffold new tasksets with `uv run vf-init <name>` and check them model-free with `uv run vf-validate <taskset-id>`. Run evaluations through [Prime-RL](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md) with `uv run eval <taskset-id>`.
 
 ## Skills
 

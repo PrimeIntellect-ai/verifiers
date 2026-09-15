@@ -23,11 +23,11 @@ verifiers comes with different pre-built `Env`s to use:
 ## Isolated deterministic verification
 
 Select `--env.id isolated-verifier` when the task's score must not run in the
-solver's sandbox. It is still a one-agent run: the environment records one solver
+solver's sandbox in a Prime-RL evaluation. It is still a one-agent run: the environment records one solver
 trace and starts no verifier agent, model, or harness.
 
 ```bash
-uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
+uv run eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
 ```
 
 Task authors use the existing task API. Declare every solver output the verifier

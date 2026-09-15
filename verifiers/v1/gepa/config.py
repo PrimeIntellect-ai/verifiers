@@ -15,7 +15,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
+from verifiers.v1.configs.cli.run import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig

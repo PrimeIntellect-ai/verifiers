@@ -1,9 +1,0 @@
-# glossary — a colocated MCP tool server (runs inside the harness's own runtime).
-#
-#   uv run vf-eval glossary @ configs/glossary.toml
-
-[select]
-limit = 1
-
-[env.taskset]
-id = "glossary"
