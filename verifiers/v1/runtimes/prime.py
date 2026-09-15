@@ -7,7 +7,6 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
-import base64
 import contextlib
 import logging
 import math
@@ -371,30 +370,31 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
-        if max_bytes is not None and self.config.vm:
-            try:
-                # VM execute_command uses bash and returns the complete output stream.
-                result = await self._client.execute_command(
-                    self.info.id,
-                    f"set -o pipefail; head -c {max_bytes} -- {shlex.quote(path)} | base64",
-                    working_dir=self.config.workdir,
-                    env=self.process_env({}),
-                    timeout=EFFECTIVELY_UNBOUNDED_SECONDS,
-                )
-            except Exception as exc:
-                raise SandboxError(f"read {path!r}: {exc}") from exc
-            if result.exit_code:
-                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
-            return base64.b64decode(result.stdout)
-        if max_bytes is not None:
-            return await super()._read(path, max_bytes)
-        # Avoid background-job log limits and base64 overhead by downloading binary data directly.
-        # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
+        if max_bytes is not None:
+            # Enforce the cap inside the box, then download the file whole as binary. Streaming
+            # `head | base64` through command output ties the read to the gateway's output
+            # limits (background jobs return only their last JOB_OUTPUT_TAIL_BYTES) and adds
+            # 33% base64 overhead; a 10-12 MB rollout artifact came back as an empty string.
+            result = await self.run(["stat", "-c", "%s", "--", target], {})
+            if result.exit_code:
+                raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            try:
+                size = int(result.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError) as exc:
+                raise SandboxError(
+                    f"read {path!r}: could not stat: {result.stdout[-200:]!r}"
+                ) from exc
+            if size > max_bytes:
+                raise SandboxError(
+                    f"read {path!r}: file is {size} bytes, over the read limit"
+                )
+        # Download binary data directly: no job-output limits and no base64 overhead.
+        # The temporary file is removed on every exit, and its byte read stays off the event loop.
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
