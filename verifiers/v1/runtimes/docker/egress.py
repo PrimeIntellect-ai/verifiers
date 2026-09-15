@@ -137,14 +137,15 @@ class EgressProxy:
         self.port = 0
 
     def callback_url(self, url: str, host_alias: str = HOST_ALIAS) -> str:
-        """Route one framework-owned host-loopback HTTP(S) origin through this proxy."""
+        """Route one framework-owned host-loopback HTTP(S)/WebSocket origin."""
         parsed = urlsplit(url)
+        scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
         host = (parsed.hostname or "").lower().rstrip(".")
-        if parsed.scheme not in ("http", "https") or not is_loopback_host(host):
+        if scheme not in ("http", "https") or not is_loopback_host(host):
             raise ValueError(f"unsupported Docker host callback URL: {url}")
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        port = parsed.port or (443 if scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
-        callback = _Callback(parsed.scheme, host, port, authority, host_alias)
+        callback = _Callback(scheme, host, port, authority, host_alias)
         token = self._callback_tokens.get(callback)
         if token is None:
             token = secrets.token_urlsafe(32)
@@ -153,7 +154,8 @@ class EgressProxy:
         userinfo, separator, _ = parsed.netloc.rpartition("@")
         netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
         path = f"{_CALLBACK_PREFIX}{token}{parsed.path or '/'}"
-        return urlunsplit(("http", netloc, path, parsed.query, parsed.fragment))
+        visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
+        return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
 
     async def start(
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
@@ -338,6 +340,14 @@ class EgressProxy:
                     if name.lower() == b"connection"
                     for field in value.split(b",")
                 }
+                websocket = (
+                    callback is not None
+                    and b"upgrade" in connection_fields
+                    and any(
+                        name.lower() == b"upgrade" and value.lower() == b"websocket"
+                        for name, value in request.headers
+                    )
+                )
                 excluded = {
                     b"connection",
                     b"expect",
@@ -351,6 +361,8 @@ class EgressProxy:
                     b"upgrade",
                     *connection_fields,
                 }
+                if websocket:
+                    excluded.discard(b"upgrade")
                 origin_rewrites = (
                     {
                         f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
@@ -387,7 +399,7 @@ class EgressProxy:
                             target=path,
                             headers=[
                                 (b"Host", authority.encode("ascii")),
-                                (b"Connection", b"close"),
+                                (b"Connection", b"Upgrade" if websocket else b"close"),
                                 *headers,
                             ],
                             http_version=request.http_version,
@@ -489,6 +501,11 @@ class EgressProxy:
                         response_started = True
                         writer.write(client.send(response))
                         await _drain(writer)
+                        if response.status_code == 101:
+                            await _relay(
+                                reader, writer, upstream_reader, upstream_writer
+                            )
+                            return
                         if isinstance(response, h11.Response):
                             break
                 while chunk := await _read(upstream_reader, read_timeout):
