@@ -41,6 +41,15 @@ class _SessionSnapshot(BaseModel):
 
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
+    last_stop_reason: str | None = None
+
+
+_TRUNCATION_STOPS = {
+    "max_total_tokens": "max_total_tokens",
+    "max_total_turns": "max_turns",
+    "token_budget": "max_output_tokens",
+    "compaction_failed": "compaction_failed",
+}
 
 
 class CompactionConfig(BaseConfig):
@@ -251,6 +260,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
         trace.record_metrics(snapshot.metrics)
+        if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
+            trace.stop(condition)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         self._consume_snapshot(trace, result.response_metadata)
