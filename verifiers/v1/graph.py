@@ -556,7 +556,7 @@ class PendingTurn:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
         self.trace.tools = self.tools
-        self.trace._pending = []
+        self.trace.clear_preview()
         return assistant_id
 
     def commit_prompt(self) -> None:
@@ -579,7 +579,7 @@ class PendingTurn:
             parent = len(self.trace.nodes) - 1
             index[_node_key(previous, message, self.tools)] = parent
         self.trace.tools = self.tools
-        self.trace._pending = []
+        self.trace.clear_preview()
 
 
 def prepare_turn(

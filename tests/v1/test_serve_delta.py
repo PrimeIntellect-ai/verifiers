@@ -69,6 +69,49 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
     trace.notify()
 
 
+def test_delta_fields_cover_every_serialized_trace_field():
+    """A new Trace field must be routed through the stream, or it silently vanishes."""
+    from verifiers.v1.serve.delta import HEADER_FIELDS, LIST_FIELDS, SCALAR_FIELDS
+
+    streamed = set(HEADER_FIELDS) | set(LIST_FIELDS) | set(SCALAR_FIELDS)
+    serialized = {
+        name for name, info in vf.Trace.model_fields.items() if not info.exclude
+    }
+    assert streamed == serialized
+
+
+@pytest.mark.asyncio
+async def test_failed_send_is_diffed_again():
+    """A delta the wire refused is not lost: its cursor stays and the next flush
+    carries the same content, so the client still assembles the whole trace."""
+    slot = Slot()
+    frames: list[bytes] = []
+    fail = {"on": False}
+
+    async def send(data: bytes) -> None:
+        if fail["on"]:
+            raise OSError("host unreachable")
+        frames.append(data)
+
+    async with DeltaStreamer(slot, send) as streamer:
+        trace = make_trace()
+        slot.traces.append(trace)
+        streamer.watch(trace)
+        await settle()
+        fail["on"] = True
+        add_turn(trace, "a1")
+        await settle()
+        fail["on"] = False
+        add_turn(trace, "a2")
+        await settle()
+        slot.traces = [trace]
+    assembly = EpisodeAssembly()
+    for frame in frames:
+        assembly.apply(unpack(frame))
+    assert len(assembly.traces[trace.id]["nodes"]) == 3
+    assert len(assembly.traces[trace.id]["calls"]) == 2
+
+
 @pytest.mark.asyncio
 async def test_pending_preview_streams_and_clears_on_commit():
     slot = Slot()
@@ -93,7 +136,7 @@ async def test_pending_preview_streams_and_clears_on_commit():
         trace.nodes.append(
             MessageNode(parent=1, message=UserMessage(content="tool says 42"))
         )
-        trace._pending = []
+        trace.clear_preview()
         add_turn(trace, "a2")
         await settle()
         committed = unpack(frames[-1])

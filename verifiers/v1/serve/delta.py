@@ -9,9 +9,11 @@ fields whose value changed (timing spans, stop condition, rewards, ...), and the
 `pending` preview — the messages of the request in flight that no node holds yet, so a
 watcher sees a tool result before the model has answered it. The `Trace` is
 append-only at turn granularity (a turn's nodes are committed complete, with their
-tokens), so every byte of the episode crosses the wire once and the stream costs about
-what a single reply would; the reply that ends the run carries only the episode head and
-per-trace counts the client checks its assembly against.
+tokens), so apart from the preview, which a committed turn repeats, every byte of the
+episode crosses the wire once and the stream costs about what a single reply would; the
+reply that ends the run carries only the episode head and per-trace counts the client
+checks its assembly against. A cursor advances only once its delta is on the wire, so a
+send that fails is simply diffed again at the next flush.
 
 The client applies deltas into raw dicts (`EpisodeAssembly`) — cheap enough to hand a
 caller after every turn — and validates the assembled record into a `WireEpisode` once,
@@ -21,14 +23,19 @@ when the run's reply lands.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import msgpack
 from pydantic import BaseModel
 
 from verifiers.v1.serve.encoding import msgpack_encoder
+
+if TYPE_CHECKING:
+    from verifiers.v1.env import RunSlot
+    from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +73,7 @@ def pack(payload: Any) -> bytes:
 
 
 def unpack(data: bytes) -> Any:
-    # Trace dicts carry int keys (`mm_token_type_id_map`, node-indexed links).
+    # `links` is keyed by node index (int).
     return msgpack.unpackb(data, raw=False, strict_map_key=False)
 
 
@@ -96,11 +103,11 @@ class DeltaStreamer:
     flushes the final state (the slot then holds the finished episode's traces), a
     cancelled rollout flushes nothing — its client has already gone."""
 
-    def __init__(self, slot: Any, send: Callable[[bytes], Awaitable[None]]) -> None:
+    def __init__(self, slot: RunSlot, send: Callable[[bytes], Awaitable[None]]) -> None:
         self.slot = slot
         self.send = send
         self.cursors: dict[str, TraceCursor] = {}
-        self._scheduled = False
+        self._scheduled: asyncio.Handle | None = None
         self._flushes: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
 
@@ -108,23 +115,28 @@ class DeltaStreamer:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        for task in self._flushes:
-            task.cancel()
+        if self._scheduled is not None:
+            self._scheduled.cancel()
+            self._scheduled = None
         if exc_type is None:
+            # let in-flight flushes finish, then send whatever the run left behind
+            await asyncio.gather(*self._flushes, return_exceptions=True)
             await self.flush()
+        else:
+            for task in self._flushes:
+                task.cancel()
 
-    def watch(self, trace: Any) -> None:
+    def watch(self, trace: Trace) -> None:
         trace.watch(self._changed)
         self._changed(trace)
 
-    def _changed(self, trace: Any) -> None:
-        if self._scheduled:
+    def _changed(self, trace: Trace) -> None:
+        if self._scheduled is not None:
             return
-        self._scheduled = True
-        asyncio.get_running_loop().call_soon(self._start_flush)
+        self._scheduled = asyncio.get_running_loop().call_soon(self._start_flush)
 
     def _start_flush(self) -> None:
-        self._scheduled = False
+        self._scheduled = None
         task = asyncio.create_task(self.flush())
         self._flushes.add(task)
         task.add_done_callback(self._flushes.discard)
@@ -132,27 +144,34 @@ class DeltaStreamer:
     async def flush(self) -> None:
         # Serialized: deltas must leave in diff order, and the reply after the last.
         async with self._lock:
-            for delta in self.diff():
+            for trace_id, delta, cursor in self.diff():
                 try:
                     await self.send(pack(delta))
-                except Exception:  # a lost delta only delays the client's view
+                except Exception:  # the cursor stays put: the next flush diffs it again
                     logger.warning(
-                        "failed to send delta for %s", delta.get("trace"), exc_info=True
+                        "failed to send delta for %s", trace_id, exc_info=True
                     )
+                    continue
+                if cursor is None:
+                    self.cursors.pop(trace_id, None)
+                else:
+                    self.cursors[trace_id] = cursor
 
-    def diff(self) -> list[dict]:
+    def diff(self) -> list[tuple[str, dict, TraceCursor | None]]:
+        """Each trace's delta against its sent cursor, with the cursor as it stands once
+        that delta is sent (None for a discard). Nothing here is committed: `flush`
+        stores a cursor only after its delta left."""
         traces = list(self.slot.traces)
         live = {trace.id for trace in traces}
-        deltas: list[dict] = []
+        deltas: list[tuple[str, dict, TraceCursor | None]] = []
         for trace_id in [trace_id for trace_id in self.cursors if trace_id not in live]:
             # A retried attempt abandons its traces; the client drops them too.
-            del self.cursors[trace_id]
-            deltas.append({"trace": trace_id, "discard": True})
+            deltas.append((trace_id, {"trace": trace_id, "discard": True}, None))
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
-            cursor = self.cursors.get(trace.id)
-            if cursor is None:
-                cursor = self.cursors[trace.id] = TraceCursor()
+            sent = self.cursors.get(trace.id)
+            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor()
+            if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links: dict[int, list[dict]] = {}
             for index in range(cursor.sent["nodes"]):
@@ -190,23 +209,21 @@ class DeltaStreamer:
                 if pending or "nodes" not in delta:
                     delta["pending"] = pending
             if len(delta) > 1:
-                deltas.append(delta)
+                deltas.append((trace.id, delta, cursor))
         return deltas
 
 
 class EpisodeAssembly:
     """The client's growing picture of one served episode: raw trace dicts in arrival
-    order, each shaped like a dumped `Trace`, plus the count of deltas applied."""
+    order, each shaped like a dumped `Trace` plus its `pending` preview."""
 
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
-        self.updates = 0
 
     def apply(self, delta: dict) -> None:
         trace_id = delta["trace"]
         if delta.get("discard"):
             self.traces.pop(trace_id, None)
-            self.updates += 1
             return
         trace = self.traces.get(trace_id)
         if trace is None:
@@ -226,7 +243,6 @@ class EpisodeAssembly:
             trace["pending"] = []
         if "pending" in delta:
             trace["pending"] = delta["pending"]
-        self.updates += 1
 
     def finish(self, head: dict, summaries: list[TraceSummary]) -> dict:
         """The full episode record: `head` (the episode without its traces) joined with

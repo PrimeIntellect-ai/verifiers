@@ -64,20 +64,31 @@ class EnvClient:
             self._receiver = asyncio.create_task(self._receive_loop())
 
     async def _receive_loop(self) -> None:
+        # The one receiver serves every in-flight request, so a bad frame or a delta
+        # handler that raises is logged and skipped rather than allowed to end the loop.
         while True:
             try:
-                request_id_bytes, kind, data = await self.socket.recv_multipart()
+                frames = await self.socket.recv_multipart()
             except asyncio.CancelledError:
                 break
-            request_id = request_id_bytes.decode()
-            if kind == b"delta":
-                on_delta = self._deltas.get(request_id)
-                if on_delta is not None:
-                    on_delta(data)
-                continue
-            future = self._pending.pop(request_id, None)
-            if future is not None and not future.done():
-                future.set_result(data)
+            try:
+                if len(frames) != 3:
+                    raise ValueError(
+                        f"expected [request_id, kind, data], got {len(frames)} frames - "
+                        "is the env server speaking the same serve protocol?"
+                    )
+                request_id_bytes, kind, data = frames
+                request_id = request_id_bytes.decode()
+                if kind == b"delta":
+                    on_delta = self._deltas.get(request_id)
+                    if on_delta is not None:
+                        on_delta(data)
+                    continue
+                future = self._pending.pop(request_id, None)
+                if future is not None and not future.done():
+                    future.set_result(data)
+            except Exception:  # keep receiving for the other requests
+                logger.warning("dropping a malformed env-server frame", exc_info=True)
 
     async def _request(
         self,
@@ -118,7 +129,7 @@ class EnvClient:
             raise
         finally:
             self._deltas.pop(request_id, None)
-        response = response_type.model_validate(msgpack.unpackb(data, raw=False))
+        response = response_type.model_validate(unpack(data))
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
         return response

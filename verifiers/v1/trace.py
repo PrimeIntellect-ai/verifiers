@@ -470,6 +470,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self._pending = list(messages)
         self.notify()
 
+    def clear_preview(self) -> None:
+        """The previewed messages are committed (or abandoned)."""
+        self._pending = []
+
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
         """The wire unpacks with msgpack's `strict_map_key`, which forbids int map keys —
