@@ -1,6 +1,7 @@
 """Eval CLI entrypoint."""
 
 import asyncio
+import importlib.util
 import json
 import logging
 import shutil
@@ -36,6 +37,12 @@ USAGE = (
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Both packages install an `eval` script and the last one installed wins; in a
+    # prime-rl workspace its entrypoint is the one meant.
+    if importlib.util.find_spec("prime_rl") is not None:
+        from prime_rl.entrypoints.eval import main as prime_rl_main
+
+        return prime_rl_main()
     argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):

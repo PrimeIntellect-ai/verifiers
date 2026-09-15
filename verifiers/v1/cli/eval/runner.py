@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import TypeVar, cast
 
 from verifiers.v1.cli.dashboard import dashboard
+from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
     append_episode,
@@ -126,6 +127,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         logger.info(
             "running %dx%d rollouts on %s", len(plan), config.num_rollouts, config.model
         )
+        logger.info(PRIME_RL_HINT)
     start = time.time()
     logger.info("results: %s", out)
 
