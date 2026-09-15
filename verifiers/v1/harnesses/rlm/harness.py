@@ -48,7 +48,7 @@ _TRUNCATION_STOPS = {
     "max_total_tokens": "max_total_tokens",
     "max_total_turns": "max_turns",
     "token_budget": "max_output_tokens",
-    "compaction_failed": "max_input_tokens",
+    "compaction_failed": "compaction_failed",
 }
 
 
