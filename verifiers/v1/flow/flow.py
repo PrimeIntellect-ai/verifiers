@@ -13,7 +13,6 @@ from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.flow.compile import Graph
-    from verifiers.v1.flow.preflight import Check
 
 
 class FlowConfig(BaseConfig):
@@ -24,23 +23,18 @@ class FlowConfig(BaseConfig):
     client: ClientConfig | None = None
     """Endpoint for seats that pin none."""
     max_concurrent_rows: int = Field(default=4, gt=0)
-    """Rows that may run at once; zero or negative would hang the gate forever."""
+    """Rows that may run at once."""
     inference_concurrency: int | None = Field(default=None, gt=0)
-    """Model requests (nested harness calls included) allowed upstream at once; None
-    leaves each rollout its own unbounded client, byte-identical to before."""
+    """Model requests in flight at once across the run, nested harness calls
+    included; None leaves every rollout unbounded."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
-    """Named capacity pools: max concurrently running node instances per pool.
-    Zero-capacity pools would deadlock node execution, so sizes must be positive."""
+    """Named capacity pools: max concurrently running node instances per pool."""
 
     @field_validator("pools")
     @classmethod
     def _pools_positive(cls, pools: dict[str, int]) -> dict[str, int]:
-        empty = {name: size for name, size in pools.items() if size < 1}
-        if empty:
-            raise ValueError(
-                f"pool sizes must be >= 1 (got {empty}); a zero-capacity pool "
-                "deadlocks every node that holds it"
-            )
+        if empty := {name: size for name, size in pools.items() if size < 1}:
+            raise ValueError(f"pool sizes must be >= 1, got {empty}")
         return pools
 
 
@@ -72,10 +66,3 @@ class Flow(Generic[ConfigT]):
     @property
     def name(self) -> str:
         return type(self).__name__
-
-    async def preflight(self, *, contact: bool = True) -> list[Check]:
-        """The run's prerequisites as typed `Check`s (see `verifiers.v1.flow.preflight`);
-        the producer decides what a refusal means — the engine never calls this."""
-        from verifiers.v1.flow.preflight import preflight
-
-        return await preflight(self.config, contact=contact)

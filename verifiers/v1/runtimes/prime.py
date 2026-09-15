@@ -119,7 +119,7 @@ class PrimeConfig(NetworkPolicyConfig):
         return self
 
 
-_DELETE_TIMEOUT_S = 30.0  # per-attempt wall bound on sandbox delete (see teardown)
+_DELETE_TIMEOUT_S = 30.0  # per delete attempt
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
@@ -432,6 +432,31 @@ class PrimeRuntime(Runtime):
             with contextlib.suppress(Exception):
                 SandboxClient(APIClient()).delete(self.info.id)
 
+    async def _delete(self, client) -> None:
+        """Three bounded attempts: a failed delete leaks a paid box, and the SDK's
+        own call has no timeout. The last failure is an error naming the id."""
+        for attempt in range(1, 4):
+            try:
+                async with asyncio.timeout(_DELETE_TIMEOUT_S):
+                    await client.delete(self.info.id)
+                return
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                if attempt == 3:
+                    logger.error(
+                        "prime: sandbox %s deletion not confirmed after 3 attempts; "
+                        "verify provider state. Last error: %s",
+                        self.info.id,
+                        e,
+                    )
+                else:
+                    logger.warning(
+                        "prime: delete sandbox %s failed (attempt %d/3): %s",
+                        self.info.id,
+                        attempt,
+                        e,
+                    )
+                    await asyncio.sleep(0.5 * attempt)
+
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
@@ -440,41 +465,7 @@ class PrimeRuntime(Runtime):
             return
         try:
             if self.info.id is not None:  # keep info.id available after teardown
-                # A failed delete leaks a PAID box: retry it, bounded, and make a
-                # final failure LOUD (the id is the operator's cleanup handle).
-                # Per-attempt await bound: the SDK's delete forwards timeout=None,
-                # which DISABLES the httpx client default — a hung connection would
-                # otherwise stall teardown forever. This bounds the per-call AWAIT
-                # under normal loop scheduling (not an absolute wallclock deadline);
-                # total teardown bounded by 3*N + 1.5s backoff. Internal SDK retries
-                # do NOT survive this cancellation (CancelledError is a BaseException).
-                for attempt in range(1, 4):
-                    try:
-                        async with asyncio.timeout(_DELETE_TIMEOUT_S):
-                            await client.delete(self.info.id)
-                        break
-                    except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-                        if attempt == 3:
-                            # Deliberately honest: a 404 or lost response here may mean
-                            # the box is already gone — state is UNKNOWN, not "live".
-                            logger.error(
-                                "prime: deletion of sandbox %s NOT CONFIRMED after 3 "
-                                "attempts — verify provider state; cleanup may be "
-                                "needed. Last error: %s",
-                                self.info.id,
-                                e,
-                            )
-                        else:
-                            logger.warning(
-                                "prime: delete sandbox %s failed (attempt %d/3), "
-                                "retrying: %s",
-                                self.info.id,
-                                attempt,
-                                e,
-                            )
-                            await asyncio.sleep(0.5 * attempt)
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+                await self._delete(client)
         finally:
             loop = asyncio.get_running_loop()
             shared = _shared_clients[loop]

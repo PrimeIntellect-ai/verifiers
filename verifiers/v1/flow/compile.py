@@ -95,16 +95,13 @@ def compile_flow(cls: type[Flow]) -> Graph:
     }
     if not nodes:
         raise FlowError([f"{cls.__name__}: declares no nodes"])
-    if "entry" in nodes:
-        # a node named `entry` replaces Flow.entry (a str-or-None ClassVar), which
-        # would crash the checks below with a bare TypeError
+    if "entry" in nodes:  # it would shadow `Flow.entry`
         raise FlowError([f"{cls.__name__}: a node may not be named 'entry'"])
     entry = cls.entry or next(iter(nodes))
     graph = Graph(
         name=cls.__name__, entry=entry, nodes=nodes, config_type=cls.config_type()
     )
     errors = [
-
         error
         for name, check in CHECKS.items()
         if name not in cls.skip_checks
@@ -194,13 +191,9 @@ def runtime_refs(graph: Graph) -> list[str]:
 
 def expand_shape(graph: Graph) -> list[str]:
     return [
-        f"{node.name}: a fan-out node routes with `then`, not `outcomes`"
+        f"{node.name}: expand routes with `then`, not `outcomes`"
         for node in graph.nodes.values()
-        if (
-            isinstance(node, ExpandNode)
-            or (isinstance(node, FnNode) and node.over is not None)
-        )
-        and node.outcomes
+        if isinstance(node, ExpandNode) and node.outcomes
     ]
 
 
@@ -246,34 +239,28 @@ def join_arity(graph: Graph) -> list[str]:
         for node in graph.nodes.values()
         if node.join.kind == "at_least"
         and not isinstance(node, ExpandNode)
-        and not (isinstance(node, FnNode) and node.over is not None)
         and isinstance(node.join.k, int)
         and node.join.k > len(preds[node.name])
     ] + [
-        f"{node.name}: at_least({node.join.k}) needs k >= 1; k <= 0 fires nothing"
+        f"{node.name}: at_least({node.join.k}) needs k >= 1"
         for node in graph.nodes.values()
-        if node.join.kind == "at_least" and isinstance(node.join.k, int) and node.join.k < 1
+        if node.join.kind == "at_least"
+        and isinstance(node.join.k, int)
+        and node.join.k < 1
     ]
 
 
 def node_values(graph: Graph) -> list[str]:
-    """Counts that would silently deadlock, hang, or degenerate at runtime."""
+    """Counts that would deadlock or never run."""
     errors = []
     for node in graph.nodes.values():
         if node.retries < 0:
             errors.append(f"{node.name}: retries={node.retries} is negative")
         if node.max_visits is not None and node.max_visits < 1:
-            errors.append(
-                f"{node.name}: max_visits={node.max_visits} never allows a visit"
-            )
-        if (
-            isinstance(node, (ExpandNode, FnNode))
-            and node.max_active is not None
-            and node.max_active < 1
-        ):
+            errors.append(f"{node.name}: max_visits={node.max_visits} allows no visit")
+        if isinstance(node, ExpandNode) and (node.max_active or 1) < 1:
             errors.append(
                 f"{node.name}: max_active={node.max_active} is not a capacity"
-                " (use None for unbounded)"
             )
     return errors
 

@@ -34,10 +34,8 @@ runtime that node ran in), or an explicit runtime config."""
 class Join:
     kind: Literal["all", "any", "at_least"] = "all"
     k: int | Callable[..., int] = 0
-    """For `at_least`: the count, or a callable of `Upstream` (a config-dependent K).
-    A quorum that fires before all its predecessors have finished is RE-TRIGGERED
-    when a straggler later fires: the node runs a further visit and its `then`
-    targets execute again — consumers must be idempotent or guard on outcomes."""
+    """For `at_least`: the count, or a callable of `Upstream`. A quorum that fires
+    early runs the node again when a straggler later fires."""
 
 
 ALL = Join("all")
@@ -116,19 +114,17 @@ class RunNode(Node):
 @dataclass(frozen=True, kw_only=True)
 class FnNode(Node):
     func: Callable[..., Any | Awaitable[Any]]
-    over: Callable[..., Iterable[Any]] | None = None
-    """With `over`, the function runs once per item of `over(upstream)` as
-    `func(upstream, item)`, joined by `join` — dynamic fan-out without a model."""
-    max_active: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
 class ExpandNode(Node):
-    seat: str
-    make_task: Callable[..., Any]
+    """One instance per item of `over(upstream)`: a seat on `each(upstream, item)`'s
+    task, or with no seat, host Python `each(upstream, item)`."""
+
     over: Callable[..., Iterable[Any]]
+    each: Callable[..., Any]
+    seat: str | None = None
     max_active: int | None = None
-    pools: tuple[str, ...] = ("runtimes",)
 
 
 def agent(
@@ -165,18 +161,16 @@ def fn(
     *,
     then: Target | None = None,
     outcomes: dict[str, Target] | None = None,
-    over: Callable[..., Iterable[Any]] | None = None,
     **kw: Any,
 ) -> FnNode:
     """Host-side Python (sync or async) over `Upstream`; with `outcomes`, its return
-    value routes. With `over=`, it runs once per item of `over(upstream)` as
-    `func(upstream, item)`, joined by `join` — dynamic fan-out without a model."""
-    return FnNode(func=func, then=then, outcomes=outcomes, over=over, **kw)
+    value routes."""
+    return FnNode(func=func, then=then, outcomes=outcomes, **kw)
 
 
 def expand(
-    seat: str,
-    make_task: Callable[..., Any],
+    seat_or_func: str | Callable[..., Any],
+    make_task: Callable[..., Any] | None = None,
     *,
     over: Callable[..., Iterable[Any]],
     then: Target | None = None,
@@ -184,14 +178,24 @@ def expand(
     max_active: int | None = None,
     **kw: Any,
 ) -> ExpandNode:
-    """The same agent node once per item of `over(upstream)`, built by
-    `make_task(upstream, item)` and joined by `join`."""
+    """Fan-out over `over(upstream)`, joined by `join`. `expand("seat", make_task,
+    over=...)` runs the seat once per item on `make_task(upstream, item)`;
+    `expand(func, over=...)` runs `func(upstream, item)` on the host, no model."""
+    if isinstance(seat_or_func, str):
+        if make_task is None:
+            raise TypeError(f"expand({seat_or_func!r}, ...) needs a make_task")
+        kw.setdefault("pools", ("runtimes",))
+        return ExpandNode(
+            seat=seat_or_func,
+            each=make_task,
+            over=over,
+            then=then,
+            join=join,
+            max_active=max_active,
+            **kw,
+        )
+    if make_task is not None:
+        raise TypeError("expand(func, ...) takes no make_task")
     return ExpandNode(
-        seat=seat,
-        make_task=make_task,
-        over=over,
-        then=then,
-        join=join,
-        max_active=max_active,
-        **kw,
+        each=seat_or_func, over=over, then=then, join=join, max_active=max_active, **kw
     )

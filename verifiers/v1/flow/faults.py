@@ -1,21 +1,7 @@
-"""The fault taxonomy: what kind of thing failed a row.
-
-`fault_kind` classifies a trace error (`Trace.errors` entries, typed by their `type`
-name) or a live exception into one of four kinds:
-
-- `permanent` — the endpoint refused the credentials for good (a provider 401/403):
-  no retry re-enables it; the producer decides what a permanent fault means.
-- `outage` — the endpoint's failure, not the turn's (a provider 5xx/429, or a request
-  that never got a status): the engine holds new admissions while it lasts.
-- `platform` — the sandbox/runtime side failed (provisioning, exec, the
-  interception/tunnel path).
-- `turn` — everything else: the attempt's own fault.
-
-Ported from the proven upstream data-flywheel seat.py `provider_outage`/
-`permanent_provider_error` (prime-envs-private origin/main; its evidence: a
-12-minute endpoint restart cost 45 turns / 2,705 calls / 24 attempt ids before the
-fix — the outage must never count as the turn's fault).
-"""
+"""What kind of thing failed a row: `permanent` (the endpoint refused the
+credentials), `outage` (the endpoint's failure, a 5xx/429 or no status), `platform`
+(the runtime or interception side), or `turn` (the attempt's own). The engine
+reports it on `RowResult.fault`; what to do about it is the producer's call."""
 
 from __future__ import annotations
 
@@ -34,24 +20,17 @@ def _class_of(error) -> type | None:
     return getattr(vf_errors, getattr(error, "type", None) or "", None)
 
 
-def _is(error, base: type) -> bool:
+def _is(error, base: type | tuple[type, ...]) -> bool:
     cls = _class_of(error)
     return isinstance(cls, type) and issubclass(cls, base)
 
 
-def _status(error) -> int | None:
-    """The typed HTTP status a provider error carries, None when it carries none."""
-    status = getattr(error, "status_code", None)
-    return status if isinstance(status, int) else None
-
-
 def fault_kind(error) -> FaultKind:
-    """Classify one trace error or exception; a None or untyped failure is `turn`."""
     if error is not None and _is(error, ProviderError):
-        status = _status(error)
+        status = getattr(error, "status_code", None)
         if status in (401, 403):
             return "permanent"
-        if status is None or status == 429 or status >= 500:
+        if not isinstance(status, int) or status == 429 or status >= 500:
             return "outage"
     elif _is(error, (SandboxError, InterceptionError)):
         return "platform"

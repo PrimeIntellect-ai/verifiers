@@ -56,13 +56,8 @@ def now() -> str:
 
 
 def _canonical(value: Any) -> Any:
-    """Sets become sorted lists so digests are stable across processes (set
-    iteration order is seeded); unsortable sets degrade to a sorted string form.
-    Models flatten through `model_dump(mode="python", by_alias=True)` first: the
-    dump is byte-identical to the base serialization for set-free models (so
-    existing ledger keys never change) while `mode="python"` keeps set-valued
-    fields AS SETS, letting the sorting above canonicalize them before
-    serialization would convert them to seed-ordered lists."""
+    """Sets as sorted lists, models as dicts: set order is hash-seeded, so a digest
+    over raw sets would differ between processes."""
     if isinstance(value, (set, frozenset)):
         try:
             return sorted(_canonical(v) for v in value)
@@ -78,13 +73,8 @@ def _canonical(value: Any) -> Any:
 
 
 def digest(*parts: Any) -> str:
-    """Sets are canonicalized to sorted lists BOTH before flattening (plain
-    containers) and after (models serialize their inner sets), so digests are
-    stable across processes regardless of hash seed."""
     flat = to_jsonable_python(_canonical(parts))
-    return hashlib.sha256(
-        json.dumps(_canonical(flat), sort_keys=True).encode()
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(flat, sort_keys=True).encode()).hexdigest()
 
 
 def row_key(row: Any) -> str:
@@ -149,31 +139,23 @@ class Ledger:
         return self._traces.get(trace_id)
 
     def _episodes(self) -> list[WireEpisode]:
-        """The run's episodes; a torn FINAL line (a process killed mid-write) is
-        skipped so one bad tail cannot block every resume attach."""
+        """The run's episodes; a torn last line (a process killed mid-write) is
+        skipped rather than blocking every resume."""
         try:
             return read_episodes(self.run_dir, WireTrace)
         except json.JSONDecodeError:
-            lines = (self.run_dir / TRACES_FILE).read_text().splitlines()
-            tail_torn = False
-            episodes: list[WireEpisode] = []
-            for i, line in enumerate(lines):
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    if i == len(lines) - 1:
-                        tail_torn = True  # the process died mid-write
-                        continue
-                    raise
-                record = WireEpisode.model_validate({**row, "traces": []})
-                record.traces = [
-                    type_adapter(WireTrace).validate_python(t)
-                    for t in row["traces"]
-                ]
-                episodes.append(record)
-            if not tail_torn:
-                raise
+            lines = [
+                line
+                for line in (self.run_dir / TRACES_FILE).read_text().splitlines()
+                if line.strip()
+            ]
+            rows = [json.loads(line) for line in lines[:-1]]  # torn elsewhere: raise
             logger.warning("traces.jsonl ends in a torn line; skipping it")
+            episodes = []
+            for row in rows:
+                episode = WireEpisode.model_validate({**row, "traces": []})
+                episode.traces = [
+                    type_adapter(WireTrace).validate_python(t) for t in row["traces"]
+                ]
+                episodes.append(episode)
             return episodes
