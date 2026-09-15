@@ -23,6 +23,24 @@ class HarnessConfig(BaseConfig):
     """Extra program variables; harness-owned variables take precedence."""
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
+    mcp_header_env: dict[str, dict[str, str]] = Field(default_factory=dict)
+    """ACP MCP headers by server name: header values are read from host env vars."""
+
+    def resolve_mcp_headers(self, servers: dict[str, str]) -> dict[str, dict[str, str]]:
+        resolved = {}
+        for name, headers in self.mcp_header_env.items():
+            if name not in servers:
+                continue
+            resolved[name] = {}
+            for header, variable in headers.items():
+                value = os.environ.get(variable)
+                if not value:
+                    raise ValueError(
+                        f"MCP header environment variable {variable!r} is missing"
+                    )
+                resolved[name][header] = value
+        return resolved
+
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
     """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None

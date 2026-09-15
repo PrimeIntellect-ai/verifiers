@@ -1,6 +1,7 @@
 import base64
 
 import numpy as np
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -192,7 +193,8 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
-def test_parallel_commits_reconcile_shared_prompt_prefix():
+@pytest.mark.parametrize("same_tools", [False, True])
+def test_parallel_commits_reconcile_shared_prompt_prefix(same_tools):
     """Two requests prepared from the same graph snapshot share any common prompt prefix that
     the first response commits while the second is in flight. A later turn must keep following
     its original child path rather than re-rooting through the sibling and stranding an orphan."""
@@ -206,13 +208,13 @@ def test_parallel_commits_reconcile_shared_prompt_prefix():
     assistant_a = vf.AssistantMessage(content="A1")
 
     # Both model requests leave before either response has committed its prompt.
-    pending_a = graph.prepare_turn(trace, [system, user_a])
-    pending_b = graph.prepare_turn(trace, [system, user_b])
     tool_a = vf.Tool(name="echo", namespace="a")
-    tool_b = vf.Tool(name="echo", namespace="b")
-    assistant_a_id = pending_a.commit(_response(assistant_a), [tool_a])
-    pending_b.commit(_response(vf.AssistantMessage(content="B1")), [tool_b])
-    assert trace.tools == [tool_a, tool_b]
+    tool_b = vf.Tool(name="echo", namespace="a" if same_tools else "b")
+    pending_a = graph.prepare_turn(trace, [system, user_a], [tool_a])
+    pending_b = graph.prepare_turn(trace, [system, user_b], [tool_b])
+    assistant_a_id = pending_a.commit(_response(assistant_a))
+    pending_b.commit(_response(vf.AssistantMessage(content="B1")))
+    assert trace.tools == ([tool_a] if same_tools else [tool_a, tool_b])
 
     graph.prepare_turn(
         trace,
@@ -222,16 +224,23 @@ def test_parallel_commits_reconcile_shared_prompt_prefix():
             assistant_a,
             vf.ToolMessage(content="tool A", tool_call_id="call_a"),
         ],
+        [tool_a],
     ).commit(_response(vf.AssistantMessage(content="A2")))
 
     roots = [node for node in trace.nodes if node.parent is None]
     identities = [
-        (node.parent, graph.message_hash(node.message)) for node in trace.nodes
+        (
+            node.parent,
+            tuple(tool.namespace for tool in node.tools),
+            graph.message_hash(node.message),
+        )
+        for node in trace.nodes
     ]
-    assert len(roots) == 1
+    assert len(roots) == (1 if same_tools else 2)
     assert len(identities) == len(set(identities))
     assert trace.num_branches == 2
     assert assistant_a_id not in graph.leaves(trace)
+    assert [branch.tools for branch in trace.branches] == [[tool_b], [tool_a]]
 
 
 def test_parallel_commit_reconciles_only_token_identical_prefixes():

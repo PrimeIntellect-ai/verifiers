@@ -181,14 +181,6 @@ class ModalRuntime(Runtime):
                 "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
             ) from e
 
-        if self.network_restricted and not hasattr(
-            modal.Sandbox, "_experimental_set_outbound_network_policy"
-        ):
-            raise SandboxError(
-                "Modal execution-time network policies require a Modal SDK with "
-                "_experimental_set_outbound_network_policy; upgrade verifiers[modal]"
-            )
-
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
@@ -219,14 +211,6 @@ class ModalRuntime(Runtime):
 
         # Modal requires both allowlist types at creation before they can be updated.
         # Trusted setup runs open; prepare_execution removes the broad CIDR grant.
-        network = (
-            {
-                "outbound_domain_allowlist": ["*"],
-                "outbound_cidr_allowlist": ["0.0.0.0/0"],
-            }
-            if self.network_restricted
-            else {}
-        )
         self._sandbox = await modal.Sandbox.create.aio(
             "sleep",
             "infinity",  # keep-alive entrypoint; the harness runs via `exec`
@@ -243,7 +227,10 @@ class ModalRuntime(Runtime):
             gpu=self.config.gpu,
             region=self.config.region,
             block_network=not self.config.network_access,
-            **network,
+            outbound_domain_allowlist=["*"] if self.network_restricted else None,
+            outbound_cidr_allowlist=(
+                ["0.0.0.0/0"] if self.network_restricted else None
+            ),
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
         )
@@ -260,19 +247,9 @@ class ModalRuntime(Runtime):
             if routes is None:
                 domains, cidrs = ["*"], ["0.0.0.0/0"]
             else:
-                domains = list(
-                    dict.fromkeys(
-                        domain
-                        for domain in [
-                            *(
-                                _egress_domain(route, framework=True)
-                                for route in routes
-                            ),
-                            *(_egress_domain(rule) for rule in self.config.allow),
-                        ]
-                        if domain is not None
-                    )
-                )
+                domains = [_egress_domain(route, framework=True) for route in routes]
+                domains.extend(_egress_domain(rule) for rule in self.config.allow)
+                domains = list(dict.fromkeys(d for d in domains if d is not None))
                 cidrs = []
             # Always send both lists: leaving the setup CIDR grant would bypass domains.
             # The awaited RPC applies the policy and closes newly disallowed connections.

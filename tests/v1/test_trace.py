@@ -207,7 +207,7 @@ def test_wire_trace_round_trip(history_type):
     tr.info = {"build": "ok"}
     tr.root_reply = "root answer"
     tr.stop("done")
-    prepare_turn(tr, []).commit_prompt(request.tools)
+    prepare_turn(tr, [], request.tools).commit_prompt()
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))

@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI, omit
+from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -191,7 +192,29 @@ async def chat(
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    return await client.chat.completions.create(**kwargs)
+    raw_stream = await client.chat.completions.create(
+        **kwargs, stream=True, stream_options={"include_usage": True}
+    )
+    # Accumulate native deltas without auto-parsing tool arguments or treating
+    # finish_reason="length" as an exception: compaction owns that decision.
+    async with AsyncChatCompletionStream(
+        raw_stream=raw_stream, response_format=omit, input_tools=[]
+    ) as response:
+        completion = None
+        async for event in response:
+            if event.type == "chunk":
+                completion = event.snapshot
+        if (
+            completion is None
+            or not completion.choices
+            or any(choice.finish_reason is None for choice in completion.choices)
+        ):
+            raise RuntimeError("model stream ended before a completion finished")
+        for choice in completion.choices:
+            # Some providers repeat the role in each delta. The SDK concatenates
+            # these strings, but the role is metadata, not incremental content.
+            choice.message.role = "assistant"
+        return completion
 
 
 async def run_tool_hook(
