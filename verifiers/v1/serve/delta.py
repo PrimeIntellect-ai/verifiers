@@ -4,8 +4,10 @@ The worker streams a served episode as it grows. Each trace announces its own ch
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
 after every recorded turn); the `DeltaStreamer` then diffs the run's live traces against
 what it has already sent and ships only the new part — the trace header once, then
-appended nodes / calls / errors, semantic links landing on earlier nodes, and the scalar
-fields whose value changed (timing spans, stop condition, rewards, ...). The `Trace` is
+appended nodes / calls / errors, semantic links landing on earlier nodes, the scalar
+fields whose value changed (timing spans, stop condition, rewards, ...), and the
+`pending` preview — the messages of the request in flight that no node holds yet, so a
+watcher sees a tool result before the model has answered it. The `Trace` is
 append-only at turn granularity (a turn's nodes are committed complete, with their
 tokens), so every byte of the episode crosses the wire once and the stream costs about
 what a single reply would; the reply that ends the run carries only the episode head and
@@ -82,6 +84,7 @@ class TraceCursor:
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
         self.scalars: dict[str, bytes] = {}
+        self.pending: bytes = pack([])
 
 
 class DeltaStreamer:
@@ -179,6 +182,13 @@ class DeltaStreamer:
                     changed[field] = value
             if changed:
                 delta["set"] = changed
+            pending = [dump(message) for message in trace.pending]
+            packed = pack(pending)
+            if packed != cursor.pending:
+                cursor.pending = packed
+                # nodes landing clear the preview on the client by themselves
+                if pending or "nodes" not in delta:
+                    delta["pending"] = pending
             if len(delta) > 1:
                 deltas.append(delta)
         return deltas
@@ -203,6 +213,7 @@ class EpisodeAssembly:
             trace = self.traces[trace_id] = {
                 **delta["open"],
                 **{field: [] for field in LIST_FIELDS},
+                "pending": [],
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
@@ -210,6 +221,11 @@ class EpisodeAssembly:
             if field in delta:
                 trace[field].extend(delta[field])
         trace.update(delta.get("set") or {})
+        # a committed turn absorbs the preview; an explicit preview replaces it
+        if "nodes" in delta:
+            trace["pending"] = []
+        if "pending" in delta:
+            trace["pending"] = delta["pending"]
         self.updates += 1
 
     def finish(self, head: dict, summaries: list[TraceSummary]) -> dict:
@@ -221,6 +237,7 @@ class EpisodeAssembly:
             trace = self.traces.get(summary.id)
             if trace is None:
                 raise RuntimeError(f"served episode is missing trace {summary.id}")
+            trace = {key: value for key, value in trace.items() if key != "pending"}
             if (
                 len(trace["nodes"]) != summary.nodes
                 or len(trace["calls"]) != summary.calls

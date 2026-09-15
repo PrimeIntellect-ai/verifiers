@@ -661,6 +661,9 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # The tail is what the harness added since the last turn (tool results, user
+        # turns): live watchers see it now rather than with the model's reply.
+        session.trace.preview(turn.tail)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
         if relay_streaming:

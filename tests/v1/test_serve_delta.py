@@ -70,6 +70,55 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pending_preview_streams_and_clears_on_commit():
+    slot = Slot()
+    frames: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        frames.append(data)
+
+    async with DeltaStreamer(slot, send) as streamer:
+        trace = make_trace()
+        slot.traces.append(trace)
+        streamer.watch(trace)
+        add_turn(trace, "a1")
+        await settle()
+        # the harness sends its next request: the tool result is previewed at once
+        trace.preview([UserMessage(content="tool says 42")])
+        await settle()
+        preview = unpack(frames[-1])
+        assert preview["pending"][0]["content"] == "tool says 42"
+        assert "nodes" not in preview
+        # the model answers: the turn commits and the preview goes with it
+        trace.nodes.append(
+            MessageNode(parent=1, message=UserMessage(content="tool says 42"))
+        )
+        trace._pending = []
+        add_turn(trace, "a2")
+        await settle()
+        committed = unpack(frames[-1])
+        assert len(committed["nodes"]) == 2 and "pending" not in committed
+        trace.stop("agent_completed")
+        trace.ok = True
+        episode = Episode(
+            env=EnvInfo(id="my-env"), task=trace.task, ok=True, traces=[trace]
+        )
+        slot.traces = list(episode.traces)
+    assembly = EpisodeAssembly()
+    for frame in frames:
+        assembly.apply(unpack(frame))
+        if unpack(frame).get("pending"):
+            assert assembly.traces[trace.id]["pending"][0]["content"] == "tool says 42"
+    assert assembly.traces[trace.id]["pending"] == []
+    summaries = [
+        TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))
+    ]
+    record = assembly.finish(dump(episode, exclude={"traces"}), summaries)
+    assert "pending" not in record["traces"][0]
+    assert WireEpisode.model_validate(unpack(pack(record))).traces[0].id == trace.id
+
+
+@pytest.mark.asyncio
 async def test_deltas_stream_once_and_reassemble_the_episode():
     slot = Slot()
     frames: list[bytes] = []

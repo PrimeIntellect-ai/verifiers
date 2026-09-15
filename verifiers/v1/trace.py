@@ -448,6 +448,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """Physical node key -> node id for the graph builder."""
     _on_change: Any = PrivateAttr(default=None)
+    _pending: list[Message] = PrivateAttr(default_factory=list)
+    """The messages of the request in flight that no node holds yet (the harness's tool
+    results and user turns): a preview for live watchers until the turn commits."""
 
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
@@ -457,6 +460,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """The trace just changed shape (a phase span, a committed turn)."""
         if self._on_change is not None:
             self._on_change(self)
+
+    @property
+    def pending(self) -> list[Message]:
+        return self._pending
+
+    def preview(self, messages: Iterable[Message]) -> None:
+        """Show watchers the uncommitted messages of the request in flight."""
+        self._pending = list(messages)
+        self.notify()
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
