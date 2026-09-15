@@ -322,18 +322,10 @@ def message_hash(message: Message) -> str:
                 ]
                 if unparsed_content:
                     hashed_state["content"] = unparsed_content
-            # `reasoning.*` are OpenRouter-style reasoning_details (text, summary,
-            # encrypted); their text is `reasoning_content` and their `format` /
-            # `index` are presentation, which harness SDKs do not replay verbatim.
-            represented = (
-                kind in ("message", "reasoning")
-                or kind.startswith("reasoning.")
-                or (
-                    kind in ("function_call", "custom_tool_call")
-                    and any(
-                        call.id == item.get("call_id")
-                        for call in message.tool_calls or []
-                    )
+            represented = kind in ("message", "reasoning") or (
+                kind in ("function_call", "custom_tool_call")
+                and any(
+                    call.id == item.get("call_id") for call in message.tool_calls or []
                 )
             )
             if represented and not hashed_state:
