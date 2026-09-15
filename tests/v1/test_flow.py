@@ -461,5 +461,5 @@ def test_build_async_openai_carries_the_endpoint_headers():
     from verifiers.v1.clients import build_async_openai
     from verifiers.v1.configs.client import EvalClientConfig
 
-    client = build_async_openai(EvalClientConfig(headers={"X-Test": "1"}), timeout=7)
-    assert client.default_headers["X-Test"] == "1" and client.timeout == 7
+    client = build_async_openai(EvalClientConfig(headers={"X-Test": "1"}))
+    assert client.default_headers["X-Test"] == "1"

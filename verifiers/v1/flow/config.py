@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
+from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 
 
 class FlowConfig(BaseConfig):
@@ -14,9 +15,10 @@ class FlowConfig(BaseConfig):
     client: ClientConfig | None = None
     """Endpoint for seats that pin none."""
     max_concurrent_rows: int = Field(default=4, gt=0)
-    inference_concurrency: int | None = Field(default=None, gt=0)
-    """Model requests in flight at once across the run, nested harness calls
-    included; None leaves every rollout unbounded."""
+    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
+    """The interception shape, as in `EnvConfig`: `elastic` (default), `server`, or
+    `static`. Tunneled when any seat's runtime is remote; a task whose tool servers sit
+    in a remote runtime behind local seats needs a `server` with a tunnel configured."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
     """Named capacity pools: boxes (and anything else named) held at once."""
     outage_backoff_s: float = Field(default=60.0, gt=0)

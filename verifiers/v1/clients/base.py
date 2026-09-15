@@ -19,9 +19,7 @@ being silently reattempted."""
 VERSION_SEGMENT = re.compile(r"v\d+")
 
 
-def build_async_openai(
-    config: BaseClientConfig, timeout: httpx.Timeout | float = DEFAULT_TIMEOUT
-) -> AsyncOpenAI:
+def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
     """The endpoint as `config` resolves it -- key, base URL and headers (a Prime team's
     billing header included). Code that calls a model directly builds its client here;
     a bare `AsyncOpenAI(...)` drops the headers and bills whoever the key belongs to."""
@@ -29,9 +27,9 @@ def build_async_openai(
         base_url=config.base_url,
         api_key=resolve_api_key(config),
         default_headers=config.headers or None,
-        timeout=timeout,
+        timeout=DEFAULT_TIMEOUT,
         max_retries=MAX_RETRIES,
-        http_client=httpx.AsyncClient(timeout=timeout, limits=DEFAULT_LIMITS),
+        http_client=httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS),
     )
 
 

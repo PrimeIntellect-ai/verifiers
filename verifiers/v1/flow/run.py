@@ -31,7 +31,7 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +47,7 @@ from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.ledger import Ledger, StepRecord, digest, now, row_key
 from verifiers.v1.flow.pools import Pools
 from verifiers.v1.flow.work import AgentWork, CommandWork, FnWork, Work
-from verifiers.v1.interception import InterceptionServer
+from verifiers.v1.interception import Interception, make_interception
 from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,
@@ -102,7 +102,7 @@ class RowResult:
 
 
 class Run:
-    """The ledger, the pools, the inference gate, and the row loop for one run directory.
+    """The ledger, the pools, the interception, and the row loop for one run directory.
 
     The run's identity is its directory name, never its config: operational knobs and
     a pipeline's own policy fields re-key nothing on a resume — an agent step keys on
@@ -128,7 +128,7 @@ class Run:
             asyncio.Event()
         )  # cleared while an infrastructure outage is on
         self._admissions.set()
-        self._inference: InterceptionServer | None = None
+        self._inference: Interception | None = None
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
 
     # -- rows -----------------------------------------------------------------------
@@ -252,19 +252,16 @@ class Run:
         os.environ[RUN_LABEL_VAR] = (
             self.label
         )  # every host subprocess inherits it: what `sweep` finds
-        async with AsyncExitStack() as stack:
-            if self.config.inference_concurrency is not None:
-                remote = any(
-                    not runtime_is_local(self.seat(name).runtime)
-                    for name, field in type(self.config).model_fields.items()
-                    if field.annotation is AgentConfig
-                )
-                self._inference = await stack.enter_async_context(
-                    InterceptionServer(
-                        requires_tunnel=remote,
-                        max_inflight=self.config.inference_concurrency,
-                    )
-                )
+        remote = any(
+            not runtime_is_local(self.seat(name).runtime)
+            for name, field in type(self.config).model_fields.items()
+            if field.annotation is AgentConfig
+        )
+        interception = make_interception(
+            self.config.interception, requires_tunnel=remote
+        )
+        async with interception:
+            self._inference = interception
             try:
                 yield
             finally:
