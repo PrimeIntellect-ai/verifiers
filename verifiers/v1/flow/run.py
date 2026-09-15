@@ -35,15 +35,29 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.agent import make_agent
-from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.flow.config import FlowConfig
-from verifiers.v1.flow.ledger import Ledger, StepRecord, digest, now, row_key
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    declared_agent_configs,
+    resolve_agent,
+)
+from verifiers.v1.flow.config import RUNTIMES, FlowConfig
+from verifiers.v1.flow.ledger import (
+    SHORT,
+    STEP_KEY,
+    EventKind,
+    Ledger,
+    StepRecord,
+    Terminal,
+    digest,
+    now,
+    row_key,
+)
 from verifiers.v1.flow.pools import Pools
 from verifiers.v1.flow.work import AgentWork, CommandWork, FnWork, Work
 from verifiers.v1.interception import Interception, make_interception
@@ -57,14 +71,18 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Usage
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.retries import backoff
 
 logger = logging.getLogger("verifiers.flow")
 
 _MISSING = object()  # a record whose value cannot be rebuilt: run the step again
-RUNTIMES = "runtimes"
+LABEL_MAX = 60  # sandbox label length cap
 _SCOPE: ContextVar[tuple[str, ...]] = ContextVar("flow_scope", default=())
+
+T = TypeVar("T")
+RowState = Literal["running", "ok", "failed", "stopped"]
 
 
 class StepFailed(Exception):
@@ -85,7 +103,6 @@ class Oversized(ValueError):
 
 class _RolloutFailed(Exception):
     def __init__(self, trace: Trace) -> None:
-        self.trace = trace
         last = trace.last_error
         super().__init__(f"{last.type}: {last.message}" if last else "rollout failed")
 
@@ -93,10 +110,19 @@ class _RolloutFailed(Exception):
 @dataclass
 class RowResult:
     row: str
-    ok: bool
+    state: RowState
     value: Any = None
     error: str | None = None
-    stopped: bool = False
+
+
+@dataclass
+class RunStatus:
+    rows: dict[str, RowState]
+    steps: list[str]
+    """`<row>/<path>` in flight."""
+    draining: bool
+    usage: Usage | None
+    """Provider usage summed over every agent step so far."""
 
 
 class Run:
@@ -115,12 +141,12 @@ class Run:
         self.config = config
         self.ledger = Ledger(run_dir)
         self.pools = Pools(config.pools)
-        self.identity = digest(run_dir.name)[:16]
-        self.label = f"flow-{run_dir.name}-{self.identity}"[:60]
+        self.identity = digest(run_dir.name)[:SHORT]
+        self.label = f"flow-{run_dir.name}-{self.identity}"[:LABEL_MAX]
         self._require_identity(rekey)
-        self.rows: dict[str, str] = {}  # row key -> running | ok | failed | stopped
+        self.rows: dict[str, RowState] = {}
         self.steps: set[str] = set()  # `<row>/<path>` in flight
-        self.tokens = {"input": 0, "output": 0}
+        self.usage: Usage | None = None
         self._draining = asyncio.Event()
         self._inference: Interception | None = None
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
@@ -196,29 +222,30 @@ class Run:
             self.ledger.event("drain")
             self._draining.set()
 
-    def status(self) -> dict[str, Any]:
-        return {
-            "rows": dict(self.rows),
-            "steps": sorted(self.steps),
-            "draining": self._draining.is_set(),
-            "tokens": dict(self.tokens),
-        }
+    def status(self) -> RunStatus:
+        return RunStatus(
+            rows=dict(self.rows),
+            steps=sorted(self.steps),
+            draining=self._draining.is_set(),
+            usage=self.usage,
+        )
 
     def seat(self, name: str) -> AgentConfig:
-        cfg: AgentConfig = getattr(self.config, name)
-        update = {}
-        if cfg.model is None and self.config.model is not None:
-            update["model"] = self.config.model
-        if cfg.client is None and self.config.client is not None:
-            update["client"] = self.config.client
-        return cfg.model_copy(update=update) if update else cfg
+        """The seat with the run's defaults filled in: the identity its steps key on."""
+        cfg = self.config
+        return resolve_agent(
+            getattr(cfg, name),
+            model=cfg.model,
+            client=cfg.client,
+            sampling=cfg.sampling,
+        )
 
     async def _row(self, flow: Callable[..., Any], row: Any) -> RowResult:
         try:
             key = row_key(row)
         except Exception as exc:  # noqa: BLE001 — the row itself is the problem being reported
             return RowResult(
-                row=repr(row)[:80], ok=False, error=f"row cannot be keyed: {exc}"
+                row=repr(row)[:80], state="failed", error=f"row cannot be keyed: {exc}"
             )
         self.rows[key] = "running"
         self.ledger.event("row_started", row=key)
@@ -226,18 +253,18 @@ class Run:
             value = await flow(Ctx(self, key, row), row)
             self.rows[key] = "ok"
             self.ledger.event("row_finished", row=key, state="ok")
-            return RowResult(row=key, ok=True, value=value)
+            return RowResult(row=key, state="ok", value=value)
         except Stopped:
             self.rows[key] = "stopped"
             self.ledger.event("row_finished", row=key, state="stopped")
-            return RowResult(row=key, ok=False, stopped=True)
+            return RowResult(row=key, state="stopped")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — a failed row is data, never a failed run
             self.rows[key] = "failed"
             error = f"{type(exc).__name__}: {exc}"
             self.ledger.event("row_finished", row=key, state="failed", error=error)
-            return RowResult(row=key, ok=False, error=error)
+            return RowResult(row=key, state="failed", error=error)
 
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:
@@ -247,8 +274,7 @@ class Run:
         )  # every host subprocess inherits it: what `sweep` finds
         remote = any(
             not runtime_is_local(self.seat(name).runtime)
-            for name, field in type(self.config).model_fields.items()
-            if field.annotation is AgentConfig
+            for name in declared_agent_configs(self.config)
         )
         interception = make_interception(
             self.config.interception, requires_tunnel=remote
@@ -284,7 +310,7 @@ class Run:
         file = self.run_dir / "run.json"
         previous = json.loads(file.read_text()) if file.exists() else {}
         try:
-            source = digest(inspect.getsource(flow))[:16]
+            source = digest(inspect.getsource(flow))[:SHORT]
         except (OSError, TypeError):
             source = previous.get("source")
         if source is not None and previous.get("source") not in (None, source):
@@ -332,15 +358,20 @@ class Ctx:
         counts[name] = n + 1
         return "/".join([*scope, f"{name}#{n}"])
 
-    def _event(self, kind: str, **fields: Any) -> None:
+    def _event(self, kind: EventKind, **fields: Any) -> None:
         """One event for this row: the row key always rides along."""
         self.run.ledger.event(kind, row=self.key, **fields)
 
     # -- steps ----------------------------------------------------------------------
 
     def step(
-        self, name: str, work: Work, *, retries: int = 0, timeout: float | None = None
-    ) -> Awaitable[Any]:
+        self,
+        name: str,
+        work: Work[T],
+        *,
+        retries: int = 0,
+        timeout: float | None = None,
+    ) -> Awaitable[T]:
         """Run `work` once, durably. The value is the trace, the program result, or
         the function's return; on resume it comes from the ledger. `retries` re-run the
         whole work after a failure, with the shared backoff, on top of an agent's own
@@ -348,22 +379,22 @@ class Ctx:
         return self._step_value(self._path(name), work, retries, timeout)
 
     async def _step_value(
-        self, path: str, work: Work, retries: int, timeout: float | None
-    ) -> Any:
+        self, path: str, work: Work[T], retries: int, timeout: float | None
+    ) -> T:
         value, _ = await self._step(path, work, None, retries, timeout)
         return value
 
     def spread(
         self,
         name: str,
-        works: Iterable[Work],
+        works: Iterable[Work[T]],
         *,
         at_least: int | None = None,
         max_active: int | None = None,
         within: float | None = None,
         retries: int = 0,
         timeout: float | None = None,
-    ) -> Awaitable[dict[int, Any]]:
+    ) -> Awaitable[dict[int, T]]:
         """`works` as one step each, by item index. Starts only as many as the quorum
         still needs, `max_active` at a time; returns the first `at_least` to land (by
         recorded finish time, so a resume picks the same ones) and cancels the rest.
@@ -381,13 +412,13 @@ class Ctx:
     async def _spread(
         self,
         path: str,
-        works: list[Work],
+        works: list[Work[T]],
         at_least: int | None,
         max_active: int | None,
         within: float | None,
         retries: int,
         timeout: float | None,
-    ) -> dict[int, Any]:
+    ) -> dict[int, T]:
         need = len(works) if at_least is None else at_least
         if not 1 <= need <= len(works):
             raise ValueError(f"{path}: at_least={at_least} over {len(works)} items")
@@ -531,7 +562,7 @@ class Ctx:
         content = work.content()
         if isinstance(work, AgentWork):
             content = [*content, self.run.seat(work.seat).model_dump(mode="json")]
-        return digest(self.run.identity, self.key, path, content)[:24]
+        return digest(self.run.identity, self.key, path, content)[:STEP_KEY]
 
     def _attached(
         self, path: str, work: Work, index: int | None
@@ -561,12 +592,8 @@ class Ctx:
         held = () if work.runtime is not None else (RUNTIMES,)
         async with run.pools.hold(held), agent:
             trace = await agent.run(work.task, runtime=work.runtime)
-        await run.ledger.append(trace, env="flow")
-        if usage := trace.usage:
-            run.tokens["input"] += usage.prompt_tokens + (
-                usage.cached_input_tokens or 0
-            )
-            run.tokens["output"] += usage.completion_tokens
+        await run.ledger.append(trace)
+        run.usage = Usage.aggregate(u for u in (run.usage, trace.usage) if u)
         if not trace.ok:
             raise _RolloutFailed(trace)
         return trace, {"trace_id": trace.id}
@@ -600,7 +627,7 @@ class Ctx:
         index: int | None,
         work: Work,
         key: str,
-        terminal: str,
+        terminal: Terminal,
         started: str,
         attempts: int,
         **fields: Any,
@@ -610,7 +637,7 @@ class Ctx:
             row=self.key,
             path=path,
             index=index,
-            kind=type(work).__name__.removesuffix("Work").lower(),
+            kind=work.kind,
             terminal=terminal,
             attempts=attempts,
             started_at=started,

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import Field, PositiveInt
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
+from verifiers.v1.types import SamplingConfig
+
+RUNTIMES = "runtimes"
+"""The pool held around every box a step provisions."""
 
 
 class FlowConfig(BaseConfig):
@@ -14,19 +18,14 @@ class FlowConfig(BaseConfig):
     """Model for seats that pin none."""
     client: ClientConfig | None = None
     """Endpoint for seats that pin none."""
-    max_concurrent_rows: int = Field(default=4, gt=0)
+    sampling: SamplingConfig | None = None
+    """Sampling for seats that pin none; a seat's own values merge on top."""
+    max_concurrent_rows: PositiveInt = 4
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape, as in `EnvConfig`: `elastic` (default), `server`, or
     `static`. Tunneled when any seat's runtime is remote; a task whose tool servers sit
     in a remote runtime behind local seats needs a `server` with a tunnel configured."""
-    pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
-    """Named capacity pools: boxes (and anything else named) held at once."""
-    payload_cap: int = Field(default=1_000_000, gt=0)
+    pools: dict[str, PositiveInt] = Field(default_factory=lambda: {RUNTIMES: 8})
+    """Named capacity pools: how many holders at once; `runtimes` bounds live boxes."""
+    payload_cap: PositiveInt = 1_000_000
     """Largest step value the ledger records, in bytes of JSON; bulk belongs in traces or files."""
-
-    @field_validator("pools")
-    @classmethod
-    def _pools_positive(cls, pools: dict[str, int]) -> dict[str, int]:
-        if empty := {name: size for name, size in pools.items() if size < 1}:
-            raise ValueError(f"pool sizes must be >= 1, got {empty}")
-        return pools

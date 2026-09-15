@@ -57,7 +57,7 @@ async def test_steps_attach_on_resume_and_scopes_separate_repeats(tmp_path):
         return out
 
     (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert first.ok and first.value == ["start", "build0", "build1", "again"]
+    assert first.state == "ok" and first.value == ["start", "build0", "build1", "again"]
     (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
     assert again.value == first.value and len(calls) == 4
 
@@ -78,7 +78,7 @@ async def test_operational_knobs_and_policy_fields_never_rekey_a_resume(tmp_path
 
     run_dir = tmp_path / "run"
     (first,) = await Run(run_dir, Cfg()).run(flow, [{"id": 1}])
-    assert first.ok and first.value == ["a", "b"]
+    assert first.state == "ok" and first.value == ["a", "b"]
     (again,) = await Run(
         run_dir,
         Cfg(
@@ -88,7 +88,7 @@ async def test_operational_knobs_and_policy_fields_never_rekey_a_resume(tmp_path
             payload_cap=2048,
         ),
     ).run(flow, [{"id": 1}])
-    assert again.ok and again.value == first.value and calls == ["a", "b"]
+    assert again.state == "ok" and again.value == first.value and calls == ["a", "b"]
 
 
 async def test_agent_steps_key_on_their_resolved_seat_and_nothing_else(tmp_path):
@@ -138,7 +138,7 @@ async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path)
         task=vf.TraceTask(type="ToyTask", data=task.data),
         agent=vf.AgentInfo(config=run.seat("alpha")),
     )
-    await run.ledger.append(trace, env="flow")
+    await run.ledger.append(trace)
     run.ledger.put(
         StepRecord(
             key=Ctx(run, key, {"id": 1})._key("rollout#0", agent("alpha", task)),
@@ -152,7 +152,9 @@ async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path)
         )
     )
     (first,) = await run.run(flow, [{"id": 1}])
-    assert first.ok and first.value == ["prep", trace.id] and calls == ["prep"]
+    assert (
+        first.state == "ok" and first.value == ["prep", trace.id] and calls == ["prep"]
+    )
 
     moved = Run(run_dir, Cfg(alpha=seat(model="alpha/2")))
     ctx = Ctx(moved, key, {"id": 1})
@@ -172,14 +174,14 @@ async def test_a_launch_under_a_different_identity_refuses_unless_rekeyed(tmp_pa
 
     run_dir = tmp_path / "run"
     (first,) = await Run(run_dir, config()).run(flow, [{"id": 1}])
-    assert first.ok
+    assert first.state == "ok"
     recorded = json.loads((run_dir / "run.json").read_text())["identity"]
     moved = run_dir.rename(tmp_path / "renamed")
     with pytest.raises(ValueError, match=recorded) as raised:
         Run(moved, config())
     assert digest("renamed")[:16] in str(raised.value)
     (again,) = await Run(moved, config(), rekey=True).run(flow, [{"id": 1}])
-    assert again.ok and calls == ["s", "s"]  # rekeyed: nothing attaches
+    assert again.state == "ok" and calls == ["s", "s"]  # rekeyed: nothing attaches
 
 
 async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
@@ -195,11 +197,11 @@ async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
         return await ctx.step("flaky", fn(flaky), retries=2)
 
     results = await Run(tmp_path, config()).run(flow, [{"id": 1}, {"id": 2}])
-    failed = [r for r in results if not r.ok]
+    failed = [r for r in results if r.state == "failed"]
     assert (
         len(attempts) == 3 and len(failed) == 1 and "ValueError: no" in failed[0].error
     )
-    assert [r.value for r in results if r.ok] == [2]
+    assert [r.value for r in results if r.state == "ok"] == [2]
 
 
 async def test_a_step_timeout_fails_the_step(tmp_path):
@@ -210,7 +212,7 @@ async def test_a_step_timeout_fails_the_step(tmp_path):
         await ctx.step("slow", fn(slow), timeout=0.01)
 
     (result,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert not result.ok and "TimeoutError" in result.error
+    assert result.state != "ok" and "TimeoutError" in result.error
 
 
 async def test_spread_starts_only_what_the_quorum_needs_and_resumes_the_same_quorum(
@@ -229,7 +231,11 @@ async def test_spread_starts_only_what_the_quorum_needs_and_resumes_the_same_quo
         return await ctx.spread("sq", [fn(item, i) for i in range(5)], at_least=2)
 
     (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert first.ok and first.value == {1: 1, 2: 4} and sorted(started) == [0, 1, 2]
+    assert (
+        first.state == "ok"
+        and first.value == {1: 1, 2: 4}
+        and sorted(started) == [0, 1, 2]
+    )
     (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
     assert again.value == first.value and len(started) == 3
 
@@ -251,7 +257,7 @@ async def test_commands_share_a_runtime_scope_and_attach_on_resume(tmp_path):
         return read.stdout.strip(), read.exit_code
 
     (first,) = await Run(tmp_path / "run", Cfg()).run(flow, [{"id": 1}])
-    assert first.ok and first.value == ("shared", 0)
+    assert first.state == "ok" and first.value == ("shared", 0)
     marker.unlink()
     (again,) = await Run(tmp_path / "run", Cfg()).run(flow, [{"id": 1}])
     assert again.value == ("shared", 0)  # both commands attached; nothing ran
@@ -268,13 +274,9 @@ async def test_drain_stops_before_the_next_step_and_a_resume_finishes(tmp_path):
 
     run = Run(tmp_path, config())
     (stopped,) = await run.run(flow, [{"id": 1}])
-    assert (
-        stopped.stopped
-        and not stopped.ok
-        and run.status()["rows"] == {stopped.row: "stopped"}
-    )
+    assert stopped.state == "stopped" and run.status().rows == {stopped.row: "stopped"}
     (done,) = await Run(tmp_path, config()).run(undrained, [{"id": 1}])
-    assert done.ok and done.value == 3
+    assert done.state == "ok" and done.value == 3
     assert (
         run.ledger.get(done.row, "a#0") is not None
         and run.ledger.get(done.row, "b#0") is not None
@@ -334,7 +336,7 @@ async def test_events_stream_each_step_including_the_ones_in_flight(tmp_path):
     release.set()
     (result,) = await task
     events = run.ledger.events()
-    assert result.ok and [e["type"] for e in events[3:]] == [
+    assert result.state == "ok" and [e["type"] for e in events[3:]] == [
         "step_completed",
         "row_finished",
     ]
@@ -353,7 +355,7 @@ async def test_a_resume_emits_attached_events_and_a_torn_last_line_is_skipped(tm
     (again,) = await Run(tmp_path, config()).run(
         flow, [{"id": 1}]
     )  # ... a new run drops it
-    assert again.ok and again.value == first.value == [1, 2]
+    assert again.state == "ok" and again.value == first.value == [1, 2]
     resumed = Ledger(tmp_path).events()[before:]
     assert [e["type"] for e in resumed] == [
         "run",
@@ -379,7 +381,9 @@ async def test_an_oversized_step_value_fails_at_once(tmp_path):
         return await ctx.step("big", fn(big), retries=3)
 
     (result,) = await Run(tmp_path, config(payload_cap=50)).run(flow, [{"id": 1}])
-    assert not result.ok and "over payload_cap" in result.error and len(calls) == 1
+    assert (
+        result.state != "ok" and "over payload_cap" in result.error and len(calls) == 1
+    )
 
 
 async def test_sweep_kills_the_subprocesses_a_dead_launch_left(tmp_path):

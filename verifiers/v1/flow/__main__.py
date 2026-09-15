@@ -1,14 +1,15 @@
-"""`python -m verifiers.v1.flow <module:flow> <rows.jsonl> <run_dir> [config.json]`
+"""`python -m verifiers.v1.flow [-v] <module:flow> <rows.jsonl> <run_dir> [@ config.toml] [--<field> <value> ...]`
 
 The flow is an async function `flow(ctx, row)`; its config class is read off its
-`config` attribute, else `FlowConfig`. Ctrl-C once drains (in-flight steps finish and
-record), twice cancels. The same command against the same run directory resumes.
-`-v` streams every progress event (the `events.jsonl` line) to stderr.
+`config` attribute, else `FlowConfig`, and parsed like every v1 CLI: `@ file.toml`
+loads a file, `--author.model x` sets a field, `-h` after the positionals lists them.
+Ctrl-C once drains (in-flight steps finish and record), twice cancels. The same
+command against the same run directory resumes. `-v` streams every progress event
+(the `events.jsonl` line) to stderr.
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import importlib
 import json
@@ -17,38 +18,40 @@ import signal
 import sys
 from pathlib import Path
 
+from pydantic_config import cli
+
 from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.run import Run
 
+USAGE = (
+    "usage: python -m verifiers.v1.flow [-v] <module:flow> <rows.jsonl> <run_dir> "
+    "[@ config.toml] [--<field> <value> ...]"
+)
+
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="flow")
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="per-step progress on stderr"
-    )
-    parser.add_argument("flow", help="module:function")
-    parser.add_argument("rows", type=Path)
-    parser.add_argument("run_dir", type=Path)
-    parser.add_argument("config", type=Path, nargs="?")
-    args = parser.parse_args(argv)
+    args = list(sys.argv[1:] if argv is None else argv)
+    verbose = any(arg in ("-v", "--verbose") for arg in args)
+    args = [arg for arg in args if arg not in ("-v", "--verbose")]
+    if len(args) < 3 or args[0] in ("-h", "--help"):
+        raise SystemExit(USAGE)
+    target, rows_file, run_dir, *rest = args
 
     logger = logging.getLogger("verifiers.flow")
-    logger.setLevel(logging.INFO if args.verbose else logging.WARNING)
-    if args.verbose and not logger.handlers:
+    logger.setLevel(logging.INFO if verbose else logging.WARNING)
+    if verbose and not logger.handlers:
         logger.addHandler(logging.StreamHandler())  # stderr, bare messages
 
-    module, _, name = args.flow.partition(":")
+    module, _, name = target.partition(":")
     flow = getattr(importlib.import_module(module), name)
     config_cls: type[FlowConfig] = getattr(flow, "config", FlowConfig)
-    config = (
-        config_cls.model_validate_json(args.config.read_text())
-        if args.config
-        else config_cls()
-    )
+    config = cli(config_cls, args=rest, prog="flow")
     rows = [
-        json.loads(line) for line in args.rows.read_text().splitlines() if line.strip()
+        json.loads(line)
+        for line in Path(rows_file).read_text().splitlines()
+        if line.strip()
     ]
-    run = Run(args.run_dir, config)
+    run = Run(Path(run_dir), config)
 
     async def main_async() -> bool:
         loop = asyncio.get_running_loop()
@@ -56,7 +59,7 @@ def main(argv: list[str] | None = None) -> None:
         assert task is not None
 
         def interrupt() -> None:
-            if run.status()["draining"]:
+            if run.status().draining:
                 task.cancel()
             else:
                 print(
@@ -69,12 +72,11 @@ def main(argv: list[str] | None = None) -> None:
         loop.add_signal_handler(signal.SIGTERM, interrupt)
         ok = True
         async for result in run.stream(flow, rows):
-            state = "ok" if result.ok else "stopped" if result.stopped else "failed"
             print(
-                f"{result.row}: {state}"
+                f"{result.row}: {result.state}"
                 + (f" — {result.error}" if result.error else "")
             )
-            ok &= result.ok
+            ok &= result.state == "ok"
         return ok
 
     sys.exit(0 if asyncio.run(main_async()) else 1)

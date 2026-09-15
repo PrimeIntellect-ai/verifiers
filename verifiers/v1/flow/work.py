@@ -2,46 +2,62 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import Task
+from verifiers.v1.trace import Trace
+
+T = TypeVar("T")
+
+WorkKind = Literal["agent", "command", "fn"]
+
+
+class Work(ABC, Generic[T]):
+    """One unit of step work whose value is a `T`; `kind` is what the ledger records."""
+
+    kind: ClassVar[WorkKind]
+
+    @abstractmethod
+    def content(self) -> list[Any]:
+        """What keys the step besides its place: the work's inputs, JSON-stable."""
 
 
 @dataclass(frozen=True)
-class AgentWork:
+class AgentWork(Work[Trace]):
+    kind: ClassVar[WorkKind] = "agent"
     seat: str
     task: Task
     runtime: Runtime | None = None
     """A live box to run in; None provisions one for the step."""
 
-    def content(self) -> Any:
+    def content(self) -> list[Any]:
         return ["agent", self.seat, type(self.task).__name__, self.task.data]
 
 
 @dataclass(frozen=True)
-class CommandWork:
+class CommandWork(Work[ProgramResult]):
+    kind: ClassVar[WorkKind] = "command"
     argv: list[str]
     runtime: Runtime
     env: dict[str, str] = field(default_factory=dict)
 
-    def content(self) -> Any:
+    def content(self) -> list[Any]:
         return ["command", self.argv, self.env]
 
 
 @dataclass(frozen=True)
-class FnWork:
-    func: Callable[..., Any]
+class FnWork(Work[T]):
+    kind: ClassVar[WorkKind] = "fn"
+    func: Callable[..., T | Awaitable[T]]
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
 
-    def content(self) -> Any:
+    def content(self) -> list[Any]:
         return ["fn", self.func.__qualname__, self.args, self.kwargs]
-
-
-Work = AgentWork | CommandWork | FnWork
 
 
 def agent(seat: str, task: Task, *, runtime: Runtime | None = None) -> AgentWork:
@@ -59,7 +75,7 @@ def command(
     return CommandWork(argv=list(argv), runtime=runtime, env=dict(env or {}))
 
 
-def fn(func: Callable[..., Any], *args: Any, **kwargs: Any) -> FnWork:
+def fn(func: Callable[..., T | Awaitable[T]], *args: Any, **kwargs: Any) -> FnWork[T]:
     """`func(*args, **kwargs)` on the host, sync or async; the value is its return. The
     arguments key the step, so they must be JSON-stable: a bound method, closure or live
     object digests to its address and the step never attaches on resume."""
