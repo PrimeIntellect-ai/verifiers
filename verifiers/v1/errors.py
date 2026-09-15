@@ -116,38 +116,3 @@ def model_error(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
     )
-
-
-def _error_class(error: object) -> type | None:
-    """A live exception's class, or the class a recorded trace error's `type` names."""
-    if isinstance(error, BaseException):
-        return type(error)
-    name = getattr(error, "type", None)
-    cls = globals().get(name) if isinstance(name, str) else None
-    return cls if isinstance(cls, type) else None
-
-
-def permanent(error: object) -> bool:
-    """A provider refusal no retry re-enables: bad credentials or a forbidden model."""
-    cls = _error_class(error)
-    return (
-        cls is not None
-        and issubclass(cls, ProviderError)
-        and getattr(error, "status_code", None) in (401, 403)
-    )
-
-
-def infrastructure(error: object) -> bool:
-    """A failure that is the world's, not the attempt's: the endpoint down or
-    throttling (a provider 5xx, 429, or no status at all), the runtime or the
-    interception path, or a stage that hit its time budget. Retrying it later is
-    right; counting it against the attempt is not."""
-    if isinstance(error, TimeoutError):
-        return True
-    cls = _error_class(error)
-    if cls is None:
-        return False
-    if issubclass(cls, ProviderError):
-        status = getattr(error, "status_code", None)
-        return not isinstance(status, int) or status == 429 or status >= 500
-    return issubclass(cls, (SandboxError, InterceptionError))

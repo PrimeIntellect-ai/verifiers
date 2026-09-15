@@ -42,7 +42,6 @@ from pydantic_core import to_jsonable_python
 
 from verifiers.v1.agent import make_agent
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.errors import infrastructure, permanent
 from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.ledger import Ledger, StepRecord, digest, now, row_key
 from verifiers.v1.flow.pools import Pools
@@ -59,6 +58,7 @@ from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.retries import backoff
 
 logger = logging.getLogger("verifiers.flow")
 
@@ -86,10 +86,8 @@ class Oversized(ValueError):
 class _RolloutFailed(Exception):
     def __init__(self, trace: Trace) -> None:
         self.trace = trace
-        self.last = trace.last_error
-        super().__init__(
-            f"{self.last.type}: {self.last.message}" if self.last else "rollout failed"
-        )
+        last = trace.last_error
+        super().__init__(f"{last.type}: {last.message}" if last else "rollout failed")
 
 
 @dataclass
@@ -124,10 +122,6 @@ class Run:
         self.steps: set[str] = set()  # `<row>/<path>` in flight
         self.tokens = {"input": 0, "output": 0}
         self._draining = asyncio.Event()
-        self._admissions = (
-            asyncio.Event()
-        )  # cleared while an infrastructure outage is on
-        self._admissions.set()
         self._inference: Interception | None = None
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
 
@@ -206,7 +200,6 @@ class Run:
         return {
             "rows": dict(self.rows),
             "steps": sorted(self.steps),
-            "holding": not self._admissions.is_set(),
             "draining": self._draining.is_set(),
             "tokens": dict(self.tokens),
         }
@@ -306,17 +299,6 @@ class Run:
         )
         return source
 
-    def _outage(self, on: bool) -> None:
-        if on and self._admissions.is_set():
-            logger.warning(
-                "infrastructure failure: holding new steps until one succeeds"
-            )
-            self._admissions.clear()
-            self.ledger.event("holding", on=True)
-        elif not on and not self._admissions.is_set():
-            self._admissions.set()
-            self.ledger.event("holding", on=False)
-
 
 class Ctx:
     """One row's handle on the run: steps, spreads, runtimes, scopes."""
@@ -361,7 +343,8 @@ class Ctx:
     ) -> Awaitable[Any]:
         """Run `work` once, durably. The value is the trace, the program result, or
         the function's return; on resume it comes from the ledger. `retries` re-run the
-        whole work after a turn failure, on top of an agent's own `AgentConfig.retries`."""
+        whole work after a failure, with the shared backoff, on top of an agent's own
+        `AgentConfig.retries` (which names the error types worth a rerun)."""
         return self._step_value(self._path(name), work, retries, timeout)
 
     async def _step_value(
@@ -488,18 +471,10 @@ class Ctx:
             self._event("step_attached", path=path, index=index)
             return attached
         key = self._key(path, work)
-        if run._draining.is_set():
-            raise Stopped(path)
-        await run._admissions.wait()
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
         run.steps.add(tag)
         self._event("step_started", path=path, index=index)
-        started, attempts, held_since, backoff = (
-            now(),
-            0,
-            None,
-            run.config.outage_backoff_s,
-        )
+        started, attempts = now(), 0
         try:
             while True:
                 if run._draining.is_set():
@@ -510,41 +485,10 @@ class Ctx:
                         value, extra = await self._execute(work)
                 except asyncio.CancelledError:
                     raise
-                except (
-                    Exception
-                ) as exc:  # classified below: permanent, the world's, or the attempt's
+                except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
-                    cause = exc.last if isinstance(exc, _RolloutFailed) else exc
-                    if permanent(cause) or isinstance(exc, Oversized):
-                        self._event("step_failed", path=path, index=index, error=error)
-                        raise StepFailed(path, error) from exc
-                    if infrastructure(cause):
-                        held_since = held_since or time.monotonic()
-                        if time.monotonic() - held_since > run.config.outage_hold_s:
-                            self._event(
-                                "step_failed",
-                                path=path,
-                                index=index,
-                                error=f"held {run.config.outage_hold_s:g}s: {error}",
-                            )
-                            raise StepFailed(
-                                path, f"held {run.config.outage_hold_s:g}s: {error}"
-                            ) from exc
-                        run._outage(True)
-                        self._event(
-                            "step_retrying",
-                            path=path,
-                            index=index,
-                            attempt=attempts,
-                            error=error,
-                            backoff=backoff,
-                        )
-                        logger.warning("%s: %s; retrying in %.0fs", tag, error, backoff)
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, run.config.outage_hold_s)
-                        continue
                     logger.warning("%s: attempt %d failed: %s", tag, attempts, error)
-                    if attempts > retries:
+                    if attempts > retries or isinstance(exc, Oversized):
                         run.ledger.put(
                             self._record(
                                 path,
@@ -559,14 +503,16 @@ class Ctx:
                         )
                         self._event("step_failed", path=path, index=index, error=error)
                         raise StepFailed(path, error) from exc
+                    delay = backoff(attempts - 1)
                     self._event(
                         "step_retrying",
                         path=path,
                         index=index,
                         attempt=attempts,
                         error=error,
-                        backoff=0.0,
+                        backoff=delay,
                     )
+                    await asyncio.sleep(delay)
                     continue
                 record = self._record(
                     path, index, work, key, "completed", started, attempts, **extra
@@ -575,8 +521,6 @@ class Ctx:
                 self._event("step_completed", path=path, index=index)
                 return value, record
         finally:
-            if held_since is not None:
-                run._outage(False)  # this step's outage is over, one way or the other
             run.steps.discard(tag)
 
     def _key(self, path: str, work: Work) -> str:

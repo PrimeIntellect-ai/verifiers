@@ -21,10 +21,6 @@ class FlowConfig(BaseConfig):
     in a remote runtime behind local seats needs a `server` with a tunnel configured."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
     """Named capacity pools: boxes (and anything else named) held at once."""
-    outage_backoff_s: float = Field(default=60.0, gt=0)
-    """First wait after an infrastructure failure; doubles per failure in a row."""
-    outage_hold_s: float = Field(default=900.0, ge=0)
-    """How long one step keeps retrying through infrastructure failures before it fails."""
     payload_cap: int = Field(default=1_000_000, gt=0)
     """Largest step value the ledger records, in bytes of JSON; bulk belongs in traces or files."""
 

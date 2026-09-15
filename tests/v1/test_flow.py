@@ -1,5 +1,5 @@
 """The flow core on host functions and subprocess commands: memoized steps, scopes,
-retry classification, spreads, runtime scopes, drain, streaming, what a resume keys
+retries, spreads, runtime scopes, drain, streaming, what a resume keys
 on, and the event stream."""
 
 import asyncio
@@ -8,7 +8,6 @@ import json
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ProviderError, SandboxError
 from verifiers.v1.flow import (
     Ctx,
     FlowConfig,
@@ -23,8 +22,6 @@ from verifiers.v1.flow.ledger import digest, now, row_key
 
 
 def config(**kw) -> FlowConfig:
-    kw.setdefault("outage_backoff_s", 0.01)
-    kw.setdefault("outage_hold_s", 0.5)
     return FlowConfig(**kw)
 
 
@@ -80,7 +77,7 @@ async def test_operational_knobs_and_policy_fields_never_rekey_a_resume(tmp_path
         return [await ctx.step("a", fn(work, "a")), await ctx.step("b", fn(work, "b"))]
 
     run_dir = tmp_path / "run"
-    (first,) = await Run(run_dir, Cfg(outage_backoff_s=0.01)).run(flow, [{"id": 1}])
+    (first,) = await Run(run_dir, Cfg()).run(flow, [{"id": 1}])
     assert first.ok and first.value == ["a", "b"]
     (again,) = await Run(
         run_dir,
@@ -88,8 +85,6 @@ async def test_operational_knobs_and_policy_fields_never_rekey_a_resume(tmp_path
             rounds=8,
             max_concurrent_rows=1,
             pools={"runtimes": 1},
-            outage_backoff_s=0.02,
-            outage_hold_s=1.0,
             payload_cap=2048,
         ),
     ).run(flow, [{"id": 1}])
@@ -137,7 +132,7 @@ async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path)
         return [prep, (await ctx.step("rollout", agent("alpha", task))).id]
 
     run_dir = tmp_path / "run"
-    run = Run(run_dir, Cfg(outage_backoff_s=0.01))
+    run = Run(run_dir, Cfg())
     key = row_key({"id": 1})
     trace = vf.Trace(
         task=vf.TraceTask(type="ToyTask", data=task.data),
@@ -159,7 +154,7 @@ async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path)
     (first,) = await run.run(flow, [{"id": 1}])
     assert first.ok and first.value == ["prep", trace.id] and calls == ["prep"]
 
-    moved = Run(run_dir, Cfg(alpha=seat(model="alpha/2"), outage_backoff_s=0.01))
+    moved = Run(run_dir, Cfg(alpha=seat(model="alpha/2")))
     ctx = Ctx(moved, key, {"id": 1})
     assert ctx._attached("prep#0", fn(work, "prep"), None) is not None
     assert ctx._attached("rollout#0", agent("alpha", task), None) is None
@@ -207,60 +202,15 @@ async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
     assert [r.value for r in results if r.ok] == [2]
 
 
-async def test_infrastructure_failures_hold_and_retry_without_consuming_retries(
-    tmp_path,
-):
-    seen = 0
-
-    def flapping_box() -> int:
-        nonlocal seen
-        seen += 1
-        if seen < 3:
-            raise SandboxError("box gone")
-        return seen
-
-    async def flow(ctx: Ctx, row) -> int:
-        return await ctx.step("s", fn(flapping_box))
-
-    run = Run(tmp_path, config())
-    (result,) = await run.run(flow, [{"id": 1}])
-    assert result.ok and result.value == 3 and not run.status()["holding"]
-
-
-async def test_infrastructure_hold_budget_and_timeouts_fail_the_step(tmp_path):
-    def down() -> None:
-        raise SandboxError("down")
-
+async def test_a_step_timeout_fails_the_step(tmp_path):
     async def slow() -> None:
         await asyncio.sleep(1)
 
     async def flow(ctx: Ctx, row) -> None:
-        if row["id"] == 1:
-            await ctx.step("down", fn(down))
         await ctx.step("slow", fn(slow), timeout=0.01)
 
-    results = await Run(tmp_path, config(outage_hold_s=0.05)).run(
-        flow, [{"id": 1}, {"id": 2}]
-    )
-    errors = sorted(r.error for r in results)
-    assert all("held 0.05s" in e for e in errors)
-    assert any("SandboxError: down" in e for e in errors) and any(
-        "TimeoutError" in e for e in errors
-    )
-
-
-async def test_permanent_failures_stop_at_once(tmp_path):
-    calls: list[int] = []
-
-    def denied() -> None:
-        calls.append(1)
-        raise ProviderError("forbidden", status_code=403)
-
-    async def flow(ctx: Ctx, row) -> None:
-        await ctx.step("s", fn(denied), retries=3)
-
     (result,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert not result.ok and len(calls) == 1
+    assert not result.ok and "TimeoutError" in result.error
 
 
 async def test_spread_starts_only_what_the_quorum_needs_and_resumes_the_same_quorum(
@@ -300,14 +250,10 @@ async def test_commands_share_a_runtime_scope_and_attach_on_resume(tmp_path):
             read = await ctx.step("read", command(["cat", str(marker)], runtime=box))
         return read.stdout.strip(), read.exit_code
 
-    (first,) = await Run(tmp_path / "run", Cfg(outage_backoff_s=0.01)).run(
-        flow, [{"id": 1}]
-    )
+    (first,) = await Run(tmp_path / "run", Cfg()).run(flow, [{"id": 1}])
     assert first.ok and first.value == ("shared", 0)
     marker.unlink()
-    (again,) = await Run(tmp_path / "run", Cfg(outage_backoff_s=0.01)).run(
-        flow, [{"id": 1}]
-    )
+    (again,) = await Run(tmp_path / "run", Cfg()).run(flow, [{"id": 1}])
     assert again.value == ("shared", 0)  # both commands attached; nothing ran
 
 
@@ -455,11 +401,3 @@ async def test_sweep_kills_the_subprocesses_a_dead_launch_left(tmp_path):
     finally:
         if orphan.returncode is None:
             orphan.kill()
-
-
-def test_build_async_openai_carries_the_endpoint_headers():
-    from verifiers.v1.clients import build_async_openai
-    from verifiers.v1.configs.client import EvalClientConfig
-
-    client = build_async_openai(EvalClientConfig(headers={"X-Test": "1"}))
-    assert client.default_headers["X-Test"] == "1"
