@@ -55,7 +55,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
         logger.info("results: %s", run_dir)
 
     # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
-    # own one event loop: `env.serving()` (shared tool servers + interception pool, built once
+    # own one event loop: `env.serving()` (shared tool servers + interception pool, built
     # once) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
     # (GEPAAdapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
     # main thread means a Ctrl-C raises straight through it into this teardown.

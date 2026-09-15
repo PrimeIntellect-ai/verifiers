@@ -194,6 +194,9 @@ uv pip install -e .        # install this package (or register it in your projec
 uv run vf-validate {dash}  # model-free gold checks
 ```
 
+3. Evaluate from a [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) checkout
+   that has this package installed: `uv run eval {dash} -n 3`.
+
 ## Layout
 
 {layout_block}
