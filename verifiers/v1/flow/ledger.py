@@ -50,6 +50,7 @@ EventKind = Literal[
     "step_retrying",
     "step_completed",
     "step_failed",
+    "step_cancelled",
     "spread_started",
     "spread_finished",
 ]

@@ -353,50 +353,52 @@ class Ctx:
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
         self._event("step_started", path=path, index=index)
         started, attempts = now(), 0
-        while True:
-            attempts += 1
-            try:
-                async with asyncio.timeout(timeout):
-                    value = await work.execute(self)
-                    fields = work.dump(self, value)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                logger.warning("%s: attempt %d failed: %s", tag, attempts, error)
-                if attempts > retries or isinstance(exc, Oversized):
-                    run.ledger.put(
-                        self._record(
-                            path,
-                            index,
-                            work,
-                            key,
-                            "error",
-                            started,
-                            attempts,
-                            error=error,
+        try:
+            while True:
+                attempts += 1
+                try:
+                    async with asyncio.timeout(timeout):
+                        value = await work.execute(self)
+                        fields = work.dump(self, value)
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    logger.warning("%s: attempt %d failed: %s", tag, attempts, error)
+                    if attempts > retries or isinstance(exc, Oversized):
+                        run.ledger.put(
+                            self._record(
+                                path,
+                                index,
+                                work,
+                                key,
+                                "error",
+                                started,
+                                attempts,
+                                error=error,
+                            )
                         )
+                        self._event("step_failed", path=path, index=index, error=error)
+                        raise StepFailed(f"{path}: {error}") from exc
+                    delay = backoff(attempts - 1)
+                    self._event(
+                        "step_retrying",
+                        path=path,
+                        index=index,
+                        attempt=attempts,
+                        error=error,
+                        backoff=delay,
                     )
-                    self._event("step_failed", path=path, index=index, error=error)
-                    raise StepFailed(f"{path}: {error}") from exc
-                delay = backoff(attempts - 1)
-                self._event(
-                    "step_retrying",
-                    path=path,
-                    index=index,
-                    attempt=attempts,
-                    error=error,
-                    backoff=delay,
+                    await asyncio.sleep(delay)
+                    continue
+                run.ledger.put(
+                    self._record(
+                        path, index, work, key, "completed", started, attempts, **fields
+                    )
                 )
-                await asyncio.sleep(delay)
-                continue
-            run.ledger.put(
-                self._record(
-                    path, index, work, key, "completed", started, attempts, **fields
-                )
-            )
-            self._event("step_completed", path=path, index=index)
-            return value
+                self._event("step_completed", path=path, index=index)
+                return value
+        except asyncio.CancelledError:
+            self._event("step_cancelled", path=path, index=index)
+            raise
 
     def _key(self, path: str, work: Work) -> str:
         """The step's key: its place in this row and the content of its work."""
