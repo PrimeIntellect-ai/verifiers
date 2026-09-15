@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import contextlib
-import hashlib
 import hmac
 import secrets
 import socket
@@ -18,7 +17,6 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig, network_rule_match
 
 HOST_ALIAS = "vf.host.internal"
 _CALLBACK_PREFIX = "/.vf-host/"
-_MAX_CALLBACK_CREDENTIALS = 4096
 _HEADER_TIMEOUT = 10
 _IO_TIMEOUT = 300
 
@@ -123,7 +121,6 @@ class _Callback:
     port: int
     authority: str
     host_alias: str
-    credential_origin: tuple[str, str, int]
 
 
 class EgressProxy:
@@ -135,20 +132,11 @@ class EgressProxy:
         )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
-        self._authorization_origins: dict[
-            tuple[tuple[str, str, int], bytes], tuple[str, str, int]
-        ] = {}
         self._handlers: set[asyncio.Task] = set()
         self.server: asyncio.Server | None = None
         self.port = 0
 
-    def callback_url(
-        self,
-        url: str,
-        host_alias: str = HOST_ALIAS,
-        *,
-        credential_origin: tuple[str, str, int] | None = None,
-    ) -> str:
+    def callback_url(self, url: str, host_alias: str = HOST_ALIAS) -> str:
         """Route one framework-owned host-loopback HTTP(S) origin through this proxy."""
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -156,14 +144,7 @@ class EgressProxy:
             raise ValueError(f"unsupported Docker host callback URL: {url}")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
-        callback = _Callback(
-            parsed.scheme,
-            host,
-            port,
-            authority,
-            host_alias,
-            credential_origin or (parsed.scheme, host, port),
-        )
+        callback = _Callback(parsed.scheme, host, port, authority, host_alias)
         token = self._callback_tokens.get(callback)
         if token is None:
             token = secrets.token_urlsafe(32)
@@ -249,11 +230,6 @@ class EgressProxy:
             connect = method == "CONNECT"
             if callback is not None:
                 scheme, host, port = callback.scheme, callback.host, callback.port
-                forward_cookies = (
-                    scheme,
-                    host,
-                    port,
-                ) == callback.credential_origin
             elif connect:
                 parsed = urlsplit(f"//{target}")
                 host, port = parsed.hostname or "", parsed.port or 443
@@ -386,35 +362,12 @@ class EgressProxy:
                 for name, value in request.headers:
                     if name.lower() in excluded:
                         continue
-                    if callback is not None and name.lower() == b"authorization":
-                        # Bind each credential to the origin where it was supplied,
-                        # allowing a redirected server to establish its own auth.
-                        credential = (
-                            callback.credential_origin,
-                            hashlib.sha256(value).digest(),
-                        )
-                        # Eviction could authorize an old credential at a new origin.
-                        if (
-                            credential not in self._authorization_origins
-                            and len(self._authorization_origins)
-                            >= _MAX_CALLBACK_CREDENTIALS
-                        ):
-                            raise ValueError("callback authorization capacity exceeded")
-                        origin = (scheme, host, port)
-                        if (
-                            self._authorization_origins.setdefault(credential, origin)
-                            != origin
-                        ):
-                            continue
                     if callback is not None and name.lower() == b"cookie":
-                        # Callback cookie names carry their capability token. Strip
-                        # it upstream; unscoped cookies cannot cross origins.
+                        # Callback cookie names carry their capability token; strip it upstream.
                         prefix = f"{token}-".encode()
                         value = b"; ".join(
-                            cookie.removeprefix(prefix)
-                            for part in value.split(b";")
-                            if (cookie := part.strip()).startswith(prefix)
-                            or forward_cookies
+                            cookie.strip().removeprefix(prefix)
+                            for cookie in value.split(b";")
                         )
                         if not value:
                             continue
@@ -518,16 +471,18 @@ class EgressProxy:
                                 redirect_host = (
                                     (redirected.hostname or "").lower().rstrip(".")
                                 )
-                                if redirected.scheme in (
-                                    "http",
-                                    "https",
-                                ) and is_loopback_host(redirect_host):
-                                    # Returning to the initial origin reuses its
-                                    # cookie scope without sharing credentials with peers.
+                                if (
+                                    redirected.scheme,
+                                    redirect_host,
+                                    redirected.port
+                                    or (443 if redirected.scheme == "https" else 80),
+                                ) == (scheme, host, port):
+                                    # Redirects cannot grant access to another host service.
                                     value = self.callback_url(
-                                        destination,
+                                        redirected._replace(
+                                            netloc=callback.authority
+                                        ).geturl(),
                                         callback.host_alias,
-                                        credential_origin=callback.credential_origin,
                                     ).encode("latin-1")
                             headers.append((name, value))
                         response = replace(response, headers=headers)
