@@ -10,12 +10,17 @@ box is alive), a fresh box is provisioned from the task's verifier declaration,
 No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """
 
+from functools import partial
+from pathlib import Path
+
 import verifiers.v1 as vf
+from verifiers.v1.agent import resolve_rollout_timeouts
 from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnv,
     IsolatedVerifierEnvConfig,
 )
 from verifiers.v1.runtimes import Runtime, RuntimeConfig
+from verifiers.v1.tasksets.harbor.runtime import make_harbor_compose_runtime
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
     verifier_box_data,
@@ -33,14 +38,20 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             raise TypeError(
                 f"the harbor env runs harbor tasks; got {type(task).__name__}"
             )
-        if task.data.verifier is None:
-            await agents.agent.run(task)
-            return
-        # Resolve the verifier's box before the solve, so an impossible pairing
-        # (e.g. a restricted Prime verifier without vm=true) costs nothing
-        # rather than a full agent run.
-        self.verifier_config(task)
-        await agents.agent.run(task.defer_scoring(), collect_artifacts=True)
+        separate = task.data.verifier is not None
+        if separate:
+            self.verifier_config(task)
+        factory = None
+        if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
+            timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
+            factory = partial(
+                make_harbor_compose_runtime, task=task, setup_timeout=timeouts.setup
+            )
+        await agents.agent.run(
+            task.defer_scoring() if separate else task,
+            runtime_factory=factory,
+            collect_artifacts=separate,
+        )
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
