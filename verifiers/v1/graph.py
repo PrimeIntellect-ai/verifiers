@@ -340,6 +340,7 @@ def message_hash(message: Message) -> str:
             add(tc.type)
             add(tc.id)
             add(tc.name)
+            add(tc.namespace or "")
             add(
                 tc.arguments
                 if tc.type == "custom"
@@ -547,7 +548,13 @@ class PendingTurn:
     def commit(self, response: Response) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
-        self.trace.tools = self.tools
+        if self.tools:
+            self.trace.tools = list(
+                {
+                    (tool.namespace, tool.name, tool.type): tool
+                    for tool in [*self.trace.tools, *self.tools]
+                }.values()
+            )
         return assistant_id
 
     def commit_prompt(self) -> None:
@@ -569,7 +576,13 @@ class PendingTurn:
             )
             parent = len(self.trace.nodes) - 1
             index[_node_key(previous, message, self.tools)] = parent
-        self.trace.tools = self.tools
+        if self.tools:
+            self.trace.tools = list(
+                {
+                    (tool.namespace, tool.name, tool.type): tool
+                    for tool in [*self.trace.tools, *self.tools]
+                }.values()
+            )
 
 
 def prepare_turn(
