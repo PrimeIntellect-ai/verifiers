@@ -223,14 +223,14 @@ def run_v1_server():
         address_queue: mp.Queue = mpctx.Queue()
         proc = mpctx.Process(
             target=serve_env,
-            kwargs=dict(
-                max_workers=1,
-                elastic=False,
-                address="tcp://127.0.0.1:0",
-                address_queue=address_queue,
-                config_data=env_config_data(config.env),
-                max_concurrent=config.max_concurrent,
-            ),
+            kwargs={
+                "max_workers": 1,
+                "elastic": False,
+                "address": "tcp://127.0.0.1:0",
+                "address_queue": address_queue,
+                "config_data": env_config_data(config.env),
+                "max_concurrent": config.max_concurrent,
+            },
         )
         proc.start()
         try:
