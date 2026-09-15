@@ -34,7 +34,7 @@ EVENTS_FILE = "events.jsonl"
 """Filename the run's progress events are appended to (one JSON object per line)."""
 
 SHORT = 16
-"""Digest chars for a run identity, a row key and a source hash."""
+"""Digest chars for a row key, a source hash and the run label."""
 STEP_KEY = 24
 """Digest chars for a step key — what a resume matches a record on."""
 

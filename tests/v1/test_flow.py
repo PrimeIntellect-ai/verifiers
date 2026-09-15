@@ -3,9 +3,6 @@ retries, spreads, runtime scopes, drain, streaming, what a resume keys
 on, and the event stream."""
 
 import asyncio
-import json
-
-import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.flow import (
@@ -18,7 +15,7 @@ from verifiers.v1.flow import (
     command,
     fn,
 )
-from verifiers.v1.flow.ledger import digest, now, row_key
+from verifiers.v1.flow.ledger import now, row_key
 
 
 def config(**kw) -> FlowConfig:
@@ -162,28 +159,6 @@ async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path)
     assert ctx._attached("rollout#0", agent("alpha", task), None) is None
 
 
-async def test_a_launch_under_a_different_identity_refuses_unless_rekeyed(tmp_path):
-    calls: list[str] = []
-
-    def work(tag: str) -> str:
-        calls.append(tag)
-        return tag
-
-    async def flow(ctx: Ctx, row) -> str:
-        return await ctx.step("s", fn(work, "s"))
-
-    run_dir = tmp_path / "run"
-    (first,) = await Run(run_dir, config()).run(flow, [{"id": 1}])
-    assert first.state == "ok"
-    recorded = json.loads((run_dir / "run.json").read_text())["identity"]
-    moved = run_dir.rename(tmp_path / "renamed")
-    with pytest.raises(ValueError, match=recorded) as raised:
-        Run(moved, config())
-    assert digest("renamed")[:16] in str(raised.value)
-    (again,) = await Run(moved, config(), rekey=True).run(flow, [{"id": 1}])
-    assert again.state == "ok" and calls == ["s", "s"]  # rekeyed: nothing attaches
-
-
 async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
     attempts: list[int] = []
 
@@ -215,29 +190,33 @@ async def test_a_step_timeout_fails_the_step(tmp_path):
     assert result.state != "ok" and "TimeoutError" in result.error
 
 
-async def test_spread_starts_only_what_the_quorum_needs_and_resumes_the_same_quorum(
-    tmp_path,
-):
+async def test_spread_runs_every_item_and_a_resume_attaches_them(tmp_path):
     started: list[int] = []
 
     async def item(i: int) -> int:
         started.append(i)
-        await asyncio.sleep(0.01 * (i + 1))
-        if i == 0:
-            raise ValueError("bad item")
         return i * i
 
     async def flow(ctx: Ctx, row) -> dict[int, int]:
-        return await ctx.spread("sq", [fn(item, i) for i in range(5)], at_least=2)
+        return await ctx.spread("sq", [fn(item, i) for i in range(3)])
 
     (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert (
-        first.state == "ok"
-        and first.value == {1: 1, 2: 4}
-        and sorted(started) == [0, 1, 2]
-    )
+    assert first.state == "ok" and first.value == {0: 0, 1: 1, 2: 4}
     (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
-    assert again.value == first.value and len(started) == 3
+    assert again.value == first.value and sorted(started) == [0, 1, 2]
+
+
+async def test_a_spread_fails_when_any_item_does(tmp_path):
+    def item(i: int) -> int:
+        if i == 1:
+            raise ValueError("bad item")
+        return i
+
+    async def flow(ctx: Ctx, row) -> dict[int, int]:
+        return await ctx.spread("sq", [fn(item, i) for i in range(3)])
+
+    (result,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    assert result.state == "failed" and "1/3 items failed" in result.error
 
 
 async def test_commands_share_a_runtime_scope_and_attach_on_resume(tmp_path):
@@ -341,7 +320,7 @@ async def test_events_stream_each_step_including_the_ones_in_flight(tmp_path):
         "row_finished",
     ]
     assert events[2]["row"] == result.row and events[2]["path"] == "long#0"
-    assert all("at" in e for e in events) and len(events[0]["identity"]) == 16
+    assert all("at" in e for e in events) and events[0]["label"] == run.label
 
 
 async def test_a_resume_emits_attached_events_and_a_torn_last_line_is_skipped(tmp_path):

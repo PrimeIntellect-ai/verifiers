@@ -7,7 +7,7 @@
         async with ctx.runtime("builder") as box:
             build = await ctx.step("build", agent("builder", build_task(row), runtime=box))
             lint = await ctx.step("lint", command(["ruff", "check", "."], runtime=box))
-        solves = await ctx.spread("solve", [agent("solver", t) for t in tasks], at_least=2)
+        solves = await ctx.spread("solve", [agent("solver", t) for t in tasks])
         return await ctx.step("bank", fn(bank, review, build, lint, solves))
 
     results = await Run(run_dir, config).run(pipeline, rows)

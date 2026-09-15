@@ -53,7 +53,6 @@ async def flywheel(ctx: Ctx, row: dict) -> dict:
                 agent("solver", task(request, request=request))
                 for _ in range(ctx.config.attempts)
             ],
-            at_least=2,
         )
     )
     async with ctx.runtime("builder") as box:
