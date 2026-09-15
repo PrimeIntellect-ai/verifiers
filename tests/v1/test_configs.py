@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.runtimes import E2BConfig, E2BRuntime
+from verifiers.v1.runtimes import E2BConfig
 from verifiers.v1.runtimes.e2b import _egress_update
 
 CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"))
@@ -20,32 +20,6 @@ CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.env.taskset.id
-
-
-@pytest.mark.parametrize(
-    ("values", "message"),
-    [
-        ({"cpu": 1.5}, "whole CPU cores"),
-        ({"cpu": 3}, "1 or an even number"),
-        ({"memory": 1.0009765625}, "even whole number of MB"),
-        ({"disk": 0}, "greater than 0"),
-    ],
-)
-def test_e2b_config_rejects_unsupported_resources(values: dict, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        E2BConfig.model_validate(values)
-
-
-@pytest.mark.parametrize("cpu", [1, 2, 4])
-def test_e2b_config_accepts_supported_cpu_counts(cpu: int) -> None:
-    assert E2BConfig(cpu=cpu).cpu == cpu
-
-
-def test_e2b_runtime_revalidates_task_resource_updates() -> None:
-    config = E2BConfig().model_copy(update={"cpu": 3})
-
-    with pytest.raises(ValueError, match="1 or an even number"):
-        E2BRuntime(config)
 
 
 @pytest.mark.parametrize(
@@ -103,10 +77,7 @@ def test_e2b_egress_update_states_the_complete_policy() -> None:
     assert unrestricted == {"allow_internet_access": True}
 
     blocklist = _egress_update(E2BConfig(block=["203.0.113.0/24"]), routes)
-    assert blocklist == {
-        "allow_out": ["tunnel.example.com"],
-        "deny_out": ["203.0.113.0/24"],
-    }
+    assert blocklist == {"deny_out": ["203.0.113.0/24"]}
 
     allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
     assert allowlist == {

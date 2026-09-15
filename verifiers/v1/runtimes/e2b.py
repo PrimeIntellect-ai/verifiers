@@ -21,8 +21,8 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import shlex
-import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -43,16 +43,21 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_SCHEMA = 1
-_TEMPLATE_LOCK_DIR = os.path.join(tempfile.gettempdir(), "vf-e2b-template-locks")
+_TEMPLATE_LOCK_DIR = CACHE_DIR / "e2b-template-locks"
 
-# `run_program` holds a wait stream open for the whole rollout; on a long one it can drop
-# (proxy idle, transient network). Reconnecting resumes waiting on the same pid — never a
-# re-run — so a bounded number of attempts, backing off from `_WAIT_RECONNECT_BACKOFF`
-# seconds and doubling per attempt, is safe.
+# Run as the image's root like the sibling runtimes; the SDK's default is an
+# unprivileged `user`, which breaks root-only setup steps (package installs, restores).
+_USER = "root"
+
+# `run_program` and `open_process` hold a stream open for the whole rollout; on a long
+# one it can drop (proxy idle, transient network). Reconnecting resumes the same pid —
+# never a re-run — so a bounded number of attempts, backing off from
+# `_WAIT_RECONNECT_BACKOFF` seconds and doubling per attempt, is safe.
 _WAIT_RECONNECTS = 4
 _WAIT_RECONNECT_BACKOFF = 0.25
 
@@ -77,45 +82,36 @@ def _template_resources(cpu: float, memory: float) -> tuple[int, int]:
     return cpu_count, int(memory_mb_value)
 
 
-def _validate_egress_rules(allow: list[str], block: list[str]) -> None:
-    """Validate the two selector shapes supported by E2B's network API.
+_HOSTNAME = re.compile(
+    r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+    re.IGNORECASE,
+)
 
-    Allow rules accept hostnames (including a leading ``*.``), IPs, and CIDRs. Deny
-    rules only accept IPs and CIDRs; the provider rejects hostnames at request time.
-    """
+
+def _is_address(rule: str) -> bool:
+    try:
+        ipaddress.ip_network(rule, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_egress_rules(allow: list[str], block: list[str]) -> None:
+    """Validate the two selector shapes E2B's network API accepts: allow rules take
+    hostnames (a leading ``*.`` wildcard included), IPs, and CIDRs; deny rules take IPs
+    and CIDRs only."""
     for rule in block:
-        try:
-            ipaddress.ip_network(rule, strict=False)
-        except ValueError:
+        if not _is_address(rule):
             raise ValueError(
                 f"E2B block rules must be IP addresses or CIDR blocks, got {rule!r}"
-            ) from None
-
-    for rule in allow:
-        try:
-            ipaddress.ip_network(rule, strict=False)
-            continue
-        except ValueError:
-            pass
-
-        hostname = rule.removeprefix("*.").removesuffix(".")
-        labels = hostname.split(".")
-        valid_hostname = 0 < len(hostname) <= 253 and all(
-            0 < len(label) <= 63
-            and label[0] != "-"
-            and label[-1] != "-"
-            and all(
-                char.isascii() and (char.isalnum() or char == "-") for char in label
             )
-            for label in labels
-        )
-        if valid_hostname:
-            continue
-
-        raise ValueError(
-            "E2B allow rules must be hostnames, wildcard hostnames, IP addresses, "
-            f"or CIDR blocks (no schemes, ports, or paths), got {rule!r}"
-        )
+    for rule in allow:
+        if not (_is_address(rule) or _HOSTNAME.fullmatch(rule)):
+            raise ValueError(
+                "E2B allow rules must be hostnames, wildcard hostnames, IP addresses, "
+                f"or CIDR blocks (no schemes, ports, or paths), got {rule!r}"
+            )
 
 
 def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
@@ -123,16 +119,18 @@ def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
     atomically. None restores unrestricted egress for another trusted setup phase;
     otherwise `routes` (the interception and MCP endpoints) stay reachable alongside
     the configured allowlist. E2B resolves an `allow_out` entry over a same-host
-    `deny_out` one, so an allowlist is expressed as allow + deny-everything."""
+    `deny_out` one and requires the deny-everything floor whenever `allow_out` names
+    domains, so an allowlist is expressed as allow + deny-everything and a blocklist
+    as deny only (everything else, framework routes included, stays reachable)."""
     if routes is None:
         return {"allow_internet_access": True}
+    if config.allow == ["*"]:
+        return {"deny_out": list(config.block)}
     hosts = list(
         dict.fromkeys(
             host for route in routes if (host := urlsplit(route).hostname) is not None
         )
     )
-    if config.allow == ["*"]:
-        return {"allow_out": hosts, "deny_out": list(config.block)}
     entries = list(dict.fromkeys([*hosts, *config.allow]))
     if not entries:
         return {"allow_internet_access": False}
@@ -143,7 +141,8 @@ class E2BConfig(NetworkPolicyConfig):
     type: Literal["e2b"] = "e2b"
     image: str = "python:3.11-slim"
     """Public Debian-based Docker image used to build a cached E2B template."""
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = Field(default=2.0, ge=1)
     """CPU cores. E2B templates require 1 or an even whole number."""
@@ -153,14 +152,11 @@ class E2BConfig(NetworkPolicyConfig):
     """Advisory disk request in GB. E2B template builds have no disk-size knob, so this
     is accepted (so a task can declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 1.0
-    """Pace sandbox creation to this many per second, enforced host-wide across every
-    env-server worker process (None/<= 0 disables it). The default fits E2B's base tier;
-    Pro allows ~5/s and enterprise plans more — raise this to your plan's rate for
-    high-concurrency evals or training."""
+    """Pace sandbox creation to this many per second, enforced user-wide across every
+    env-server worker process (None/<= 0 disables it). Raise it to your plan's rate."""
 
     @model_validator(mode="after")
-    def _validate_template_resources(self) -> "E2BConfig":
-        _template_resources(self.cpu, self.memory)
+    def _validate_egress(self) -> "E2BConfig":
         if self.network_restricted:
             _validate_egress_rules(
                 [rule for rule in self.allow if rule != "*"],
@@ -178,19 +174,32 @@ async def _queue_stream(queue: asyncio.Queue[bytes | None]) -> AsyncIterator[byt
         yield chunk
 
 
+def _byte_handle(handle):
+    """Make a command handle deliver exact bytes to its callbacks.
+
+    The SDK decodes chunks as UTF-8 with ``errors="replace"`` (lossy for arbitrary
+    bytes) through a per-handle incremental decoder. Swapping it for latin-1 — a 1:1 map
+    of bytes onto U+00–U+FF — lets ``chunk.encode("latin-1")`` recover the bytes. The
+    swap is safe right after the handle is returned: the SDK constructs it after its
+    last await, so no chunk is decoded before the caller runs again.
+
+    TODO(e2b): drop this once the SDK grows a bytes mode for command output; it rides
+    on private attrs the guard can only prove exist, not that chunks still route
+    through them (they do on 2.35.0–2.46.x, hence the ``<3`` pin)."""
+    for name in ("_stdout_decoder", "_stderr_decoder"):
+        if not hasattr(handle, name):
+            raise SandboxError(
+                "e2b SDK command handle no longer exposes its stream decoders; "
+                "cannot deliver byte-accurate process output"
+            )
+        setattr(handle, name, codecs.getincrementaldecoder("latin-1")())
+    return handle
+
+
 class E2BProcess(RuntimeProcess):
     """Built in two steps: the queues (and their `on_*` callbacks) must exist before
     `commands.run` is called with them, and the handle only exists after — so construct
-    first, then `attach` the started handle.
-
-    Byte fidelity: the SDK hands the callbacks *text* (chunks decoded as UTF-8 with
-    ``errors="replace"``), which is lossy for arbitrary bytes — but the decode goes
-    through a per-handle incremental decoder that `open_process` swaps for latin-1
-    before the program is allowed to write. Latin-1 maps bytes 1:1 onto U+00–U+FF, so
-    ``chunk.encode("latin-1")`` recovers the exact bytes. Output that precedes the swap
-    (login-shell profile noise) may still be UTF-8-decoded; it all lands before the
-    wrapper's start marker and is dropped by the marker strip, so the lossy
-    ``errors="replace"`` on the re-encode below can only ever touch discarded bytes."""
+    first, then `attach` the started handle (made byte-exact by `_byte_handle`)."""
 
     def __init__(self, sandbox, marker: bytes) -> None:
         self._handle = None
@@ -240,12 +249,35 @@ class E2BProcess(RuntimeProcess):
         from e2b import CommandExitException
 
         try:
-            result = await self._handle.wait()
-            return result.exit_code
-        except CommandExitException as e:
-            return e.exit_code
-        except Exception as e:
-            raise SandboxError(f"e2b live process failed: {e}") from e
+            for attempt in range(_WAIT_RECONNECTS):
+                try:
+                    return (await self._handle.wait()).exit_code
+                except CommandExitException as e:
+                    return e.exit_code
+                except Exception as e:
+                    if attempt == _WAIT_RECONNECTS - 1:
+                        raise SandboxError(
+                            f"e2b live process connection failed: {e}"
+                        ) from e
+                    await asyncio.sleep(_WAIT_RECONNECT_BACKOFF * 2**attempt)
+                    # Resume the live stream on the same pid. Output written during
+                    # the gap is not replayed; the drops seen in practice are idle
+                    # ones, when nothing is in flight.
+                    try:
+                        self._handle = _byte_handle(
+                            await self._sandbox.commands.connect(
+                                self._handle.pid,
+                                timeout=0,
+                                on_stdout=self.on_stdout,
+                                on_stderr=self.on_stderr,
+                            )
+                        )
+                    except Exception as reconnect_error:
+                        raise SandboxError(
+                            f"e2b live process connection failed: {e}; "
+                            f"reconnect failed: {reconnect_error}"
+                        ) from reconnect_error
+            raise AssertionError("unreachable")
         finally:
             # A process that died before printing its marker produced only pre-marker
             # output — the shell's own diagnosis of why it never started. Flush it so
@@ -269,37 +301,39 @@ class E2BProcess(RuntimeProcess):
         return await self._wait_task
 
     async def terminate(self) -> None:
+        await self._signal("TERM")
+
+    async def kill(self) -> None:
+        await self._signal("KILL")
+
+    async def _signal(self, signal: str) -> None:
         if self._wait_task is not None and self._wait_task.done():
             return
         try:
             await self._sandbox.commands.run(
-                f"kill -TERM {self._handle.pid}", user="root"
+                f"kill -{signal} {self._handle.pid}", user=_USER
             )
         except Exception as e:
             if self._wait_task is None or not self._wait_task.done():
                 raise SandboxError(f"e2b live process signal failed: {e}") from e
 
-    async def kill(self) -> None:
-        if self._wait_task is not None and self._wait_task.done():
-            return
-        try:
-            await self._handle.kill()
-        except Exception as e:
-            if self._wait_task is None or not self._wait_task.done():
-                raise SandboxError(f"e2b live process kill failed: {e}") from e
-
 
 @asynccontextmanager
 async def _template_lock(name: str):
-    """Serialize a deterministic template build across local worker processes."""
-    os.makedirs(_TEMPLATE_LOCK_DIR, exist_ok=True)
-    path = os.path.join(_TEMPLATE_LOCK_DIR, f"{name}.lock")
-    fd = await asyncio.to_thread(os.open, path, os.O_CREAT | os.O_RDWR, 0o600)
+    """Serialize a deterministic template build across this user's worker processes."""
+    _TEMPLATE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(_TEMPLATE_LOCK_DIR / f"{name}.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        await asyncio.to_thread(fcntl.flock, fd, fcntl.LOCK_EX)
+        # Wait without occupying executor threads needed by the lock holder.
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.1)
         yield
     finally:
-        await asyncio.to_thread(fcntl.flock, fd, fcntl.LOCK_UN)
+        # Closing releases the lock, including when the task is cancelled.
         os.close(fd)
 
 
@@ -308,8 +342,8 @@ class E2BRuntime(Runtime):
 
     def __init__(self, config: E2BConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = E2BRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = E2BRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
         # Start marker for `_command`'s login-shell fence; random so no login-shell
         # output can contain it (see `_command`).
@@ -324,7 +358,6 @@ class E2BRuntime(Runtime):
             {
                 "schema": _TEMPLATE_SCHEMA,
                 "image": self.config.image,
-                "workdir": self.config.workdir,
                 "cpu": self.config.cpu,
                 "memory": self.config.memory,
             },
@@ -337,9 +370,8 @@ class E2BRuntime(Runtime):
     async def _ensure_template(self) -> str:
         from e2b import AsyncTemplate, Template
 
-        # Guaranteed valid by now — `__init__` revalidated the resolved config (task-level
-        # resources arrive via model_copy(update=...), which skips validation) when it built
-        # the info model. This call just converts to E2B's units.
+        # Validated here, not in `__init__`: task-level resources arrive unvalidated
+        # (model_copy) and a bad task should fail its own rollout, like on other providers.
         cpu_count, memory_mb = _template_resources(self.config.cpu, self.config.memory)
         name = self._template_name()
         async with _template_lock(name):
@@ -347,11 +379,7 @@ class E2BRuntime(Runtime):
                 logger.info(
                     "e2b: building template %s from image %s", name, self.config.image
                 )
-                template = (
-                    Template()
-                    .from_image(self.config.image)
-                    .set_workdir(self.config.workdir)
-                )
+                template = Template().from_image(self.config.image)
                 await AsyncTemplate.build(
                     template,
                     name,
@@ -398,12 +426,9 @@ class E2BRuntime(Runtime):
                 self.config.image,
                 template,
             )
-            # The template bakes the workdir in, but a task-supplied workdir lands on a
-            # cached template built for another; create it either way (make_dir is a no-op
-            # on an existing directory).
-            await self._sandbox.files.make_dir(self.config.workdir)
-        except asyncio.CancelledError:
-            raise
+            # The template is workdir-agnostic (one build serves every task workdir);
+            # every command passes `cwd`, so only the directory itself is needed.
+            await self._sandbox.files.make_dir(self.config.workdir, user=_USER)
         except Exception as e:
             raise SandboxError(f"e2b sandbox provisioning failed: {e}") from e
 
@@ -427,22 +452,19 @@ class E2BRuntime(Runtime):
 
         E2B commands run through a login shell (the SDK hardcodes ``bash -l -c``),
         which brings two hazards the wrapper fences off: profile initialization can
-        print to stdout/stderr (polluting results on images whose /etc/profile.d has
-        banners), and it re-derives PATH. The runtime's start marker — echoed on both
-        streams right before ``exec`` — lets consumers drop everything the shell
-        produced; the caller-supplied PATH is restored after initialization so it has
-        the same precedence as on other runtimes. The marker is printed as two printf
-        arguments so the contiguous marker string never appears in the command text
-        itself: a profile enabling ``set -x`` traces each command to stderr, and a
-        traced marker would trip the strip before the real one arrives."""
+        print to stdout/stderr (banners in /etc/profile.d) and it re-derives PATH. The
+        runtime's start marker, printed on both streams right before ``exec``, lets
+        consumers drop everything the shell produced; ``set +x`` comes first so a
+        profile that enabled tracing cannot echo the marker or the exec line to stderr
+        after it. The caller-supplied PATH is restored after initialization so it has
+        the same precedence as on other runtimes."""
         command_env = self.process_env(env)
-        head, tail = self._marker[:9], self._marker[9:]
-        emit = f"printf '%s%s' {shlex.quote(head)} {shlex.quote(tail)}"
+        emit = f"printf %s {shlex.quote(self._marker)}"
         command = f"{emit}; {emit} >&2; exec {shlex.join(argv)}"
         if "PATH" in command_env:
             command_env["VF_RUNTIME_PATH"] = command_env.pop("PATH")
             command = f'export PATH="$VF_RUNTIME_PATH"; {command}'
-        return command, command_env
+        return f"set +x; {command}", command_env
 
     def _after_marker(self, text: str) -> str:
         """Drop login-shell noise: everything through the start marker. Text without
@@ -460,6 +482,7 @@ class E2BRuntime(Runtime):
                 command,
                 envs=command_env,
                 cwd=self.config.workdir,
+                user=_USER,
                 timeout=0,  # no command deadline; the agent's own timeouts govern
             )
         except CommandExitException as e:  # non-zero exit is a result, not a failure
@@ -477,13 +500,15 @@ class E2BRuntime(Runtime):
         Read rather than test existence: the shell truncates the file before printf
         fills it, so only non-empty content proves the program completed."""
         try:
-            status = await self._sandbox.files.read(status_path)
+            status = await self._sandbox.files.read(status_path, user=_USER)
         except Exception:  # noqa: BLE001 - unreadable means "not finished yet"
             return None
         return status.strip() or None
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the rollout through a durable E2B process without ever replaying it."""
+        from e2b import CommandExitException
+
         prefix = f"/tmp/vf-program-{uuid.uuid4().hex}"
         stdout_path, stderr_path, status_path = (
             f"{prefix}.stdout",
@@ -513,6 +538,7 @@ class E2BRuntime(Runtime):
                 background=True,
                 envs=command_env,
                 cwd=self.config.workdir,
+                user=_USER,
                 stdin=False,
                 timeout=0,
             )
@@ -524,6 +550,15 @@ class E2BRuntime(Runtime):
                 try:
                     await handle.wait()
                     break
+                except CommandExitException as e:
+                    # The wrapper always exits 0, so this is the login shell failing
+                    # before it ran (`exec` failure, a profile that exits): as in
+                    # `run`, its exit code and streams are the result.
+                    return ProgramResult(
+                        e.exit_code,
+                        self._after_marker(e.stdout or ""),
+                        self._after_marker(e.stderr or ""),
+                    )
                 except Exception as e:
                     status = await self._finished_status(status_path)
                     if status is not None:
@@ -548,14 +583,14 @@ class E2BRuntime(Runtime):
                             ) from reconnect_error
                         break
             stdout, stderr = await asyncio.gather(
-                self._sandbox.files.read(stdout_path),
-                self._sandbox.files.read(stderr_path),
+                self._sandbox.files.read(stdout_path, user=_USER),
+                self._sandbox.files.read(stderr_path, user=_USER),
             )
             if status is None:
-                status = (await self._sandbox.files.read(status_path)).strip()
+                status = (
+                    await self._sandbox.files.read(status_path, user=_USER)
+                ).strip()
             return ProgramResult(int(status), stdout, stderr)
-        except asyncio.CancelledError:
-            raise
         except SandboxError:
             raise
         except Exception as e:
@@ -563,19 +598,15 @@ class E2BRuntime(Runtime):
         finally:
             with contextlib.suppress(Exception):
                 await asyncio.gather(
-                    self._sandbox.files.remove(stdout_path),
-                    self._sandbox.files.remove(stderr_path),
-                    self._sandbox.files.remove(status_path),
+                    self._sandbox.files.remove(stdout_path, user=_USER),
+                    self._sandbox.files.remove(stderr_path, user=_USER),
+                    self._sandbox.files.remove(status_path, user=_USER),
                 )
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         command, command_env = self._command(argv, env)
-        # Hold the program on a stdin gate so it cannot write before this method swaps
-        # the handle's stream decoders to latin-1 (see E2BProcess) — only then is the
-        # RuntimeProcess bytes contract (e.g. ACP's length-prefixed frames) honored.
-        command = f"read -r vf_go_; {command}"
         process = E2BProcess(self._sandbox, self._marker.encode())
         try:
             handle = await self._sandbox.commands.run(
@@ -583,6 +614,7 @@ class E2BRuntime(Runtime):
                 background=True,
                 envs=command_env,
                 cwd=self.config.workdir,
+                user=_USER,
                 on_stdout=process.on_stdout,
                 on_stderr=process.on_stderr,
                 stdin=True,
@@ -591,23 +623,11 @@ class E2BRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"e2b live process failed to start: {e}") from e
         try:
-            # TODO(e2b): drop this once the SDK grows a bytes mode for command output;
-            # the swap rides on private attrs the guard below can only prove exist,
-            # not that chunks still route through them (they do on 2.35.0–2.46.x).
-            for name in ("_stdout_decoder", "_stderr_decoder"):
-                if not hasattr(handle, name):
-                    raise SandboxError(
-                        "e2b SDK command handle no longer exposes its stream "
-                        "decoders; cannot deliver byte-accurate process output"
-                    )
-                setattr(handle, name, codecs.getincrementaldecoder("latin-1")())
-            await handle.send_stdin(b"\n")  # release the gate
-        except BaseException:
+            process.attach(_byte_handle(handle))
+        except SandboxError:
             with contextlib.suppress(Exception):
                 await handle.kill()
             raise
-        # Attach last: a gate failure above leaves no orphaned wait task behind.
-        process.attach(handle)
         return process
 
     async def run_background(
@@ -623,10 +643,14 @@ class E2BRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None:
+            return await super()._read(path, max_bytes)
         try:
             return bytes(
-                await self._sandbox.files.read(self._abs(path), format="bytes")
+                await self._sandbox.files.read(
+                    self._abs(path), format="bytes", user=_USER
+                )
             )
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -634,8 +658,10 @@ class E2BRuntime(Runtime):
     async def write(self, path: str, data: bytes) -> None:
         target = self._abs(path)
         try:
-            await self._sandbox.files.make_dir(str(PurePosixPath(target).parent))
-            await self._sandbox.files.write(target, data)
+            await self._sandbox.files.make_dir(
+                str(PurePosixPath(target).parent), user=_USER
+            )
+            await self._sandbox.files.write(target, data, user=_USER)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 
