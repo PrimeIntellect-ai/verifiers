@@ -116,7 +116,7 @@ A task's `hash` identifies its exact serialized data. Its `key` provides stable 
 
 ## Lazy and infinite tasksets
 
-`load()` may be a generator instead of returning a list: yield each task as it's built. Consumers iterate the taskset lazily (`Taskset.head` pulls only what a run needs — `eval -n 5` builds 5 tasks, not the whole set) — so a generator pays off whenever building a task is expensive.
+`load()` may be a generator instead of returning a list: yield each task as it's built. Consumers iterate the taskset lazily (`Taskset.head` pulls only what a run needs — an eval of 5 tasks builds 5 tasks, not the whole set) — so a generator pays off whenever building a task is expensive.
 
 A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know the stream never ends — infinity is inherent to the taskset, not a config knob; how many tasks a run takes is the run's choice (`-n`), not the taskset's:
 
@@ -136,7 +136,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
+Two rules follow from infinity: a run over an infinite taskset must be bounded (prime-rl's `num_examples` / `-n` — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the prime-rl orchestrator or evals process pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want a resumed run to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 
