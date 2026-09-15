@@ -51,6 +51,19 @@ class RolloutTimeouts:
     scoring: float | None = None
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
+    @property
+    def lifetime(self) -> float | None:
+        """Full provider-side sandbox budget, when every lifecycle stage is bounded.
+
+        Setup is the startup budget, agent is the solve budget, and verification spans
+        finalize plus scoring. If any stage is unbounded there is no exact sum, so the
+        provider uses its finite safety fallback instead.
+        """
+        stages = (self.setup, self.agent, self.finalize, self.scoring)
+        if any(stage is None for stage in stages):
+            return None
+        return sum(stage for stage in stages if stage is not None)
+
 
 class Rollout:
     """Manages one rollout's lifecycle (open, step, close)."""
@@ -181,7 +194,11 @@ class Rollout:
         self._opened = True
         self.trace.timing.boot.start = time.time()
         if self._borrowed_runtime is None:
-            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
+            self.runtime = make_runtime(
+                self.runtime_config,
+                name=self.trace.id,
+                lifetime_timeout=self._timeouts.lifetime,
+            )
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.

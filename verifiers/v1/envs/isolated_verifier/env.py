@@ -130,6 +130,15 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         scoring_timeout_covers_attempt: bool = False,
     ) -> tuple[Any, vf.Trace]:
         timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
+        lifetime_timeout = (
+            timeouts.scoring
+            if scoring_timeout_covers_attempt
+            else (
+                timeouts.setup + timeouts.scoring
+                if timeouts.setup is not None and timeouts.scoring is not None
+                else None
+            )
+        )
         last: Exception | None = None
         for attempt in range(self.config.verifier.retries + 1):
             if attempt:
@@ -164,6 +173,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                                     if self.config.verifier.env is None
                                     else self.config.verifier.env
                                 ),
+                                lifetime_timeout=lifetime_timeout,
                             )
                         )
                         await runtime.prepare_setup()

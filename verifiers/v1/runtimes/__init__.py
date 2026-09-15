@@ -47,8 +47,14 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
     return SubprocessRuntime
 
 
-def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
+def make_runtime(
+    config: RuntimeConfig,
+    name: str | None = None,
+    *,
+    lifetime_timeout: float | None = None,
+) -> Runtime:
     runtime = _runtime_cls(config)(config, name)
+    runtime.lifetime_timeout = lifetime_timeout
     register(runtime)
     return runtime
 
@@ -58,12 +64,14 @@ async def provision_runtime(
     config: RuntimeConfig,
     name: str | None = None,
     env: dict[str, str] | None = None,
+    *,
+    lifetime_timeout: float | None = None,
 ) -> AsyncIterator[Runtime]:
     """Provision a box from `config` and tear it down on exit.
 
     `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
     it has to reach `stop()` (which is safe on a partially-started runtime)."""
-    runtime = make_runtime(config, name)
+    runtime = make_runtime(config, name, lifetime_timeout=lifetime_timeout)
     runtime.env = dict(env or {})
     try:
         await runtime.start()

@@ -10,6 +10,7 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 import asyncio
 import contextlib
 import logging
+import math
 import re
 import shlex
 import uuid
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
+_LIFETIME = 24 * 60 * 60
+"""Modal's maximum sandbox lifetime, also the unbounded-stage fallback."""
 
 
 def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
@@ -231,7 +234,11 @@ class ModalRuntime(Runtime):
             outbound_cidr_allowlist=(
                 ["0.0.0.0/0"] if self.network_restricted else None
             ),
-            timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+            timeout=(
+                min(_LIFETIME, max(1, math.ceil(self.lifetime_timeout)))
+                if self.lifetime_timeout is not None
+                else _LIFETIME
+            ),
             encrypted_ports=[SERVICE_PORT],
         )
 

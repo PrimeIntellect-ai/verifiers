@@ -152,6 +152,11 @@ class Runtime(ABC):
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        self.lifetime_timeout: float | None = None
+        """Provider-side hard lifetime in seconds. Owned rollout runtimes receive the
+        sum of their bounded lifecycle stages so the provider can reap the sandbox even
+        if the worker is SIGKILLed and no local teardown hook can run. None means the
+        caller has an unbounded stage; remote providers must retain a finite fallback."""
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}

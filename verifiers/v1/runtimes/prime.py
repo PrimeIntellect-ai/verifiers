@@ -39,8 +39,9 @@ from verifiers.v1.utils.prime import ensure_prime_auth
 logger = logging.getLogger(__name__)
 
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
-"""Safety deadline for APIs that require a finite bound. Normal execution remains
-bounded by idle detection or rollout cancellation; 30 days is above any real run."""
+"""Provider-side safety lifetime when a rollout has an unbounded stage. Bounded
+rollouts use their exact lifecycle budget instead; the fallback ensures even a VM is
+eventually reaped if its worker is killed before local teardown can run."""
 
 
 BASE_LABELS: list[str] = []
@@ -181,19 +182,24 @@ class PrimeRuntime(Runtime):
             if self.config.idle_timeout is not None
             else None
         )
+        lifetime_minutes = (
+            max(1, math.ceil(self.lifetime_timeout / 60))
+            if self.lifetime_timeout is not None
+            else EFFECTIVELY_UNBOUNDED_SECONDS // 60
+        )
+        # An idle deadline beyond the hard lifetime cannot fire first and Prime rejects
+        # it, so clamp it rather than inflating the lifecycle-derived hard deadline.
+        idle_minutes = (
+            min(idle_minutes, lifetime_minutes) if idle_minutes is not None else None
+        )
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            # -1 is prime's convention for no lifetime limit; containers with an
-            # idle timeout must carry a finite lifetime as a safety fallback (which
-            # must exceed the idle timeout)
-            "timeout_minutes": (
-                -1
-                if self.config.vm or idle_minutes is None
-                else max(EFFECTIVELY_UNBOUNDED_SECONDS // 60, idle_minutes + 1)
-            ),
+            # Always set a provider-side deadline: local finally/atexit cleanup cannot
+            # run after SIGKILL.
+            "timeout_minutes": lifetime_minutes,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
