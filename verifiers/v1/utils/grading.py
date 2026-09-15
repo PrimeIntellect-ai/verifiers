@@ -6,6 +6,7 @@ declared path must exist so a verifier box is not scored against a stale state.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,20 @@ from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
+
+
+class GradingCollect(StrEnum):
+    """Whether a rollout tars declared artifacts into `trace.state` for a later box.
+
+    `OFF` skips grading transport. `STRICT` fails if a declared (non-convention)
+    path is missing. `BEST_EFFORT` records misses as `None` — Harbor's collection
+    contract.
+    """
+
+    OFF = "off"
+    STRICT = "strict"
+    BEST_EFFORT = "best_effort"
+
 
 MAX_BYTES = 32 * 1024 * 1024
 """Ceiling per grading collection. Sized for a delta, not a tree: the grading box
@@ -45,3 +60,18 @@ async def collect_strict(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
     return collected
+
+
+async def grading_collect(
+    runtime: Runtime,
+    artifacts: list[Artifact] | None,
+    grading_collect: GradingCollect,
+) -> dict[str, bytes | None] | None:
+    """Tar declared artifacts per `grading_collect`. `OFF` returns None."""
+    match grading_collect:
+        case GradingCollect.OFF:
+            return None
+        case GradingCollect.STRICT:
+            return await collect_strict(runtime, artifacts)
+        case GradingCollect.BEST_EFFORT:
+            return await collect(runtime, artifacts, max_bytes=MAX_BYTES)

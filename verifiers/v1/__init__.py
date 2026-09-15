@@ -139,6 +139,7 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
+from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.decorators import (
     intercept,
     metric,
@@ -354,6 +355,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
+    "GradingCollect",
     "collect",
     "restore",
     # scoring

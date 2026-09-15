@@ -49,6 +49,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.retries import backoff, trace_should_retry
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
@@ -387,18 +388,17 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
-        require_artifacts: bool = True,
+        grading_collect: GradingCollect = GradingCollect.OFF,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. `collect_artifacts` captures the task's
+        moment it's minted, before any I/O. `grading_collect` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. `require_artifacts` (default True) fails the rollout if a declared
-        path is missing; Harbor passes False so collection stays best-effort.
+        alive (`STRICT` fails if a declared path is missing; Harbor uses
+        `BEST_EFFORT`). Archive is independent.
         Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
@@ -408,7 +408,7 @@ class Agent:
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts, require_artifacts
+                task, runtime, tools, on_trace, grading_collect
             )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
@@ -440,11 +440,12 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
-        collect_artifacts: bool,
-        require_artifacts: bool,
+        grading_collect: GradingCollect,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+        if grading_collect is not GradingCollect.OFF and isinstance(
+            params["runtime_config"], SubprocessConfig
+        ):
             raise TypeError(
                 "artifact collection requires a container runtime; subprocess "
                 "artifacts live in a host-only temporary working directory"
@@ -452,8 +453,7 @@ class Agent:
         run = Rollout(
             task=task,
             on_trace=on_trace,
-            collect_artifacts=collect_artifacts,
-            require_artifacts=require_artifacts,
+            grading_collect=grading_collect,
             **params,
         )
         try:
@@ -659,8 +659,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
-        require_artifacts: bool = True,
+        grading_collect: GradingCollect = GradingCollect.OFF,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -668,8 +667,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
-                collect_artifacts=collect_artifacts,
-                require_artifacts=require_artifacts,
+                grading_collect=grading_collect,
             )
         self._completed.append(trace)
         return trace

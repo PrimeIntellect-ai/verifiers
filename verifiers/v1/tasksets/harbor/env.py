@@ -41,7 +41,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         # rather than a full agent run.
         self.verifier_config(task)
         await agents.agent.run(
-            task.defer_scoring(), collect_artifacts=True, require_artifacts=False
+            task.defer_scoring(), grading_collect=vf.GradingCollect.BEST_EFFORT
         )
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
