@@ -1,9 +1,7 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
-import asyncio
 import json
 import logging
-import secrets
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -130,22 +128,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        if not hasattr(self, "_staged_skills_dir"):
-            self._staged_skills_dir = (
-                f".vf-openclaw/staged-skills-{secrets.token_hex(8)}"
-            )
-            self._skills_setup_lock = asyncio.Lock()
-        if self.config.skills:
-            async with self._skills_setup_lock:
-                # A complete tree is immutable, so concurrent setups can safely reuse it.
-                ready_path = f"{self._staged_skills_dir}/.ready"
-                ready = await runtime.run(["test", "-f", ready_path], {})
-                if ready.exit_code != 0:
-                    await remove_dir(
-                        runtime, self._staged_skills_dir, "OpenClaw skills"
-                    )
-                    await self.install_skills(runtime, self._staged_skills_dir)
-                    await runtime.write(ready_path, b"")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
@@ -233,14 +215,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         await runtime.write(config_path, json.dumps(config).encode())
-        if self.config.skills:
-            copied = await runtime.run(
-                ["cp", "-R", self._staged_skills_dir, skills_dir], {}
-            )
-            if copied.exit_code != 0:
-                raise RuntimeError(
-                    f"failed to isolate OpenClaw skills: {copied.stderr.strip()[-500:]}"
-                )
+        await self.install_skills(runtime, skills_dir)
 
         env = {
             **self.config.resolved_env,
