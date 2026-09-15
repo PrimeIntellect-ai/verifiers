@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Self
 
 from verifiers.v1.clients import (
@@ -19,6 +20,7 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -309,6 +311,8 @@ class Agent:
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
+        self.archive_dir: Path | None = None
+        self.archive_config: ArchiveConfig = ArchiveConfig()
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -561,6 +565,8 @@ class Agent:
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),
             "runtime": runtime,
+            "archive_dir": self.archive_dir,
+            "archive_config": self.archive_config,
         }
 
     @asynccontextmanager
@@ -600,10 +606,14 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        archive_dir: Path | None = None,
+        archive_config: ArchiveConfig | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
+        self.archive_dir = archive_dir
+        self.archive_config = archive_config or ArchiveConfig()
         self._name = name
         self._shared_tools = shared_tools
         self._task_cls = task_cls

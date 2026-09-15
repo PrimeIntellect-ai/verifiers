@@ -7,6 +7,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import (
     Generic,
     TypeVar,
@@ -15,6 +16,7 @@ from typing import (
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.env import (
     EnvConfig,
     _declared_agent_configs,
@@ -143,6 +145,8 @@ class Env(ABC, Generic[ConfigT]):
         self._interception: Interception | None = None
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
+        self.archive_dir: Path | None = None
+        self.archive_config: ArchiveConfig = ArchiveConfig()
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -234,6 +238,8 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                archive_dir=self.archive_dir,
+                archive_config=self.archive_config,
             )
 
         agents = Agents(self.config, make)
