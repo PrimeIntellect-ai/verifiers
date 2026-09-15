@@ -272,43 +272,49 @@ class Env(ABC, Generic[ConfigT]):
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
-            async with asyncio.timeout(self.config.timeout.episode):
-                async with boundary(EnvError, f"{type(self).__name__}.setup()"):
-                    await self.setup(agents)
-                async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    await self.run(task, agents)
-                    if not episode.traces:
-                        raise ValueError(
-                            f"{type(self).__name__}.run() ran no agent — every "
-                            "episode must carry at least one run"
-                        )
-        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
-            # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
-            if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.run() exceeded its "
-                    f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
-                )
-            episode.errors.append(_as_error(e))
-            # The completed subset is the crash-safe episode; ok stays False.
+            try:
+                async with asyncio.timeout(self.config.timeout.episode):
+                    async with boundary(EnvError, f"{type(self).__name__}.setup()"):
+                        await self.setup(agents)
+                    async with boundary(EnvError, f"{type(self).__name__}.run()"):
+                        await self.run(task, agents)
+                        if not episode.traces:
+                            raise ValueError(
+                                f"{type(self).__name__}.run() ran no agent — every "
+                                "episode must carry at least one run"
+                            )
+            except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
+                # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
+                if isinstance(e, TimeoutError):
+                    e = TimeoutError(
+                        f"{type(self).__name__}.run() exceeded its "
+                        f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
+                    )
+                episode.errors.append(_as_error(e))
+                # The completed subset is the crash-safe episode; ok stays False.
+                return episode
+            try:
+                async with asyncio.timeout(self.config.timeout.finalize):
+                    async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
+                        await self.finalize(task, episode)
+            except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
+                # As above: a TimeoutError here is the deadline's own expiry.
+                if isinstance(e, TimeoutError):
+                    e = TimeoutError(
+                        f"{type(self).__name__}.finalize() exceeded its "
+                        f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
+                    )
+                episode.errors.append(_as_error(e))
+                return episode
+            # Both hooks and every trace concluded — stamp the attempt's verdict
+            # (retry history merges into `errors` later without touching it).
+            episode.ok = all(t.ok for t in episode.traces)
             return episode
-        try:
-            async with asyncio.timeout(self.config.timeout.finalize):
-                async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
-                    await self.finalize(task, episode)
-        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
-            # As above: a TimeoutError here is the deadline's own expiry.
-            if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.finalize() exceeded its "
-                    f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
-                )
-            episode.errors.append(_as_error(e))
-            return episode
-        # Both hooks and every trace concluded — stamp the attempt's verdict
-        # (retry history merges into `errors` later without touching it).
-        episode.ok = all(t.ok for t in episode.traces)
-        return episode
+        finally:
+            # Grading tars are only for restore during run/finalize. Drop them so
+            # the durable episode does not hold sandbox dumps in RAM.
+            for trace in episode.traces:
+                trace.state.artifacts.clear()
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent episodes of `task` (`-r n`): nothing couples them."""

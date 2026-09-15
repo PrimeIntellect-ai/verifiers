@@ -398,7 +398,7 @@ class Agent:
         moment it's minted, before any I/O. `grading_collect` captures the task's
         declared artifacts after its finalizer while its container runtime is still
         alive (`STRICT` fails if a declared path is missing; Harbor uses
-        `BEST_EFFORT`). Archive is independent.
+        `BEST_EFFORT`).
         Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
