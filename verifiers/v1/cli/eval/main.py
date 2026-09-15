@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     # An env-block flag skips the usage gate so the typed parse renders its
     # did-you-mean instead of a bare usage line.
-    typed_axis = any(a.startswith(("--env.", "--serve.")) for a in argv)
+    typed_axis = any(a.startswith("--env.") for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)
@@ -116,8 +116,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("wrote config to %s", write_config(config, run_path))
         return
     # Always tee this attempt's logs to `logs/attempt_<n>/eval.log` (`logs/latest`
-    # points there) — in server mode (the default) the workers write there too, and
-    # `--rich.show-logs` tails it live.
+    # points there); `--rich.show-logs` tails it live.
     log_file = str(create_attempt_log_dir(run_path) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level, log_file=log_file, console=config.rich is None)
@@ -128,7 +127,6 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     try:
-        # Through the env-server worker pool by default; in-process with --no-serve.
         episodes = asyncio.run(run_eval(config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
