@@ -65,7 +65,6 @@ def test_eval(taskset: str):
         for seat in SEATS.get(taskset, ("agent",))
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
-    # `--no-push`: no platform run per taskset — the smoke asserts the rollout, not the upload.
     cmd = [
         "uv", "run", "--no-sync", "eval", taskset,
         *model,
