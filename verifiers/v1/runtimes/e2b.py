@@ -54,8 +54,11 @@ _TEMPLATE_LOCK_DIR = CACHE_DIR / "e2b-template-locks"
 # unprivileged `user`, which breaks root-only setup steps (package installs, restores).
 _USER = "root"
 
-# `run_program` can reconnect to the same pid without losing its file-backed output.
-# Live process streams cannot reconnect safely: E2B does not replay missed bytes.
+# `run_program` can reconnect to the same pid without losing its file-backed output, so
+# each wait-stream drop gets its own budget of reconnect attempts (backing off from
+# `_WAIT_RECONNECT_BACKOFF` seconds, doubling per attempt): a rollout that runs for
+# hours may survive any number of drops as long as each one reconnects. Live process
+# streams cannot reconnect safely: E2B does not replay missed bytes.
 _WAIT_RECONNECTS = 4
 _WAIT_RECONNECT_BACKOFF = 0.25
 
@@ -136,6 +139,9 @@ def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
 
 
 class E2BConfig(NetworkPolicyConfig):
+    """Requires an E2B Pro plan: sandboxes are created with E2B's 24-hour maximum
+    lifetime, which the Base plan caps at one hour (the API rejects the request)."""
+
     type: Literal["e2b"] = "e2b"
     image: str = "python:3.11-slim"
     """Public Debian-based Docker image used to build a cached E2B template."""
@@ -396,7 +402,8 @@ class E2BRuntime(Runtime):
                     # egress; `prepare_execution` locks the policy down before the agent.
                     self._sandbox = await AsyncSandbox.create(
                         template,
-                        timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+                        # Maximum lifetime of any sandbox (Pro; Base's 1h cap rejects it).
+                        timeout=24 * 60 * 60,
                         metadata={"runtime": "verifiers", "name": self.name},
                     )
                     # The atexit backstop kills by id, so record it the moment the sandbox
@@ -492,6 +499,26 @@ class E2BRuntime(Runtime):
             return None
         return status.strip() or None
 
+    async def _reconnect(self, pid: int, status_path: str, cause: Exception):
+        """Reattach to a durable program's wait stream after it dropped: the handle on
+        success, None once the program is found to have finished (its status file is
+        written) — completion beats a dead stream. Raises after `_WAIT_RECONNECTS`
+        consecutive failures; a drop that reconnects consumes none of a later drop's
+        budget, so a long rollout survives any number of transient drops."""
+        error: Exception = cause
+        for attempt in range(_WAIT_RECONNECTS):
+            await asyncio.sleep(_WAIT_RECONNECT_BACKOFF * 2**attempt)
+            try:
+                return await self._sandbox.commands.connect(pid, timeout=0)
+            except Exception as reconnect_error:  # noqa: BLE001 - re-raised after the loop
+                # The pid may be gone because the program finished during the backoff.
+                if await self._finished_status(status_path) is not None:
+                    return None
+                error = reconnect_error
+        raise SandboxError(
+            f"e2b durable program connection failed: {cause}; reconnect failed: {error}"
+        ) from error
+
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the rollout through a durable E2B process without ever replaying it."""
         from e2b import CommandExitException
@@ -533,7 +560,7 @@ class E2BRuntime(Runtime):
             # stream failure — including a reconnect finding the pid already gone
             # because the program finished during the backoff — completion wins.
             status: str | None = None
-            for attempt in range(_WAIT_RECONNECTS):
+            while True:
                 try:
                     await handle.wait()
                     break
@@ -546,28 +573,12 @@ class E2BRuntime(Runtime):
                         self._after_marker(e.stdout or ""),
                         self._after_marker(e.stderr or ""),
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - a dropped stream; _reconnect re-raises
                     status = await self._finished_status(status_path)
                     if status is not None:
                         break
-                    if attempt == _WAIT_RECONNECTS - 1:
-                        raise SandboxError(
-                            f"e2b durable program connection failed: {e}"
-                        ) from e
-                    await asyncio.sleep(_WAIT_RECONNECT_BACKOFF * 2**attempt)
-                    try:
-                        handle = await self._sandbox.commands.connect(
-                            handle.pid, timeout=0
-                        )
-                    except Exception as reconnect_error:
-                        # Completion beats a dead stream: the program may have finished
-                        # (pid gone) during the backoff.
-                        status = await self._finished_status(status_path)
-                        if status is None:
-                            raise SandboxError(
-                                "e2b durable program connection failed: "
-                                f"{e}; reconnect failed: {reconnect_error}"
-                            ) from reconnect_error
+                    handle = await self._reconnect(handle.pid, status_path, e)
+                    if handle is None:  # finished while the stream was down
                         break
             stdout, stderr = await asyncio.gather(
                 self._sandbox.files.read(stdout_path, user=_USER),
