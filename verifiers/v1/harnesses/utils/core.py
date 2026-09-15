@@ -181,6 +181,49 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
+_REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+
+
+def _accumulate_reasoning(accumulated: dict, delta: dict) -> None:
+    """Merge reasoning text and structured blocks from chat completion deltas."""
+    for field_name in ("reasoning", "reasoning_content"):
+        if value := delta.get(field_name):
+            accumulated[field_name] = accumulated.get(field_name, "") + value
+
+    delta_details = delta.get("reasoning_details") or []
+    if not delta_details:
+        return
+    reasoning_details = accumulated.setdefault("reasoning_details", [])
+    for detail in delta_details:
+        previous = reasoning_details[-1] if reasoning_details else {}
+        detail_type = detail.get("type")
+        content_field = {
+            "reasoning.summary": "summary",
+            "reasoning.text": "text",
+        }.get(detail_type)
+        if (
+            content_field
+            and detail_type == previous.get("type")
+            and all(
+                previous.get(field_name) is None
+                or detail.get(field_name) is None
+                or previous[field_name] == detail[field_name]
+                for field_name in ("id", "index", "format")
+            )
+        ):
+            previous[content_field] = (previous.get(content_field) or "") + (
+                detail.get(content_field) or ""
+            )
+            for field_name in ("id", "index", "signature", "format"):
+                if (
+                    previous.get(field_name) is None
+                    and detail.get(field_name) is not None
+                ):
+                    previous[field_name] = detail[field_name]
+        else:
+            reasoning_details.append(dict(detail))
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -201,9 +244,16 @@ async def chat(
         raw_stream=raw_stream, response_format=omit, input_tools=[]
     ) as response:
         completion = None
+        reasoning: dict[int, dict] = {}
         async for event in response:
             if event.type == "chunk":
                 completion = event.snapshot
+                for choice in event.chunk.choices:
+                    delta = choice.delta.model_dump(exclude_none=True)
+                    if any(delta.get(field_name) for field_name in _REASONING_FIELDS):
+                        _accumulate_reasoning(
+                            reasoning.setdefault(choice.index, {}), delta
+                        )
         if (
             completion is None
             or not completion.choices
@@ -214,6 +264,8 @@ async def chat(
             # Some providers repeat the role in each delta. The SDK concatenates
             # these strings, but the role is metadata, not incremental content.
             choice.message.role = "assistant"
+            for field_name, value in reasoning.get(choice.index, {}).items():
+                setattr(choice.message, field_name, value)
         return completion
 
 
