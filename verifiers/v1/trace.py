@@ -442,6 +442,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
+    _on_change: Any = PrivateAttr(default=None)
+
+    def watch(self, on_change: Callable[[Trace], None]) -> None:
+        """Have `on_change` called at each of this trace's phase changes and turns."""
+        self._on_change = on_change
+
+    def notify(self) -> None:
+        """The trace just changed shape (a phase span, a committed turn)."""
+        if self._on_change is not None:
+            self._on_change(self)
+
     """`(parent, msg_hash) -> node_id` for the graph builder."""
 
     @field_serializer("mm_token_type_id_map")

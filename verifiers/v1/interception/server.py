@@ -483,6 +483,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        session.trace.notify()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
