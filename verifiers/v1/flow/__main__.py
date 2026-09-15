@@ -3,6 +3,7 @@
 The flow is an async function `flow(ctx, row)`; its config class is read off its
 `config` attribute, else `FlowConfig`. Ctrl-C once drains (in-flight steps finish and
 record), twice cancels. The same command against the same run directory resumes.
+`-v` streams every progress event (the `events.jsonl` line) to stderr.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import logging
 import signal
 import sys
 from pathlib import Path
@@ -21,11 +23,19 @@ from verifiers.v1.flow.run import Run
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="flow")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="per-step progress on stderr"
+    )
     parser.add_argument("flow", help="module:function")
     parser.add_argument("rows", type=Path)
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("config", type=Path, nargs="?")
     args = parser.parse_args(argv)
+
+    logger = logging.getLogger("verifiers.flow")
+    logger.setLevel(logging.INFO if args.verbose else logging.WARNING)
+    if args.verbose and not logger.handlers:
+        logger.addHandler(logging.StreamHandler())  # stderr, bare messages
 
     module, _, name = args.flow.partition(":")
     flow = getattr(importlib.import_module(module), name)

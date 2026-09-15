@@ -426,7 +426,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     root_reply: str | None = None
     """The root agent's response when a trace contains descendant branches."""
     state: StateT = Field(default_factory=State, exclude=True)
-    """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
+    """Runtime (possibly, non-serializable) state shared across runtimes; excluded from
+    serialization -- a value that must outlive the process goes on `info`, metrics or rewards."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
     """Usage from judges and other calls outside the agent's message graph."""

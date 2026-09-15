@@ -45,7 +45,10 @@ Work = AgentWork | CommandWork | FnWork
 
 
 def agent(seat: str, task: Task, *, runtime: Runtime | None = None) -> AgentWork:
-    """`Agent.run(task)` on the config field `seat`; the value is the `Trace`."""
+    """`Agent.run(task)` on the config field `seat`; the value is the `Trace`. The task's
+    prompt must be complete at construction (the rollout reads it before `setup` runs),
+    and anything a later step reads back must sit on `trace.info`, metrics or rewards:
+    `trace.state` is not serialized and does not survive a resume."""
     return AgentWork(seat=seat, task=task, runtime=runtime)
 
 
@@ -57,5 +60,7 @@ def command(
 
 
 def fn(func: Callable[..., Any], *args: Any, **kwargs: Any) -> FnWork:
-    """`func(*args, **kwargs)` on the host, sync or async; the value is its return."""
+    """`func(*args, **kwargs)` on the host, sync or async; the value is its return. The
+    arguments key the step, so they must be JSON-stable: a bound method, closure or live
+    object digests to its address and the step never attaches on resume."""
     return FnWork(func=func, args=args, kwargs=kwargs)

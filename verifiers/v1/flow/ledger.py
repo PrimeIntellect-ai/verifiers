@@ -1,4 +1,5 @@
-"""The ledger: one JSON record per step, written when the step completes.
+"""The ledger: one JSON record per step, written when the step completes, and one
+progress event per line as the steps happen.
 
 A resumed run attaches to every record whose key still matches and runs nothing
 else. Traces go to the run's `traces.jsonl` in verifiers' format.
@@ -28,6 +29,9 @@ from verifiers.v1.episode import WireEpisode
 from verifiers.v1.trace import Trace, WireTrace
 
 logger = logging.getLogger("verifiers.flow")
+
+EVENTS_FILE = "events.jsonl"
+"""Filename the run's progress events are appended to (one JSON object per line)."""
 
 
 class StepRecord(BaseModel):
@@ -87,6 +91,11 @@ class Ledger:
         self.steps_dir = run_dir / "steps"
         self.steps_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / TRACES_FILE).touch()
+        self.events_file = run_dir / EVENTS_FILE
+        self.events_file.touch()
+        data = self.events_file.read_bytes()
+        if data and not data.endswith(b"\n"):  # a kill tore the last line: drop it
+            self.events_file.write_bytes(data[: data.rfind(b"\n") + 1])
         self.lock = asyncio.Lock()
         self._traces: dict[str, WireTrace] | None = None
 
@@ -110,6 +119,32 @@ class Ledger:
         tmp = file.with_suffix(".tmp")
         tmp.write_text(record.model_dump_json(indent=1))
         os.replace(tmp, file)
+
+    def event(self, kind: str, **fields: Any) -> None:
+        """One progress event as a JSON line: a single small append, so lines never
+        interleave on one loop and a kill can tear at most the last one. Mirrored to
+        the logger at INFO, as the same line."""
+        event = {"type": kind, "at": now(), **fields}
+        line = json.dumps(event)
+        with self.events_file.open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+        logger.info("%s", line)
+
+    def events(self) -> list[dict[str, Any]]:
+        """The run's events, oldest first; a torn last line (a process killed mid-write)
+        is skipped rather than blocking a reader, as `_episodes` does for traces."""
+        lines = [
+            line for line in self.events_file.read_text().splitlines() if line.strip()
+        ]
+        events: list[dict[str, Any]] = []
+        for i, line in enumerate(lines):
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                if i < len(lines) - 1:
+                    raise  # torn elsewhere: corrupt, not interrupted
+                logger.warning("%s ends in a torn line; skipping it", self.events_file)
+        return events
 
     async def append(self, trace: Trace, env: str) -> None:
         await append_trace(self.run_dir, trace, self.lock, env=env)

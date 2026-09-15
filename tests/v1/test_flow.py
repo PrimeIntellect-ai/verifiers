@@ -1,11 +1,25 @@
 """The flow core on host functions and subprocess commands: memoized steps, scopes,
-retry classification, spreads, runtime scopes, drain, and streaming."""
+retry classification, spreads, runtime scopes, drain, streaming, what a resume keys
+on, and the event stream."""
 
 import asyncio
+import json
+
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.errors import ProviderError, SandboxError
-from verifiers.v1.flow import Ctx, FlowConfig, Run, command, fn
+from verifiers.v1.flow import (
+    Ctx,
+    FlowConfig,
+    Ledger,
+    Run,
+    StepRecord,
+    agent,
+    command,
+    fn,
+)
+from verifiers.v1.flow.ledger import digest, now, row_key
 
 
 def config(**kw) -> FlowConfig:
@@ -20,6 +34,14 @@ def one() -> int:
 
 def two() -> int:
     return 2
+
+
+def seat(**kw) -> vf.AgentConfig:
+    return vf.AgentConfig(harness={"id": "null"}, runtime=vf.SubprocessConfig(), **kw)
+
+
+class ToyTask(vf.Task[vf.TaskData]):
+    """The smallest task an `agent(...)` step can carry."""
 
 
 async def test_steps_attach_on_resume_and_scopes_separate_repeats(tmp_path):
@@ -41,6 +63,128 @@ async def test_steps_attach_on_resume_and_scopes_separate_repeats(tmp_path):
     assert first.ok and first.value == ["start", "build0", "build1", "again"]
     (again,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
     assert again.value == first.value and len(calls) == 4
+
+
+async def test_operational_knobs_and_policy_fields_never_rekey_a_resume(tmp_path):
+    calls: list[str] = []
+
+    class Cfg(FlowConfig):
+        rounds: int = 3
+        """A pipeline's own policy knob, outside the engine's fields."""
+
+    def work(tag: str) -> str:
+        calls.append(tag)
+        return tag
+
+    async def flow(ctx: Ctx, row) -> list[str]:
+        return [await ctx.step("a", fn(work, "a")), await ctx.step("b", fn(work, "b"))]
+
+    run_dir = tmp_path / "run"
+    (first,) = await Run(run_dir, Cfg(outage_backoff_s=0.01)).run(flow, [{"id": 1}])
+    assert first.ok and first.value == ["a", "b"]
+    (again,) = await Run(
+        run_dir,
+        Cfg(
+            rounds=8,
+            max_concurrent_rows=1,
+            pools={"runtimes": 1},
+            outage_backoff_s=0.02,
+            outage_hold_s=1.0,
+            payload_cap=2048,
+        ),
+    ).run(flow, [{"id": 1}])
+    assert again.ok and again.value == first.value and calls == ["a", "b"]
+
+
+async def test_agent_steps_key_on_their_resolved_seat_and_nothing_else(tmp_path):
+    class Cfg(FlowConfig):
+        alpha: vf.AgentConfig = seat()
+        beta: vf.AgentConfig = seat()
+
+    task = ToyTask(vf.TaskData(prompt="hi"))
+
+    def keys(cfg: FlowConfig) -> dict[str, str]:
+        ctx = Ctx(Run(tmp_path / "run", cfg), "k", {"id": 1})
+        return {
+            "alpha": ctx._key("p#0", agent("alpha", task)),
+            "beta": ctx._key("p#0", agent("beta", task)),
+            "fn": ctx._key("p#0", fn(one)),
+        }
+
+    base = keys(Cfg())
+    only_beta = keys(Cfg(beta=seat(model="beta/2")))
+    assert only_beta["alpha"] == base["alpha"] and only_beta["fn"] == base["fn"]
+    assert only_beta["beta"] != base["beta"]
+    defaulted = keys(Cfg(model="run/1"))  # the run's model fills the unpinned seats
+    assert defaulted["fn"] == base["fn"]
+    assert defaulted["alpha"] != base["alpha"] and defaulted["beta"] != base["beta"]
+
+
+async def test_a_seat_model_change_re_runs_only_that_seats_agent_steps(tmp_path):
+    class Cfg(FlowConfig):
+        alpha: vf.AgentConfig = seat()
+
+    calls: list[str] = []
+
+    def work(tag: str) -> str:
+        calls.append(tag)
+        return tag
+
+    task = ToyTask(vf.TaskData(prompt="hi"))
+
+    async def flow(ctx: Ctx, row) -> list[str]:
+        prep = await ctx.step("prep", fn(work, "prep"))
+        return [prep, (await ctx.step("rollout", agent("alpha", task))).id]
+
+    run_dir = tmp_path / "run"
+    run = Run(run_dir, Cfg(outage_backoff_s=0.01))
+    key = row_key({"id": 1})
+    trace = vf.Trace(
+        task=vf.TraceTask(type="ToyTask", data=task.data),
+        agent=vf.AgentInfo(config=run.seat("alpha")),
+    )
+    await run.ledger.append(trace, env="flow")
+    run.ledger.put(
+        StepRecord(
+            key=Ctx(run, key, {"id": 1})._key("rollout#0", agent("alpha", task)),
+            row=key,
+            path="rollout#0",
+            kind="agent",
+            terminal="completed",
+            started_at=now(),
+            finished_at=now(),
+            trace_id=trace.id,
+        )
+    )
+    (first,) = await run.run(flow, [{"id": 1}])
+    assert first.ok and first.value == ["prep", trace.id] and calls == ["prep"]
+
+    moved = Run(run_dir, Cfg(alpha=seat(model="alpha/2"), outage_backoff_s=0.01))
+    ctx = Ctx(moved, key, {"id": 1})
+    assert ctx._attached("prep#0", fn(work, "prep"), None) is not None
+    assert ctx._attached("rollout#0", agent("alpha", task), None) is None
+
+
+async def test_a_launch_under_a_different_identity_refuses_unless_rekeyed(tmp_path):
+    calls: list[str] = []
+
+    def work(tag: str) -> str:
+        calls.append(tag)
+        return tag
+
+    async def flow(ctx: Ctx, row) -> str:
+        return await ctx.step("s", fn(work, "s"))
+
+    run_dir = tmp_path / "run"
+    (first,) = await Run(run_dir, config()).run(flow, [{"id": 1}])
+    assert first.ok
+    recorded = json.loads((run_dir / "run.json").read_text())["identity"]
+    moved = run_dir.rename(tmp_path / "renamed")
+    with pytest.raises(ValueError, match=recorded) as raised:
+        Run(moved, config())
+    assert digest("renamed")[:16] in str(raised.value)
+    (again,) = await Run(moved, config(), rekey=True).run(flow, [{"id": 1}])
+    assert again.ok and calls == ["s", "s"]  # rekeyed: nothing attaches
 
 
 async def test_turn_failures_consume_retries_and_fail_only_their_row(tmp_path):
@@ -221,3 +365,101 @@ async def test_stream_yields_rows_as_they_finish(tmp_path):
         async for r in Run(tmp_path, config()).stream(flow, [{"t": 0.05}, {"t": 0.0}])
     ]
     assert order == [0.0, 0.05]
+
+
+async def test_events_stream_each_step_including_the_ones_in_flight(tmp_path):
+    release = asyncio.Event()
+
+    async def blocked() -> int:
+        await release.wait()
+        return 1
+
+    async def flow(ctx: Ctx, row) -> int:
+        return await ctx.step("long", fn(blocked))
+
+    run = Run(tmp_path, config())
+    task = asyncio.create_task(run.run(flow, [{"id": 1}]))
+    for _ in range(100):
+        if any(e["type"] == "step_started" for e in run.ledger.events()):
+            break
+        await asyncio.sleep(0.01)
+    kinds = [e["type"] for e in run.ledger.events()]
+    assert kinds == ["run", "row_started", "step_started"]  # started, not finished
+    release.set()
+    (result,) = await task
+    events = run.ledger.events()
+    assert result.ok and [e["type"] for e in events[3:]] == [
+        "step_completed",
+        "row_finished",
+    ]
+    assert events[2]["row"] == result.row and events[2]["path"] == "long#0"
+    assert all("at" in e for e in events) and len(events[0]["identity"]) == 16
+
+
+async def test_a_resume_emits_attached_events_and_a_torn_last_line_is_skipped(tmp_path):
+    async def flow(ctx: Ctx, row) -> list[int]:
+        return [await ctx.step("a", fn(one)), await ctx.step("b", fn(two))]
+
+    (first,) = await Run(tmp_path, config()).run(flow, [{"id": 1}])
+    with (tmp_path / "events.jsonl").open("a") as file:
+        file.write('{"type": "step_star')  # a SIGKILL mid-write
+    before = len(Ledger(tmp_path).events())  # a live reader skips the torn tail ...
+    (again,) = await Run(tmp_path, config()).run(
+        flow, [{"id": 1}]
+    )  # ... a new run drops it
+    assert again.ok and again.value == first.value == [1, 2]
+    resumed = Ledger(tmp_path).events()[before:]
+    assert [e["type"] for e in resumed] == [
+        "run",
+        "row_started",
+        "step_attached",
+        "step_attached",
+        "row_finished",
+    ]
+    assert [e["path"] for e in resumed if e["type"] == "step_attached"] == [
+        "a#0",
+        "b#0",
+    ]
+
+
+async def test_an_oversized_step_value_fails_at_once(tmp_path):
+    calls: list[int] = []
+
+    def big() -> str:
+        calls.append(1)
+        return "x" * 100
+
+    async def flow(ctx: Ctx, row) -> str:
+        return await ctx.step("big", fn(big), retries=3)
+
+    (result,) = await Run(tmp_path, config(payload_cap=50)).run(flow, [{"id": 1}])
+    assert not result.ok and "over payload_cap" in result.error and len(calls) == 1
+
+
+async def test_sweep_kills_the_subprocesses_a_dead_launch_left(tmp_path):
+    import os
+
+    from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR, sweep_subprocesses
+
+    run = Run(tmp_path, config())
+    orphan = await asyncio.create_subprocess_exec(
+        "sleep",
+        "600",
+        env={**os.environ, RUN_LABEL_VAR: run.label},
+        start_new_session=True,
+    )
+    try:
+        await asyncio.sleep(0.2)
+        assert sweep_subprocesses(run.label) >= 1
+        assert await asyncio.wait_for(orphan.wait(), 5) != 0
+    finally:
+        if orphan.returncode is None:
+            orphan.kill()
+
+
+def test_build_async_openai_carries_the_endpoint_headers():
+    from verifiers.v1.clients import build_async_openai
+    from verifiers.v1.configs.client import EvalClientConfig
+
+    client = build_async_openai(EvalClientConfig(headers={"X-Test": "1"}), timeout=7)
+    assert client.default_headers["X-Test"] == "1" and client.timeout == 7

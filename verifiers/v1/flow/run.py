@@ -19,6 +19,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import time
 import typing
 from collections import deque
@@ -54,6 +55,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
     set_base_sandbox_labels,
 )
+from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -77,6 +79,10 @@ class Stopped(Exception):
     """The run is draining: no step starts; the row returns stopped, to resume later."""
 
 
+class Oversized(ValueError):
+    """A step value over `payload_cap`: no retry shrinks it, so the step fails at once."""
+
+
 class _RolloutFailed(Exception):
     def __init__(self, trace: Trace) -> None:
         self.trace = trace
@@ -96,16 +102,24 @@ class RowResult:
 
 
 class Run:
-    """The ledger, the pools, the inference gate, and the row loop for one run directory."""
+    """The ledger, the pools, the inference gate, and the row loop for one run directory.
 
-    def __init__(self, run_dir: Path, config: FlowConfig) -> None:
+    The run's identity is its directory name, never its config: operational knobs and
+    a pipeline's own policy fields re-key nothing on a resume — an agent step keys on
+    its resolved seat, all else on its work — and a launch against records keyed under
+    a different identity refuses unless `rekey=True`."""
+
+    def __init__(
+        self, run_dir: Path, config: FlowConfig, *, rekey: bool = False
+    ) -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir = run_dir
         self.config = config
         self.ledger = Ledger(run_dir)
         self.pools = Pools(config.pools)
-        self.identity = digest(config.model_dump(mode="json"))[:16]
+        self.identity = digest(run_dir.name)[:16]
         self.label = f"flow-{run_dir.name}-{self.identity}"[:60]
+        self._require_identity(rekey)
         self.rows: dict[str, str] = {}  # row key -> running | ok | failed | stopped
         self.steps: set[str] = set()  # `<row>/<path>` in flight
         self.tokens = {"input": 0, "output": 0}
@@ -124,7 +138,10 @@ class Run:
     ) -> AsyncIterator[RowResult]:
         """Run `flow(ctx, row)` for every row, at most `max_concurrent_rows` at once,
         yielding each result as its row finishes. A row that raises is a failed row."""
-        self._note_source(flow)
+        source = self._note_source(flow)
+        self.ledger.event(
+            "run", identity=self.identity, source=source, label=self.label
+        )
         results: asyncio.Queue[RowResult] = asyncio.Queue()
         gate = asyncio.Semaphore(self.config.max_concurrent_rows)
         tasks: list[asyncio.Task] = []
@@ -171,15 +188,19 @@ class Run:
         return [result async for result in self.stream(flow, rows)]
 
     async def sweep(self) -> int:
-        """Delete the Prime sandboxes an earlier launch of this run left behind; the
-        count. Call before `stream` at a resume."""
+        """Kill what an earlier launch of this run left behind -- Prime sandboxes by
+        label, host subprocesses by the same label in their environment; the count.
+        Call before `stream` at a resume."""
         from verifiers.v1.runtimes.prime import sweep_sandboxes
+        from verifiers.v1.runtimes.subprocess import sweep_subprocesses
 
-        return await sweep_sandboxes([self.label])
+        return sweep_subprocesses(self.label) + await sweep_sandboxes([self.label])
 
     def drain(self) -> None:
         """Stop admitting rows and steps; in-flight steps finish and record."""
-        self._draining.set()
+        if not self._draining.is_set():
+            self.ledger.event("drain")
+            self._draining.set()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -207,22 +228,30 @@ class Run:
                 row=repr(row)[:80], ok=False, error=f"row cannot be keyed: {exc}"
             )
         self.rows[key] = "running"
+        self.ledger.event("row_started", row=key)
         try:
             value = await flow(Ctx(self, key, row), row)
             self.rows[key] = "ok"
+            self.ledger.event("row_finished", row=key, state="ok")
             return RowResult(row=key, ok=True, value=value)
         except Stopped:
             self.rows[key] = "stopped"
+            self.ledger.event("row_finished", row=key, state="stopped")
             return RowResult(row=key, ok=False, stopped=True)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — a failed row is data, never a failed run
             self.rows[key] = "failed"
-            return RowResult(row=key, ok=False, error=f"{type(exc).__name__}: {exc}")
+            error = f"{type(exc).__name__}: {exc}"
+            self.ledger.event("row_finished", row=key, state="failed", error=error)
+            return RowResult(row=key, ok=False, error=error)
 
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:
         set_base_sandbox_labels([self.label])
+        os.environ[RUN_LABEL_VAR] = (
+            self.label
+        )  # every host subprocess inherits it: what `sweep` finds
         async with AsyncExitStack() as stack:
             if self.config.inference_concurrency is not None:
                 remote = any(
@@ -241,16 +270,34 @@ class Run:
             finally:
                 self._inference = None
 
-    def _note_source(self, flow: Callable[..., Any]) -> None:
-        """Record the flow's source hash; a resume under changed code attaches to the
-        steps whose inputs still match, so say so once."""
+    def _require_identity(self, rekey: bool) -> None:
+        """Refuse a resume against records keyed under another identity: nothing would
+        attach, and every step would re-run over the finished ones. `rekey=True`
+        accepts the new identity, loudly."""
+        file = self.run_dir / "run.json"
+        previous = json.loads(file.read_text()) if file.exists() else {}
+        recorded = previous.get("identity")
+        if recorded in (None, self.identity):
+            return
+        if not rekey:
+            raise ValueError(
+                f"{self.run_dir}: run.json records identity {recorded} but this "
+                f"launch computes {self.identity} — resuming would re-key every step; "
+                "pass Run(..., rekey=True) to accept that"
+            )
+        logger.warning("%s: rekeying %s -> %s", self.run_dir, recorded, self.identity)
+
+    def _note_source(self, flow: Callable[..., Any]) -> str | None:
+        """Record the run's identity and the flow's source hash; a resume under changed
+        code attaches to the steps whose inputs still match, so say so once. The hash,
+        None if unavailable (an unhashable flow keeps what was recorded)."""
+        file = self.run_dir / "run.json"
+        previous = json.loads(file.read_text()) if file.exists() else {}
         try:
             source = digest(inspect.getsource(flow))[:16]
         except (OSError, TypeError):
-            return
-        file = self.run_dir / "run.json"
-        previous = json.loads(file.read_text()) if file.exists() else {}
-        if previous.get("source") not in (None, source):
+            source = previous.get("source")
+        if source is not None and previous.get("source") not in (None, source):
             logger.warning(
                 "%s: the flow's source changed since this run was written", self.run_dir
             )
@@ -260,6 +307,7 @@ class Run:
                 indent=1,
             )
         )
+        return source
 
     def _outage(self, on: bool) -> None:
         if on and self._admissions.is_set():
@@ -267,8 +315,10 @@ class Run:
                 "infrastructure failure: holding new steps until one succeeds"
             )
             self._admissions.clear()
+            self.ledger.event("holding", on=True)
         elif not on and not self._admissions.is_set():
             self._admissions.set()
+            self.ledger.event("holding", on=False)
 
 
 class Ctx:
@@ -287,7 +337,9 @@ class Ctx:
 
     @contextmanager
     def scope(self, label: str) -> Iterator[None]:
-        """A namespace for the steps inside: a loop iteration, a phase, a branch."""
+        """A namespace for the steps inside: a loop iteration, a phase, a branch.
+        Concurrent branches take one each: two branches stepping under the same scope
+        race for occurrence numbers and neither attaches on resume."""
         token = _SCOPE.set((*_SCOPE.get(), label))
         try:
             yield
@@ -301,13 +353,18 @@ class Ctx:
         counts[name] = n + 1
         return "/".join([*scope, f"{name}#{n}"])
 
+    def _event(self, kind: str, **fields: Any) -> None:
+        """One event for this row: the row key always rides along."""
+        self.run.ledger.event(kind, row=self.key, **fields)
+
     # -- steps ----------------------------------------------------------------------
 
     def step(
         self, name: str, work: Work, *, retries: int = 0, timeout: float | None = None
     ) -> Awaitable[Any]:
         """Run `work` once, durably. The value is the trace, the program result, or
-        the function's return; on resume it comes from the ledger."""
+        the function's return; on resume it comes from the ledger. `retries` re-run the
+        whole work after a turn failure, on top of an agent's own `AgentConfig.retries`."""
         return self._step_value(self._path(name), work, retries, timeout)
 
     async def _step_value(
@@ -354,9 +411,11 @@ class Ctx:
         need = len(works) if at_least is None else at_least
         if not 1 <= need <= len(works):
             raise ValueError(f"{path}: at_least={at_least} over {len(works)} items")
+        self._event("spread_started", path=path, need=need)
         done: dict[int, tuple[Any, StepRecord]] = {}
         for i, work in enumerate(works):
             if (attached := self._attached(path, work, i)) is not None:
+                self._event("step_attached", path=path, index=i)
                 done[i] = attached
         failures: list[str] = []
         pending = deque(i for i in range(len(works)) if i not in done)
@@ -397,10 +456,12 @@ class Ctx:
                 task.cancel()
             await asyncio.gather(*running, return_exceptions=True)
         if len(done) < need:
+            self._event("spread_finished", path=path, need=need, landed=len(done))
             raise StepFailed(path, f"{len(done)}/{need} items landed: {failures[:3]}")
         chosen = sorted(done.items(), key=lambda kv: (kv[1][1].finished_at, kv[0]))[
             :need
         ]
+        self._event("spread_finished", path=path, need=need, landed=len(done))
         return {i: value for i, (value, _) in sorted(chosen)}
 
     @asynccontextmanager
@@ -427,6 +488,7 @@ class Ctx:
     ) -> tuple[Any, StepRecord]:
         run = self.run
         if (attached := self._attached(path, work, index)) is not None:
+            self._event("step_attached", path=path, index=index)
             return attached
         key = self._key(path, work)
         if run._draining.is_set():
@@ -434,6 +496,7 @@ class Ctx:
         await run._admissions.wait()
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
         run.steps.add(tag)
+        self._event("step_started", path=path, index=index)
         started, attempts, held_since, backoff = (
             now(),
             0,
@@ -455,15 +518,30 @@ class Ctx:
                 ) as exc:  # classified below: permanent, the world's, or the attempt's
                     error = f"{type(exc).__name__}: {exc}"
                     cause = exc.last if isinstance(exc, _RolloutFailed) else exc
-                    if permanent(cause):
+                    if permanent(cause) or isinstance(exc, Oversized):
+                        self._event("step_failed", path=path, index=index, error=error)
                         raise StepFailed(path, error) from exc
                     if infrastructure(cause):
                         held_since = held_since or time.monotonic()
                         if time.monotonic() - held_since > run.config.outage_hold_s:
+                            self._event(
+                                "step_failed",
+                                path=path,
+                                index=index,
+                                error=f"held {run.config.outage_hold_s:g}s: {error}",
+                            )
                             raise StepFailed(
                                 path, f"held {run.config.outage_hold_s:g}s: {error}"
                             ) from exc
                         run._outage(True)
+                        self._event(
+                            "step_retrying",
+                            path=path,
+                            index=index,
+                            attempt=attempts,
+                            error=error,
+                            backoff=backoff,
+                        )
                         logger.warning("%s: %s; retrying in %.0fs", tag, error, backoff)
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, run.config.outage_hold_s)
@@ -482,12 +560,22 @@ class Ctx:
                                 error=error,
                             )
                         )
+                        self._event("step_failed", path=path, index=index, error=error)
                         raise StepFailed(path, error) from exc
+                    self._event(
+                        "step_retrying",
+                        path=path,
+                        index=index,
+                        attempt=attempts,
+                        error=error,
+                        backoff=0.0,
+                    )
                     continue
                 record = self._record(
                     path, index, work, key, "completed", started, attempts, **extra
                 )
                 run.ledger.put(record)
+                self._event("step_completed", path=path, index=index)
                 return value, record
         finally:
             if held_since is not None:
@@ -495,7 +583,14 @@ class Ctx:
             run.steps.discard(tag)
 
     def _key(self, path: str, work: Work) -> str:
-        return digest(self.run.identity, self.key, path, work.content())[:24]
+        """The step's key: its place and the content of its work. An agent's work also
+        keys on its resolved seat — the model and effort the rollout ran under — so a
+        seat change re-runs that seat's steps only; command and fn steps do not
+        depend on the run's config."""
+        content = work.content()
+        if isinstance(work, AgentWork):
+            content = [*content, self.run.seat(work.seat).model_dump(mode="json")]
+        return digest(self.run.identity, self.key, path, content)[:24]
 
     def _attached(
         self, path: str, work: Work, index: int | None
@@ -539,7 +634,7 @@ class Ctx:
         payload = to_jsonable_python(value)
         size = len(json.dumps(payload))
         if size > self.run.config.payload_cap:
-            raise PermissionError(
+            raise Oversized(
                 f"step value is {size} bytes, over payload_cap; keep bulk in traces or files"
             )
         return payload

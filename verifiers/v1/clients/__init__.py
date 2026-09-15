@@ -1,3 +1,4 @@
+from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import (
     Client,
     LimitedClient,
@@ -23,5 +24,6 @@ __all__ = [
     "ModelContext",
     "TrainClient",
     "TrainClientConfig",
+    "build_async_openai",
     "resolve_client",
 ]
