@@ -36,6 +36,8 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.archive import archive
 from verifiers.v1.utils.artifacts import collect
+from verifiers.v1.utils.grading import MAX_BYTES as GRADING_MAX_BYTES
+from verifiers.v1.utils.grading import collect_strict
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,7 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        require_artifacts: bool = True,
         archive_dir: Path | None = None,
         archive_config: ArchiveConfig | None = None,
     ) -> None:
@@ -89,6 +92,7 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
+        self._require_artifacts = require_artifacts
         self._archive_dir = archive_dir
         self._archive_config = archive_config or ArchiveConfig()
         self.trace: Trace = Trace(
@@ -480,9 +484,16 @@ class Rollout:
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         )
                         if self._collect_artifacts and not trace.state.artifacts:
-                            trace.state.artifacts = await collect(
-                                runtime, self.task.data.artifacts
-                            )
+                            if self._require_artifacts:
+                                trace.state.artifacts = await collect_strict(
+                                    runtime, self.task.data.artifacts
+                                )
+                            else:
+                                trace.state.artifacts = await collect(
+                                    runtime,
+                                    self.task.data.artifacts,
+                                    max_bytes=GRADING_MAX_BYTES,
+                                )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now

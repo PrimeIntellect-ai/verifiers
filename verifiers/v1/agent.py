@@ -388,6 +388,7 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        require_artifacts: bool = True,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -396,7 +397,9 @@ class Agent:
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
+        alive. `require_artifacts` (default True) fails the rollout if a declared
+        path is missing; Harbor passes False so collection stays best-effort.
+        Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
         if self._closed:
@@ -405,7 +408,7 @@ class Agent:
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, collect_artifacts, require_artifacts
             )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
@@ -438,6 +441,7 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
+        require_artifacts: bool,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
@@ -449,6 +453,7 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            require_artifacts=require_artifacts,
             **params,
         )
         try:
@@ -655,6 +660,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        require_artifacts: bool = True,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -663,6 +669,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
+                require_artifacts=require_artifacts,
             )
         self._completed.append(trace)
         return trace

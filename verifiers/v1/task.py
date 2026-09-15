@@ -110,8 +110,8 @@ class TaskData(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
     on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
-    runtime outputs that must cross that boundary. A declared path that is missing at
-    collection time fails the rollout."""
+    runtime outputs that must cross that boundary. Isolated grading fails the
+    rollout if a declared path is missing; Harbor collection is best-effort."""
 
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()

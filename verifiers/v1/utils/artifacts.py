@@ -20,18 +20,13 @@ logger = logging.getLogger(__name__)
 ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
-MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-"""Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
-agent's image, so the repo is already there and only its output has to travel."""
-
 
 class Artifact(BaseModel):
-    """One path to restore at the same location in another runtime."""
+    """One path to collect from a runtime and restore at the same location."""
 
     source: str
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
-    required: bool = True
 
 
 async def collect(
@@ -39,19 +34,18 @@ async def collect(
     artifacts: list[Artifact] | None = None,
     *,
     exclude: list[str] | None = None,
+    max_bytes: int,
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
-    they were declared, and a path cannot be collected twice.
-
-    A declared source that is missing raises: it was declared because grading needs it,
-    and grading a partial state scores the rollout wrong rather than failing it. The
-    implicit convention sweep is exempt — most tasks never write there.
+    they were declared, and a path cannot be collected twice. A missing source is
+    recorded as `None`. Callers that need declared paths to exist enforce that
+    themselves.
 
     Each source is archived separately so its exclude patterns stay local.
     `exclude` is extra `tar --exclude` patterns applied to every root, including the
-    convention dir. Grading transport does not pass it.
+    convention dir. `max_bytes` is the ceiling for this collection pass.
     """
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
@@ -81,7 +75,6 @@ async def collect(
             Artifact(
                 source=ARTIFACTS_DIR,
                 exclude=list(dict.fromkeys([*sweep_excludes, *extra_exclude])),
-                required=False,
             )
         ]
         for artifact, path in zip(declared, declared_paths, strict=True):
@@ -125,19 +118,15 @@ async def collect(
         )
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
-    budget = MAX_ARTIFACT_BYTES
+    budget = max_bytes
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
-            if not artifact.required:
-                collected[source] = None
-                continue
-            raise RuntimeError(
-                f"declared artifact {source!r} does not exist in the runtime"
-            )
-        archive = await _tar_out(runtime, artifact, budget)
-        budget -= len(archive)
-        collected[source] = archive
+            collected[source] = None
+            continue
+        blob = await _tar_out(runtime, artifact, budget)
+        budget -= len(blob)
+        collected[source] = blob
 
     logger.debug("collected artifact roots: %s", list(collected))
     return collected
@@ -148,7 +137,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
-    before the grading runtime is changed. Only regular files and directories travel.
+    before the target runtime is changed. Only regular files and directories travel.
     """
     if not collected:
         return

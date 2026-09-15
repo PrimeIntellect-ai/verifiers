@@ -42,6 +42,7 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import Artifact, collect
 from verifiers.v1.utils.decorators import reward
+from verifiers.v1.utils.grading import MAX_BYTES as GRADING_MAX_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         if not self.scoring_deferred:
-            trace.state.artifacts = await collect(runtime, self.data.artifacts)
+            trace.state.artifacts = await collect(
+                runtime, self.data.artifacts, max_bytes=GRADING_MAX_BYTES
+            )
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
@@ -630,8 +633,6 @@ def parse_verifier_extras(
 
     The convention dir is deliberately not prepended here (Harbor's
     `with_convention_entry` would): collection injects it itself, as an optional sweep.
-    Prepending it would make it an explicitly declared entry, and declared entries are
-    required — which would fail every task that never writes there.
     """
     from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
@@ -658,7 +659,6 @@ def parse_verifier_extras(
             Artifact(
                 source=entry.source,
                 exclude=list(entry.exclude or []),
-                required=False,
             )
         )
 

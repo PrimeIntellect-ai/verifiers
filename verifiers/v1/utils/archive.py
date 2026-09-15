@@ -29,7 +29,7 @@ def _entries(
     artifacts: list[Artifact] | None,
     extra: list[str],
 ) -> list[Artifact]:
-    """Task grading list plus eval extras, optional, deduped after workdir resolve."""
+    """Task path list plus eval extras, deduped after workdir resolve."""
     workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     entries: list[Artifact] = []
     seen: set[str] = set()
@@ -38,13 +38,13 @@ def _entries(
         if key in seen:
             continue
         seen.add(key)
-        entries.append(artifact.model_copy(update={"required": False}))
+        entries.append(artifact)
     for source in extra:
         key = _resolved_source(workdir, source)
         if key in seen:
             continue
         seen.add(key)
-        entries.append(Artifact(source=source, required=False))
+        entries.append(Artifact(source=source))
     return entries
 
 
@@ -56,7 +56,7 @@ async def archive(
 ) -> None:
     """Copy declared (and convention) artifact roots from `runtime` onto `dest`.
 
-    Default inventory is `/logs/artifacts` plus `artifacts` (the task grading list).
+    Default inventory is `/logs/artifacts` plus `artifacts` (the task path list).
     `config.extra` merges additional sources; `config.exclude` is applied to every
     root, including the convention dir. Best-effort: missing sources are recorded,
     not raised. Tar bytes are written as files; they are not stored on the trace.
@@ -64,7 +64,12 @@ async def archive(
     dest.mkdir(parents=True, exist_ok=True)
     policy = config or ArchiveConfig()
     optional = _entries(runtime, artifacts, policy.extra)
-    collected = await collect(runtime, optional, exclude=policy.exclude)
+    collected = await collect(
+        runtime,
+        optional,
+        exclude=policy.exclude,
+        max_bytes=policy.max_mb * 1024 * 1024,
+    )
     entries: list[dict] = []
     for source, blob in collected.items():
         name = _tar_filename(source)
