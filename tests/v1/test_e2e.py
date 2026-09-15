@@ -2,8 +2,8 @@
 
 Placement coverage is pairwise (see tests/v1/conftest.py): each list below names the
 combinations a test runs — every axis value at least once plus the cross-boundary pairs
-with distinct networking — instead of fanning the full cross product. prime/modal rows
-are local-only (their marks are excluded in CI)."""
+with distinct networking — instead of fanning the full cross product. prime/modal/e2b
+rows are local-only (their marks are excluded in CI)."""
 
 import subprocess
 import sys
@@ -108,6 +108,7 @@ CHAT_PLACEMENTS = [
     ),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
@@ -133,6 +134,7 @@ AGENTIC_PLACEMENTS = [
         marks=[mark.bash, mark.modal],
         id="bash-harness-in-modal-framework-only",
     ),
+    pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -142,6 +144,7 @@ USER_RUNTIMES = [
     pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
     pytest.param("modal", marks=[mark.modal], id="harness-in-modal"),
+    pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
 ]
 
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
@@ -166,6 +169,7 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pair("rlm", "e2b", "rlm-acp-in-e2b"),
     pytest.param(
         "prime-agent",
         "prime",
@@ -186,6 +190,8 @@ TOOL_PLACEMENTS = [
     pair("prime", "colocated", "harness-in-prime-with-tool-colocated"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
     pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
+    pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
+    pair("subprocess", "e2b", "harness-in-subprocess-with-tool-in-e2b"),
 ]
 
 # The state channel rides the same reachability as TOOL_PLACEMENTS; cover each axis
@@ -195,6 +201,7 @@ TOOL_STATE_PLACEMENTS = [
     pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
+    pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
 ]
 
 # Shared servers always run in their own runtime (colocation is per-rollout, shared is
@@ -204,6 +211,7 @@ SHARED_TOOL_PLACEMENTS = [
     pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
+    pair("e2b", "e2b", "harness-in-e2b-with-tool-in-e2b"),
 ]
 
 

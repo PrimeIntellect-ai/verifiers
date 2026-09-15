@@ -13,6 +13,7 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.e2b import E2BConfig, E2BRuntime, E2BRuntimeInfo
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -27,12 +28,16 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig | E2BConfig,
     Field(discriminator="type"),
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    SubprocessRuntimeInfo
+    | DockerRuntimeInfo
+    | PrimeRuntimeInfo
+    | ModalRuntimeInfo
+    | E2BRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -42,6 +47,8 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         return PrimeRuntime
     if isinstance(config, ModalConfig):
         return ModalRuntime
+    if isinstance(config, E2BConfig):
+        return E2BRuntime
     if isinstance(config, DockerConfig):
         return DockerRuntime
     return SubprocessRuntime
@@ -83,6 +90,9 @@ __all__ = [
     "DockerConfig",
     "DockerRuntime",
     "DockerRuntimeInfo",
+    "E2BConfig",
+    "E2BRuntime",
+    "E2BRuntimeInfo",
     "ModalConfig",
     "ModalRuntime",
     "ModalRuntimeInfo",
