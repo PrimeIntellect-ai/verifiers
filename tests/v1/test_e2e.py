@@ -86,9 +86,9 @@ USER_RUNTIMES = [
 ACP_RESUME_PLACEMENTS = [
     *[
         pair(
-            "pool",
+            "rlm",
             engine,
-            f"pool-acp-in-{engine}",
+            f"rlm-acp-in-{engine}",
             mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
         )
         for engine in ("podman", "apptainer")
@@ -109,9 +109,7 @@ ACP_RESUME_PLACEMENTS = [
         marks=[mark.pi, mark.docker],
         id="pi-responses-acp-in-docker",
     ),
-    pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
     pytest.param(
         "prime-agent",
