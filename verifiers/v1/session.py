@@ -162,9 +162,9 @@ class RolloutSession:
         prepared: set[int] = set()
         candidates: set[int] = set()
         if self.request_interceptors:
-            turn = graph.prepare_turn(self.trace, request.messages)
+            tail_start = graph.message_prefix_len(self.trace, request.messages)
             prepared_users = self.prepared_users.copy()
-            for position in range(turn.tail_start, len(request.messages)):
+            for position in range(tail_start, len(request.messages)):
                 message = request.messages[position]
                 if isinstance(message, UserMessage):
                     candidates.add(position)
@@ -350,7 +350,7 @@ class RolloutSession:
         request, records, stopped = await self.rewrite_request(
             Request(
                 messages=[*branch.messages, *previous, message],
-                tools=self.trace.tools or None,
+                tools=branch.tools or None,
             )
         )
         candidate = request.messages[-1]
@@ -358,7 +358,7 @@ class RolloutSession:
         self.trace.request_rewrites.extend(records)
         if stopped is not None:
             committed = request.messages if phase == "after" else request.messages[:-1]
-            turn = graph.prepare_turn(self.trace, committed)
+            turn = graph.prepare_turn(self.trace, committed, request.tools)
             turn.commit_prompt()
             self.consume_prepared(turn.tail)
             self.trace.stop(stopped)
