@@ -42,6 +42,7 @@ from verifiers.v1.types import (
     ToolMessage,
     UserMessage,
 )
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import (
     cap_remote_agent_timeout,
     resolve_runtime_config,
@@ -454,9 +455,10 @@ class Agent:
                     run.trace.stop("agent_completed")
             trace = await run.close()
         except BaseException:
-            # A cancellation mid-run (or a lifetime bug raised to the caller) means
-            # close() never runs — free the run's servers and owned runtime first.
-            await run.abort()
+            # close() never runs here; free the run's servers and owned runtime.
+            # Shielded: a pending cancellation would otherwise cut abort() at its
+            # first await, before the runtime stops, and leak the sandbox.
+            await run_shielded(run.abort())
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None

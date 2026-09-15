@@ -119,6 +119,9 @@ class PrimeConfig(NetworkPolicyConfig):
         return self
 
 
+_DELETE_TIMEOUT_S = 30.0  # per delete attempt
+
+
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
@@ -429,6 +432,31 @@ class PrimeRuntime(Runtime):
             with contextlib.suppress(Exception):
                 SandboxClient(APIClient()).delete(self.info.id)
 
+    async def _delete(self, client) -> None:
+        """Three bounded attempts: a failed delete leaks a paid box, and the SDK's
+        own call has no timeout. The last failure is an error naming the id."""
+        for attempt in range(1, 4):
+            try:
+                async with asyncio.timeout(_DELETE_TIMEOUT_S):
+                    await client.delete(self.info.id)
+                return
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                if attempt == 3:
+                    logger.error(
+                        "prime: sandbox %s deletion not confirmed after 3 attempts; "
+                        "verify provider state. Last error: %s",
+                        self.info.id,
+                        e,
+                    )
+                else:
+                    logger.warning(
+                        "prime: delete sandbox %s failed (attempt %d/3): %s",
+                        self.info.id,
+                        attempt,
+                        e,
+                    )
+                    await asyncio.sleep(0.5 * attempt)
+
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
@@ -437,9 +465,7 @@ class PrimeRuntime(Runtime):
             return
         try:
             if self.info.id is not None:  # keep info.id available after teardown
-                await client.delete(self.info.id)
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+                await self._delete(client)
         finally:
             loop = asyncio.get_running_loop()
             shared = _shared_clients[loop]
@@ -448,3 +474,22 @@ class PrimeRuntime(Runtime):
                 del _shared_clients[loop]
                 with contextlib.suppress(Exception):
                     await client.aclose()
+
+
+async def sweep_sandboxes(labels: list[str]) -> int:
+    """Delete every sandbox carrying all of `labels`; the count deleted. A run calls
+    this at a resume so the boxes a crashed launch left stop costing."""
+    from prime_sandboxes import AsyncSandboxClient
+
+    client = AsyncSandboxClient()
+    try:
+        response = await client.bulk_delete(labels=labels)
+    finally:
+        await client.aclose()
+    if response.failed:
+        logger.warning(
+            "prime: %d sandboxes not deleted: %s",
+            len(response.failed),
+            response.failed[:3],
+        )
+    return len(response.succeeded)

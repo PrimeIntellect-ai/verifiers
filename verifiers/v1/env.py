@@ -14,12 +14,12 @@ from typing import (
 
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.env import (
-    EnvConfig,
-    _declared_agent_configs,
-    default_agent_harness,
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    declared_agent_configs,
+    resolve_agent,
 )
+from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -32,7 +32,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
-from verifiers.v1.utils.generic import concrete_type, deep_merge
+from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
@@ -105,7 +105,7 @@ class Env(ABC, Generic[ConfigT]):
         self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
-        self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
+        self._agent_specs: dict[str, AgentConfig] = declared_agent_configs(self.config)
         if not self._agent_specs:
             raise ValueError(
                 f"{type(self).__name__} declares no agents; declare each as an "
@@ -205,23 +205,12 @@ class Env(ABC, Generic[ConfigT]):
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
-            sampling = ctx.sampling
-            if spec.sampling is not None:
-                sampling = sampling.model_copy(
-                    update=deep_merge(
-                        sampling.model_dump(exclude_unset=True),
-                        spec.sampling.model_dump(exclude_unset=True),
-                    )
-                )
-            resolved = spec.model_copy(
-                update={
-                    "harness": spec.harness
-                    if spec.harness is not None
-                    else self._default_harness,
-                    "model": spec.model if spec.model is not None else ctx.model,
-                    "sampling": sampling,
-                    "client": spec.client if spec.client is not None else ctx.client,
-                }
+            resolved = resolve_agent(
+                spec,
+                model=ctx.model,
+                client=ctx.client,
+                sampling=ctx.sampling,
+                harness=self._default_harness,
             )
             return _EpisodeAgent(
                 resolved,
