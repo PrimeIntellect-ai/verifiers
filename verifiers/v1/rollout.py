@@ -514,6 +514,7 @@ class Rollout:
                         self._archive_dir / self.trace.id,
                         self.task.data.artifacts,
                         self._archive_config,
+                        destinations=self.task.archive_destinations(),
                     )
                 except Exception:
                     logger.warning(

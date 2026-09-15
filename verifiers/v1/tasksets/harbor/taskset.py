@@ -165,6 +165,9 @@ class HarborData(TaskData):
     collect: list[CollectHook] = Field(default_factory=list)
     """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
     after the agent stops, so the files can travel to a grading box as artifacts."""
+    archive_destinations: dict[str, str] = Field(default_factory=dict)
+    """Harbor `destination` per artifact `source`: host path under the trace archive
+    dir. Restore still uses `source`."""
     verifier: VerifierConfig | None = None
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
@@ -191,6 +194,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
+
+    def archive_destinations(self) -> dict[str, str]:
+        return self.data.archive_destinations
 
     async def setup(self, runtime: Runtime) -> None:
         if self.data.upload_environment:
@@ -555,7 +561,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
-    artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
+    artifacts, destinations, hooks, verifier = parse_verifier_extras(
+        task_dir, parsed, harbor_config
+    )
     environment = parsed.environment
     environment_dir = task_dir / "environment"
     upload_environment = should_upload_environment_dir(
@@ -620,6 +628,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         ),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
+        archive_destinations=destinations,
         collect=hooks,
         verifier=verifier,
     )
@@ -627,7 +636,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
 def parse_verifier_extras(
     task_dir: Path, parsed, harbor_config: HarborConfig
-) -> tuple[list[Artifact], list[CollectHook], VerifierConfig | None]:
+) -> tuple[list[Artifact], dict[str, str], list[CollectHook], VerifierConfig | None]:
     """Harbor's `artifacts`, `[[verifier.collect]]` blocks, and verifier environment,
     narrowed to what verifiers' verifier-runtime integration can honor.
 
@@ -645,6 +654,7 @@ def parse_verifier_extras(
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[Artifact] = []
+    destinations: dict[str, str] = {}
     for entry in normalize_artifact_entries(parsed.artifacts):
         if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
             raise ValueError(
@@ -652,15 +662,14 @@ def parse_verifier_extras(
                 f"service {entry.service!r}; verifiers currently supports artifacts "
                 "from the main service only"
             )
-        # `destination` positions a file in Harbor's host trial directory. Verifiers has
-        # no such directory (the trace is the record) and Harbor never lets destination
-        # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
             Artifact(
                 source=entry.source,
                 exclude=list(entry.exclude or []),
             )
         )
+        if entry.destination:
+            destinations[entry.source] = entry.destination
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
@@ -677,7 +686,12 @@ def parse_verifier_extras(
             )
         hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
 
-    return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
+    return (
+        artifacts,
+        destinations,
+        hooks,
+        parse_verifier_environment(task_dir, parsed, harbor_config),
+    )
 
 
 def parse_verifier_environment(

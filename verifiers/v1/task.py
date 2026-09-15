@@ -181,6 +181,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
+    def archive_destinations(self) -> dict[str, str]:
+        """Host names for archived roots, keyed by sandbox source. Empty unless a
+        taskset (Harbor) supplies them. Restore still uses `source`."""
+        return {}
+
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
 
