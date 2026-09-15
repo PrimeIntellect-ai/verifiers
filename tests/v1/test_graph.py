@@ -450,3 +450,32 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
     assert trace.assistant_messages == [response]
+
+
+def test_message_hash_ignores_replayed_reasoning_presentation():
+    """A harness replays `reasoning_details` through its own SDK, which may mangle
+    presentation fields (a streamed `format` concatenated per chunk). The same turn must
+    still dedup onto its committed node, or every turn forks a branch."""
+    from verifiers.v1.graph import message_hash
+    from verifiers.v1.types import AssistantMessage, ToolCall
+
+    def message(fmt: str, data: str | None = None) -> AssistantMessage:
+        detail = {"type": "reasoning.text", "text": "think", "format": fmt, "index": 0}
+        if data is not None:
+            detail = {
+                "type": "reasoning.encrypted",
+                "data": data,
+                "format": fmt,
+                "index": 0,
+            }
+        return AssistantMessage(
+            content="hi",
+            reasoning_content="think",
+            tool_calls=[ToolCall(id="c1", type="function", name="ls", arguments="{}")],
+            provider_state=[detail],
+        )
+
+    assert message_hash(message("unknown")) == message_hash(message("unknown" * 12))
+    assert message_hash(message("x", data="blob-a")) != message_hash(
+        message("x", data="blob-b")
+    )
