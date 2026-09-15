@@ -13,6 +13,7 @@ from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.flow.compile import Graph
+    from verifiers.v1.flow.preflight import Check
 
 
 class FlowConfig(BaseConfig):
@@ -24,6 +25,9 @@ class FlowConfig(BaseConfig):
     """Endpoint for seats that pin none."""
     max_concurrent_rows: int = Field(default=4, gt=0)
     """Rows that may run at once; zero or negative would hang the gate forever."""
+    inference_concurrency: int | None = Field(default=None, gt=0)
+    """Model requests (nested harness calls included) allowed upstream at once; None
+    leaves each rollout its own unbounded client, byte-identical to before."""
     pools: dict[str, int] = Field(default_factory=lambda: {"runtimes": 8})
     """Named capacity pools: max concurrently running node instances per pool.
     Zero-capacity pools would deadlock node execution, so sizes must be positive."""
@@ -68,3 +72,10 @@ class Flow(Generic[ConfigT]):
     @property
     def name(self) -> str:
         return type(self).__name__
+
+    async def preflight(self, *, contact: bool = True) -> list[Check]:
+        """The run's prerequisites as typed `Check`s (see `verifiers.v1.flow.preflight`);
+        the producer decides what a refusal means — the engine never calls this."""
+        from verifiers.v1.flow.preflight import preflight
+
+        return await preflight(self.config, contact=contact)

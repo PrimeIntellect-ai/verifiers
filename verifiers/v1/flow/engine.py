@@ -20,7 +20,9 @@ from pydantic_core import to_jsonable_python
 from verifiers.v1.agent import make_agent
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.flow.compile import FlowError, Graph
+from verifiers.v1.flow.faults import FaultKind, fault_kind
 from verifiers.v1.flow.flow import Flow
+from verifiers.v1.flow.gate import Workers
 from verifiers.v1.flow.ledger import Ledger, NodeRecord, digest, now, row_key
 from verifiers.v1.flow.nodes import (
     AgentNode,
@@ -39,6 +41,7 @@ from verifiers.v1.flow.outcome import (
     parse_outcome,
 )
 from verifiers.v1.flow.pools import Pools
+from verifiers.v1.interception import InterceptionServer
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import (
     Runtime,
@@ -104,6 +107,9 @@ class RowResult:
     ok: bool
     records: dict[str, NodeRecord] = field(default_factory=dict)
     error: str | None = None
+    fault: FaultKind | None = None
+    """What kind of failure ended the row (None when it succeeded or no error was
+    classified); the walker reports, the producer decides — never auto-actioned."""
 
 
 @dataclass
@@ -143,6 +149,12 @@ class Engine:
             )
         self._stack = AsyncExitStack()
         self._outcome_tools: dict[str, dict[str, SharedToolServer]] = {}
+        self._inference: InterceptionServer | None = None  # the shared gate, when on
+        # Admission is open while unset-outage: an asyncio Event wakes waiters on
+        # set(), so the hold is an ADMISSION event (open by default; a row ending
+        # outage-classified closes it, any row ending non-outage reopens it).
+        self._admissions = asyncio.Event()
+        self._admissions.set()
         # Any change to the graph shape or the config invalidates every ledger key.
         self.identity = digest(
             self.graph.structural_hash(), self.config.model_dump(mode="json")
@@ -158,22 +170,44 @@ class Engine:
         gate = asyncio.Semaphore(self.config.max_concurrent_rows)
 
         async def one(row: Any) -> RowResult:
+            # An endpoint outage holds NEW admissions (upstream's newest behavior);
+            # any row ending non-outage — success or other fault — reopens them.
+            await self._admissions.wait()
             async with gate:
                 try:
                     key = row_key(row)
                 except Exception:  # noqa: BLE001 — an unkeyable row is a failed row
-                    return RowResult(
+                    result = RowResult(
                         row="<unkeyable>", ok=False, error=f"row cannot be keyed: {row!r}"
                     )
-                try:
-                    return await _Row(self, row, key).run()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — a crashed row is a failed row, never a poisoned run
-                    return RowResult(row=key, ok=False, error=f"{type(exc).__name__}: {exc}")
+                else:
+                    try:
+                        result = await _Row(self, row, key).run()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — a crashed row is a failed row, never a poisoned run
+                        result = RowResult(
+                            row=key,
+                            ok=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                            fault=fault_kind(exc),
+                        )
+                if result.fault == "outage":
+                    self._admissions.clear()
+                else:
+                    self._admissions.set()
+                return result
 
         async with self._stack:
             self._outcome_tools.clear()  # run 1's servers exited with its stack
+            self._inference = None
+            if self.config.inference_concurrency is not None:
+                self._inference = await self._stack.enter_async_context(
+                    Workers(
+                        self.config.inference_concurrency,
+                        requires_tunnel=self._gate_needs_tunnel(),
+                    )
+                )
             tasks: list[asyncio.Task] = []
             try:
                 async for row in _aiter(rows):
@@ -209,6 +243,15 @@ class Engine:
             update["client"] = self.config.client
         return cfg.model_copy(update=update) if update else cfg
 
+    def _gate_needs_tunnel(self) -> bool:
+        """Whether the shared gate server must be reachable from inside boxes:
+        any seat on a remote runtime, and it tunnels."""
+        return any(
+            not runtime_is_local(self.seat(node.seat).runtime)
+            for node in self.graph.nodes.values()
+            if isinstance(node, (AgentNode, ExpandNode))
+        )
+
 
 class _Row:
     def __init__(self, engine: Engine, row: Any, key: str | None = None) -> None:
@@ -226,6 +269,7 @@ class _Row:
         self.items: dict[str, dict[int, Any]] = {}  # fan-out results by original index
         self.stack = AsyncExitStack()
         self.error: str | None = None
+        self.fault: FaultKind | None = None  # what failed the row, when something did
 
     # -- the loop -----------------------------------------------------------------
 
@@ -263,7 +307,11 @@ class _Row:
                 await asyncio.gather(*self.running, return_exceptions=True)
         records = {d.node: d.record for d in self.done.values()}
         return RowResult(
-            row=self.key, ok=self.error is None, records=records, error=self.error
+            row=self.key,
+            ok=self.error is None,
+            records=records,
+            error=self.error,
+            fault=None if self.error is None else self.fault,
         )
 
     def _start_ready(self) -> None:
@@ -422,12 +470,17 @@ class _Row:
                     **extra,
                 )
                 self.e.ledger.put(record)
+                self.fault = None  # a completed attempt clears a stale fault
                 logger.info("%s: %s@%s -> %s", self.key, node.name, visit, outcome)
                 return _Done(node.name, record, value)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a node failure is data: recorded, then routed or retried
                 error = f"{type(exc).__name__}: {exc}"
+                if self.fault is None or not isinstance(exc, FlowError):
+                    # A live exception classifies itself; the FlowError a failed
+                    # rollout raised keeps the fault `_run_agent` read off the trace.
+                    self.fault = fault_kind(exc)
                 logger.warning(
                     "%s: %s@%s attempt %s failed: %s",
                     self.key,
@@ -529,6 +582,9 @@ class _Row:
     ) -> tuple[str | None, Trace, dict]:
         trace = await self._rollout(node, node.make_task(up))
         if not trace.ok:
+            # Classify from the trace's own errors (typed by name): the row reports
+            # the endpoint's failure as what it is, not as a generic node error.
+            self.fault = fault_kind(trace.errors[-1] if trace.errors else None)
             raise FlowError(
                 [f"{node.name}: rollout failed: {[e.message for e in trace.errors]}"]
             )
@@ -667,7 +723,7 @@ class _Row:
         `submit_outcome` tool when its harness speaks MCP and its task's state
         carries `outcome`; otherwise the task sets `state.outcome` itself (in
         `finalize`) or the last reply ends with an `Outcome:` line."""
-        agent = make_agent(self.e.seat(node.seat))
+        agent = make_agent(self.e.seat(node.seat), interception=self.e._inference)
         tools = None
         if node.outcomes and agent.harness.SUPPORTS_MCP:
             if "outcome" in state_cls(type(task)).model_fields:
