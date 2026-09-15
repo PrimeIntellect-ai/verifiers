@@ -70,11 +70,16 @@ class ContainerProcess(RuntimeProcess):
     so `exec` (the argv prefix that runs a command inside the container) delivers them."""
 
     def __init__(
-        self, process: asyncio.subprocess.Process, exec: list[str], pid: int
+        self,
+        process: asyncio.subprocess.Process,
+        exec: list[str],
+        pid: int,
+        pidfile: str,
     ) -> None:
         self._process = process
         self._exec = exec
         self._pid = pid
+        self._pidfile = pidfile
         assert process.stdin is not None
         assert process.stdout is not None
         assert process.stderr is not None
@@ -87,7 +92,10 @@ class ContainerProcess(RuntimeProcess):
         await self._stdin.drain()
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        try:
+            return await self._process.wait()
+        finally:
+            await run_shielded(cli(*self._exec, "rm", "-f", self._pidfile))
 
     async def terminate(self) -> None:
         await self._signal("TERM")
@@ -188,7 +196,9 @@ class ContainerRuntime(Runtime):
             while True:
                 ready = await cli(*control, "cat", pidfile)
                 if ready.exit_code == 0 and ready.stdout.strip().isdigit():
-                    return ContainerProcess(proc, control, int(ready.stdout.strip()))
+                    return ContainerProcess(
+                        proc, control, int(ready.stdout.strip()), pidfile
+                    )
                 # A target that already exited still left its pidfile: poll once more.
                 if exited or loop.time() >= deadline:
                     break
