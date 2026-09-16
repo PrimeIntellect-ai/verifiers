@@ -663,7 +663,7 @@ class InterceptionServer(Interception):
             return self._fail(session, dialect, error)
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
-        session.trace.preview(turn.tail)
+        session.trace.preview(turn, turn.tail)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
         if relay_streaming:
@@ -786,6 +786,8 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if node is None:
+                    turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and
                 # the error that ended it (if any).
                 self.record_call(
@@ -1051,6 +1053,8 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
+            if node is None:
+                turn.abandon()
             # The turn's one per-exchange record: settings, timing, outcome, and the
             # error that ended it (if any).
             self.record_call(

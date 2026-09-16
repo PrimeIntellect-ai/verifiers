@@ -448,7 +448,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """Physical node key -> node id for the graph builder."""
     _on_change: Any = PrivateAttr(default=None)
-    _pending: list[Message] = PrivateAttr(default_factory=list)
+    _pending: dict[object, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
 
@@ -463,16 +463,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def pending(self) -> list[Message]:
-        return self._pending
+        """The uncommitted messages of every request in flight, in request order."""
+        return [message for messages in self._pending.values() for message in messages]
 
-    def preview(self, messages: Iterable[Message]) -> None:
-        """Show watchers the uncommitted messages of the request in flight."""
-        self._pending = list(messages)
+    def preview(self, key: object, messages: Iterable[Message]) -> None:
+        """Show watchers the uncommitted messages of one request in flight. Requests
+        run concurrently (parallel agents share a trace), so each previews under its
+        own `key` and only clears its own."""
+        self._pending[key] = list(messages)
         self.notify()
 
-    def clear_preview(self) -> None:
-        """The previewed messages are committed (or abandoned)."""
-        self._pending = []
+    def clear_preview(self, key: object) -> None:
+        """The request's previewed messages are committed (or abandoned)."""
+        self._pending.pop(key, None)
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:

@@ -128,16 +128,29 @@ async def test_pending_preview_streams_and_clears_on_commit():
         add_turn(trace, "a1")
         await settle()
         # the harness sends its next request: the tool result is previewed at once
-        trace.preview([UserMessage(content="tool says 42")])
+        request, subagent = object(), object()
+        trace.preview(request, [UserMessage(content="tool says 42")])
         await settle()
         preview = unpack(frames[-1])
         assert preview["pending"][0]["content"] == "tool says 42"
         assert "nodes" not in preview
+        # a concurrent request (a sub-agent) previews under its own key; its failure
+        # takes only its own messages back
+        trace.preview(subagent, [UserMessage(content="sub-agent asks")])
+        await settle()
+        assert [m["content"] for m in unpack(frames[-1])["pending"]] == [
+            "tool says 42",
+            "sub-agent asks",
+        ]
+        trace.clear_preview(subagent)
+        trace.notify()
+        await settle()
+        assert [m["content"] for m in unpack(frames[-1])["pending"]] == ["tool says 42"]
         # the model answers: the turn commits and the preview goes with it
         trace.nodes.append(
             MessageNode(parent=1, message=UserMessage(content="tool says 42"))
         )
-        trace.clear_preview()
+        trace.clear_preview(request)
         add_turn(trace, "a2")
         await settle()
         committed = unpack(frames[-1])
