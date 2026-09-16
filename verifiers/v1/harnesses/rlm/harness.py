@@ -101,10 +101,11 @@ class RLMHarnessConfig(HarnessConfig):
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
-    max_total_tokens: NonNegativeInt = 10_000_000
+    max_total_tokens: NonNegativeInt | None = 10_000_000
     """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
     tree; once spent every engine stops and no further sub-agents spawn. 10M by default;
-    `0` removes the budget (the rollout timeout is then the only terminator)."""
+    `0` removes the budget (the rollout timeout is then the only terminator); `None`
+    defers to nano-rlm's own default (1,000,000)."""
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
@@ -221,7 +222,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 # explicit null: nano-rlm reads it as unbounded (its own default is 1M)
                 **(
                     {"max_total_tokens": None}
-                    if not self.config.max_total_tokens
+                    if self.config.max_total_tokens == 0
                     else {}
                 ),
             },

@@ -65,6 +65,8 @@ def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeo
     )
     if agent_timeout is None:
         agent_timeout = DEFAULT_ROLLOUT_TIMEOUT
+    elif agent_timeout == 0:
+        agent_timeout = None  # explicit: unbounded
     return RolloutTimeouts(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
         agent=agent_timeout,
