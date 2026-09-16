@@ -529,7 +529,12 @@ class PendingTurn:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
         self.trace.tools = self.tools
+        self.trace.clear_preview(self)
         return assistant_id
+
+    def abandon(self) -> None:
+        """The request failed or was cancelled before a commit: its preview goes."""
+        self.trace.clear_preview(self)
 
     def commit_prompt(self) -> None:
         """Record an input that terminated before model inference."""
@@ -551,6 +556,7 @@ class PendingTurn:
             parent = len(self.trace.nodes) - 1
             index[_node_key(previous, message, self.tools)] = parent
         self.trace.tools = self.tools
+        self.trace.clear_preview(self)
 
 
 def prepare_turn(
