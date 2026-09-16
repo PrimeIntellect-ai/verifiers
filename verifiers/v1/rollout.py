@@ -180,6 +180,7 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
+        self.trace.notify()
         if self._borrowed_runtime is None:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
@@ -219,6 +220,7 @@ class Rollout:
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
+            self.trace.notify()
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None
@@ -342,6 +344,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
+        self.trace.notify()
         return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -464,6 +467,7 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
+                trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
                 trace.timing.finalize.start = time.time()
@@ -479,6 +483,7 @@ class Rollout:
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
+                trace.notify()
                 async with boundary(TaskError, "scoring"):
                     # Cross-trace judgement runs later, after the runtime is gone.
                     await asyncio.wait_for(
@@ -489,6 +494,7 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
+                trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
