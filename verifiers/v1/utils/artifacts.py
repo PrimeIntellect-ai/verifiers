@@ -8,9 +8,11 @@ import shlex
 import tarfile
 import uuid
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+from verifiers.v1.errors import SandboxError
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -34,16 +36,19 @@ async def collect(
     artifacts: list[Artifact] | None = None,
     *,
     max_bytes: int,
+    missing: Literal["raise", "omit"],
+    on_limit: Literal["raise", "omit"],
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
-    they were declared, and a path cannot be collected twice. A missing source is
-    recorded as `None`. Callers that need declared paths to exist enforce that
-    themselves.
+    they were declared, and a path cannot be collected twice.
 
     Each source is archived separately so its `Artifact.exclude` patterns stay local.
-    `max_bytes` is the ceiling for this collection pass.
+    `max_bytes` is the ceiling for this collection pass. `missing="omit"` records an
+    absent source as `None`; `"raise"` fails unless the source is the convention dir.
+    `on_limit="raise"` fails the pass when a tar would exceed the remaining budget;
+    `"omit"` records that root and every later one as `None`.
     """
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
@@ -111,12 +116,33 @@ async def collect(
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
     budget = max_bytes
+    capped = False
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
+            if missing == "raise" and PurePosixPath(source) != convention:
+                raise RuntimeError(
+                    f"declared artifact {source!r} does not exist in the runtime"
+                )
+            collected[source] = None
+            continue
+        if capped:
             collected[source] = None
             continue
         blob = await _tar_out(runtime, artifact, budget)
+        if blob is None:
+            if on_limit == "raise":
+                raise SandboxError(
+                    f"artifact {source!r} over remaining {budget} byte budget"
+                )
+            logger.warning(
+                "artifact %s over remaining %s byte budget; omitting later roots",
+                source,
+                budget,
+            )
+            collected[source] = None
+            capped = True
+            continue
         budget -= len(blob)
         collected[source] = blob
 
@@ -159,7 +185,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
 
 
-async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
+async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes | None:
+    """Tar one existing root. `None` means the tar exceeded `budget`."""
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
@@ -172,7 +199,12 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
-        return await runtime.read(path, max_bytes=budget)
+        try:
+            return await runtime.read(path, max_bytes=budget)
+        except SandboxError as exc:
+            if "byte limit" not in str(exc):
+                raise
+            return None
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
