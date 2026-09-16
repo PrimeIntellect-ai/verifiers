@@ -40,9 +40,8 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import Artifact, collect
+from verifiers.v1.utils.artifacts import Artifact
 from verifiers.v1.utils.decorators import reward
-from verifiers.v1.utils.grading import MAX_BYTES as GRADING_MAX_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +255,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
         Harbor runs these after the agent phase and before artifact collection, which
         is exactly what `finalize` means here, so the hook maps onto the existing
-        lifecycle rather than needing a stage of its own.
+        lifecycle rather than needing a stage of its own. Shared-verifier grading
+        reads the live box; tarring into `trace.state` is only for separate-verifier
+        transport (`grading_collect` in `Rollout.close`).
 
         Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
         output is observability, here it is a grading input, and a silently absent file
@@ -278,10 +279,6 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        if not self.scoring_deferred:
-            trace.state.artifacts = await collect(
-                runtime, self.data.artifacts, max_bytes=GRADING_MAX_BYTES
-            )
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
