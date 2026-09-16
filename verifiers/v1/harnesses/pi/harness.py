@@ -22,7 +22,7 @@ PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
-MCP_VERSION = "2.25.0"
+MCP_VERSION = "2.28.0"
 ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
@@ -137,7 +137,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             extension_path = f"{agent_dir}/mcp.js"
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "lifecycle": "eager"}
+                    name: {"url": url, "lifecycle": "eager", "directTools": True}
                     for name, url in mcp_urls.items()
                 }
             }

@@ -91,8 +91,8 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
             if not PurePosixPath(artifact.source).is_absolute()
         ]
         solver = resolve_runtime_config(self.config.agent.runtime, task)
-        solver_workdir = PurePosixPath(getattr(solver, "workdir", "") or "/")
-        verifier_workdir = PurePosixPath(config.workdir)
+        solver_workdir = PurePosixPath(getattr(solver, "workdir", "/") or "/app")
+        verifier_workdir = PurePosixPath(config.workdir or "/app")
         if relative and solver_workdir != verifier_workdir:
             raise ValueError(
                 "isolated-verifier cannot transfer relative artifacts "

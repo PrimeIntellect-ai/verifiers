@@ -38,7 +38,8 @@ class E2BConfig(BaseConfig):
     type: Literal["e2b"] = "e2b"
     image: str = "python:3.11-slim"
     """Docker image to run; built into an E2B template on first use."""
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     user: str = "root"
     """User that runs commands and owns written files."""
     network_access: bool = True
@@ -65,8 +66,8 @@ class E2BRuntime(Runtime):
 
     def __init__(self, config: E2BConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = E2BRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = E2BRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
 
     @property
