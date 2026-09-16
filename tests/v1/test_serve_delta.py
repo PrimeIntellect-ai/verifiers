@@ -128,7 +128,7 @@ async def test_pending_preview_streams_and_clears_on_commit():
         add_turn(trace, "a1")
         await settle()
         # the harness sends its next request: the tool result is previewed at once
-        request, subagent = object(), object()
+        request, subagent = ["request"], ["sub-agent"]  # unhashable, like a PendingTurn
         trace.preview(request, [UserMessage(content="tool says 42")])
         await settle()
         preview = unpack(frames[-1])
