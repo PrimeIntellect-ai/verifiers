@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,13 @@ if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ManifestEntry:
+    source: str
+    file: str | None
+    harbor_destination: str | None
 
 
 def drop_archive(root: Path | None, trace_id: str) -> None:
@@ -40,11 +48,6 @@ def _host_file(source: str, destination: str | None) -> str:
         path = f"{path}.tar"
     return path
 
-
-def _resolved_source(workdir: PurePosixPath, source: str) -> str:
-    return str(workdir / source)
-
-
 def _entries(
     runtime: Runtime,
     artifacts: list[Artifact] | None,
@@ -53,30 +56,28 @@ def _entries(
     """Task path list plus eval extras, deduped after workdir resolve."""
     workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     entries: list[Artifact] = []
-    seen: set[str] = set()
+    seen: set[str] = set[str]()
     for artifact in artifacts or []:
-        key = _resolved_source(workdir, artifact.source)
+        key = str(workdir / artifact.source)
         if key in seen:
             continue
         seen.add(key)
         entries.append(artifact)
     for source in extra:
-        key = _resolved_source(workdir, source)
+        key = str(workdir / source)
         if key in seen:
             continue
         seen.add(key)
         entries.append(Artifact(source=source))
     return entries
 
-
 def _resolved_destinations(
     workdir: PurePosixPath, destinations: Mapping[str, str]
 ) -> dict[str, str]:
     return {
-        _resolved_source(workdir, source): dest
+        str(workdir / source): dest
         for source, dest in destinations.items()
     }
-
 
 async def archive(
     runtime: Runtime,
@@ -103,15 +104,17 @@ async def archive(
         PurePosixPath(getattr(runtime.config, "workdir", "") or "/"),
         destinations or {},
     )
-    optional = _entries(runtime, artifacts, policy.extra)
+    sources = _entries(runtime, artifacts, policy.extra)
+
     collected = await collect(
         runtime,
-        optional,
+        sources,
         max_bytes=policy.max_mb * 1024 * 1024,
         missing="omit",
         on_limit="omit",
     )
-    entries: list[dict] = []
+
+    entries: list[ManifestEntry] = []
     claimed: set[str] = set()
     for source, blob in collected.items():
         destination = names.get(source)
@@ -122,11 +125,11 @@ async def archive(
                     "archive host path %s already claimed; skipping %s", name, source
                 )
             entries.append(
-                {
-                    "source": source,
-                    "file": None,
-                    "harbor_destination": destination,
-                }
+                ManifestEntry(
+                    source=source,
+                    file=None,
+                    harbor_destination=destination,
+                )
             )
             continue
         claimed.add(name)
