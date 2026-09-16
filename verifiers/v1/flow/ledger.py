@@ -181,10 +181,7 @@ class Ledger:
     def index(self) -> dict[str, tuple[int, int]]:
         if self._index is None:
             self._index = {
-                e["id"]: (e["offset"], e["length"])
-                for e in (
-                    read_jsonl(self.index_file) if self.index_file.exists() else []
-                )
+                e["id"]: (e["offset"], e["length"]) for e in read_jsonl(self.index_file)
             }
         return self._index
 
