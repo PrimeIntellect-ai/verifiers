@@ -139,13 +139,18 @@ class Run:
         return [result async for result in self.stream(flow, rows)]
 
     async def sweep(self) -> int:
-        """Kill what an earlier launch of this run left behind -- Prime sandboxes by
-        label, host subprocesses by the same label in their environment; the count.
-        Call before `stream` at a resume."""
+        """Kill what an earlier launch of this run left behind -- Prime sandboxes and Docker
+        containers by label, host subprocesses by the same label in their environment; the
+        count. Call before `stream` at a resume."""
+        from verifiers.v1.runtimes.docker import sweep_containers
         from verifiers.v1.runtimes.prime import sweep_sandboxes
         from verifiers.v1.runtimes.subprocess import sweep_subprocesses
 
-        return sweep_subprocesses(self.label) + await sweep_sandboxes([self.label])
+        return (
+            sweep_subprocesses(self.label)
+            + await sweep_containers(self.label)
+            + await sweep_sandboxes([self.label])
+        )
 
     def drain(self) -> None:
         """Stop admitting steps; in-flight steps finish and record, rows return stopped."""

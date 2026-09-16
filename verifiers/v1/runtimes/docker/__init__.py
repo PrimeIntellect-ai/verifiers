@@ -111,6 +111,22 @@ class DockerProcess(RuntimeProcess):
             )
 
 
+RUN_LABEL = "verifiers.run"
+"""Container label carrying each of the process's base sandbox labels; what `sweep_containers`
+finds a crashed launch's containers by."""
+
+
+async def sweep_containers(label: str) -> int:
+    """Remove every container labelled with `label` (an earlier launch of the same run, killed
+    with its cleanup skipped); the count."""
+    ids = (
+        await docker("ps", "-aq", "--filter", f"label={RUN_LABEL}={label}")
+    ).stdout.split()
+    if ids:
+        await docker("rm", "-f", *ids)
+    return len(ids)
+
+
 async def docker(*args: str) -> ProgramResult:
     proc = await asyncio.create_subprocess_exec(
         "docker",
@@ -244,6 +260,13 @@ class DockerRuntime(Runtime):
             for arg in ("--env", f"{key}={value}")
         ]
         mount_args = [arg for mount in self.config.mounts for arg in ("-v", mount)]
+        from verifiers.v1.runtimes.prime import (
+            BASE_LABELS,
+        )  # the run's labels, shared with Prime
+
+        label_args = [
+            arg for label in BASE_LABELS for arg in ("--label", f"{RUN_LABEL}={label}")
+        ]
         run = await docker(
             "run",
             "--detach",
@@ -251,6 +274,7 @@ class DockerRuntime(Runtime):
             *limits,
             *env_args,
             *mount_args,
+            *label_args,
             "--workdir",
             self.config.workdir,
             "--entrypoint",
