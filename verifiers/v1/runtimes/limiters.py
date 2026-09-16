@@ -7,11 +7,9 @@ the single-process eval and all the elastically-spawned env-server worker proces
 just within one process. Keyed by name: one bucket file per name, shared by every process (and
 run) for the user.
 
-Mutual exclusion uses the ``filelock`` package rather than hand-rolled ``fcntl``. On
-filesystems where ``flock`` is unreliable (e.g. NFS), set
-``VERIFIERS_LIMITER_SOFT_LOCK=1`` to switch to ``SoftFileLock``, which excludes via atomic
-lock-file creation. Either way, the shared bucket still requires a wall clock comparable
-across hosts and boots.
+Mutual exclusion uses ``SoftFileLock``, which excludes via atomic lock-file creation and
+works on both local and shared/NFS filesystems. The shared bucket still requires a wall
+clock comparable across hosts and boots.
 """
 
 import asyncio
@@ -19,7 +17,7 @@ import os
 import time
 from typing import Self
 
-from filelock import FileLock, SoftFileLock
+from filelock import SoftFileLock
 
 from verifiers.v1.utils.paths import CACHE_DIR
 
@@ -37,17 +35,11 @@ class CreationLimiter:
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
         self._path = LIMITER_DIR / f"{name}.bucket"
-        # State and lock live in separate files: SoftFileLock deletes its lock file on
-        # release, which would also destroy the bucket cursor if they shared a path. The
-        # soft and native locks also need distinct paths: FileLock intentionally leaves
-        # its inode behind, while SoftFileLock interprets any existing path as held. A
-        # shared path would therefore wedge after switching an installation to soft mode.
+        # State and lock live in separate files: SoftFileLock deletes its marker on
+        # release, which would also destroy the bucket cursor if they shared a path.
         # 60s acquisition cap: a holder wedged mid-reservation surfaces as an error
         # instead of an endless hang.
-        if os.environ.get("VERIFIERS_LIMITER_SOFT_LOCK"):
-            self._lock = SoftFileLock(f"{self._path}.soft.lock", timeout=60)
-        else:
-            self._lock = FileLock(f"{self._path}.lock", timeout=60)
+        self._lock = SoftFileLock(f"{self._path}.lock", timeout=60)
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)

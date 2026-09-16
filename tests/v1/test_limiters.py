@@ -26,7 +26,6 @@ def _worker(lim_dir: str, name: str, n: int, per_sec: float, q) -> None:
 
 def _leave_soft_lock_held(lim_dir: str, name: str, conn) -> None:
     """Exit without cleanup to simulate a worker dying in the critical section."""
-    os.environ["VERIFIERS_LIMITER_SOFT_LOCK"] = "1"
     lim = _make(lim_dir, name, per_sec=10)
     lim._lock.acquire()
     conn.send("held")
@@ -60,28 +59,11 @@ def test_backlog_over_five_minutes_raises(monkeypatch, tmp_path):
         lim._reserve()
 
 
-def test_soft_lock_env_opt_in(monkeypatch, tmp_path):
+def test_uses_soft_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(limiters, "LIMITER_DIR", tmp_path)
-    monkeypatch.setenv("VERIFIERS_LIMITER_SOFT_LOCK", "1")
     lim = limiters.CreationLimiter("soft", per_sec=10)
     assert isinstance(lim._lock, SoftFileLock)
-    assert lim._lock.lock_file == str(tmp_path / "soft.bucket.soft.lock")
-
-
-def test_switching_from_native_to_soft_lock_does_not_wedge(monkeypatch, tmp_path):
-    monkeypatch.setattr(limiters, "LIMITER_DIR", tmp_path)
-    native = limiters.CreationLimiter("switch", per_sec=10)
-    native._reserve()
-    # Older filelock versions and interrupted native lockers may leave this inode
-    # behind. SoftFileLock must never interpret it as its own held marker.
-    native_lock_path = Path(native._lock.lock_file)
-    native_lock_path.touch()
-
-    monkeypatch.setenv("VERIFIERS_LIMITER_SOFT_LOCK", "1")
-    soft = limiters.CreationLimiter("switch", per_sec=10)
-    assert native_lock_path == tmp_path / "switch.bucket.lock"
-    assert soft._lock.lock_file == str(tmp_path / "switch.bucket.soft.lock")
-    assert soft._reserve() > 0
+    assert lim._lock.lock_file == str(tmp_path / "soft.bucket.lock")
 
 
 def test_soft_lock_recovers_after_holder_exits(tmp_path):
@@ -97,17 +79,8 @@ def test_soft_lock_recovers_after_holder_exits(tmp_path):
     parent_conn.close()
     proc.join(10)
     assert proc.exitcode == 0
-    assert (tmp_path / "crash.bucket.soft.lock").exists()
-
-    old = os.environ.get("VERIFIERS_LIMITER_SOFT_LOCK")
-    os.environ["VERIFIERS_LIMITER_SOFT_LOCK"] = "1"
-    try:
-        assert _make(tmp_path, "crash", per_sec=10)._reserve() == 0.0
-    finally:
-        if old is None:
-            os.environ.pop("VERIFIERS_LIMITER_SOFT_LOCK", None)
-        else:
-            os.environ["VERIFIERS_LIMITER_SOFT_LOCK"] = old
+    assert (tmp_path / "crash.bucket.lock").exists()
+    assert _make(tmp_path, "crash", per_sec=10)._reserve() == 0.0
 
 
 def test_aggregate_rate_holds_across_processes(tmp_path):
