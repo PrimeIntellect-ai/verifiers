@@ -101,10 +101,10 @@ class RLMHarnessConfig(HarnessConfig):
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
-    max_total_tokens: PositiveInt | None = 10_000_000
+    max_total_tokens: NonNegativeInt = 10_000_000
     """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
     tree; once spent every engine stops and no further sub-agents spawn. 10M by default;
-    `None` falls back to nano-rlm's default (1,000,000) and does not disable the budget."""
+    `0` removes the budget (the rollout timeout is then the only terminator)."""
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
@@ -192,7 +192,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
-            "max_total_tokens": self.config.max_total_tokens,
+            "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
         }
         if isinstance(compaction, bool):
@@ -217,7 +217,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
             "policy": {
-                key: value for key, value in policy_knobs.items() if value is not None
+                **{k: v for k, v in policy_knobs.items() if v is not None},
+                # explicit null: nano-rlm reads it as unbounded (its own default is 1M)
+                **(
+                    {"max_total_tokens": None}
+                    if not self.config.max_total_tokens
+                    else {}
+                ),
             },
             "system_prompt_path": None,
             "append_to_system_prompt": "\n\n".join(appends) or None,
