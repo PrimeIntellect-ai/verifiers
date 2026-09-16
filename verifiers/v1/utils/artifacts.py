@@ -31,6 +31,41 @@ class Artifact(BaseModel):
     """`tar --exclude` patterns, applied when `source` is a directory."""
 
 
+def on_missing(
+    source: str,
+    convention: PurePosixPath,
+    *,
+    missing: Literal["raise", "omit"],
+) -> None:
+    """Raise when a declared (non-convention) root is absent under a strict policy."""
+    if missing == "raise" and PurePosixPath(source) != convention:
+        raise RuntimeError(
+            f"declared artifact {source!r} does not exist in the runtime"
+        )
+
+
+def on_over_budget(
+    source: str,
+    budget: int,
+    *,
+    on_limit: Literal["raise", "omit"],
+) -> bool:
+    """Handle a tar over the remaining shared budget.
+
+    Returns ``True`` when later roots should be omitted without tarring.
+    """
+    if on_limit == "raise":
+        raise SandboxError(
+            f"artifact {source!r} over remaining {budget} byte budget"
+        )
+    logger.warning(
+        "artifact %s over remaining %s byte budget; omitting later roots",
+        source,
+        budget,
+    )
+    return True
+
+
 async def collect(
     runtime: Runtime,
     artifacts: list[Artifact] | None = None,
@@ -45,10 +80,10 @@ async def collect(
     they were declared, and a path cannot be collected twice.
 
     Each source is archived separately so its `Artifact.exclude` patterns stay local.
-    `max_bytes` is the ceiling for this collection pass. `missing="omit"` records an
-    absent source as `None`; `"raise"` fails unless the source is the convention dir.
-    `on_limit="raise"` fails the pass when a tar would exceed the remaining budget;
-    `"omit"` records that root and every later one as `None`.
+    `max_bytes` is the shared ceiling for this collection pass. `missing="omit"`
+    records an absent source as `None`; `"raise"` fails unless the source is the
+    convention dir. `on_limit="raise"` fails the pass when a tar would exceed the
+    remaining budget; `"omit"` records that root and every later one as `None`.
     """
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
@@ -116,32 +151,20 @@ async def collect(
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
     budget = max_bytes
-    capped = False
+    exceeded_budget = False
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
-            if missing == "raise" and PurePosixPath(source) != convention:
-                raise RuntimeError(
-                    f"declared artifact {source!r} does not exist in the runtime"
-                )
+            on_missing(source, convention, missing=missing)
             collected[source] = None
             continue
-        if capped:
+        if exceeded_budget:
             collected[source] = None
             continue
         blob = await _tar_out(runtime, artifact, budget)
         if blob is None:
-            if on_limit == "raise":
-                raise SandboxError(
-                    f"artifact {source!r} over remaining {budget} byte budget"
-                )
-            logger.warning(
-                "artifact %s over remaining %s byte budget; omitting later roots",
-                source,
-                budget,
-            )
+            exceeded_budget = on_over_budget(source, budget, on_limit=on_limit)
             collected[source] = None
-            capped = True
             continue
         budget -= len(blob)
         collected[source] = blob
