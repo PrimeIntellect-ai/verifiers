@@ -27,6 +27,7 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
     RuntimeConfig,
+    SubprocessConfig,
     make_runtime,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
@@ -503,7 +504,12 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
-            if runtime is not None and self._opened and self._archive_dir is not None:
+            if (
+                runtime is not None
+                and self._opened
+                and self._archive_dir is not None
+                and not isinstance(runtime.config, SubprocessConfig)
+            ):
                 try:
                     await archive(
                         runtime,
