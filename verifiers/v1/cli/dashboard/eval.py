@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
+from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
 from verifiers.v1.cli.output import attempt_log_file, output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
@@ -278,6 +279,10 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_row("timeouts", timeouts)
     grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
     return grid
+
+
+def _prime_rl_footer() -> Group:
+    return Group(Text(""), Text(PRIME_RL_HINT, style="dim", overflow="fold"))
 
 
 def _push_footer(push: "PushState | None") -> Group | None:
@@ -833,13 +838,15 @@ def _render(
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
-    footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
-    footer = Group(*footers) if footers else None
+    footers = [
+        f
+        for f in (_push_footer(push), _interrupt_footer(), _prime_rl_footer())
+        if f is not None
+    ]
+    footer = Group(*footers)
     progress = Progress(slots, start, completed)
     top = Group(header, progress, Rule(style="dim"))
-    reserved = len(_CONSOLE.render_lines(top))
-    if footer is not None:
-        reserved += len(_CONSOLE.render_lines(footer))
+    reserved = len(_CONSOLE.render_lines(top)) + len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     if tail is not None:  # --show-logs: the run's log stream in place of rollout rows
         parts = [
@@ -847,9 +854,8 @@ def _render(
             progress,
             Rule(style="dim"),
             tail.view(rows_per_page),
+            footer,
         ]
-        if footer is not None:
-            parts.append(footer)
         return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     if count > 1:
@@ -859,9 +865,8 @@ def _render(
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, runtime_type, completed),
+        footer,
     ]
-    if footer is not None:
-        parts.append(footer)
     return Group(*parts)
 
 

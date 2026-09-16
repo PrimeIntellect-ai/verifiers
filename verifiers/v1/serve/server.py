@@ -8,6 +8,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseResponse,
@@ -93,14 +94,33 @@ class EnvServer:
         endpoint (and a training run's changing model) leaves nothing behind."""
         return ModelContext(client=client_config, model=model, sampling=sampling)
 
-    async def _run(self, req: RunRequest) -> RunResponse:
+    async def _run(
+        self, req: RunRequest, client_id: bytes, request_id: bytes
+    ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
+
+        async def send_delta(data: bytes) -> None:
+            await self.frontend.send_multipart(
+                [client_id, request_id, b"delta", data], copy=False
+            )
+
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
-        # in flight the same way the in-process eval's semaphore does.
-        episode = await self.env.run_slot(slot, ctx, self._gate)
-        # Trust the env-minted episode; serialize it once before client-side re-typing.
-        return RunResponse.model_construct(episode=episode)
+        # in flight the same way the in-process eval's semaphore does. The streamer
+        # ships each trace as it changes; the reply below carries only the rest.
+        async with DeltaStreamer(slot, send_delta) as streamer:
+            episode = await self.env.run_slot(
+                slot, ctx, self._gate, on_trace=streamer.watch
+            )
+        return RunResponse(
+            head=dump(episode, exclude={"traces"}),
+            traces=[
+                TraceSummary(
+                    id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls)
+                )
+                for trace in episode.traces
+            ],
+        )
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
@@ -113,7 +133,9 @@ class EnvServer:
             elif route == "run":
                 # Registered in the dispatch loop, before this task first runs
                 try:
-                    response = await self._run(RunRequest.model_validate(raw))
+                    response = await self._run(
+                        RunRequest.model_validate(raw), client_id, request_id
+                    )
                 finally:
                     self._running.pop(request_id.decode(), None)
             elif route == "cancel":
@@ -152,9 +174,8 @@ class EnvServer:
                 use_bin_type=True,
             )
         try:
-            # Let ZMQ retain the packed response instead of copying large traces.
             await self.frontend.send_multipart(
-                [client_id, request_id, data], copy=False
+                [client_id, request_id, b"reply", data], copy=False
             )
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)

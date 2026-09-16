@@ -18,6 +18,80 @@ def pair(a: str, b: str, id: str, *extra_marks):
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
 
 
+@pytest.mark.asyncio
+async def test_chat_harness_preserves_streamed_reasoning():
+    import json
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    from verifiers.v1.harnesses.utils.core import chat
+
+    def chunk(text: str, finish_reason: str | None = None) -> dict:
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning": text,
+                        "reasoning_content": text,
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.text",
+                                "index": 0,
+                                "id": "r1",
+                                "format": "unknown",
+                                "signature": "sig",
+                                "text": text,
+                            }
+                        ],
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
+    events = [chunk("Plan: "), chunk("call ls", "stop")]
+    content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    content += "data: [DONE]\n\n"
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="https://example.test/v1",
+            http_client=http_client,
+        )
+        completion = await chat(client, "test-model", [], [])
+
+    message = completion.choices[0].message.model_dump(exclude_none=True)
+    assert message["role"] == "assistant"
+    assert message["reasoning"] == "Plan: call ls"
+    assert message["reasoning_content"] == "Plan: call ls"
+    assert message["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "index": 0,
+            "id": "r1",
+            "format": "unknown",
+            "signature": "sig",
+            "text": "Plan: call ls",
+        }
+    ]
+
+
 # harness x harness runtime: every harness once, both local runtimes hit (subprocess
 # only carries the in-house loops — the rest NEEDS_CONTAINER), one remote row per
 # provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
@@ -278,6 +352,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness.id == "pi":
+        recall = next(tool for tool in trace.tools if tool.name == "resume_recall")
+        assert recall.parameters["properties"]["codeword"]["type"] == "string"
+        assert "codeword" in recall.parameters["required"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
         assert all(call.acp is not None for call in trace.calls)

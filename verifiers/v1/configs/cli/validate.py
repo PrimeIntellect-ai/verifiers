@@ -56,7 +56,7 @@ class ValidateConfig(BaseConfig):
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing, errored, and timed-out tasks in place. The run dir comes
     from the resolved config (`output_dir / run.dir`), so resume with the run's own
-    config — e.g. `uv run validate @ <run-dir>/configs/validate.json --resume`.
+    config — e.g. `uv run vf-validate @ <run-dir>/configs/validate.json --resume`.
     Excluded from the saved config."""
     clean: bool = Field(False, exclude=True)
     """Delete the run directory (`output_dir / run.dir`) before running, overwriting a

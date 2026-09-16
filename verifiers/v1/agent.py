@@ -55,11 +55,19 @@ __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_ROLLOUT_TIMEOUT = 4 * 3600.0
+"""Agent solve-attempt budget when neither the eval config nor the task sets one."""
+
+
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
     """Apply an agent's stage-timeout precedence to one task."""
     agent_timeout = (
         timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
     )
+    if agent_timeout is None:
+        agent_timeout = DEFAULT_ROLLOUT_TIMEOUT
+    elif agent_timeout == 0:
+        agent_timeout = None  # explicit: unbounded
     return RolloutTimeouts(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
         agent=agent_timeout,
