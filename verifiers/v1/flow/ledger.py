@@ -20,12 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
-from verifiers.v1.cli.output import (
-    TRACES_FILE,
-    append_trace,
-    read_episodes,
-    read_jsonl,
-)
+from verifiers.v1.cli.output import TRACES_FILE, append_trace, read_jsonl, type_adapter
 from verifiers.v1.flow.work import WorkKind
 from verifiers.v1.trace import Trace, WireTrace
 
@@ -33,6 +28,9 @@ logger = logging.getLogger("verifiers.flow")
 
 EVENTS_FILE = "events.jsonl"
 """Filename the run's progress events are appended to (one JSON object per line)."""
+INDEX_FILE = "traces.index.jsonl"
+"""Where each trace sits in `traces.jsonl`: `{id, offset, length}` per line, so a step
+attaching on resume reads its one trace instead of the whole file."""
 
 SHORT = 16
 """Digest chars for a row key, a source hash and the run label."""
@@ -53,6 +51,7 @@ EventKind = Literal[
     "step_cancelled",
     "spread_started",
     "spread_finished",
+    "rss",
 ]
 
 
@@ -110,14 +109,18 @@ class Ledger:
         self.run_dir = run_dir
         self.steps_dir = run_dir / "steps"
         self.steps_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / TRACES_FILE).touch()
+        self.traces_file = run_dir / TRACES_FILE
+        self.traces_file.touch()
+        self.index_file = run_dir / INDEX_FILE
         self.events_file = run_dir / EVENTS_FILE
         self.events_file.touch()
         data = self.events_file.read_bytes()
         if data and not data.endswith(b"\n"):  # a kill tore the last line: drop it
             self.events_file.write_bytes(data[: data.rfind(b"\n") + 1])
         self.lock = asyncio.Lock()
-        self._traces: dict[str, WireTrace] | None = None
+        self._index: dict[str, tuple[int, int]] | None = (
+            None  # trace id -> (offset, length)
+        )
 
     def path(self, row: str, path: str, index: int | None) -> Path:
         name = (
@@ -154,16 +157,65 @@ class Ledger:
         """The run's events, oldest first."""
         return read_jsonl(self.events_file)
 
+    # -- traces -----------------------------------------------------------------------
+
     async def append(self, trace: Trace) -> None:
-        await append_trace(self.run_dir, trace, self.lock, env="flow")
-        if self._traces is not None:
-            self._traces[trace.id] = trace  # type: ignore[assignment]
+        async with self.lock:
+            start = self.traces_file.stat().st_size
+            await append_trace(self.run_dir, trace, asyncio.Lock(), env="flow")
+            length = self.traces_file.stat().st_size - start
+            with self.index_file.open("a", encoding="utf-8") as file:
+                file.write(
+                    json.dumps({"id": trace.id, "offset": start, "length": length})
+                    + "\n"
+                )
+            self.index()[trace.id] = (start, length)
+
+    def index(self) -> dict[str, tuple[int, int]]:
+        if self._index is None:
+            self._index = {
+                e["id"]: (e["offset"], e["length"])
+                for e in (
+                    read_jsonl(self.index_file) if self.index_file.exists() else []
+                )
+            }
+        return self._index
 
     def trace(self, trace_id: str) -> WireTrace | None:
-        if self._traces is None:
-            self._traces = {
-                trace.id: trace
-                for episode in read_episodes(self.run_dir, WireTrace)
-                for trace in episode.traces
-            }
-        return self._traces.get(trace_id)
+        """One trace by id, read in place; a trace the index lacks (a run written before
+        the index, a torn index line) triggers one full rebuild of the index."""
+        if trace_id not in self.index():
+            self._reindex()
+        if (where := self.index().get(trace_id)) is None:
+            return None
+        with self.traces_file.open("rb") as file:
+            file.seek(where[0])
+            episode = json.loads(file.read(where[1]))
+        adapter = type_adapter(WireTrace)
+        return next(
+            (
+                adapter.validate_python(t)
+                for t in episode["traces"]
+                if t["id"] == trace_id
+            ),
+            None,
+        )
+
+    def _reindex(self) -> None:
+        index, offset = {}, 0
+        with self.traces_file.open("rb") as file:
+            for line in file:
+                if line.strip():
+                    try:
+                        episode = json.loads(line)
+                    except json.JSONDecodeError:  # the torn last line
+                        break
+                    for t in episode["traces"]:
+                        index[t["id"]] = (offset, len(line))
+                offset += len(line)
+        with self.index_file.open("w", encoding="utf-8") as file:
+            for tid, (start, length) in index.items():
+                file.write(
+                    json.dumps({"id": tid, "offset": start, "length": length}) + "\n"
+                )
+        self._index = index

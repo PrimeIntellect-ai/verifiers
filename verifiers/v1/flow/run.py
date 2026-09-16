@@ -16,9 +16,11 @@ earlier step values, so a resume walks the same path. Concurrent branches are
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import inspect
 import logging
 import os
+import resource
 import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -62,6 +64,11 @@ logger = logging.getLogger("verifiers.flow")
 
 LABEL_MAX = 60
 """Chars the run's label is cut to: the sandbox label a sweep finds its boxes by."""
+DRAIN_FILE = "drain"
+"""A file of this name in the run directory drains the run, as Ctrl-C once does: for a
+supervisor or an operator without the process's terminal. Remove it to launch again."""
+RSS_STEP_MB = 256
+"""An `rss` event each time the process's peak resident memory grows by this much."""
 _SCOPE: ContextVar[tuple[str, ...]] = ContextVar("flow_scope", default=())
 
 T = TypeVar("T")
@@ -104,6 +111,7 @@ class Run:
         """Every row seen so far, by key, and where it stands."""
         self.interception: Interception | None = None  # live inside `_serving`
         self._draining = asyncio.Event()
+        self._rss_mark = 0
         (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
 
     # -- rows -----------------------------------------------------------------------
@@ -147,7 +155,15 @@ class Run:
 
     @property
     def draining(self) -> bool:
+        if not self._draining.is_set() and (self.run_dir / DRAIN_FILE).exists():
+            self.drain()
         return self._draining.is_set()
+
+    def _watch_rss(self) -> None:
+        mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+        if mb >= self._rss_mark + RSS_STEP_MB:
+            self._rss_mark = mb - mb % RSS_STEP_MB
+            self.ledger.event("rss", mb=mb)
 
     def seat(self, name: str) -> AgentConfig:
         """The seat with the run's defaults filled in: the identity its steps key on."""
@@ -187,6 +203,18 @@ class Run:
 
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:
+        with (self.run_dir / "run.lock").open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError(
+                    f"{self.run_dir} is in use by another launch"
+                ) from None
+            async with self._interception():
+                yield
+
+    @asynccontextmanager
+    async def _interception(self) -> AsyncIterator[None]:
         set_base_sandbox_labels([self.label])
         os.environ[RUN_LABEL_VAR] = (
             self.label
@@ -227,6 +255,7 @@ class Ctx:
     def __init__(self, run: Run, key: str, row: Any) -> None:
         self.run, self.key, self.row = run, key, row
         self._counts: dict[tuple[str, ...], dict[str, int]] = {}
+        self._attached_paths: set[str] = set()
 
     @property
     def config(self) -> FlowConfig:
@@ -256,6 +285,14 @@ class Ctx:
     def _event(self, kind: EventKind, **fields: Any) -> None:
         """One event for this row: the row key always rides along."""
         self.run.ledger.event(kind, row=self.key, **fields)
+
+    def attached(self, name: str) -> bool:
+        """Whether the latest step called `name` in this scope came from the ledger rather
+        than ran: what a flow checks when a later step assumed that step's side effects
+        (a world it brought up in a shared box) and must redo them on a resume."""
+        scope = _SCOPE.get()
+        n = self._counts.get(scope, {}).get(name, 0) - 1
+        return "/".join([*scope, f"{name}#{n}"]) in self._attached_paths
 
     # -- steps ----------------------------------------------------------------------
 
@@ -346,9 +383,10 @@ class Ctx:
             except LookupError as exc:
                 logger.warning("%s/%s: %s; running the step again", self.key, path, exc)
             else:
+                self._attached_paths.add(path)
                 self._event("step_attached", path=path, index=index)
                 return value
-        if run._draining.is_set():
+        if run.draining:
             raise Stopped(path)
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
         self._event("step_started", path=path, index=index)
@@ -395,6 +433,7 @@ class Ctx:
                     )
                 )
                 self._event("step_completed", path=path, index=index)
+                run._watch_rss()
                 return value
         except asyncio.CancelledError:
             self._event("step_cancelled", path=path, index=index)

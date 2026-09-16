@@ -4,6 +4,7 @@ and how the record rebuilds that value on a resume."""
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import typing
@@ -36,7 +37,12 @@ class Oversized(ValueError):
 
 
 class RolloutFailed(Exception):
-    """An agent step whose trace ended in an error: the step's attempt failed."""
+    """An agent step whose trace ended in an error: the step's attempt failed. `type` and
+    `status_code` are the trace's last error, for a flow routing on `StepFailed.__cause__`."""
+
+    def __init__(self, message: str, type: str = "", status_code: int | None = None):
+        super().__init__(message)
+        self.type, self.status_code = type, status_code
 
 
 class Work(ABC, Generic[T]):
@@ -84,9 +90,10 @@ class AgentWork(Work[Trace]):
             trace = await agent.run(self.task, runtime=self.runtime)
         await run.ledger.append(trace)
         if not trace.ok:
-            last = trace.last_error
+            if (last := trace.last_error) is None:
+                raise RolloutFailed("rollout failed")
             raise RolloutFailed(
-                f"{last.type}: {last.message}" if last else "rollout failed"
+                f"{last.type}: {last.message}", last.type, last.status_code
             )
         return trace
 
@@ -131,7 +138,11 @@ class FnWork(Work[T]):
         return ["fn", self.func.__qualname__, self.args, self.kwargs]
 
     async def execute(self, ctx: Ctx) -> T:
-        value = self.func(*self.args, **self.kwargs)
+        # A sync function runs off the loop: a build or a shell-out in it must not
+        # stall every other row's turns.
+        if inspect.iscoroutinefunction(self.func):
+            return await self.func(*self.args, **self.kwargs)
+        value = await asyncio.to_thread(self.func, *self.args, **self.kwargs)
         return await value if inspect.isawaitable(value) else value
 
     def dump(self, ctx: Ctx, value: T) -> dict[str, Any]:

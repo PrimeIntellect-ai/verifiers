@@ -4,7 +4,8 @@ The flow is an async function `flow(ctx, row)`; its config is the `FlowConfig`
 subclass its module exports via `__all__` (as a harness or taskset module exports its
 class), else `FlowConfig`, and is parsed like every v1 CLI: `@ file.toml`
 loads a file, `--author.model x` sets a field, `-h` after the positionals lists them.
-Ctrl-C once drains (in-flight steps finish and record), twice cancels. The same
+Ctrl-C once drains (in-flight steps finish and record), twice cancels; so does a `drain`
+file in the run directory. The same
 command against the same run directory resumes. `-v` streams every progress event
 (the `events.jsonl` line) to stderr.
 """
