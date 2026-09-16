@@ -41,7 +41,7 @@ The best system prompt is printed when the run finishes and written to `best_sys
 Hand it back to eval or training via the config-layer taskset system prompt:
 
 ```bash
-uv run eval reverse-text \
+uv run vf-eval reverse-text \
   --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
 ```
 

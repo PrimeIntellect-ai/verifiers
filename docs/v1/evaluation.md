@@ -3,7 +3,7 @@
 To evaluate any taskset, use the `eval` entrypoint:
 
 ```bash
-uv run eval primeintellect/terminal-bench-2
+uv run vf-eval primeintellect/terminal-bench-2
 ```
 
 You can also use `.toml` files for configuration:
@@ -25,7 +25,7 @@ version = "0.116.0"
 type = "docker"
 ```
 
-Validate the config by using `uv run eval @ config.toml --dry-run`. To run the evaluation, use `uv run eval @ config.toml`.
+Validate the config by using `uv run vf-eval @ config.toml --dry-run`. To run the evaluation, use `uv run vf-eval @ config.toml`.
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 

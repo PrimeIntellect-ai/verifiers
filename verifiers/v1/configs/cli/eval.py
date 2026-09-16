@@ -129,7 +129,7 @@ class EvalConfig(BaseConfig):
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
-    run's own config — e.g. `uv run eval @ <run-dir>/configs/eval.json --resume`. Excluded
+    run's own config — e.g. `uv run vf-eval @ <run-dir>/configs/eval.json --resume`. Excluded
     from the saved config."""
 
     @model_validator(mode="before")

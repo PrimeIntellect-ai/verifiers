@@ -1,7 +1,6 @@
 """Eval CLI entrypoint."""
 
 import asyncio
-import importlib.util
 import json
 import logging
 import shutil
@@ -31,18 +30,12 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
-    "       uv run eval @ <run-dir>/configs/resolved/eval.json --resume   (re-run the run's missing/errored rollouts)"
+    "usage: uv run vf-eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
+    "       uv run vf-eval @ <run-dir>/configs/resolved/eval.json --resume   (re-run the run's missing/errored rollouts)"
 )
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Both packages install an `eval` script and the last one installed wins; in a
-    # prime-rl workspace its entrypoint is the one meant.
-    if importlib.util.find_spec("prime_rl") is not None:
-        from prime_rl.entrypoints.eval import main as prime_rl_main
-
-        return prime_rl_main()
     argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
@@ -115,7 +108,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"--resume requires the exact config the run was started with - it "
                 f"differs in [{', '.join(changed)}]. Resumed rollouts would not be "
-                f"comparable; re-run with `uv run eval @ {saved_path} --resume`, or "
+                f"comparable; re-run with `uv run vf-eval @ {saved_path} --resume`, or "
                 "start a fresh run"
             )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
