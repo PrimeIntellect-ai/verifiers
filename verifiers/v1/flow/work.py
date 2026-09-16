@@ -17,7 +17,7 @@ from pydantic import TypeAdapter
 from pydantic.errors import PydanticSchemaGenerationError
 from pydantic_core import to_jsonable_python
 
-from verifiers.v1.agent import make_agent
+from verifiers.v1.agent import Agent, make_agent
 from verifiers.v1.flow.config import RUNTIMES
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import Task
@@ -87,7 +87,7 @@ class AgentWork(Work[Trace]):
         agent = make_agent(run.seat(self.seat), interception=run.interception)
         held = () if self.runtime is not None else (RUNTIMES,)
         async with run.pools.hold(held), agent:
-            trace = await agent.run(self.task, runtime=self.runtime)
+            trace = await self.rollout(agent)
         await run.ledger.append(trace)
         if not trace.ok:
             if (last := trace.last_error) is None:
@@ -96,6 +96,12 @@ class AgentWork(Work[Trace]):
                 f"{last.type}: {last.message}", last.type, last.status_code
             )
         return trace
+
+    async def rollout(self, agent: Agent) -> Trace:
+        """One rollout of the task on `agent`. A subclass that drives the seat differently
+        (turn by turn, through `agent.interaction`) overrides this alone; the pool, the
+        ledger and the failure rule stay here."""
+        return await agent.run(self.task, runtime=self.runtime)
 
     def dump(self, ctx: Ctx, value: Trace) -> dict[str, Any]:
         return {"trace_id": value.id}
