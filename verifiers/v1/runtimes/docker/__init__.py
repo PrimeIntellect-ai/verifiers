@@ -15,6 +15,8 @@ from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
+from pydantic import Field
+
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -35,6 +37,9 @@ class DockerConfig(NetworkPolicyConfig):
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
+    mounts: list[str] = Field(default_factory=list)
+    """Bind mounts in docker `-v` form (`/host/path:/container/path[:ro]`): host data
+    the box reads in place instead of having it copied in per rollout."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -238,12 +243,14 @@ class DockerRuntime(Runtime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        mount_args = [arg for mount in self.config.mounts for arg in ("-v", mount)]
         run = await docker(
             "run",
             "--detach",
             *network,
             *limits,
             *env_args,
+            *mount_args,
             "--workdir",
             self.config.workdir,
             "--entrypoint",
