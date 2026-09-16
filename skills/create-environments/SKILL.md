@@ -128,7 +128,7 @@ The harness owns:
 - wiring model requests to the supplied interception endpoint and secret;
 - harness-generic execution metrics.
 
-Runtime config chooses where code executes. Task hooks should use the `vf.Runtime` interface they receive instead of assuming Docker-, Prime-, Modal-, or host-specific implementation details.
+Runtime config chooses where code executes. Task hooks should use the `vf.Runtime` interface they receive instead of assuming Docker-, Prime-, Modal-, Daytona-, E2B-, or host-specific implementation details.
 
 ## Scoring rules
 

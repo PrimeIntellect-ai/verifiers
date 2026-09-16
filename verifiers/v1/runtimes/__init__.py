@@ -12,7 +12,13 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     register,
 )
+from verifiers.v1.runtimes.daytona import (
+    DaytonaConfig,
+    DaytonaRuntime,
+    DaytonaRuntimeInfo,
+)
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.e2b import E2BConfig, E2BRuntime, E2BRuntimeInfo
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -27,12 +33,22 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig
+    | DockerConfig
+    | PrimeConfig
+    | ModalConfig
+    | DaytonaConfig
+    | E2BConfig,
     Field(discriminator="type"),
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    SubprocessRuntimeInfo
+    | DockerRuntimeInfo
+    | PrimeRuntimeInfo
+    | ModalRuntimeInfo
+    | DaytonaRuntimeInfo
+    | E2BRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -42,6 +58,10 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         return PrimeRuntime
     if isinstance(config, ModalConfig):
         return ModalRuntime
+    if isinstance(config, DaytonaConfig):
+        return DaytonaRuntime
+    if isinstance(config, E2BConfig):
+        return E2BRuntime
     if isinstance(config, DockerConfig):
         return DockerRuntime
     return SubprocessRuntime
@@ -80,9 +100,15 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 __all__ = [
     "BaseRuntimeInfo",
+    "DaytonaConfig",
+    "DaytonaRuntime",
+    "DaytonaRuntimeInfo",
     "DockerConfig",
     "DockerRuntime",
     "DockerRuntimeInfo",
+    "E2BConfig",
+    "E2BRuntime",
+    "E2BRuntimeInfo",
     "ModalConfig",
     "ModalRuntime",
     "ModalRuntimeInfo",
