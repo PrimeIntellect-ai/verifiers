@@ -35,8 +35,8 @@ from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.archive import archive
-from verifiers.v1.utils.grading import GradingCollect, grading_collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.grading import GradingCollect, grading_collect
 
 logger = logging.getLogger(__name__)
 
@@ -503,11 +503,7 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
-            if (
-                runtime is not None
-                and self._opened
-                and self._archive_dir is not None
-            ):
+            if runtime is not None and self._opened and self._archive_dir is not None:
                 try:
                     await archive(
                         runtime,

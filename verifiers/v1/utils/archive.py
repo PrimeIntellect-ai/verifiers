@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -15,6 +16,15 @@ if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
 
 logger = logging.getLogger(__name__)
+
+
+def drop_archive(root: Path | None, trace_id: str) -> None:
+    """Remove a rollout dump that will not join the episode (an abandoned retry).
+    `root` is the run archive dir (`artifacts/`); dumps live at `<episode.id>/<trace.id>`."""
+    if root is None:
+        return
+    for dump in root.glob(f"*/{trace_id}"):
+        shutil.rmtree(dump, ignore_errors=True)
 
 
 def _flatten(source: str) -> str:

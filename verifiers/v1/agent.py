@@ -23,6 +23,7 @@ from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
+from verifiers.v1.episode import Episode
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -593,10 +594,10 @@ class _EpisodeAgent(Agent):
     """One role's `Agent` for one episode, built fresh each time (a cheap
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
-    they're created, finished ones land in `completed` (the episode's traces),
-    each run takes one of the episode's agent permits. The taskset's shared tool
-    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
-    in play (`tools=` overrides)."""
+    they're created, finished ones land on the episode, each run takes one of the
+    episode's agent permits. The taskset's shared tool servers ride only its own
+    tasks — on an env-minted task they'd wrongly put MCP in play (`tools=`
+    overrides)."""
 
     def __init__(
         self,
@@ -607,7 +608,7 @@ class _EpisodeAgent(Agent):
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
-        completed: list[Trace],
+        episode: Episode,
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
@@ -623,7 +624,7 @@ class _EpisodeAgent(Agent):
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
-        self._completed = completed
+        self._episode = episode
         self._on_trace = on_trace
         self._on_discard = on_discard
 
@@ -669,7 +670,7 @@ class _EpisodeAgent(Agent):
                 on_trace=self._watch(on_trace),
                 grading_collect=grading_collect,
             )
-        self._completed.append(trace)
+        self._episode.traces.append(trace)
         return trace
 
     @asynccontextmanager
@@ -707,7 +708,7 @@ class _EpisodeAgent(Agent):
             # `Agent.interaction()` may fail before yielding (e.g. task/harness setup).
             # Its trace is minted first, so retain that failed rollout in the episode.
             if trace is not None and trace.is_completed:
-                self._completed.append(trace)
+                self._episode.traces.append(trace)
 
 
 def make_agent(

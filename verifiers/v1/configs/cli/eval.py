@@ -137,7 +137,8 @@ class EvalConfig(BaseConfig):
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     """Host-side sandbox dump policy. Default is `/logs/artifacts` plus the task's
     grading artifacts; `extra` / `exclude` add or filter that set, `max_mb` caps
-    the dump (256 MiB). Written under `output_dir / run.dir / artifacts / <trace.id>/`."""
+    the dump (256 MiB). Written under
+    `output_dir / run.dir / artifacts / <episode.id> / <trace.id>/`."""
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the

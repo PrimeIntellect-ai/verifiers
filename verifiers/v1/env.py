@@ -34,6 +34,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.archive import drop_archive
 from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -196,7 +197,7 @@ class Env(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
-        completed: list[Trace],
+        episode: Episode,
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
@@ -206,6 +207,7 @@ class Env(ABC, Generic[ConfigT]):
         `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
         gate = asyncio.Semaphore(limit) if limit else None
+        archive_dir = self.archive_dir / episode.id if self.archive_dir else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -234,11 +236,11 @@ class Env(ABC, Generic[ConfigT]):
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
-                completed=completed,
+                episode=episode,
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
-                archive_dir=self.archive_dir,
+                archive_dir=archive_dir,
                 archive_config=self.archive_config,
             )
 
@@ -270,7 +272,7 @@ class Env(ABC, Generic[ConfigT]):
                 hash=task.hash,
             ),
         )
-        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
+        agents = self._episode_agents(ctx, episode, on_trace, on_discard)
         try:
             try:
                 async with asyncio.timeout(self.config.timeout.episode):
@@ -340,9 +342,11 @@ class Env(ABC, Generic[ConfigT]):
             live = slot.traces
 
             def discard(trace: Trace) -> None:
-                # A retried agent attempt abandons its trace; drop it from the view.
+                # A retried agent attempt abandons its trace; drop it from the view
+                # and its host dump (only the final attempt joins the episode).
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
+                drop_archive(self.archive_dir, trace.id)
 
             async with semaphore or contextlib.nullcontext():
                 return await self.run_episode(
