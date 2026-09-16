@@ -98,6 +98,15 @@ def digest(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(flat, sort_keys=True).encode()).hexdigest()
 
 
+def trim_torn_tail(file: Path) -> None:
+    """Drop the partial last line a kill mid-append left in a JSON-lines file, so the next
+    append does not fuse with it into a corrupt line no reader can skip. Creates the file."""
+    file.touch()
+    data = file.read_bytes()
+    if data and not data.endswith(b"\n"):
+        file.write_bytes(data[: data.rfind(b"\n") + 1])
+
+
 def row_key(row: Any) -> str:
     """A row's key: its `key` field or attribute when it has one, else a digest."""
     key = row.get("key") if isinstance(row, Mapping) else getattr(row, "key", None)
@@ -113,10 +122,8 @@ class Ledger:
         self.traces_file.touch()
         self.index_file = run_dir / INDEX_FILE
         self.events_file = run_dir / EVENTS_FILE
-        self.events_file.touch()
-        data = self.events_file.read_bytes()
-        if data and not data.endswith(b"\n"):  # a kill tore the last line: drop it
-            self.events_file.write_bytes(data[: data.rfind(b"\n") + 1])
+        for file in (self.events_file, self.index_file):
+            trim_torn_tail(file)
         self.lock = asyncio.Lock()
         self._index: dict[str, tuple[int, int]] | None = (
             None  # trace id -> (offset, length)
