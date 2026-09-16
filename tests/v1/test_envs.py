@@ -1,33 +1,21 @@
-"""Smoke-eval every example taskset in `environments/` through the `eval` CLI.
+"""Smoke-eval every example taskset in `environments/` in-process.
 
-Each taskset runs with its required harness for one short, capped rollout, so a broken
-example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
-SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
+Each taskset runs with its required harness for one short, capped rollout through the
+shared e2e runner, so a broken example taskset fails CI. `compact` is excluded (it's a
+harness, not a taskset); SWE/container tasksets need a docker/prime runtime and are
+covered by dedicated V1 e2e tests.
 """
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.e2e
 
-EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
-
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
-
-# Per-run caps are seat fields; recipe envs name their own seats.
-SEATS: dict[str, tuple[str, ...]] = {
-    "code_golf": ("golfer",),
-    "kuhn_poker": ("player0", "player1"),
-    "openenv_wordle": ("player",),
-    "proposer_solver": ("proposer", "solver"),
-    "wordle": ("player",),
-}
 
 
 def v1_tasksets() -> list[str]:
@@ -41,42 +29,19 @@ def v1_tasksets() -> list[str]:
 
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
-def test_eval(taskset: str):
+async def test_eval(run_v1, taskset: str, tmp_path: Path):
     """Run one capped rollout of `taskset`; a taskset that bundles a harness uses it by default."""
     if taskset in SKIP_EVAL:
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
-    if os.getenv("PRIME_API_KEY"):
-        model = [
-            "-m", "openai/gpt-5.6-luna",
-            "--client.base-url", "https://api.pinference.ai/api/v1",
-            "--client.api-key-var", "PRIME_API_KEY",
-        ]  # fmt: skip
-    elif os.getenv("OPENAI_API_KEY"):
-        model = [
-            "-m", "gpt-4.1-mini",
-            "--client.base-url", "https://api.openai.com/v1",
-            "--client.api-key-var", "OPENAI_API_KEY",
-        ]  # fmt: skip
-    else:
-        pytest.skip("no model API key configured")
-
-    caps = [
-        flag
-        for seat in SEATS.get(taskset, ("agent",))
-        for flag in (f"--env.{seat}.max-turns", "4")
-    ]
-    cmd = [
-        "uv", "run", "--no-sync", "eval", taskset,
-        *model,
-        "-n", "1", "-r", "1", *caps,
-        "--sampling.max-tokens", "512", "--no-rich", "--no-push",
-    ]  # fmt: skip
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=EVAL_TIMEOUT, check=False
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {taskset}")
-    assert proc.returncode == 0, (
-        f"eval {taskset} failed: {(proc.stderr or proc.stdout)[-2000:]}"
+    # `harness=None`: every seat keeps the taskset's own harness; the runner caps each
+    # seat's turns.
+    traces = await run_v1(
+        taskset,
+        output_dir=tmp_path / taskset,
+        harness=None,
+        max_tokens=512,
+        rollout_timeout=600,
     )
+    assert traces, f"{taskset} produced no trace"
+    for trace in traces:
+        assert trace.ok, f"{taskset}: {trace.errors}"
