@@ -7,11 +7,11 @@ the single-process eval and all the elastically-spawned env-server worker proces
 just within one process. Keyed by name: one bucket file per name, shared by every process (and
 run) for the user.
 
-Mutual exclusion uses the ``filelock`` package (``flock`` on POSIX, ``msvcrt`` on Windows,
-rather than hand-rolled ``fcntl``). On filesystems where ``flock`` is unreliable (e.g. NFS),
-set ``VERIFIERS_LIMITER_SOFT_LOCK=1`` to switch to ``SoftFileLock``, which excludes via
-atomic lock-file creation. Either way, the shared bucket still requires a wall clock
-comparable across hosts and boots.
+Mutual exclusion uses the ``filelock`` package rather than hand-rolled ``fcntl``. On
+filesystems where ``flock`` is unreliable (e.g. NFS), set
+``VERIFIERS_LIMITER_SOFT_LOCK=1`` to switch to ``SoftFileLock``, which excludes via atomic
+lock-file creation. Either way, the shared bucket still requires a wall clock comparable
+across hosts and boots.
 """
 
 import asyncio
