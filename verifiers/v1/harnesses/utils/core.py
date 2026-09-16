@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import certifi
 import httpx
 from openai import APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
@@ -419,10 +420,15 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
+    timeout = httpx.Timeout(600.0 if args.bash else None, connect=5.0)
+    # Verify TLS against certifi's bundle, not the image's trust store: minimal images
+    # (e.g. plain ubuntu) ship no ca-certificates, and the client then reports the
+    # failed handshake with the interception tunnel as a bare "Connection error".
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
-        timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        timeout=timeout,
+        http_client=httpx.AsyncClient(timeout=timeout, verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
