@@ -22,7 +22,6 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
-    DaytonaConfig,
     E2BConfig,
     ModalConfig,
     Runtime,
@@ -113,9 +112,7 @@ class Rollout:
                 if isinstance(runtime_config, NetworkPolicyConfig)
                 else NetworkPolicyConfig(
                     allow=[]
-                    if isinstance(
-                        runtime_config, ModalConfig | DaytonaConfig | E2BConfig
-                    )
+                    if isinstance(runtime_config, ModalConfig | E2BConfig)
                     and not runtime_config.network_access
                     else ["*"]
                 )
