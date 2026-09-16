@@ -88,13 +88,14 @@ async def archive(
     """Copy declared (and convention) artifact roots from `runtime` onto `dest`.
 
     Default inventory is `/logs/artifacts` plus `artifacts` (the task path list).
-    `config.extra` merges additional sources. Best-effort: missing sources are
-    recorded, not raised. Tar bytes are written as files; they are not stored on
-    the trace.
+    `config.extra` merges additional sources. Best-effort: missing sources stay
+    in the manifest with `file: null`. Tar bytes are written as files; they are
+    not stored on the trace.
 
     Host names default to a flattened `source` (`/app/x` → `app__x.tar`).
     `destinations` maps sandbox source to a relative path under `dest` (Harbor
-    `destination`); restore is unchanged. First writer wins on a colliding host path.
+    `destination`); restore is unchanged. First writer wins on a colliding host
+    path; later rows keep `file: null`.
     """
     dest.mkdir(parents=True, exist_ok=True)
     policy = config or ArchiveConfig()
@@ -113,33 +114,29 @@ async def archive(
     for source, blob in collected.items():
         destination = names.get(source)
         name = _host_file(source, destination)
-        if name in claimed:
+        if blob is None or name in claimed:
+            if name in claimed:
+                logger.warning(
+                    "archive host path %s already claimed; skipping %s", name, source
+                )
             entries.append(
                 {
                     "source": source,
-                    "file": name,
-                    "destination": destination,
-                    "present": False,
-                    "error": "collision",
+                    "file": None,
+                    "harbor_destination": destination,
                 }
             )
             continue
         claimed.add(name)
-        present = blob is not None
-        if present:
-            path = dest / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(blob)
+        path = dest / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
         entries.append(
             {
                 "source": source,
                 "file": name,
-                "destination": destination,
-                "present": present,
-                "error": None,
+                "harbor_destination": destination,
             }
         )
-    (dest / "manifest.json").write_text(
-        json.dumps({"entries": entries}, indent=2) + "\n"
-    )
+    (dest / "manifest.json").write_text(json.dumps(entries, indent=2) + "\n")
     logger.debug("archived %d artifact root(s) to %s", len(entries), dest)
