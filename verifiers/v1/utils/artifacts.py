@@ -33,7 +33,6 @@ async def collect(
     runtime: Runtime,
     artifacts: list[Artifact] | None = None,
     *,
-    exclude: list[str] | None = None,
     max_bytes: int,
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
@@ -43,22 +42,15 @@ async def collect(
     recorded as `None`. Callers that need declared paths to exist enforce that
     themselves.
 
-    Each source is archived separately so its exclude patterns stay local.
-    `exclude` is extra `tar --exclude` patterns applied to every root, including the
-    convention dir. `max_bytes` is the ceiling for this collection pass.
+    Each source is archived separately so its `Artifact.exclude` patterns stay local.
+    `max_bytes` is the ceiling for this collection pass.
     """
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
     workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
-    extra_exclude = list(exclude or [])
     declared = [
-        a.model_copy(
-            update={
-                "source": str(workdir / a.source),
-                "exclude": list(dict.fromkeys([*a.exclude, *extra_exclude])),
-            }
-        )
+        a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
@@ -74,7 +66,7 @@ async def collect(
         entries = [
             Artifact(
                 source=ARTIFACTS_DIR,
-                exclude=list(dict.fromkeys([*sweep_excludes, *extra_exclude])),
+                exclude=sweep_excludes,
             )
         ]
         for artifact, path in zip(declared, declared_paths, strict=True):

@@ -88,9 +88,9 @@ async def archive(
     """Copy declared (and convention) artifact roots from `runtime` onto `dest`.
 
     Default inventory is `/logs/artifacts` plus `artifacts` (the task path list).
-    `config.extra` merges additional sources; `config.exclude` is applied to every
-    root, including the convention dir. Best-effort: missing sources are recorded,
-    not raised. Tar bytes are written as files; they are not stored on the trace.
+    `config.extra` merges additional sources. Best-effort: missing sources are
+    recorded, not raised. Tar bytes are written as files; they are not stored on
+    the trace.
 
     Host names default to a flattened `source` (`/app/x` → `app__x.tar`).
     `destinations` maps sandbox source to a relative path under `dest` (Harbor
@@ -106,7 +106,6 @@ async def archive(
     collected = await collect(
         runtime,
         optional,
-        exclude=policy.exclude,
         max_bytes=policy.max_mb * 1024 * 1024,
     )
     entries: list[dict] = []
