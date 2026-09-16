@@ -18,18 +18,19 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
     uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
     uv run pytest tests/v1 -n auto -m "not e2e"                   # deterministic CI matrix
-    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal"  # live CI job
+    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal and not e2b"  # live CI job
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
+    uv run --extra e2b pytest tests/v1 -n 1 -m e2b                # only E2B (needs both API keys)
 
-Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal`, placement `colocated`,
+Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal` / `e2b`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
-prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
+prime/modal/e2b provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
 CI runs deterministic tests across the Python matrix and the remaining live E2Es once.
 """
 
@@ -96,14 +97,14 @@ def pytest_configure(config) -> None:
 
 
 def pytest_collection_modifyitems(config, items) -> None:
-    """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
-    rest of the suite (e.g. config parsing) still runs in a keyless environment."""
-    if os.environ.get("PRIME_API_KEY"):
-        return
-    skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
+    """Skip live tests independently when their model or runtime credentials are absent."""
+    model_skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
+    e2b_skip = pytest.mark.skip(reason="needs E2B_API_KEY")
     for item in items:
-        if "e2e" in item.keywords:
-            item.add_marker(skip)
+        if "e2e" in item.keywords and not os.environ.get("PRIME_API_KEY"):
+            item.add_marker(model_skip)
+        if "e2b" in item.keywords and not os.environ.get("E2B_API_KEY"):
+            item.add_marker(e2b_skip)
 
 
 def _configure_prime_runtimes(config: dict) -> None:

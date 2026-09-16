@@ -46,7 +46,7 @@ _ENSURE_UV = (
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
-# modal/prime, a host loopback port on the local container engines. A server placed in such
+# modal/prime/e2b, a host loopback port on the local container engines. A server placed in such
 # a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
 SERVICE_PORT = 8000
 
