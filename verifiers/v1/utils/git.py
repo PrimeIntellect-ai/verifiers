@@ -53,7 +53,7 @@ _DIFF = (
     "rm -f {full} {capped}; "
     "git add -A; "
     "add_rc=$?; "
-    '[ "$#" -gt 0 ] && git reset -q -- "$@"; '
+    '[ "$#" -gt 0 ] && git --literal-pathspecs reset -q -- "$@"; '
     'git -c core.quotepath=off diff --cached --binary "$VF_DIFF_BASE" > {full}; '
     "diff_rc=$?; "
     "git reset -q; "
@@ -95,12 +95,26 @@ async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[
     filesystem, the pre-agent untracked set falls out of the diff with no setup-side
     bookkeeping in any taskset. Drop this then.
     """
-    result = await runtime.run(
-        ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
-    )
-    if result.exit_code != 0:
-        return []
-    return [path for path in (result.stdout or "").split("\0") if path]
+    # `run` decodes output with replacement; use the byte-preserving file API so an
+    # unsupported filename fails instead of becoming a different path.
+    snapshot_path = f"/tmp/vf-untracked-{uuid.uuid4().hex}"
+    try:
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'git ls-files --others --exclude-standard -z > "$1"',
+                "vf-snapshot-untracked",
+                snapshot_path,
+            ],
+            env or {},
+        )
+        if result.exit_code != 0:
+            return []
+        raw = await runtime.read(snapshot_path)
+    finally:
+        await runtime.run(["rm", "-f", snapshot_path], env or {})
+    return [path.decode() for path in raw.split(b"\0") if path]
 
 
 async def capture_patch(
