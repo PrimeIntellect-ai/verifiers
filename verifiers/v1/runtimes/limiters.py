@@ -37,14 +37,17 @@ class CreationLimiter:
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
         self._path = LIMITER_DIR / f"{name}.bucket"
-        lock_cls = (
-            SoftFileLock if os.environ.get("VERIFIERS_LIMITER_SOFT_LOCK") else FileLock
-        )
         # State and lock live in separate files: SoftFileLock deletes its lock file on
-        # release, which would also destroy the bucket cursor if they shared a path.
+        # release, which would also destroy the bucket cursor if they shared a path. The
+        # soft and native locks also need distinct paths: FileLock intentionally leaves
+        # its inode behind, while SoftFileLock interprets any existing path as held. A
+        # shared path would therefore wedge after switching an installation to soft mode.
         # 60s acquisition cap: a holder wedged mid-reservation surfaces as an error
         # instead of an endless hang.
-        self._lock = lock_cls(f"{self._path}.lock", timeout=60)
+        if os.environ.get("VERIFIERS_LIMITER_SOFT_LOCK"):
+            self._lock = SoftFileLock(f"{self._path}.soft.lock", timeout=60)
+        else:
+            self._lock = FileLock(f"{self._path}.lock", timeout=60)
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
