@@ -28,7 +28,7 @@ uv run vf-eval <MY_ENV> --dry-run
 2. Run model-free gold validation when the taskset implements `validate`:
 
 ```bash
-uv run validate <MY_ENV> --runtime.type subprocess
+uv run vf-validate <MY_ENV> --runtime.type subprocess
 ```
 
 3. Do a small run to see whether it works correctly:

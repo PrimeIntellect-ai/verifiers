@@ -3,7 +3,7 @@
 verifiers offers built in support for [GEPA](https://github.com/gepa-ai/gepa), an algorithm that optimizes a system prompt to maximize the downstream reward for a given taskset:
 
 ```bash
-uv run gepa reverse-text
+uv run vf-gepa reverse-text
 ```
 
 `gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
@@ -23,7 +23,7 @@ id = "bash"
 temperature = 1.0
 ```
 
-Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA, use `uv run gepa @ config.toml`. CLI arguments overwrite toml arguments when both are present.
+Validate the config by using `uv run vf-gepa @ config.toml --dry-run`. To run GEPA, use `uv run vf-gepa @ config.toml`. CLI arguments overwrite toml arguments when both are present.
 
 ## Common config values
 
