@@ -68,16 +68,16 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="ad081dbcf5e8c1d4e5b431b4b7d4dd5f30b7367c", min_length=1
+        default="aa33e05e00a9ebc5c94059e27a1bc674334196c5", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
     """Recursion depth RLM may spawn sub-agents to; `None` = nano-rlm's default (1).
     Set 0 to disable recursion."""
-    builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
-    """Built-in rlm skills to enable (the contract's `skills`), e.g. `["edit"]`;
-    empty enables none. The base `skills` field takes SKILL.md paths."""
+    builtin_skills: list[BuiltinSkill] = Field(default_factory=lambda: ["edit"])
+    """Built-in rlm skills to enable (the contract's `skills`); `["edit"]` by default,
+    `[]` enables none. The base `skills` field takes SKILL.md paths."""
     builtin_tools: list[BuiltinTool] | None = None
     """Native tool selection; None uses nano-rlm's default and is omitted from the
     runtime contract. Explicit selection requires a nano-rlm ref supporting it."""
@@ -90,7 +90,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Sub-agents running at once per session tree; `None` = nano-rlm's default (4),
     raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_subagent_calls: PositiveInt | None = None
-    """Tree-total recursive call cap; `None` uses nano-rlm's default (64)."""
+    """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
@@ -101,10 +101,10 @@ class RLMHarnessConfig(HarnessConfig):
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
-    max_total_tokens: PositiveInt | None = None
+    max_total_tokens: PositiveInt | None = 10_000_000
     """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
-    tree; once spent every engine stops and no further sub-agents spawn. `None` uses
-    nano-rlm's default (1,000,000); it does not disable the budget."""
+    tree; once spent every engine stops and no further sub-agents spawn. 10M by default;
+    `None` falls back to nano-rlm's default (1,000,000) and does not disable the budget."""
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
