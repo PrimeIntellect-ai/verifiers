@@ -20,7 +20,7 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 
 @pytest.mark.asyncio
-async def test_chat_harness_preserves_streamed_reasoning():
+async def test_chat_harness_requests_complete_response():
     import json
 
     import httpx
@@ -28,19 +28,21 @@ async def test_chat_harness_preserves_streamed_reasoning():
 
     from verifiers.v1.harnesses.utils.core import chat
 
-    def chunk(text: str, finish_reason: str | None = None) -> dict:
-        return {
+    async def respond(request: httpx.Request) -> httpx.Response:
+        assert not json.loads(request.content).get("stream", False)
+        completion = {
             "id": "chatcmpl-test",
-            "object": "chat.completion.chunk",
+            "object": "chat.completion",
             "created": 0,
             "model": "test-model",
             "choices": [
                 {
                     "index": 0,
-                    "delta": {
+                    "message": {
                         "role": "assistant",
-                        "reasoning": text,
-                        "reasoning_content": text,
+                        "content": "done",
+                        "reasoning": "Plan: call ls",
+                        "reasoning_content": "Plan: call ls",
                         "reasoning_details": [
                             {
                                 "type": "reasoning.text",
@@ -48,24 +50,23 @@ async def test_chat_harness_preserves_streamed_reasoning():
                                 "id": "r1",
                                 "format": "unknown",
                                 "signature": "sig",
-                                "text": text,
+                                "text": "Plan: call ls",
                             }
                         ],
                     },
-                    "finish_reason": finish_reason,
+                    "finish_reason": "stop",
                 }
             ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+            },
         }
-
-    events = [chunk("Plan: "), chunk("call ls", "stop")]
-    content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
-    content += "data: [DONE]\n\n"
-
-    async def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=content,
-            headers={"content-type": "text/event-stream"},
+            json=completion,
+            headers={"content-type": "application/json"},
             request=request,
         )
 
