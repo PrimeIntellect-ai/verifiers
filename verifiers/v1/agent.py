@@ -422,11 +422,14 @@ class Agent:
             history.extend(trace.errors)
             delay = backoff(attempt)
             logger.warning(
-                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
+                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s: %s",
                 attempt + 1,
                 retry.max_retries,
                 delay,
                 trace.last_error.type if trace.last_error else "?",
+                (trace.last_error.message or "")[:300].replace("\n", " ")
+                if trace.last_error
+                else "",
             )
             await asyncio.sleep(delay)
         if history:
