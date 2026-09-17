@@ -66,17 +66,18 @@ def main(argv: list[str] | None = None) -> None:
         for line in Path(rows_file).read_text().splitlines()
         if line.strip()
     ]
-    run = Run(Path(run_dir), config)
 
     async def main_async() -> bool:
-        drain_on_interrupt(run)
-        ok = True
-        async for result in run.stream(flow, rows):
-            print(
-                f"{result.row}: {result.state}"
-                + (f" — {result.error}" if result.error else "")
-            )
-            ok &= result.state == "ok"
+        async with Run(Path(run_dir), config) as run:
+            drain_on_interrupt(run)
+            await run.sweep()
+            ok = True
+            async for result in run.stream(flow, rows):
+                print(
+                    f"{result.row}: {result.state}"
+                    + (f" — {result.error}" if result.error else "")
+                )
+                ok &= result.state == "ok"
         return ok
 
     sys.exit(0 if asyncio.run(main_async()) else 1)

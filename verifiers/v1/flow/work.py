@@ -5,6 +5,7 @@ and how the record rebuilds that value on a resume."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import typing
@@ -43,6 +44,16 @@ class RolloutFailed(Exception):
     def __init__(self, message: str, type: str = "", status_code: int | None = None):
         super().__init__(message)
         self.type, self.status_code = type, status_code
+
+
+def _payload(ctx: Ctx, value: Any) -> Any:
+    """A step value as the record keeps it, under `payload_cap`: bulk belongs in traces or files."""
+    payload = to_jsonable_python(value)
+    if (size := len(json.dumps(payload))) > ctx.config.payload_cap:
+        raise Oversized(
+            f"step value is {size} bytes, over payload_cap; keep bulk in traces or files"
+        )
+    return payload
 
 
 class Work(ABC, Generic[T]):
@@ -127,7 +138,7 @@ class CommandWork(Work[ProgramResult]):
         return await self.runtime.run(self.argv, self.env)
 
     def dump(self, ctx: Ctx, value: ProgramResult) -> dict[str, Any]:
-        return {"payload": to_jsonable_python(value)}
+        return {"payload": _payload(ctx, value)}
 
     def load(self, ledger: Ledger, record: StepRecord) -> ProgramResult:
         return ProgramResult(**record.payload)
@@ -141,23 +152,30 @@ class FnWork(Work[T]):
     kwargs: dict[str, Any] = field(default_factory=dict)
 
     def content(self, ctx: Ctx) -> list[Any]:
-        return ["fn", self.func.__qualname__, self.args, self.kwargs]
+        name = f"{self.func.__module__}.{self.func.__qualname__}"
+        return ["fn", name, self.args, self.kwargs]
 
     async def execute(self, ctx: Ctx) -> T:
-        # A sync function runs off the loop: a build or a shell-out in it must not
-        # stall every other row's turns.
+        # A sync function runs off the loop: a build or a shell-out in it must not stall
+        # every other row's turns. A thread cannot be cancelled, so a timeout or a cancel
+        # waits for it to finish before it propagates: no retry overlaps the work.
         if inspect.iscoroutinefunction(self.func):
             return await self.func(*self.args, **self.kwargs)
-        value = await asyncio.to_thread(self.func, *self.args, **self.kwargs)
+        future = asyncio.ensure_future(
+            asyncio.to_thread(self.func, *self.args, **self.kwargs)
+        )
+        try:
+            value = await asyncio.shield(
+                future
+            )  # a cancel must not cancel the thread's task
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(future)
+            raise
         return await value if inspect.isawaitable(value) else value
 
     def dump(self, ctx: Ctx, value: T) -> dict[str, Any]:
-        payload = to_jsonable_python(value)
-        if (size := len(json.dumps(payload))) > ctx.config.payload_cap:
-            raise Oversized(
-                f"step value is {size} bytes, over payload_cap; keep bulk in traces or files"
-            )
-        return {"payload": payload}
+        return {"payload": _payload(ctx, value)}
 
     def load(self, ledger: Ledger, record: StepRecord) -> T:
         """The payload, validated against the function's return annotation when it
@@ -192,6 +210,8 @@ def command(
 
 def fn(func: Callable[..., T | Awaitable[T]], *args: Any, **kwargs: Any) -> FnWork[T]:
     """`func(*args, **kwargs)` on the host, sync or async; the value is its return. The
-    arguments key the step, so they must be JSON-stable: a bound method, closure or live
-    object digests to its address and the step never attaches on resume."""
+    arguments key the step, so they must be JSON-stable (anything else is an error): a bound
+    method's instance state is not part of the key. A sync function cannot be interrupted:
+    a `timeout` on its step fails the step once the function returns, and hard termination
+    needs a subprocess with its own timeout."""
     return FnWork(func=func, args=args, kwargs=kwargs)

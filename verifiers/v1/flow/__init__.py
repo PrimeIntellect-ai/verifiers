@@ -10,7 +10,8 @@
         solves = await ctx.spread("solve", [agent("solver", t) for t in tasks])
         return await ctx.step("bank", fn(bank, review, build, lint, solves))
 
-    results = await Run(run_dir, config).run(pipeline, rows)
+    async with Run(run_dir, config) as run:
+        results = await run.run(pipeline, rows)
 
 A flow is a function; routing, loops and joins are Python. Every step is recorded
 and a re-run against the same directory attaches to what finished.

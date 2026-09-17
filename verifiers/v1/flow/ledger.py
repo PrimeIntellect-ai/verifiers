@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel
-from pydantic_core import to_jsonable_python
+from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from verifiers.v1.cli.output import TRACES_FILE, append_trace, read_jsonl, type_adapter
 from verifiers.v1.flow.work import WorkKind
@@ -94,7 +94,12 @@ def _canonical(value: Any) -> Any:
 
 
 def digest(*parts: Any) -> str:
-    flat = to_jsonable_python(_canonical(parts), fallback=repr)
+    """A stable digest of JSON-stable parts; an object JSON cannot express is an error, since
+    a key that digests to an address never attaches on a resume."""
+    try:
+        flat = to_jsonable_python(_canonical(parts))
+    except PydanticSerializationError as exc:
+        raise ValueError(f"step content is not JSON-stable: {exc}") from None
     return hashlib.sha256(json.dumps(flat, sort_keys=True).encode()).hexdigest()
 
 
@@ -119,10 +124,9 @@ class Ledger:
         self.steps_dir = run_dir / "steps"
         self.steps_dir.mkdir(parents=True, exist_ok=True)
         self.traces_file = run_dir / TRACES_FILE
-        self.traces_file.touch()
         self.index_file = run_dir / INDEX_FILE
         self.events_file = run_dir / EVENTS_FILE
-        for file in (self.events_file, self.index_file):
+        for file in (self.traces_file, self.events_file, self.index_file):
             trim_torn_tail(file)
         self.lock = asyncio.Lock()
         self._index: dict[str, tuple[int, int]] | None = (

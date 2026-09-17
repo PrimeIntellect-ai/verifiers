@@ -20,14 +20,15 @@ import fcntl
 import inspect
 import logging
 import os
+import re
 import resource
 import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import IO, Any, Literal, Self, TypeVar
 
 from verifiers.v1.configs.agent import (
     AgentConfig,
@@ -73,11 +74,26 @@ _SCOPE: ContextVar[tuple[str, ...]] = ContextVar("flow_scope", default=())
 
 T = TypeVar("T")
 RowState = Literal["running", "ok", "failed", "stopped"]
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+"""What a scope label or step name may be: a path segment, so records never collide on disk."""
 
 
 class StepFailed(Exception):
     """A step used up its retries, or failed in a way no retry mends: `<path>: <error>`,
-    the cause chained. What a flow catches to route on a failed step."""
+    the cause chained. What a flow catches to route on a failed step. A failed spread
+    carries `failures`, the exception per item index that did not land."""
+
+    def __init__(self, message: str, failures: dict[int, BaseException] | None = None):
+        super().__init__(message)
+        self.failures = failures or {}
+
+
+def _name(name: str) -> str:
+    if not NAME.fullmatch(name):
+        raise ValueError(
+            f"{name!r}: a scope label or step name must match {NAME.pattern}"
+        )
+    return name
 
 
 class Stopped(Exception):
@@ -97,13 +113,15 @@ class Run:
 
     A resume is the same launch against the same directory: a step attaches to its
     record when its place and content still match, and the config re-keys nothing
-    (an agent step keys on its resolved seat, all else on its work alone)."""
+    (an agent step keys on its resolved seat, all else on its work alone).
+
+    `async with Run(run_dir, config) as run` owns the directory for the block: the lock
+    is taken before anything is read or repaired, and `sweep` and `stream` run inside.
+    `run.run(flow, rows)` on its own takes ownership for the duration of the call."""
 
     def __init__(self, run_dir: Path, config: FlowConfig) -> None:
-        run_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir = run_dir
         self.config = config
-        self.ledger = Ledger(run_dir)
         self.pools = Pools(config.pools)
         where = digest(str(run_dir.resolve()))[:SHORT]
         self.label = f"flow-{run_dir.name}-{where}"[:LABEL_MAX]
@@ -112,20 +130,42 @@ class Run:
         self.interception: Interception | None = None  # live inside `_serving`
         self._draining = asyncio.Event()
         self._rss_mark = 0
-        (run_dir / "config.json").write_text(config.model_dump_json(indent=1))
+        self._lock: IO[str] | None = None
+
+    async def __aenter__(self) -> Self:
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        lock = (self.run_dir / "run.lock").open("w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            raise RuntimeError(f"{self.run_dir} is in use by another launch") from None
+        self._lock = lock
+        self.ledger = Ledger(self.run_dir)  # repairs torn tails: only under the lock
+        (self.run_dir / "config.json").write_text(self.config.model_dump_json(indent=1))
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        assert self._lock is not None
+        self._lock.close()  # releases the flock
+        self._lock = None
+
+    @property
+    def owned(self) -> bool:
+        return self._lock is not None
 
     # -- rows -----------------------------------------------------------------------
 
     async def stream(self, flow: Flow, rows: Iterable[Any]) -> AsyncIterator[RowResult]:
         """Run `flow(ctx, row)` for every row, `pools["rows"]` at once, yielding each
         result as its row finishes. A row that raises is a failed row."""
-        self.ledger.event("run", source=self._source(flow), label=self.label)
 
         async def one(row: Any) -> RowResult:
             async with self.pools.hold((ROWS,)):
                 return await self._row(flow, row)
 
-        async with self._serving():
+        async with nullcontext() if self.owned else self, self._serving():
+            self.ledger.event("run", source=self._source(flow), label=self.label)
             tasks = [asyncio.create_task(one(row)) for row in rows]
             try:
                 for done in asyncio.as_completed(tasks):
@@ -141,7 +181,11 @@ class Run:
     async def sweep(self) -> int:
         """Kill what an earlier launch of this run left behind -- Prime sandboxes and Docker
         containers by label, host subprocesses by the same label in their environment; the
-        count. Call before `stream` at a resume."""
+        count. Call before `stream` at a resume, inside `async with Run(...)`."""
+        if not self.owned:
+            raise RuntimeError(
+                "sweep needs ownership of the run: `async with Run(...) as run`"
+            )
         from verifiers.v1.runtimes.docker import sweep_containers
         from verifiers.v1.runtimes.prime import sweep_sandboxes
         from verifiers.v1.runtimes.subprocess import sweep_subprocesses
@@ -187,6 +231,8 @@ class Run:
             return RowResult(
                 row=repr(row)[:80], state="failed", error=f"row cannot be keyed: {exc}"
             )
+        if key in self.rows:
+            return RowResult(row=key, state="failed", error="duplicate row key")
         self.rows[key] = "running"
         self.ledger.event("row_started", row=key)
         try:
@@ -208,18 +254,6 @@ class Run:
 
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:
-        with (self.run_dir / "run.lock").open("w") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError(
-                    f"{self.run_dir} is in use by another launch"
-                ) from None
-            async with self._interception():
-                yield
-
-    @asynccontextmanager
-    async def _interception(self) -> AsyncIterator[None]:
         set_base_sandbox_labels([self.label])
         os.environ[RUN_LABEL_VAR] = (
             self.label
@@ -274,13 +308,14 @@ class Ctx:
         """A namespace for the steps inside: a loop iteration, a phase, a branch.
         Concurrent branches take one each: two branches stepping under the same scope
         race for occurrence numbers and neither attaches on resume."""
-        token = _SCOPE.set((*_SCOPE.get(), label))
+        token = _SCOPE.set((*_SCOPE.get(), _name(label)))
         try:
             yield
         finally:
             _SCOPE.reset(token)
 
     def _path(self, name: str) -> str:
+        _name(name)
         scope = _SCOPE.get()
         counts = self._counts.setdefault(scope, {})
         n = counts.get(name, 0)
@@ -338,20 +373,20 @@ class Ctx:
             ),
             return_exceptions=True,
         )
-        failed = [r for r in results if isinstance(r, BaseException)]
+        failed = {i: r for i, r in enumerate(results) if isinstance(r, BaseException)}
         self._event(
             "spread_finished",
             path=path,
             items=len(works),
             landed=len(works) - len(failed),
         )
-        for exc in failed:
+        for exc in failed.values():
             if isinstance(exc, Stopped):
                 raise exc
         if failed:
-            errors = [str(exc) for exc in failed]
+            errors = [str(exc) for exc in failed.values()]
             raise StepFailed(
-                f"{path}: {len(failed)}/{len(works)} items failed: {errors[:3]}"
+                f"{path}: {len(failed)}/{len(works)} items failed: {errors[:3]}", failed
             )
         return dict(enumerate(results))  # type: ignore[arg-type]
 
@@ -382,11 +417,24 @@ class Ctx:
     ) -> T:
         run = self.run
         key = self._key(path, work)
-        if (record := self._attached(path, work, index)) is not None:
+        record = run.ledger.get(self.key, path, index)
+        # Why the step runs rather than attaches, on the `step_started` event: the first
+        # thing to read when a resume re-runs work it should have found.
+        reason = (
+            "no_record"
+            if record is None
+            else "previous_failed"
+            if record.terminal != "completed"
+            else "key_changed"
+            if record.key != key
+            else None
+        )
+        if reason is None:
             try:
-                value = work.load(run.ledger, record)
+                value = work.load(run.ledger, record)  # type: ignore[arg-type]
             except LookupError as exc:
                 logger.warning("%s/%s: %s; running the step again", self.key, path, exc)
+                reason = "load_failed"
             else:
                 self._attached_paths.add(path)
                 self._event("step_attached", path=path, index=index)
@@ -394,7 +442,7 @@ class Ctx:
         if run.draining:
             raise Stopped(path)
         tag = f"{self.key}/{path}" + (f".{index}" if index is not None else "")
-        self._event("step_started", path=path, index=index)
+        self._event("step_started", path=path, index=index, reason=reason)
         started, attempts = now(), 0
         try:
             while True:
@@ -447,13 +495,6 @@ class Ctx:
     def _key(self, path: str, work: Work) -> str:
         """The step's key: its place in this row and the content of its work."""
         return digest(self.key, path, work.content(self))[:STEP_KEY]
-
-    def _attached(self, path: str, work: Work, index: int | None) -> StepRecord | None:
-        """The completed record this step attaches to, when its key still matches."""
-        record = self.run.ledger.get(self.key, path, index)
-        if record is None or record.terminal != "completed":
-            return None
-        return record if record.key == self._key(path, work) else None
 
     def _record(
         self,
