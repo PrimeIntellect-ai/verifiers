@@ -119,29 +119,25 @@ async def archive(
     for source, blob in collected.items():
         destination = names.get(source)
         name = _host_file(source, destination)
-        if blob is None or name in claimed:
-            if name in claimed:
-                logger.warning(
-                    "archive host path %s already claimed; skipping %s", name, source
-                )
-            entries.append(
-                ManifestEntry(
-                    source=source,
-                    file=None,
-                    harbor_destination=destination,
-                )
+        file: str | None = None
+        if name in claimed:
+            logger.warning(
+                "archive host path %s already claimed; skipping %s", name, source
             )
-            continue
-        claimed.add(name)
-        path = dest / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(blob)
+        elif blob is not None:
+            claimed.add(name)
+            path = dest / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+            file = name
         entries.append(
-            {
-                "source": source,
-                "file": name,
-                "harbor_destination": destination,
-            }
+            ManifestEntry(
+                source=source,
+                file=file,
+                harbor_destination=destination,
+            )
         )
-    (dest / "manifest.json").write_text(json.dumps(entries, indent=2) + "\n")
+    (dest / "manifest.json").write_text(
+        json.dumps([asdict(entry) for entry in entries], indent=2) + "\n"
+    )
     logger.debug("archived %d artifact root(s) to %s", len(entries), dest)
