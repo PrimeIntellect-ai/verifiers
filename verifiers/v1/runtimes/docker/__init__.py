@@ -13,12 +13,12 @@ import sys
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
+from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, Runtime, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
 from verifiers.v1.runtimes.docker.egress import (
     EgressProxy,
@@ -27,6 +27,10 @@ from verifiers.v1.runtimes.docker.egress import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.modal import ModalConfig
+    from verifiers.v1.runtimes.prime import PrimeConfig
 
 
 class DockerConfig(ContainerConfig, NetworkPolicyConfig):
@@ -65,11 +69,22 @@ class DockerRuntime(ContainerRuntime):
     info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
 
     def __init__(
-        self, config: DockerConfig | PodmanConfig, name: str | None = None
+        self,
+        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        name: str | None = None,
+        *,
+        host: Runtime | None = None,
     ) -> None:
         super().__init__(name)
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
-        self.info = self.info_cls(**self.config.model_dump())
+        self._host = host
+        self.info = (
+            host.info.model_copy(
+                update={"image": self.config.image, "workdir": self.config.workdir}
+            )
+            if host
+            else self.info_cls(**self.config.model_dump())
+        )
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
         self._proxy: EgressProxy | None = None
@@ -81,16 +96,22 @@ class DockerRuntime(ContainerRuntime):
     @classmethod
     @contextlib.asynccontextmanager
     async def attach(
-        cls, config: DockerConfig, container: str, *, service_url: str
+        cls,
+        config: "DockerConfig | PrimeConfig | ModalConfig",
+        container: str,
+        *,
+        service_url: str | None = None,
+        host: Runtime | None = None,
     ) -> AsyncIterator["DockerRuntime"]:
         """Borrow an existing container; its caller owns creation and removal."""
-        if config.network_restricted:
+        if host is None and config.network_restricted:
             raise ValueError("Attaching a local container requires public networking")
-        runtime = cls(config)
+        runtime = cls(config, host=host)
+        runtime.is_local = host.is_local if host is not None else True
         runtime._container = container
         runtime._owns_container = False
         try:
-            inspected = await cli(
+            inspected = await runtime._run_host(
                 runtime.engine, "inspect", "--format", "{{json .Config}}", container
             )
             if inspected.exit_code:
@@ -102,16 +123,20 @@ class DockerRuntime(ContainerRuntime):
             runtime.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
-            runtime.info.id = container
+            if host is None:
+                runtime.info.id = container
             runtime.info.image = runtime.config.image
             runtime.info.workdir = runtime.config.workdir
             runtime.info.borrowed = True
             runtime._service_url = service_url
-            runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
-            if sys.platform == "linux":
-                await runtime._proxy.start(listener=await runtime._container_listener())
-            else:
-                await runtime._proxy.start("127.0.0.1")
+            if host is None and service_url is not None:
+                runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
+                if sys.platform == "linux":
+                    await runtime._proxy.start(
+                        listener=await runtime._container_listener()
+                    )
+                else:
+                    await runtime._proxy.start("127.0.0.1")
             yield runtime
         finally:
             await runtime.stop()
@@ -295,6 +320,8 @@ class DockerRuntime(ContainerRuntime):
         )
 
     def host_url(self, url: str) -> str:
+        if self._host is not None:
+            return self._host.host_url(url)
         parts = urlsplit(url)
         if not is_loopback_host(parts.hostname or ""):
             return url
@@ -303,6 +330,8 @@ class DockerRuntime(ContainerRuntime):
         return self._proxy.callback_url(url, host)
 
     async def expose(self, port: int) -> str:
+        if self._host is not None:
+            return await self._host.expose(port)
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(
                 f"{self.engine} publishes only port {SERVICE_PORT}, not {port}"
@@ -372,6 +401,9 @@ class DockerRuntime(ContainerRuntime):
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
+        if self._host is not None:
+            await self._host.prepare_execution(routes)
+            return
         if not self.network_restricted:
             return
         assert self._proxy is not None
@@ -384,6 +416,7 @@ class DockerRuntime(ContainerRuntime):
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
         ]
+        assert isinstance(self.config, NetworkPolicyConfig)
         self._proxy.policy = NetworkPolicy(self.config, framework)
         if self._cut:
             return
@@ -496,13 +529,13 @@ class DockerRuntime(ContainerRuntime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
-        if self.network_restricted:
+        if self.network_restricted and self._proxy is not None:
             env = {**env, **self._proxy_env()}
         # The engine owns the background server as a detached exec process.
         command = self._exec(self.process_env(env))
         command.insert(2, "--detach")
         script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
-        result = await cli(*command, "sh", "-c", script)
+        result = await self._run_host(*command, "sh", "-c", script)
         if result.exit_code != 0:
             raise SandboxError(
                 f"{self.engine} background process failed: {result.stderr.strip()}"
