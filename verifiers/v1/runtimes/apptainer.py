@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import ClassVar, Literal, Self
+from weakref import WeakValueDictionary
 
 from pydantic import model_validator
 
@@ -48,7 +49,9 @@ class ApptainerRuntimeInfo(ApptainerConfig, BaseRuntimeInfo):
 
 
 class ApptainerRuntime(ContainerRuntime):
-    _pulls: ClassVar[dict[str, asyncio.Lock]] = {}
+    _pulls: ClassVar[
+        WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock]
+    ] = WeakValueDictionary()
 
     def __init__(self, config: ApptainerConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -176,7 +179,9 @@ class ApptainerRuntime(ContainerRuntime):
         image = self.config.image
         ref = image if "://" in image else f"docker://{image}"
         sif = _ROOT / "images" / f"{hashlib.sha256(ref.encode()).hexdigest()}.sif"
-        async with self._pulls.setdefault(ref, asyncio.Lock()):
+        async with self._pulls.setdefault(
+            (asyncio.get_running_loop(), ref), asyncio.Lock()
+        ):
             if not sif.exists():
                 sif.parent.mkdir(parents=True, exist_ok=True)
                 # Pull to a unique path and publish it atomically, so concurrent

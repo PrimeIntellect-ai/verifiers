@@ -264,6 +264,7 @@ class ACPHarnessSession(HarnessSession):
             "command": self.config.command,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
+            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},

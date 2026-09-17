@@ -1,23 +1,25 @@
-"""Compose owns the project; DockerRuntime executes in its main container."""
+"""Harbor owns the Compose project and lends its main container to the agent."""
 
 import asyncio
+import atexit
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import uuid
+from contextlib import AsyncExitStack
 from pathlib import Path
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import DockerConfig, DockerRuntime, Runtime, RuntimeConfig
+from verifiers.v1.runtimes import DockerConfig, DockerRuntime
 from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.runtimes.container import cli
-from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
+from verifiers.v1.utils.aio import run_shielded
 
 
-class HarborComposeRuntime(DockerRuntime):
+class ComposeProject:
     def __init__(
         self,
         config: DockerConfig,
@@ -27,7 +29,10 @@ class HarborComposeRuntime(DockerRuntime):
     ):
         if config.network_restricted or config.gpu:
             raise ValueError("This Compose adapter supports public-network CPU tasks")
-        super().__init__(config)
+        self.config = config
+        self.name = f"vf-{uuid.uuid4().hex}"
+        self.env = dict(task.runtime_env())
+        self._stack = AsyncExitStack()
         self.task = task
         self._setup_timeout = setup_timeout
         self._main_overrides = config.model_dump(
@@ -39,6 +44,7 @@ class HarborComposeRuntime(DockerRuntime):
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
         self._created = False
+        self._closed = False
 
     async def _compose(self, *args: str) -> str:
         result = await cli(*self._compose_argv, *args, env=self._compose_env)
@@ -48,9 +54,19 @@ class HarborComposeRuntime(DockerRuntime):
             )
         return result.stdout
 
-    async def start(self) -> None:
-        async with asyncio.timeout(self._setup_timeout):
-            await self._start()
+    async def __aenter__(self) -> DockerRuntime:
+        atexit.register(self.cleanup)
+        self._stack.push_async_callback(asyncio.to_thread, self.cleanup)
+        try:
+            async with asyncio.timeout(self._setup_timeout):
+                await self._start()
+        except BaseException:
+            await run_shielded(self._stack.aclose())
+            raise
+        return self.runtime
+
+    async def __aexit__(self, *exc) -> None:
+        await run_shielded(self._stack.aclose())
 
     async def _start(self) -> None:
         import yaml
@@ -132,34 +148,15 @@ class HarborComposeRuntime(DockerRuntime):
         containers = (await self._compose("ps", "--all", "--quiet", "main")).split()
         if len(containers) != 1:
             raise SandboxError("Harbor Compose requires exactly one main container")
-        self._container = containers[0]
-        self.info.id = self._container
-        inspected = await cli(
-            "docker", "inspect", "--format", "{{json .Config}}", self._container
-        )
-        if inspected.exit_code:
-            raise SandboxError(
-                f"Compose container inspection failed: {inspected.stderr}"
-            )
-        container = json.loads(inspected.stdout)
-        self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
-        self.config = self.config.model_copy(
-            update={
-                "image": container["Image"],
-                "workdir": container["WorkingDir"] or "/",
-            }
-        )
-        self.info.image, self.info.workdir = self.config.image, self.config.workdir
         published = await self._compose("port", owner, str(SERVICE_PORT))
-        self._service_url = f"http://{published.strip()}"
-        self._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
-        if sys.platform == "linux":
-            await self._proxy.start(listener=await self._container_listener())
-        else:
-            await self._proxy.start("127.0.0.1")
+        self.runtime = await self._stack.enter_async_context(
+            DockerRuntime.attach(
+                self.config, containers[0], service_url=f"http://{published.strip()}"
+            )
+        )
 
     def cleanup(self) -> None:
-        if self._stopped:
+        if self._closed:
             return
         if self._created:
             # Use the same checked operation on normal exit and the atexit backstop.
@@ -170,13 +167,6 @@ class HarborComposeRuntime(DockerRuntime):
                 timeout=60,
                 check=True,
             )
-        self._stopped = True
+        self._closed = True
         self._temporary.cleanup()
-
-
-def make_harbor_compose_runtime(
-    config: RuntimeConfig, *, task: HarborTask, setup_timeout: float | None = None
-) -> Runtime:
-    if not isinstance(config, DockerConfig):
-        raise TypeError("Harbor Compose currently requires local Docker")
-    return HarborComposeRuntime(config, task, setup_timeout=setup_timeout)
+        atexit.unregister(self.cleanup)

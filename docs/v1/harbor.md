@@ -146,3 +146,7 @@ verifiers does not have parity with Harbor yet, so some features are missing and
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Sidecar artifacts and collect hooks ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+
+Compose projects are owned by the Harbor environment; agents borrow the existing
+Docker main container. Failures retry with a fresh project through
+`--env.retries`, rather than retrying an agent inside the same project.
