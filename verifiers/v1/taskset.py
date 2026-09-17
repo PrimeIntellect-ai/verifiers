@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Generic, Self
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.task import Task, TaskT
+from verifiers.v1.task import Task, TaskData, TaskT
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -109,3 +109,25 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
                 return [SearchToolset(config.tools)]
         """
         return []
+
+    def prepare(self) -> None:
+        """One-time host-local preparation, before serving any task.
+
+        A taskset whose tasks read host files (e.g. a downloaded package) fetches
+        them here, so a serving process doesn't fetch per request. `serve` runs this
+        once per server (and per pool worker) at startup; a taskset that can't serve
+        raises to fail fast.
+        """
+        return
+
+    def localize(self, data: TaskData) -> TaskData:
+        """Remap the loading process's host paths in wire task data onto this
+        process's filesystem.
+
+        A served task's data was loaded on the CLIENT (`serve` never `load()`s):
+        any host path it carries is meaningful on the client's filesystem only.
+        `serve` validates a request's task data into the taskset's declared type
+        and hands it here before running the task, so a taskset that keeps host
+        paths resolves them locally instead of trusting the client's layout.
+        """
+        return data

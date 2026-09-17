@@ -26,6 +26,7 @@ import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -479,6 +480,36 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
     return command
 
 
+@contextmanager
+def _download_lock(target: Path) -> Iterator[None]:
+    """One downloader at a time per package, across processes sharing a cache.
+
+    A worker pool's processes share one home (and so one ``CACHE``), and a serving
+    process can prepare alongside the client that loaded the taskset; the lock
+    settles concurrent downloads of the same package into one instead of N racing
+    ones. Best-effort: without ``fcntl`` (non-POSIX) or with an unopenable lock
+    file the body runs unlocked — the atomic rename in :func:`dataset_dir` keeps
+    concurrent downloads correct, duplicates only waste bandwidth.
+    """
+    handle = None
+    try:
+        import fcntl
+
+        # The handle must outlive this block: the flock it holds guards the body
+        # run under the `yield`, released by the close in the finally below.
+        handle = open(target.with_name(f"{target.name}.download"), "w")  # noqa: SIM115
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        if handle is not None:
+            handle.close()
+        handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()
+
+
 def dataset_dir(config: HarborConfig) -> Path:
     """Download/cache a Hub or legacy-registry package selected by the config."""
     out = cache_dir(config)
@@ -486,6 +517,16 @@ def dataset_dir(config: HarborConfig) -> Path:
         return out
 
     CACHE.mkdir(parents=True, exist_ok=True)
+    with _download_lock(out):
+        if out.is_dir():
+            # Another process (or a prior request's localize) finished the
+            # download while this one waited on the lock.
+            return out
+        return _download_dataset(config, out)
+
+
+def _download_dataset(config: HarborConfig, out: Path) -> Path:
+    """Export the CLI download of `config` into `out` (caller holds the lock)."""
     # Publish only a complete CLI export to the cache.
     with tempfile.TemporaryDirectory(dir=CACHE) as temp:
         export_dir = Path(temp) / "export"
@@ -785,6 +826,62 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
+    def prepare(self) -> None:
+        """Download the package into this process's cache before serving.
+
+        Harbor tasks stage `environment/` and `tests/` off the local filesystem at
+        rollout and grading time, and in `serve` the process that stages them is
+        NOT the one that loaded the taskset — the client ships task data over the
+        wire, `task_dir` paths included. A serving process therefore needs its own
+        copy of the package; fetching it here (once per server/worker startup,
+        before the first request) keeps the download out of the rollout path and
+        fails loudly at startup when it can't serve.
+        """
+        dataset_dir(self.config)
+
+    def localize(self, data: HarborData) -> HarborData:
+        """Resolve a wire-shipped `task_dir` against this process's cache.
+
+        The client (an orchestrator, an eval driver) loaded the package on its own
+        filesystem, so `task_dir` points there; reading it here would fail — on a
+        pod it is often literally another container's `/root` (`EACCES`) — so
+        remap it onto the local copy of the same package. A task_dir that already
+        exists (in-process serving, shared filesystem) stays untouched.
+        """
+        task_dir = Path(data.task_dir)
+        if not data.task_dir or task_dir.is_dir():
+            return data
+        root = dataset_dir(self.config)
+        # Same package, same layout: the path below the cache's dataset dir name
+        # (that name — digest suffix included — derives from the same config
+        # here) locates the local twin.
+        parts = task_dir.parts
+        local: Path | None = None
+        if root.name in parts:
+            candidate = root.joinpath(*parts[parts.index(root.name) + 1 :])
+            if (candidate / "task.toml").is_file():
+                local = candidate
+        if local is None:
+            # Layout drift (a different package revision moved the task dir):
+            # fall back to the task dir's name, unique within a package.
+            local = next(
+                (
+                    path.parent
+                    for path in sorted(root.rglob("task.toml"))
+                    if path.parent.name == task_dir.name
+                ),
+                None,
+            )
+        if local is None:
+            raise TaskError(
+                f"task {data.name!r} points at {data.task_dir!r}, which does not "
+                f"exist here, and the local {self.config.dataset!r} package "
+                f"({root}) holds no task named {task_dir.name!r} — the serving "
+                "process cached a package revision that does not match the "
+                "loading client's"
+            )
+        return data.model_copy(update={"task_dir": str(local)})
+
     def load(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [

@@ -35,6 +35,17 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
+        try:
+            # Host-local taskset preparation (e.g. a harbor package download)
+            # before serving: request task data carries the LOADING process's
+            # host paths, and staging them needs files this startup fetched.
+            self.env.taskset.prepare()
+        except Exception:  # serving is still worth attempting
+            logger.exception(
+                "taskset %s host preparation failed; serving anyway — per-task "
+                "localization retries and reports per-rollout failures",
+                self.taskset_id,
+            )
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from
@@ -82,8 +93,11 @@ class EnvServer:
         declared `TaskData` type and wrap it in the declared `Task` with the config's
         task subtree — the same construction the taskset's own `load()` performs. The
         client owns the taskset; this server never `load()`s data, so pool workers
-        don't each pull the dataset."""
+        don't each pull the dataset. The wire data was dumped on the CLIENT's
+        filesystem: the taskset's `localize` remaps whatever host paths it carries
+        (e.g. harbor `task_dir`) onto this process's before the task runs."""
         data = self.data_cls.model_validate(task_data)
+        data = self.env.taskset.localize(data)
         return self.task_cls(data, self.env.config.taskset.task)
 
     def _context(
