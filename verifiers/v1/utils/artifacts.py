@@ -56,10 +56,10 @@ def on_over_budget(
     """
     if on_limit == "raise":
         raise SandboxError(
-            f"artifact {source!r} over remaining {budget} byte budget"
+            f"collect: {source!r} over remaining {budget} byte budget"
         )
     logger.warning(
-        "artifact %s over remaining %s byte budget; omitting later roots",
+        "collect: %s over remaining %s byte budget; omitting later roots",
         source,
         budget,
     )

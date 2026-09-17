@@ -520,7 +520,7 @@ class Rollout:
                     )
                 except Exception:
                     logger.warning(
-                        "artifact archive failed (rollout %s)", trace.id, exc_info=True
+                        "archive failed (rollout %s)", trace.id, exc_info=True
                     )
             if self._harness_session is not None:
                 with contextlib.suppress(Exception):

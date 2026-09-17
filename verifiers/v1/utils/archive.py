@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.utils.artifacts import Artifact, collect
@@ -19,11 +19,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+ManifestStatus = Literal["ok", "skipped"]
+
+
 @dataclass
 class ManifestEntry:
     source: str
     file: str | None
     harbor_destination: str | None
+    status: ManifestStatus
 
 
 def drop_archive(root: Path | None, trace_id: str) -> None:
@@ -89,14 +93,15 @@ async def archive(
     """Copy declared (and convention) artifact roots from `runtime` onto `dest`.
 
     Default inventory is `/logs/artifacts` plus `artifacts` (the task path list).
-    `config.extra` merges additional sources. Best-effort: missing sources and
-    roots over `max_mb` stay in the manifest with `file: null`. Tar bytes are
-    written as files; they are not stored on the trace.
+    `config.extra` merges additional sources. Best-effort: each root is a
+    `ManifestEntry` with `status` `ok` (tar written) or `skipped` (missing, over
+    `max_mb`, or host-path collision). `file` is the host tar name on `ok`, else
+    `null`. Tar bytes are written as files; they are not stored on the trace.
 
     Host names default to a flattened `source` (`/app/x` → `app__x.tar`).
     `destinations` maps sandbox source to a relative path under `dest` (Harbor
     `destination`); restore is unchanged. First writer wins on a colliding host
-    path; later rows keep `file: null`.
+    path; later rows are `status: skipped`.
     """
     dest.mkdir(parents=True, exist_ok=True)
     policy = config or ArchiveConfig()
@@ -120,21 +125,27 @@ async def archive(
         destination = names.get(source)
         name = _host_file(source, destination)
         file: str | None = None
+        status: ManifestStatus
         if name in claimed:
             logger.warning(
-                "archive host path %s already claimed; skipping %s", name, source
+                "archive: host path %s already claimed; skipping %s", name, source
             )
+            status = "skipped"
         elif blob is not None:
             claimed.add(name)
             path = dest / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(blob)
             file = name
+            status = "ok"
+        else:
+            status = "skipped"
         entries.append(
             ManifestEntry(
                 source=source,
                 file=file,
                 harbor_destination=destination,
+                status=status,
             )
         )
     (dest / "manifest.json").write_text(
