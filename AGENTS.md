@@ -15,7 +15,7 @@
 
 ## Docs
 
-- **Kept intentionally minimal**: `docs/` and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
+- **Kept intentionally minimal**: `docs/`, `skills/`, and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
 - **Docs reflect `main`, not history**: describe the current state of the codebase only — no removed/legacy fields, migration paths, or "this used to be X" anecdotes.
 
 ## Skills
