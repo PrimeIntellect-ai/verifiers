@@ -102,7 +102,9 @@ class ModalConfig(NetworkPolicyConfig):
     env-server worker process (None/<= 0 disables it)."""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "ModalConfig":
+    def _validate_config(self) -> "ModalConfig":
+        if self.vm and self.gpu is not None:
+            raise ValueError("Modal VM sandboxes do not support GPUs")
         if not self.network_restricted:
             return self
         if not self.network_access:
@@ -414,14 +416,12 @@ class ModalRuntime(Runtime):
         sandbox = self._sandbox
         if sandbox is None:
             return
-        try:
-            async with asyncio.timeout(60):
-                await self.stop()
-                await sandbox.wait.aio(raise_on_termination=False)
-        except BaseException:
-            # Keep the cleanup handle when termination could not be confirmed.
-            self._sandbox = sandbox
-            raise
+        self.stopped = True
+        async with asyncio.timeout(60):
+            await sandbox.terminate.aio()
+            await sandbox.wait.aio(raise_on_termination=False)
+        # Keep the cleanup handle until termination is confirmed.
+        self._sandbox = None
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly

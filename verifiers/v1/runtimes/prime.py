@@ -440,10 +440,11 @@ class PrimeRuntime(Runtime):
         """Confirm termination before another runtime consumes this box's artifacts."""
         from prime_sandboxes import APIError, AsyncSandboxClient
 
-        await self.stop()
+        self.stopped = True
         if self.info.id is None:
             return
-        async with AsyncSandboxClient() as client, asyncio.timeout(60):
+        async with asyncio.timeout(60), AsyncSandboxClient() as client:
+            await self.teardown()
             while True:
                 try:
                     sandbox = await client.get(self.info.id)

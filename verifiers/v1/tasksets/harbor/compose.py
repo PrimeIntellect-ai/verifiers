@@ -42,7 +42,6 @@ class ComposeProject:
             )
         self.config = config
         self.name = f"vf-{uuid.uuid4().hex}"
-        self.env = dict(task.runtime_env())
         self._stack = AsyncExitStack()
         self._host: PrimeRuntime | ModalRuntime | None = None
         if isinstance(config, PrimeConfig):
@@ -63,11 +62,6 @@ class ComposeProject:
             )
         self.task = task
         self._setup_timeout = setup_timeout
-        self._main_overrides = config.model_dump(
-            include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
-        )
-        if task.data.image is not None:
-            self._main_overrides["image"] = config.image
         self._temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
@@ -176,7 +170,11 @@ class ComposeProject:
             owner = services[owner]["network_mode"].split(":", 1)[1]
         if services.get(owner, {}).get("network_mode") == "host":
             raise SandboxError("Harbor Compose requires an isolated service network")
-        main: dict[str, object] = dict(self._main_overrides)
+        main = self.config.model_dump(
+            include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
+        )
+        if self.task.data.image is not None:
+            main["image"] = self.config.image
         if "workdir" in main:
             main["working_dir"] = main.pop("workdir")
         if self._host is None:
@@ -208,14 +206,12 @@ class ComposeProject:
             base_file,
             environment / "docker-compose.yaml",
             override,
-            write_env_compose_file(directory / "env.json", self.env),
+            write_env_compose_file(directory / "env.json", self.task.runtime_env()),
         ]
         if self._host is not None:
-            for index, path in enumerate(paths):
-                target = Path(project_dir if index == 1 else "/harbor") / path.name
-                if index != 1:
-                    await self._host.write(str(target), path.read_bytes())
-                paths[index] = target
+            for path in paths:
+                await self._host.write(f"/harbor/{path.name}", path.read_bytes())
+            paths = [Path("/harbor") / path.name for path in paths]
         self._compose_argv = [
             "docker",
             "compose",
@@ -241,18 +237,15 @@ class ComposeProject:
                 f"Compose container inspection failed: {inspected.stderr}"
             )
         containers = json.loads(inspected.stdout)
-        if (
-            sum(
-                container["Config"]["Labels"]["com.docker.compose.service"] == "main"
-                for container in containers
-            )
-            != 1
-        ):
-            raise SandboxError("Harbor Compose requires exactly one main container")
         service_url = None
         if self._host is None:
             published = await self._compose("port", owner, str(SERVICE_PORT))
-            service_url = f"http://{published.strip()}"
+            endpoint = next(
+                address
+                for address in published.splitlines()
+                if address.startswith("127.0.0.1:")
+            )
+            service_url = f"http://{endpoint}"
         for container in containers:
             name = container["Config"]["Labels"]["com.docker.compose.service"]
             if name in self.services:
@@ -267,6 +260,9 @@ class ComposeProject:
                     service_url=service_url if name == "main" else None,
                 )
             )
+
+        if "main" not in self.services:
+            raise SandboxError("Harbor Compose requires exactly one main container")
 
     async def stop_service(self, name: str) -> None:
         async with asyncio.timeout(60):

@@ -264,9 +264,14 @@ class HarborTask(Task[HarborData, HarborState, HarborTaskConfig]):
         harness cleanup and stopping main. Hook failures remain errors because these
         files are grading inputs.
         """
+        runtimes = {**trace.state.services, "main": runtime}
+        declared = {
+            entry.service for entry in (*self.data.collect, *self.data.artifacts)
+        }
+        if missing := declared - runtimes.keys():
+            raise ValueError(f"Unknown artifact or collect services: {sorted(missing)}")
         if services is None and self.data.verifier is not None:
             services = {"main"}
-        runtimes = {**trace.state.services, "main": runtime}
         for hook in self.data.collect:
             if services is not None and hook.service not in services:
                 continue
