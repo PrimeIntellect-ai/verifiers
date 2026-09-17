@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -45,7 +46,15 @@ from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
 
-CACHE = Path.home() / ".cache" / "harbor"
+# The package cache, overridable for shared-storage deployments: pods-mode
+# ships each task's absolute `task_dir` from the loading process (the
+# orchestrator) to the serving one (an env-server pod), which stages
+# `environment/` and `tests/` off that path. Client and server must therefore
+# resolve ONE cache location. Set `HARBOR_CACHE_DIR` to a path on storage both
+# see (e.g. the run's shared PVC mount) on every pod that loads or serves a
+# harbor taskset; the default is the local, per-process home cache, which only
+# works when loading and serving share a filesystem.
+CACHE = Path(os.environ.get("HARBOR_CACHE_DIR") or (Path.home() / ".cache" / "harbor"))
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
