@@ -137,7 +137,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             extension_path = f"{agent_dir}/mcp.js"
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "lifecycle": "eager"}
+                    name: {"url": url, "lifecycle": "eager", "directTools": True}
                     for name, url in mcp_urls.items()
                 }
             }

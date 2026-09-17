@@ -5,6 +5,7 @@ import array
 import contextlib
 import json
 import logging
+import re
 import shlex
 import socket
 import subprocess
@@ -126,7 +127,7 @@ class DockerRuntime(ContainerRuntime):
             options += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
             options += ["--memory", f"{self.config.memory}g"]
-        _, gpu_count = parse_gpu(self.config.gpu)
+        gpu_type, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             if self.engine == "docker":
                 options += ["--gpus", str(gpu_count)]
@@ -172,6 +173,30 @@ class DockerRuntime(ContainerRuntime):
         if run.exit_code != 0:
             raise SandboxError(f"{self.engine} run failed: {run.stderr.strip()}")
         self.info.id = run.stdout.strip()[:12]  # `run -d` prints the container id
+        if self.engine == "docker" and gpu_type and gpu_count:
+            # Check the devices Docker actually exposed, including on remote daemons.
+            gpus = await cli(
+                self.engine,
+                "exec",
+                self._container,
+                "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            )
+            if gpus.exit_code != 0:
+                raise SandboxError(
+                    f"Cannot verify Docker GPU type: {(gpus.stderr or gpus.stdout).strip()}"
+                )
+            names = gpus.stdout.strip().splitlines()
+            if len(names) != gpu_count or any(
+                not re.search(
+                    rf"(?:^|[\s-]){re.escape(gpu_type)}(?:$|[\s-])", name, re.IGNORECASE
+                )
+                for name in names
+            ):
+                raise SandboxError(
+                    f"Requested {self.config.gpu!r}, but Docker exposed: {', '.join(names) or 'no GPUs'}"
+                )
         inspected = await cli(
             self.engine, "inspect", "--format", "{{json .Config}}", self._container
         )

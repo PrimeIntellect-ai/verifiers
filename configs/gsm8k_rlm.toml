@@ -1,6 +1,6 @@
 # The gsm8k taskset run with the rlm harness, configured entirely from TOML.
 #
-#   uv run eval @ configs/gsm8k_rlm.toml
+#   uv run vf-eval @ configs/gsm8k_rlm.toml
 #
 # The discriminator ids (which taskset, which harness) come from this file's
 # [env.taskset] / [env.agent.harness] `id` — they select the schema, and the rest of the
