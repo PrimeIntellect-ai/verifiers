@@ -31,15 +31,9 @@ class ComposeProject:
             raise ValueError("This Compose adapter supports public-network CPU tasks")
         self.config = config
         self.name = f"vf-{uuid.uuid4().hex}"
-        self.env = dict(task.runtime_env())
         self._stack = AsyncExitStack()
         self.task = task
         self._setup_timeout = setup_timeout
-        self._main_overrides = config.model_dump(
-            include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
-        )
-        if task.data.image is not None:
-            self._main_overrides["image"] = config.image
         self._temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
@@ -94,7 +88,11 @@ class ComposeProject:
             owner = services[owner]["network_mode"].split(":", 1)[1]
         if services.get(owner, {}).get("network_mode") == "host":
             raise SandboxError("Harbor Compose requires an isolated service network")
-        main: dict[str, object] = dict(self._main_overrides)
+        main = self.config.model_dump(
+            include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
+        )
+        if self.task.data.image is not None:
+            main["image"] = self.config.image
         if "workdir" in main:
             main["working_dir"] = main.pop("workdir")
         if self.config.cpu is not None:
@@ -117,7 +115,9 @@ class ComposeProject:
             base["services"]["main"].pop("image", None)
         base_file = directory / "base.json"
         base_file.write_text(json.dumps(base))
-        env_file = write_env_compose_file(directory / "env.json", self.env)
+        env_file = write_env_compose_file(
+            directory / "env.json", self.task.runtime_env()
+        )
         self._compose_argv = [
             "docker",
             "compose",
@@ -149,9 +149,14 @@ class ComposeProject:
         if len(containers) != 1:
             raise SandboxError("Harbor Compose requires exactly one main container")
         published = await self._compose("port", owner, str(SERVICE_PORT))
+        endpoint = next(
+            address
+            for address in published.splitlines()
+            if address.startswith("127.0.0.1:")
+        )
         self.runtime = await self._stack.enter_async_context(
             DockerRuntime.attach(
-                self.config, containers[0], service_url=f"http://{published.strip()}"
+                self.config, containers[0], service_url=f"http://{endpoint}"
             )
         )
 
