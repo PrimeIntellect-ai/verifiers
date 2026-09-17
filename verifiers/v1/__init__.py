@@ -139,7 +139,6 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
-from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.decorators import (
     intercept,
     metric,
@@ -156,6 +155,7 @@ from verifiers.v1.utils.git import (
 from verifiers.v1.utils.git import (
     resolve_head as resolve_head,
 )
+from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.loaders import (
     default_harness_id,
     env_config_type,
