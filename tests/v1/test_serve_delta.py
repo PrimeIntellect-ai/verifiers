@@ -4,6 +4,7 @@ the episode the worker finished with."""
 import asyncio
 import copy
 
+import numpy as np
 import pytest
 
 import verifiers.v1 as vf
@@ -176,7 +177,8 @@ async def test_pending_preview_streams_and_clears_on_commit():
 
 
 @pytest.mark.asyncio
-async def test_deltas_stream_once_and_reassemble_the_episode():
+@pytest.mark.parametrize("routing_dtype", [np.uint8, np.uint16])
+async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
     slot = Slot()
     frames: list[bytes] = []
 
@@ -192,8 +194,15 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
         await settle()
         assert len(frames) == 1, "the mint and the boot span coalesce into one delta"
         add_turn(trace, "a1")
+        trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
         await settle()
         add_turn(trace, "a2")
+        # The next prefill corrects the previous turn's last routing row, potentially
+        # widening its dtype. The previous node has already crossed the wire.
+        trace.nodes[1].routed_experts = np.array(
+            [[[0], [1]], [[2], [3]], [[100], [np.iinfo(routing_dtype).max]]],
+            dtype=routing_dtype,
+        )
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
         trace.record_reward("match", 1.0)
@@ -224,6 +233,10 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
     rebuilt = WireEpisode.model_validate(unpack(pack(assembly.finish(head, summaries))))
     assert rebuilt.ok and rebuilt.traces[0].id == trace.id
     assert rebuilt.traces[0].messages == trace.messages
+    np.testing.assert_array_equal(
+        rebuilt.traces[0].nodes[1].routed_experts, trace.nodes[1].routed_experts
+    )
+    assert rebuilt.traces[0].nodes[1].routed_experts.dtype == routing_dtype
     assert (
         rebuilt.traces[0].nodes[0].semantic_parents == trace.nodes[0].semantic_parents
     )
