@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import AsyncIterator
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
@@ -75,6 +76,45 @@ class DockerRuntime(ContainerRuntime):
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
+        self._owns_container = True
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def attach(
+        cls, config: DockerConfig, container: str, *, service_url: str
+    ) -> AsyncIterator["DockerRuntime"]:
+        """Borrow an existing container; its caller owns creation and removal."""
+        if config.network_restricted:
+            raise ValueError("Attaching a local container requires public networking")
+        runtime = cls(config)
+        runtime._container = container
+        runtime._owns_container = False
+        try:
+            inspected = await cli(
+                runtime.engine, "inspect", "--format", "{{json .Config}}", container
+            )
+            if inspected.exit_code:
+                raise SandboxError(f"Container inspection failed: {inspected.stderr}")
+            info = json.loads(inspected.stdout)
+            runtime._image_env = dict(
+                entry.split("=", 1) for entry in info["Env"] or []
+            )
+            runtime.config = config.model_copy(
+                update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
+            )
+            runtime.info.id = container
+            runtime.info.image = runtime.config.image
+            runtime.info.workdir = runtime.config.workdir
+            runtime.info.borrowed = True
+            runtime._service_url = service_url
+            runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
+            if sys.platform == "linux":
+                await runtime._proxy.start(listener=await runtime._container_listener())
+            else:
+                await runtime._proxy.start("127.0.0.1")
+            yield runtime
+        finally:
+            await runtime.stop()
 
     @property
     def published_port(self) -> int:
@@ -469,7 +509,7 @@ class DockerRuntime(ContainerRuntime):
             )
 
     def cleanup(self) -> None:
-        if self._container is None or self._stopped:
+        if not self._owns_container or self._container is None or self._stopped:
             return
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows
