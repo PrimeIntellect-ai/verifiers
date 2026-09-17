@@ -352,6 +352,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness.id == "pi":
+        recall = next(tool for tool in trace.tools if tool.name == "resume_recall")
+        assert recall.parameters["properties"]["codeword"]["type"] == "string"
+        assert "codeword" in recall.parameters["required"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
         assert all(call.acp is not None for call in trace.calls)

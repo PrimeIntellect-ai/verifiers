@@ -34,13 +34,24 @@ def format_count(n: int) -> str:
     return f"{n / 1e6:.1f}M"
 
 
+MAX_OVERRIDE_CHARS = 72
+
+
 def format_override(value: object) -> str:
-    """A value as one compact segment: dict `{k=v,k=v}`, list/tuple `[a,b]`, else `str`."""
+    """A value as one compact segment: dict `{k=v,k=v}`, list/tuple `[a,b]`, else `str`;
+    whitespace collapsed and cut to MAX_OVERRIDE_CHARS."""
     if isinstance(value, dict):
-        return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ",".join(str(v) for v in value) + "]"
-    return str(value)
+        text = "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
+    elif isinstance(value, (list, tuple)):
+        text = "[" + ",".join(str(v) for v in value) + "]"
+    else:
+        text = str(value)
+    text = " ".join(text.split())
+    return (
+        text
+        if len(text) <= MAX_OVERRIDE_CHARS
+        else text[: MAX_OVERRIDE_CHARS - 1] + "…"
+    )
 
 
 def format_mean(

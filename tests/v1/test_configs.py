@@ -1,7 +1,7 @@
 """Every checked-in v1 eval config parses.
 
 Mirrors prime-rl's config test: glob the configs and assert each validates into its config
-type. The root `configs/*.toml` are the `uv run eval @ <file>` v1 configs (EvalConfig).
+type. The root `configs/*.toml` are the `uv run vf-eval @ <file>` v1 configs (EvalConfig).
 """
 
 import tomllib

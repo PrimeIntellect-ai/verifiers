@@ -14,7 +14,7 @@ Set up an evaluation for a taskset in the correct way to reproduce results from 
 Use the `eval` entrypoint
 
 ```bash
-uv run eval <MY_ENV>
+uv run vf-eval <MY_ENV>
 ```
 
 ## Core workflow
@@ -22,19 +22,19 @@ uv run eval <MY_ENV>
 1. Resolve and validate config without model calls:
 
 ```bash
-uv run eval <MY_ENV> --dry-run
+uv run vf-eval <MY_ENV> --dry-run
 ```
 
 2. Run model-free gold validation when the taskset implements `validate`:
 
 ```bash
-uv run validate <MY_ENV> --runtime.type subprocess
+uv run vf-validate <MY_ENV> --runtime.type subprocess
 ```
 
 3. Do a small run to see whether it works correctly:
 
 ```bash
-uv run eval <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
+uv run vf-eval <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 4. Inspect successful, zero-reward, and errored traces.
@@ -49,7 +49,7 @@ A plugin id names an installed package (e.g. `my-taskset`); verifiers imports it
 The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
-uv run eval my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
+uv run vf-eval my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
 ```
 
 The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
@@ -57,8 +57,8 @@ keeps the taskset's own story (its exported `Env` subclass, else the single-agen
 env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash
-uv run eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
-uv run eval my-task-v1 --env.id agentic-judge \
+uv run vf-eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
+uv run vf-eval my-task-v1 --env.id agentic-judge \
   --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
 ```
 
@@ -78,7 +78,7 @@ The names of these tools are set by the respective harness. Research the relevan
 The CLI help is generated from the current config classes. Include the taskset and env ids you plan to use before `--help` so their concrete config fields are loaded:
 
 ```bash
-uv run eval my-task-v1 \
+uv run vf-eval my-task-v1 \
   --env.id best-of-n \
   --help
 ```
@@ -90,13 +90,13 @@ For implementation details and defaults, start at `verifiers/v1/configs/cli/eval
 Taskset settings:
 
 ```bash
-uv run eval my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
+uv run vf-eval my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
 ```
 
 Harness and runtime settings:
 
 ```bash
-uv run eval my-task-v1 \
+uv run vf-eval my-task-v1 \
   --env.agent.harness.id rlm \
   --env.agent.runtime.type docker \
   --env.agent.runtime.cpu 4 \
@@ -106,7 +106,7 @@ uv run eval my-task-v1 \
 Sampling:
 
 ```bash
-uv run eval my-task-v1 \
+uv run vf-eval my-task-v1 \
   --sampling.temperature 0.7 \
   --sampling.top-p 0.95 \
   --sampling.max-tokens 2048 \
@@ -141,7 +141,7 @@ temperature = 0.7
 ```
 
 ```bash
-uv run eval @ configs/my-eval.toml
+uv run vf-eval @ configs/my-eval.toml
 ```
 
 ## Retries
@@ -149,7 +149,7 @@ uv run eval @ configs/my-eval.toml
 Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
 
 ```bash
-uv run eval my-task-v1 \
+uv run vf-eval my-task-v1 \
   --env.agent.retries.max-retries 2 \
   --env.agent.retries.include SandboxError ProviderError \
   --env.agent.retries.exclude TaskError
@@ -171,7 +171,7 @@ outputs/<env>--<model>--<harness>--<short-id>/
 Resume in place by re-running the run's own saved config with `--resume` (it re-runs only the missing/errored rollouts; any config drift from the saved run is refused):
 
 ```bash
-uv run eval @ <run-dir>/configs/eval.json --resume
+uv run vf-eval @ <run-dir>/configs/eval.json --resume
 ```
 
 To overwrite a run dir and start fresh instead, use `--clean`.

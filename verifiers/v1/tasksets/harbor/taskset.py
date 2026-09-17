@@ -75,10 +75,10 @@ class HarborConfig(TasksetConfig):
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     ignore_timeouts: bool = True
-    """Drop each task's declared agent and verifier timeouts so rollouts run
-    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
-    authored against Harbor's runtime and confound model capability with inference
-    speed; set False to apply them anyway."""
+    """Drop each task's declared agent and verifier timeouts so rollouts use the
+    run-level `--timeout.*` limits or their defaults (4 h for the agent; `--timeout.rollout 0`
+    runs unbounded). Task timeouts are authored against Harbor's runtime and confound
+    model capability with inference speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
     """Scale each task's agent and verifier timeouts. Only applies with
     `ignore_timeouts=False`."""

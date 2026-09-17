@@ -10,7 +10,6 @@ from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -77,10 +76,6 @@ class EvalConfig(BaseConfig):
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
-    serve: ServeConfig | None = Field(default_factory=ServeConfig)
-    """How the env is hosted: the env-server worker pool (elastic by default) and each
-    worker's episode bound — the path prime-rl trains through. `--no-serve` runs the
-    rollouts in-process instead."""
     run: RunConfig = Field(default_factory=RunConfig)
     """Run identity: `run.name` is the display name, `run.dir` names the directory
     under `output_dir`, and `run.id` is stamped on traces."""
@@ -111,8 +106,7 @@ class EvalConfig(BaseConfig):
     )
     """Episodes in flight at once, `None` for no limit. An episode plays its agents one
     at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
-    says otherwise. Under `[serve]` it also seeds each worker's bound, unless
-    `--serve.max-concurrent` pins one."""
+    says otherwise."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)
@@ -123,8 +117,7 @@ class EvalConfig(BaseConfig):
     previous run's results. Excluded from the saved config."""
     rich: RichConfig | None = Field(default_factory=RichConfig)
     """The live dashboard (on by default; `--no-rich` streams logs to the console
-    instead). A served run has no live per-turn view, so its rollout rows fill in as
-    each episode completes; `--rich.show-logs` swaps the rows for the run's logs."""
+    instead); `--rich.show-logs` swaps the rollout rows for the run's logs."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -141,7 +134,7 @@ class EvalConfig(BaseConfig):
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
-    run's own config — e.g. `uv run eval @ <run-dir>/configs/eval.json --resume`. Excluded
+    run's own config — e.g. `uv run vf-eval @ <run-dir>/configs/eval.json --resume`. Excluded
     from the saved config."""
 
     @model_validator(mode="before")
