@@ -7,7 +7,7 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
@@ -25,7 +25,6 @@ PRIME_AGENT_COMMIT: Literal["81ae3cb34d27d38ee37f9e205a1e73694993b344"] = (
 PRIME_AGENT_VERSION = "0.9.1"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
-SKILLS_DIR = ".agents/skills"
 PROVIDER = "intercept"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
@@ -155,7 +154,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         await ensure_installed(
@@ -191,6 +189,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
         root = self._root(trace)
         agent_dir = f"{root}/agent"
+        skills_dir = f"{agent_dir}/skills"
         created = await runtime.run(
             [
                 "mkdir",
@@ -207,6 +206,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
+        await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -251,7 +251,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if self.config.autonomous:
             args.append("--autonomous")
         for skill in self.config.skills:
-            args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
+            args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
 
