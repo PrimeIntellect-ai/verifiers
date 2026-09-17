@@ -1,6 +1,7 @@
 from typing import Any
 
 import verifiers as vf
+from verifiers.envs.environment import Environment
 from verifiers.envs.integrations import openenv_env
 from verifiers.types import UserMessage
 
@@ -160,3 +161,28 @@ async def test_openenv_uses_public_async_mcp_client(monkeypatch):
     action = client.step_actions[0]
     assert action.tool_name == "echo"
     assert action.arguments == {"message": "hi"}
+
+
+async def test_openenv_start_server_forwards_metrics_port(monkeypatch):
+    env = vf.OpenEnvEnv(
+        num_train_examples=1,
+        num_eval_examples=0,
+        prompt_renderer=render_prompt,
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_server(self, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(Environment, "start_server", fake_start_server)
+
+    await env.start_server(
+        extra_env_kwargs={},
+        num_workers=1,
+        log_level="info",
+        log_dir="/tmp",
+        console_logging=True,
+        metrics_port=9090,
+    )
+
+    assert captured["metrics_port"] == 9090

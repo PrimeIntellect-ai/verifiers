@@ -194,6 +194,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         log_level: str | None = None,
         log_dir: str | None = None,
         console_logging: bool = True,
+        metrics_port: int | None = None,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10m
@@ -206,6 +207,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             log_level=log_level,
             log_dir=log_dir,
             console_logging=console_logging,
+            metrics_port=metrics_port,
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
