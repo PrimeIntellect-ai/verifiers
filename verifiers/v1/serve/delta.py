@@ -4,12 +4,12 @@ The worker streams a served episode as it grows. Each trace announces its own ch
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
 after every recorded turn); the `DeltaStreamer` then diffs the run's live traces against
 what it has already sent and ships only the new part — the trace header once, then
-appended nodes / calls / errors, semantic links landing on earlier nodes, the scalar
+appended nodes / calls / errors, semantic links and routing-row repairs on earlier nodes, the scalar
 fields whose value changed (timing spans, stop condition, rewards, ...), and the
 `pending` preview — the messages of the request in flight that no node holds yet, so a
 watcher sees a tool result before the model has answered it. The `Trace` is
-append-only at turn granularity (a turn's nodes are committed complete, with their
-tokens), so apart from the preview, which a committed turn repeats, every byte of the
+append-only at turn granularity except for links and the last routing row of a node,
+which the next prefill can repair. Apart from these and the preview, every byte of the
 episode crosses the wire once and the stream costs about what a single reply would; the
 reply that ends the run carries only the episode head and per-trace counts the client
 checks its assembly against. A cursor advances only once its delta is on the wire, so a
@@ -29,8 +29,10 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Self
 
 import msgpack
+import numpy as np
 from pydantic import BaseModel
 
+from verifiers.v1.graph import _decode_ndarray, _encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
 
 if TYPE_CHECKING:
@@ -73,7 +75,7 @@ def pack(payload: Any) -> bytes:
 
 
 def unpack(data: bytes) -> Any:
-    # `links` is keyed by node index (int).
+    # Node updates are keyed by node index (int).
     return msgpack.unpackb(data, raw=False, strict_map_key=False)
 
 
@@ -90,6 +92,8 @@ class TraceCursor:
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
+        self.routing_rows: dict[int, bytes] = {}
+        """Only the final routing row can change after a node has been sent."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
 
@@ -183,6 +187,18 @@ class DeltaStreamer:
                     cursor.links[index] = len(node_links)
             if links:
                 delta["links"] = links
+            routing_rows: dict[int, dict] = {}
+            for index, node in enumerate(trace.nodes):
+                if node.routed_experts is None:
+                    continue
+                row = _encode_ndarray(node.routed_experts[-1:])
+                packed = pack(row)
+                if cursor.routing_rows.get(index) != packed:
+                    cursor.routing_rows[index] = packed
+                    if index < cursor.sent["nodes"]:
+                        routing_rows[index] = row
+            if routing_rows:
+                delta["routing_rows"] = routing_rows
             for field in LIST_FIELDS:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
@@ -234,6 +250,15 @@ class EpisodeAssembly:
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
+        for index, row in (delta.get("routing_rows") or {}).items():
+            node = trace["nodes"][int(index)]
+            # Concatenation preserves earlier rows and widens the dtype if needed,
+            # without mutating the original node delta held by a consumer.
+            node["routed_experts"] = _encode_ndarray(
+                np.concatenate(
+                    [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]
+                )
+            )
         # a later `links` delta grows a node's semantic_parents in place, so the node
         # is copied: the delta stays as it was when the caller received it
         if "nodes" in delta:
