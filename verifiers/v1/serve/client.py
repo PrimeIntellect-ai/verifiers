@@ -1,11 +1,13 @@
 """ZMQ client for the env server.
 
-A DEALER socket + msgpack, with a single receive loop matching responses to
-per-request futures by `request_id`. Speaks the typed pydantic request/response
-models (`serve/types.py`) end-to-end: a request is `model_dump`ed onto the wire
-and the reply is `model_validate`d back — `Trace`s come back typed as
-`Trace[WireTaskData]` (non-strict task, so env fields survive without importing the
-env). Health is just another request (no dedicated probe thread).
+A DEALER socket + msgpack, with a single receive loop matching replies to
+per-request futures by `request_id` and routing a run's `delta` frames to its
+assembly (`serve/delta.py`). Speaks the typed pydantic request/response models
+(`serve/types.py`) end-to-end: a request is `model_dump`ed onto the wire; a run's
+traces stream back turn by turn and the assembled record is `model_validate`d into a
+`WireEpisode` once the reply lands — `Trace`s typed as `Trace[WireTaskData]`
+(non-strict task, so env fields survive without importing the env). Health is just
+another request (no dedicated probe thread).
 """
 
 import asyncio
@@ -13,6 +15,7 @@ import contextlib
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from typing import TypeVar
 
 import msgpack
@@ -21,6 +24,7 @@ import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.episode import WireEpisode
+from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -47,6 +51,7 @@ class EnvClient:
         self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.connect(address)
         self._pending: dict[str, asyncio.Future[bytes]] = {}
+        self._deltas: dict[str, Callable[[bytes], None]] = {}
         # Strong refs to in-flight fire-and-forget cancels: the loop only
         # holds weak references to tasks, so an unreferenced one can be
         # garbage-collected before it ever sends
@@ -59,27 +64,48 @@ class EnvClient:
             self._receiver = asyncio.create_task(self._receive_loop())
 
     async def _receive_loop(self) -> None:
+        # The one receiver serves every in-flight request, so a bad frame or a delta
+        # handler that raises is logged and skipped rather than allowed to end the loop.
         while True:
             try:
-                request_id_bytes, data = await self.socket.recv_multipart()
+                frames = await self.socket.recv_multipart()
             except asyncio.CancelledError:
                 break
-            future = self._pending.pop(request_id_bytes.decode(), None)
-            if future is not None and not future.done():
-                future.set_result(data)
+            try:
+                if len(frames) != 3:
+                    raise ValueError(
+                        f"expected [request_id, kind, data], got {len(frames)} frames - "
+                        "is the env server speaking the same serve protocol?"
+                    )
+                request_id_bytes, kind, data = frames
+                request_id = request_id_bytes.decode()
+                if kind == b"delta":
+                    on_delta = self._deltas.get(request_id)
+                    if on_delta is not None:
+                        on_delta(data)
+                    continue
+                future = self._pending.pop(request_id, None)
+                if future is not None and not future.done():
+                    future.set_result(data)
+            except Exception:  # keep receiving for the other requests
+                logger.warning("dropping a malformed env-server frame", exc_info=True)
 
     async def _request(
         self,
         request: BaseRequest,
         response_type: type[ResponseT],
         timeout: float | None = None,
+        on_delta: Callable[[bytes], None] | None = None,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. A
-        `timeout` is only used for health polling — rollouts run untimed."""
+        `timeout` is only used for health polling — rollouts run untimed. `on_delta`
+        receives each `delta` frame the request streams before its reply."""
         self._ensure_receiver()
         request_id = uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
+        if on_delta is not None:
+            self._deltas[request_id] = on_delta
         payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
         await self.socket.send_multipart(
             [request_id.encode(), request.method.encode(), payload]
@@ -101,30 +127,29 @@ class EnvClient:
                 self._cancel_tasks.add(task)
                 task.add_done_callback(self._cancel_tasks.discard)
             raise
-        if response_type is HealthResponse:
-            response = response_type.model_validate(msgpack.unpackb(data, raw=False))
-        else:
-            # Keep large trace replies compact on the loop and expand only one at a time.
-            await self._decode_slots.acquire()
-            decoding = asyncio.create_task(
-                asyncio.to_thread(
-                    lambda: response_type.model_validate(
-                        msgpack.unpackb(data, raw=False)
-                    )
-                )
-            )
-            # Hold the slot until the worker finishes so cancellation cannot overlap decodes.
-            decoding.add_done_callback(lambda _: self._decode_slots.release())
-            try:
-                response = await asyncio.shield(decoding)
-            except asyncio.CancelledError:
-                decoding.add_done_callback(
-                    lambda task: None if task.cancelled() else task.exception()
-                )
-                raise
+        finally:
+            self._deltas.pop(request_id, None)
+        response = response_type.model_validate(unpack(data))
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
         return response
+
+    async def _validate_episode(self, record: dict) -> WireEpisode:
+        """Type the assembled record off the loop, one episode at a time: a long
+        trace is a lot of token spans to validate."""
+        await self._decode_slots.acquire()
+        decoding = asyncio.create_task(
+            asyncio.to_thread(WireEpisode.model_validate, record)
+        )
+        # Hold the slot until the worker finishes so cancellation cannot overlap decodes.
+        decoding.add_done_callback(lambda _: self._decode_slots.release())
+        try:
+            return await asyncio.shield(decoding)
+        except asyncio.CancelledError:
+            decoding.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )
+            raise
 
     async def _send_cancel(self, run_request_id: str) -> None:
         """Best-effort server-side abort of an abandoned run."""
@@ -164,10 +189,22 @@ class EnvClient:
         model: str,
         sampling: SamplingConfig,
         task_data: dict,
+        on_delta: Callable[[dict], None] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
-        itself (`task_data`, its dumped `TaskData`)."""
+        itself (`task_data`, its dumped `TaskData`). The traces stream in as the
+        rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
+        sees each as it lands, so a caller can relay or persist the stream. The
+        episode returned is assembled from the same deltas."""
+        assembly = EpisodeAssembly()
+
+        def apply(data: bytes) -> None:
+            delta = unpack(data)
+            assembly.apply(delta)
+            if on_delta is not None:
+                on_delta(delta)
+
         response = await self._request(
             RunRequest(
                 task_data=task_data,
@@ -176,8 +213,12 @@ class EnvClient:
                 sampling=sampling,
             ),
             RunResponse,
+            on_delta=apply,
         )
-        return response.episode
+        assert response.head is not None
+        return await self._validate_episode(
+            assembly.finish(response.head, response.traces)
+        )
 
     async def close(self) -> None:
         if self._receiver is not None:

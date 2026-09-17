@@ -193,7 +193,7 @@ class EnvServerPool:
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
                         await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
+                            [client_id, request_id, b"reply", _HEALTH]
                         )
                     elif method == b"cancel":
                         # Route the cancel to the worker holding the target run;
@@ -208,7 +208,7 @@ class EnvServerPool:
                         target_entry = pending.get(target)
                         if target_entry is None:
                             await self.frontend.send_multipart(
-                                [client_id, request_id, _CANCEL_MISS]
+                                [client_id, request_id, b"reply", _CANCEL_MISS]
                             )
                         else:
                             worker = target_entry["worker"]
@@ -238,16 +238,25 @@ class EnvServerPool:
                             self._maybe_scale_up(in_flight)
                 for w in self.workers:
                     if w["dealer"] in events:
-                        request_id, data = await w["dealer"].recv_multipart(copy=False)
-                        # Copy only the routing key; relay the response Frames unchanged.
-                        entry = pending.pop(request_id.bytes, None)
-                        if entry is None:
-                            continue
-                        entry["worker"]["active"] -= 1
-                        in_flight -= 1
+                        request_id, kind, data = await w["dealer"].recv_multipart(
+                            copy=False
+                        )
+                        # Copy only the routing key; relay the Frames unchanged. A
+                        # `delta` is one of many for its request — only the `reply`
+                        # closes the request out.
+                        if kind.bytes == b"reply":
+                            entry = pending.pop(request_id.bytes, None)
+                            if entry is None:
+                                continue
+                            entry["worker"]["active"] -= 1
+                            in_flight -= 1
+                        else:
+                            entry = pending.get(request_id.bytes)
+                            if entry is None:
+                                continue
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, data], copy=False
+                                [entry["client_id"], request_id, kind, data], copy=False
                             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
