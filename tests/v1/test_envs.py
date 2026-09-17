@@ -66,10 +66,10 @@ def test_eval(taskset: str):
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
     cmd = [
-        "uv", "run", "--no-sync", "eval", taskset,
+        "uv", "run", "--no-sync", "vf-eval", taskset,
         *model,
         "-n", "1", "-r", "1", *caps,
-        "--sampling.max-tokens", "512", "--no-rich",
+        "--sampling.max-tokens", "512", "--no-rich", "--no-push",
     ]  # fmt: skip
     try:
         proc = subprocess.run(

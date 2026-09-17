@@ -483,6 +483,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        session.trace.notify()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -638,8 +639,10 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
-            turn = graph.prepare_turn(session.trace, model_request.messages)
-            turn.commit_prompt(model_request.tools)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
+            turn.commit_prompt()
             session.trace.stop(stopped)
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {stopped}"),
@@ -651,11 +654,16 @@ class InterceptionServer(Interception):
             # Restricted mediation can mutate the body without reporting policy paths.
             if request_rewrites or session.network_policy.network_restricted:
                 model_request = dialect.parse_request(body)
-            turn = graph.prepare_turn(session.trace, model_request.messages)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # The tail is what the harness added since the last turn (tool results, user
+        # turns): live watchers see it now rather than with the model's reply.
+        session.trace.preview(turn, turn.tail)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
         if relay_streaming:
@@ -739,7 +747,7 @@ class InterceptionServer(Interception):
                             ),
                             status=400,
                         )
-                    node = turn.commit(call_response, model_request.tools)
+                    node = turn.commit(call_response)
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
@@ -778,6 +786,8 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if node is None:
+                    turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and
                 # the error that ended it (if any).
                 self.record_call(
@@ -905,7 +915,7 @@ class InterceptionServer(Interception):
                         ),
                         status=409 if session.released else 400,
                     )
-                node = turn.commit(response, model_request.tools)
+                node = turn.commit(response)
                 session.consume_prepared(turn.tail)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if stopped is not None:
@@ -1013,7 +1023,7 @@ class InterceptionServer(Interception):
                     raise parser_error
                 response = parser.finish()
                 if not session.released and not session.stopped:
-                    node = turn.commit(response, model_request.tools)
+                    node = turn.commit(response)
                     session.consume_prepared(turn.tail)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
                 elif session.stopped:
@@ -1043,6 +1053,8 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
+            if node is None:
+                turn.abandon()
             # The turn's one per-exchange record: settings, timing, outcome, and the
             # error that ended it (if any).
             self.record_call(
