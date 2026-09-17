@@ -5,12 +5,14 @@ import array
 import contextlib
 import json
 import logging
+import re
 import shlex
 import socket
 import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
@@ -89,6 +91,55 @@ class DockerRuntime(ContainerRuntime):
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
+        self._owns_container = True
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def attach(
+        cls,
+        config: "DockerConfig | PrimeConfig | ModalConfig",
+        container: str,
+        *,
+        service_url: str | None = None,
+        host: Runtime | None = None,
+    ) -> AsyncIterator["DockerRuntime"]:
+        """Borrow an existing container; its caller owns creation and removal."""
+        if host is None and config.network_restricted:
+            raise ValueError("Attaching a local container requires public networking")
+        runtime = cls(config, host=host)
+        runtime.is_local = host.is_local if host is not None else True
+        runtime._container = container
+        runtime._owns_container = False
+        try:
+            inspected = await runtime._run_host(
+                runtime.engine, "inspect", "--format", "{{json .Config}}", container
+            )
+            if inspected.exit_code:
+                raise SandboxError(f"Container inspection failed: {inspected.stderr}")
+            info = json.loads(inspected.stdout)
+            runtime._image_env = dict(
+                entry.split("=", 1) for entry in info["Env"] or []
+            )
+            runtime.config = config.model_copy(
+                update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
+            )
+            if host is None:
+                runtime.info.id = container
+            runtime.info.image = runtime.config.image
+            runtime.info.workdir = runtime.config.workdir
+            runtime.info.borrowed = True
+            runtime._service_url = service_url
+            if host is None and service_url is not None:
+                runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
+                if sys.platform == "linux":
+                    await runtime._proxy.start(
+                        listener=await runtime._container_listener()
+                    )
+                else:
+                    await runtime._proxy.start("127.0.0.1")
+            yield runtime
+        finally:
+            await runtime.stop()
 
     @property
     def published_port(self) -> int:
@@ -141,7 +192,7 @@ class DockerRuntime(ContainerRuntime):
             options += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
             options += ["--memory", f"{self.config.memory}g"]
-        _, gpu_count = parse_gpu(self.config.gpu)
+        gpu_type, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             if self.engine == "docker":
                 options += ["--gpus", str(gpu_count)]
@@ -187,6 +238,30 @@ class DockerRuntime(ContainerRuntime):
         if run.exit_code != 0:
             raise SandboxError(f"{self.engine} run failed: {run.stderr.strip()}")
         self.info.id = run.stdout.strip()[:12]  # `run -d` prints the container id
+        if self.engine == "docker" and gpu_type and gpu_count:
+            # Check the devices Docker actually exposed, including on remote daemons.
+            gpus = await cli(
+                self.engine,
+                "exec",
+                self._container,
+                "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            )
+            if gpus.exit_code != 0:
+                raise SandboxError(
+                    f"Cannot verify Docker GPU type: {(gpus.stderr or gpus.stdout).strip()}"
+                )
+            names = gpus.stdout.strip().splitlines()
+            if len(names) != gpu_count or any(
+                not re.search(
+                    rf"(?:^|[\s-]){re.escape(gpu_type)}(?:$|[\s-])", name, re.IGNORECASE
+                )
+                for name in names
+            ):
+                raise SandboxError(
+                    f"Requested {self.config.gpu!r}, but Docker exposed: {', '.join(names) or 'no GPUs'}"
+                )
         inspected = await cli(
             self.engine, "inspect", "--format", "{{json .Config}}", self._container
         )
@@ -245,6 +320,8 @@ class DockerRuntime(ContainerRuntime):
         )
 
     def host_url(self, url: str) -> str:
+        if self._host is not None:
+            return self._host.host_url(url)
         parts = urlsplit(url)
         if not is_loopback_host(parts.hostname or ""):
             return url
@@ -253,6 +330,8 @@ class DockerRuntime(ContainerRuntime):
         return self._proxy.callback_url(url, host)
 
     async def expose(self, port: int) -> str:
+        if self._host is not None:
+            return await self._host.expose(port)
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(
                 f"{self.engine} publishes only port {SERVICE_PORT}, not {port}"
@@ -322,6 +401,9 @@ class DockerRuntime(ContainerRuntime):
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
+        if self._host is not None:
+            await self._host.prepare_execution(routes)
+            return
         if not self.network_restricted:
             return
         assert self._proxy is not None
@@ -460,7 +542,7 @@ class DockerRuntime(ContainerRuntime):
             )
 
     def cleanup(self) -> None:
-        if self._container is None or self._stopped:
+        if not self._owns_container or self._container is None or self._stopped:
             return
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows

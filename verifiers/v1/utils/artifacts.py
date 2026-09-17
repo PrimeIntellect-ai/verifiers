@@ -37,7 +37,7 @@ class Artifact(BaseModel):
 
 
 async def collect(
-    runtime: Runtime,
+    runtime: Runtime | dict[str, Runtime],
     artifacts: list[Artifact] | None = None,
     *,
     max_bytes: int = MAX_ARTIFACT_BYTES,
@@ -54,6 +54,7 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
+    runtimes = runtime if isinstance(runtime, dict) else {"main": runtime}
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
@@ -62,7 +63,7 @@ async def collect(
             update={
                 "source": str(
                     PurePosixPath(
-                        getattr(runtime.service(a.service).config, "workdir", "") or "/"
+                        getattr(runtimes[a.service].config, "workdir", "") or "/"
                     )
                     / a.source
                 )
@@ -138,7 +139,7 @@ async def collect(
     existence: list[str] = []
     for service, sources in batches:
         output = await _run(
-            runtime.service(service),
+            runtimes[service],
             f"for source in {shlex.join(sources)}; do "
             'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
             "done",
@@ -156,7 +157,7 @@ async def collect(
             raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
-        archive = await _tar_out(runtime.service(artifact.service), artifact, budget)
+        archive = await _tar_out(runtimes[artifact.service], artifact, budget)
         budget -= len(archive)
         collected[source] = archive
 

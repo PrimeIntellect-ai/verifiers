@@ -77,10 +77,10 @@ class HarborConfig(TasksetConfig):
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     ignore_timeouts: bool = True
-    """Drop each task's declared agent and verifier timeouts so rollouts run
-    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
-    authored against Harbor's runtime and confound model capability with inference
-    speed; set False to apply them anyway."""
+    """Drop each task's declared agent and verifier timeouts so rollouts use the
+    run-level `--timeout.*` limits or their defaults (4 h for the agent; `--timeout.rollout 0`
+    runs unbounded). Task timeouts are authored against Harbor's runtime and confound
+    model capability with inference speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
     """Scale each task's agent and verifier timeouts. Only applies with
     `ignore_timeouts=False`."""
@@ -173,7 +173,14 @@ class HarborData(TaskData):
     grades in the agent's box."""
 
 
-class HarborTask(Task[HarborData, State, HarborTaskConfig]):
+class HarborState(State):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    services: dict[str, Runtime] = Field(default_factory=dict, exclude=True)
+    """Live Compose execution targets, owned by the Harbor environment."""
+
+
+class HarborTask(Task[HarborData, HarborState, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
@@ -253,18 +260,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> None:
         """Run collect hooks and capture artifacts from the selected services.
 
-        Separate grading captures main here and sidecars during cleanup, after all
-        harness work in main finishes. Hook failures remain errors because these
+        Separate grading captures main here; the environment collects sidecars after
+        harness cleanup and stopping main. Hook failures remain errors because these
         files are grading inputs.
         """
         if services is None and self.data.verifier is not None:
             services = {"main"}
+        runtimes = {**trace.state.services, "main": runtime}
         for hook in self.data.collect:
             if services is not None and hook.service not in services:
                 continue
             try:
                 result = await asyncio.wait_for(
-                    runtime.service(hook.service).run(["sh", "-c", hook.command], {}),
+                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
@@ -281,24 +289,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             len(value) for value in trace.state.artifacts.values() if value is not None
         )
         collected = await collect(
-            runtime,
+            runtimes,
             self.data.artifacts,
             max_bytes=self.data.artifact_max_bytes - used,
             services=services,
         )
         trace.state.artifacts.update(collected)
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        if not trace.ok or self.data.verifier is None:
-            return
-        services = {
-            *(artifact.service for artifact in self.data.artifacts),
-            *(hook.service for hook in self.data.collect),
-        } - {"main"}
-        if services:
-            # No remaining harness operation may run in main once evidence is frozen.
-            await runtime.stop_service("main")
-            await self.finalize(trace, runtime, services=services)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(

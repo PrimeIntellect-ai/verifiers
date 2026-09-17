@@ -77,6 +77,8 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
 
 class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
+    vm: bool = False
+    """Use a VM sandbox for workloads requiring a Docker daemon."""
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
@@ -236,6 +238,7 @@ class ModalRuntime(Runtime):
             ),
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
+            experimental_options={"vm_runtime": True} if self.config.vm else {},
         )
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
@@ -405,6 +408,20 @@ class ModalRuntime(Runtime):
         if sandbox is not None:  # keep info.id available after teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
+
+    async def stop_and_wait(self) -> None:
+        """Confirm termination before another runtime consumes this box's artifacts."""
+        sandbox = self._sandbox
+        if sandbox is None:
+            return
+        try:
+            async with asyncio.timeout(60):
+                await self.stop()
+                await sandbox.wait.aio(raise_on_termination=False)
+        except BaseException:
+            # Keep the cleanup handle when termination could not be confirmed.
+            self._sandbox = sandbox
+            raise
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly

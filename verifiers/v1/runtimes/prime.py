@@ -343,6 +343,10 @@ class PrimeRuntime(Runtime):
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
+        if self.config.vm:
+            raise SandboxError(
+                "The Prime SDK does not support port exposure from VM sandboxes"
+            )
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
         # HTTPS URL. Removed when the sandbox is deleted in stop(), so a tool in its own prime
         # sandbox needs no host tunnel. Port exposure is region-gated: many regions (incl. the
@@ -431,6 +435,25 @@ class PrimeRuntime(Runtime):
 
             with contextlib.suppress(Exception):
                 SandboxClient(APIClient()).delete(self.info.id)
+
+    async def stop_and_wait(self) -> None:
+        """Confirm termination before another runtime consumes this box's artifacts."""
+        from prime_sandboxes import APIError, AsyncSandboxClient
+
+        await self.stop()
+        if self.info.id is None:
+            return
+        async with AsyncSandboxClient() as client, asyncio.timeout(60):
+            while True:
+                try:
+                    sandbox = await client.get(self.info.id)
+                except APIError as error:
+                    if str(error).startswith("HTTP 404:"):
+                        return
+                    raise
+                if str(sandbox.status) == "TERMINATED":
+                    return
+                await asyncio.sleep(1)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via

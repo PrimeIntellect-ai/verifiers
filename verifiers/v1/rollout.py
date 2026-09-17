@@ -26,7 +26,6 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
-    register,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
@@ -70,7 +69,6 @@ class Rollout:
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
-        runtime_factory: Callable[[RuntimeConfig], Runtime] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> None:
@@ -85,7 +83,6 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
-        self._runtime_factory = runtime_factory
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
@@ -183,13 +180,9 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
+        self.trace.notify()
         if self._borrowed_runtime is None:
-            self.runtime = (
-                self._runtime_factory(self.runtime_config)
-                if self._runtime_factory is not None
-                else make_runtime(self.runtime_config, name=self.trace.id)
-            )
-            register(self.runtime)
+            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
@@ -227,6 +220,7 @@ class Rollout:
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
+            self.trace.notify()
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None
@@ -354,6 +348,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
+        self.trace.notify()
         return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -445,13 +440,6 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
-            self.trace.ok = False
-            with contextlib.suppress(Exception):
-                async with asyncio.timeout(self._timeouts.finalize):
-                    await invoke(
-                        self.task.cleanup,
-                        {"trace": self.trace, "runtime": self.runtime},
-                    )
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -483,6 +471,7 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
+                trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
                 trace.timing.finalize.start = time.time()
@@ -498,6 +487,7 @@ class Rollout:
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
+                trace.notify()
                 async with boundary(TaskError, "scoring"):
                     # Cross-trace judgement runs later, after the runtime is gone.
                     await asyncio.wait_for(
@@ -508,6 +498,7 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
+                trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
@@ -516,6 +507,7 @@ class Rollout:
                     await self._harness_session.close()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
+            trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()
             for span in (
@@ -535,32 +527,16 @@ class Rollout:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
-                try:
-                    async with (
-                        boundary(TaskError, "task cleanup"),
-                        asyncio.timeout(self._timeouts.finalize),
-                    ):
-                        await invoke(
-                            self.task.cleanup, {"trace": trace, "runtime": runtime}
-                        )
-                except Exception as error:  # noqa: BLE001 - record cleanup failures before grading
-                    self.fail(error)
-                    trace.ok = False
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()
-                except Exception as error:
-                    # Custom project owners can require confirmed teardown before grading.
-                    if self._runtime_factory is not None:
-                        self.fail(error)
-                        trace.ok = False
+                except Exception:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
-            trace.is_completed = True
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

@@ -138,7 +138,7 @@ class BaseRuntimeInfo(BaseConfig):
 class Runtime(ABC):
     __slots__ = ("env",)
 
-    is_local: ClassVar[bool] = True
+    is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
     subprocess and the local container runtimes; remote runtimes override to False and
     use a host `Tunnel` inward plus `expose` outward."""
@@ -172,16 +172,6 @@ class Runtime(ABC):
     @property
     def type(self) -> str:
         return self.config.type
-
-    def service(self, name: str) -> "Runtime":
-        """Select a filesystem and execution target within this runtime."""
-        if name != "main":
-            raise SandboxError(f"{self.type} runtime has no service {name!r}")
-        return self
-
-    async def stop_service(self, name: str) -> None:
-        """Stop one service while keeping its peers alive for collection."""
-        raise SandboxError(f"{self.type} runtime cannot stop service {name!r}")
 
     @abstractmethod
     async def start(self) -> None:

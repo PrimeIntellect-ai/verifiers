@@ -32,7 +32,8 @@ class ContainerConfig(BaseConfig):
     """Hard memory limit in GB. None = unlimited."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "2". Docker exposes that many GPUs (needs the nvidia
-    container toolkit); Podman selects that many NVIDIA CDI devices. Apptainer exposes
+    container toolkit) and checks requested types with nvidia-smi; Podman selects
+    that many NVIDIA CDI devices. Apptainer exposes
     all accessible NVIDIA GPUs, so its count is advisory. None = none."""
     disk: float | None = None
     """Advisory disk request in GB. Local containers have no portable per-container size
@@ -78,18 +79,30 @@ class ContainerProcess(RuntimeProcess):
     so the container runtime delivers them directly to the inner process group."""
 
     def __init__(
-        self, process: RuntimeProcess, runtime: "ContainerRuntime", pid: int
+        self,
+        process: RuntimeProcess,
+        runtime: "ContainerRuntime",
+        pid: int,
+        pidfile: str,
     ) -> None:
         self._process = process
         self._runtime = runtime
         self._pid = pid
+        self._pidfile = pidfile
         self.stdout, self.stderr = process.stdout, process.stderr
 
     async def write(self, data: bytes) -> None:
         await self._process.write(data)
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        try:
+            return await self._process.wait()
+        finally:
+            await run_shielded(
+                self._runtime._run_host(
+                    *self._runtime._exec({}), "rm", "-f", self._pidfile
+                )
+            )
 
     async def poll(self) -> int | None:
         return await self._process.poll()
@@ -245,7 +258,9 @@ class ContainerRuntime(Runtime):
                     returncode = await proc.poll()
                     ready = await self._run_host(*self._exec({}), "cat", pidfile)
                     if ready.exit_code == 0 and ready.stdout.strip().isdigit():
-                        return ContainerProcess(proc, self, int(ready.stdout.strip()))
+                        return ContainerProcess(
+                            proc, self, int(ready.stdout.strip()), pidfile
+                        )
                     if returncode is not None:
                         break
                     await asyncio.sleep(0.05)

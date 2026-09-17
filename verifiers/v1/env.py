@@ -316,16 +316,23 @@ class Env(ABC, Generic[ConfigT]):
         ctx: ModelContext,
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
         retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
         permit for the attempt in flight, held across the whole of it (its agents,
         their boxes, `finalize()`) and released before a retry's backoff and before
-        `on_complete` (the runners' persistence hook, which fires when final)."""
+        `on_complete` (the runners' persistence hook, which fires when final).
+        `on_trace` sees each trace at mint, after it joined `slot.traces`."""
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
             live = slot.traces
+
+            def minted(trace: Trace) -> None:
+                live.append(trace)
+                if on_trace is not None:
+                    on_trace(trace)
 
             def discard(trace: Trace) -> None:
                 # A retried agent attempt abandons its trace; drop it from the view.
@@ -336,7 +343,7 @@ class Env(ABC, Generic[ConfigT]):
                 return await self.run_episode(
                     slot.task,
                     ctx,
-                    on_trace=live.append,
+                    on_trace=minted,
                     on_discard=discard,
                 )
 

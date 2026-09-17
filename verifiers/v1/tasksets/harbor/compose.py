@@ -1,36 +1,37 @@
-"""One Compose project owner using Docker execution locally or inside a VM."""
+"""Harbor owns a Compose project locally or inside an existing provider runtime."""
 
 import asyncio
-import copy
+import atexit
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import uuid
+from contextlib import AsyncExitStack
 from pathlib import Path
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerConfig,
     DockerRuntime,
     ModalConfig,
+    ModalRuntime,
     PrimeConfig,
-    Runtime,
-    RuntimeConfig,
+    PrimeRuntime,
 )
-from verifiers.v1.runtimes.base import SERVICE_PORT, register
-from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy
+from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
+from verifiers.v1.runtimes.container import cli
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
+from verifiers.v1.utils.aio import run_shielded
 
 
-class HarborComposeRuntime(DockerRuntime):
+class ComposeProject:
     def __init__(
         self,
         config: DockerConfig | PrimeConfig | ModalConfig,
         task: HarborTask,
         *,
-        host: Runtime | None = None,
         setup_timeout: float | None = None,
     ):
         if config.gpu:
@@ -39,10 +40,27 @@ class HarborComposeRuntime(DockerRuntime):
             raise ValueError(
                 "Harbor Compose on local Docker requires public networking"
             )
-        super().__init__(config, host=host)
-        if host is not None:
-            # Expose provisioning updates to the trace while the host is still starting.
-            host.info = self.info
+        self.config = config
+        self.name = f"vf-{uuid.uuid4().hex}"
+        self.env = dict(task.runtime_env())
+        self._stack = AsyncExitStack()
+        self._host: PrimeRuntime | ModalRuntime | None = None
+        if isinstance(config, PrimeConfig):
+            if not config.vm:
+                raise ValueError("Harbor Compose on Prime requires vm=True")
+            self._host = PrimeRuntime(
+                config.model_copy(
+                    update={"image": "python:3.11-slim-trixie", "workdir": "/"}
+                )
+            )
+        elif isinstance(config, ModalConfig):
+            if not config.network_access:
+                raise ValueError("Harbor Compose on Modal requires network_access=True")
+            self._host = ModalRuntime(
+                config.model_copy(
+                    update={"image": "docker:28.3.3-dind", "workdir": "/", "vm": True}
+                )
+            )
         self.task = task
         self._setup_timeout = setup_timeout
         self._main_overrides = config.model_dump(
@@ -54,8 +72,15 @@ class HarborComposeRuntime(DockerRuntime):
         self._compose_argv: list[str] = []
         self._compose_env: dict[str, str] = {}
         self._created = False
-        self._owner: HarborComposeRuntime | None = None
-        self._services: dict[str, HarborComposeRuntime] = {"main": self}
+        self._closed = False
+        self.services: dict[str, DockerRuntime] = {}
+
+    async def _run_host(
+        self, *args: str, env: dict[str, str] | None = None
+    ) -> ProgramResult:
+        if self._host is not None:
+            return await self._host.run(list(args), env or {})
+        return await cli(*args, env=env)
 
     async def _compose(self, *args: str) -> str:
         result = await self._run_host(*self._compose_argv, *args, env=self._compose_env)
@@ -65,9 +90,19 @@ class HarborComposeRuntime(DockerRuntime):
             )
         return result.stdout
 
-    async def start(self) -> None:
-        async with asyncio.timeout(self._setup_timeout):
-            await self._start()
+    async def __aenter__(self) -> DockerRuntime:
+        atexit.register(self.cleanup)
+        self._stack.push_async_callback(self._teardown)
+        try:
+            async with asyncio.timeout(self._setup_timeout):
+                await self._start()
+        except BaseException:
+            await run_shielded(self._stack.aclose())
+            raise
+        return self.services["main"]
+
+    async def __aexit__(self, *exc) -> None:
+        await run_shielded(self._stack.aclose())
 
     async def _start(self) -> None:
         import yaml
@@ -81,12 +116,32 @@ class HarborComposeRuntime(DockerRuntime):
             remote_unpack_command,
         )
 
-        if self._owner is not None:
-            raise RuntimeError("Compose services are started by their project")
         environment = Path(self.task.data.task_dir).resolve() / "environment"
         project_dir = str(environment)
         if self._host is not None:
             await self._host.start()
+            if isinstance(self.config, PrimeConfig):
+                install = await self._host.run(
+                    [
+                        "sh",
+                        "-c",
+                        (
+                            "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
+                            "apt-get install -y -qq --no-install-recommends docker.io docker-cli docker-compose iptables "
+                            "> /tmp/docker-install.log 2>&1 || { tail -40 /tmp/docker-install.log; exit 1; }"
+                        ),
+                    ],
+                    {},
+                )
+                if install.exit_code:
+                    raise SandboxError(
+                        f"Docker bootstrap failed: {install.stderr} {install.stdout}"
+                    )
+            await self._host.run_background(
+                ["dockerd", "--host=unix:///var/run/docker.sock"],
+                {},
+                "/tmp/dockerd.log",
+            )
             async with asyncio.timeout(60):
                 while (await self._run_host("docker", "info")).exit_code:
                     await asyncio.sleep(1)
@@ -194,88 +249,44 @@ class HarborComposeRuntime(DockerRuntime):
             != 1
         ):
             raise SandboxError("Harbor Compose requires exactly one main container")
-        for container in containers:
-            name = container["Config"]["Labels"]["com.docker.compose.service"]
-            service = self if name == "main" else copy.copy(self)
-            service._container = container["Id"]
-            service._image_env = dict(
-                entry.split("=", 1) for entry in container["Config"]["Env"] or []
-            )
-            if name != "main":
-                service._owner = self
-                service.env = {}
-                service._uv_interpreters = {}
-                service._uv_script_locks = {}
-                service._setup_claimed = False
-                service.info = self.info.model_copy(update={"borrowed": True})
-            service.config = self.config.model_copy(
-                update={
-                    "image": container["Config"]["Image"],
-                    "workdir": container["Config"]["WorkingDir"] or "/",
-                }
-            )
-            service.info.image = service.config.image
-            service.info.workdir = service.config.workdir
-            if self._host is None:
-                service.info.id = service._container
-            self._services[name] = service
+        service_url = None
         if self._host is None:
             published = await self._compose("port", owner, str(SERVICE_PORT))
-            self._service_url = f"http://{published.strip()}"
-            self._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
-            if sys.platform == "linux":
-                await self._proxy.start(listener=await self._container_listener())
-            else:
-                await self._proxy.start("127.0.0.1")
-
-    def service(self, name: str) -> Runtime:
-        return self._services[name]
+            service_url = f"http://{published.strip()}"
+        for container in containers:
+            name = container["Config"]["Labels"]["com.docker.compose.service"]
+            if name in self.services:
+                raise SandboxError(
+                    f"Harbor Compose requires one container per service: {name}"
+                )
+            self.services[name] = await self._stack.enter_async_context(
+                DockerRuntime.attach(
+                    self.config,
+                    container["Id"],
+                    host=self._host,
+                    service_url=service_url if name == "main" else None,
+                )
+            )
 
     async def stop_service(self, name: str) -> None:
         async with asyncio.timeout(60):
             await self._compose("stop", name)
 
-    def host_url(self, url: str) -> str:
-        return (
-            self._host.host_url(url)
-            if self._host is not None
-            else super().host_url(url)
-        )
-
-    async def prepare_execution(self, routes: list[str] | None) -> None:
+    async def _teardown(self) -> None:
         if self._host is not None:
-            await self._host.prepare_execution(routes)
-        else:
-            await super().prepare_execution(routes)
-
-    async def expose(self, port: int) -> str:
-        if self._owner is not None:
-            raise SandboxError("Only the main Compose service publishes a runtime port")
-        url = (
-            await self._host.expose(port)
-            if self._host is not None
-            else await super().expose(port)
-        )
-        assert url is not None
-        return url
-
-    async def teardown(self) -> None:
-        if self._owner is not None:
-            return
-        if self._host is not None:
-            await self._host.stop()
-            self._stopped = True
+            await self._host.stop_and_wait()
+            self._closed = True
             self._temporary.cleanup()
+            atexit.unregister(self.cleanup)
         else:
-            await super().teardown()
+            await asyncio.to_thread(self.cleanup)
 
     def cleanup(self) -> None:
-        if self._stopped or self._owner is not None:
+        if self._closed:
             return
         if self._host is not None:
             self._host.cleanup()
         elif self._created:
-            # Use the same checked operation on normal exit and the atexit backstop.
             subprocess.run(
                 [*self._compose_argv, "down", "--volumes", "--remove-orphans"],
                 env={**os.environ, **self._compose_env},
@@ -283,40 +294,6 @@ class HarborComposeRuntime(DockerRuntime):
                 timeout=60,
                 check=True,
             )
-        self._stopped = True
+        self._closed = True
         self._temporary.cleanup()
-
-
-class _RemoteComposeRuntime(HarborComposeRuntime):
-    is_local = False
-
-
-def make_harbor_compose_runtime(
-    config: RuntimeConfig, *, task: HarborTask, setup_timeout: float | None = None
-) -> Runtime:
-    host = None
-    if isinstance(config, PrimeConfig):
-        from verifiers.v1.tasksets.harbor.prime import PrimeComposeVM
-
-        if not config.vm:
-            raise ValueError("Harbor Compose on Prime requires vm=True")
-        host = PrimeComposeVM(
-            # Trixie supplies Docker's separate CLI and Compose v2 packages.
-            config.model_copy(
-                update={"image": "python:3.11-slim-trixie", "workdir": "/"}
-            )
-        )
-    elif isinstance(config, ModalConfig):
-        from verifiers.v1.tasksets.harbor.modal import ModalComposeVM
-
-        if not config.network_access:
-            raise ValueError("Harbor Compose on Modal requires network_access=True")
-        host = ModalComposeVM(
-            config.model_copy(update={"image": "docker:28.3.3-dind", "workdir": "/"})
-        )
-    elif not isinstance(config, DockerConfig):
-        raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
-    if host is not None:
-        register(host)
-    runtime_cls = _RemoteComposeRuntime if host is not None else HarborComposeRuntime
-    return runtime_cls(config, task, host=host, setup_timeout=setup_timeout)
+        atexit.unregister(self.cleanup)

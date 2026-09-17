@@ -106,7 +106,7 @@ container images. Prime VM ports cannot be published externally. Modal publishes
 main's runtime service port through its encrypted tunnel, including when main shares
 another service's network namespace.
 
-The rollout removes the entire project or confirms remote sandbox termination before
+The Harbor environment removes the entire project or confirms remote sandbox termination before
 separate grading, which retains the ordinary fresh verifier runtime.
 
 ## Network policies
@@ -136,7 +136,7 @@ tool and provider-held resource remains disabled.
 
 ## Artifacts and collect hooks
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services require a runtime that provides them. For separate grading, main's hooks and artifacts are collected during `finalize`. After harness scoring and cleanup, task `cleanup` stops main and collects sidecar evidence. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the Harbor-owned Compose project. For separate grading, main's hooks and artifacts are collected during `finalize`. After harness scoring and cleanup, the Harbor environment stops main and collects sidecar evidence. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
 
 `artifact_max_bytes` defaults to 32 MiB and bounds the total archive bytes across all services. Increase it for tasks whose outputs exceed that limit. Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
@@ -163,3 +163,7 @@ verifiers does not have parity with Harbor yet, so some features are missing and
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+
+Compose projects are owned by the Harbor environment; agents borrow the existing
+Docker main container. Failures retry with a fresh project through
+`--env.retries`, rather than retrying an agent inside the same project.
