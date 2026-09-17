@@ -15,12 +15,14 @@
 
 ## Docs
 
-- **Kept intentionally minimal**: `docs/`, `skills/`, and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
+- **Kept intentionally minimal**: `docs/` and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
 - **Docs reflect `main`, not history**: describe the current state of the codebase only — no removed/legacy fields, migration paths, or "this used to be X" anecdotes.
 
 ## Skills
 
 - **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), `release` (publish stable versions), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
+
+If a repository skill could benefit from an update, suggest the specific change, explain why it would help, and ask the user for approval before making it. Wait for approval before creating, modifying, renaming, or deleting skills, including their supporting files and symlinks. If the user has already explicitly requested or approved the skill change, proceed without asking again. Requests to change code, fix workflows, update documentation, or open a PR do not implicitly authorize skill changes. You may read and follow skills without changing them.
 
 ## Testing
 
