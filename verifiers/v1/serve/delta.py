@@ -92,8 +92,8 @@ class TraceCursor:
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
-        self.routing_rows: dict[int, bytes] = {}
-        """Only the final routing row can change after a node has been sent."""
+        self.final_rows: dict[int, bytes] = {}
+        """Per node that carries routing, its final row as packed when last sent."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
 
@@ -161,6 +161,31 @@ class DeltaStreamer:
                 else:
                     self.cursors[trace_id] = cursor
 
+    def _maybe_add_routing_repairs(
+        self,
+        delta: dict[str, Any],
+        trace: Trace,
+        cursor: TraceCursor,
+        sent_nodes: int,
+    ) -> None:
+        """Add final rows repaired since they were sent, keyed by node index.
+
+        Record every node's current row on the cursor. `sent_nodes` is the pre-flush
+        count, so a node first sent in this delta is never reported as a repair.
+        """
+        repairs: dict[int, dict] = {}
+        for index, node in enumerate(trace.nodes):
+            if node.routed_experts is None:
+                continue
+            row = _encode_ndarray(node.routed_experts[-1:])
+            packed = pack(row)
+            if cursor.final_rows.get(index) != packed:
+                cursor.final_rows[index] = packed
+                if index < sent_nodes:
+                    repairs[index] = row
+        if repairs:
+            delta["routing_repairs"] = repairs
+
     def diff(self) -> list[tuple[str, dict, TraceCursor | None]]:
         """Each trace's delta against its sent cursor, with the cursor as it stands once
         that delta is sent (None for a discard). Nothing here is committed: `flush`
@@ -187,18 +212,7 @@ class DeltaStreamer:
                     cursor.links[index] = len(node_links)
             if links:
                 delta["links"] = links
-            routing_rows: dict[int, dict] = {}
-            for index, node in enumerate(trace.nodes):
-                if node.routed_experts is None:
-                    continue
-                row = _encode_ndarray(node.routed_experts[-1:])
-                packed = pack(row)
-                if cursor.routing_rows.get(index) != packed:
-                    cursor.routing_rows[index] = packed
-                    if index < cursor.sent["nodes"]:
-                        routing_rows[index] = row
-            if routing_rows:
-                delta["routing_rows"] = routing_rows
+            self._maybe_add_routing_repairs(delta, trace, cursor, cursor.sent["nodes"])
             for field in LIST_FIELDS:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
@@ -236,6 +250,20 @@ class EpisodeAssembly:
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
 
+    def _maybe_apply_routing_repairs(self, delta: dict[str, Any], trace: dict) -> None:
+        """Replace repaired final rows in nodes the client already holds.
+
+        Rebuild each array: a repair can widen its dtype, and decoded rows alias
+        the original delta's bytes, which must remain unchanged for consumers.
+        """
+        for index, row in (delta.get("routing_repairs") or {}).items():
+            node = trace["nodes"][int(index)]
+            node["routed_experts"] = _encode_ndarray(
+                np.concatenate(
+                    [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]
+                )
+            )
+
     def apply(self, delta: dict) -> None:
         trace_id = delta["trace"]
         if delta.get("discard"):
@@ -250,15 +278,7 @@ class EpisodeAssembly:
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
-        for index, row in (delta.get("routing_rows") or {}).items():
-            node = trace["nodes"][int(index)]
-            # Concatenation preserves earlier rows and widens the dtype if needed,
-            # without mutating the original node delta held by a consumer.
-            node["routed_experts"] = _encode_ndarray(
-                np.concatenate(
-                    [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]
-                )
-            )
+        self._maybe_apply_routing_repairs(delta, trace)
         # a later `links` delta grows a node's semantic_parents in place, so the node
         # is copied: the delta stays as it was when the caller received it
         if "nodes" in delta:
