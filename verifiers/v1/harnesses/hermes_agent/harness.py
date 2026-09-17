@@ -111,6 +111,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             env=env,
             command=[
                 f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
+                "-P",  # Keep task files from shadowing installed Hermes modules.
                 "-c",
                 PROGRAM_SOURCE,
             ],
