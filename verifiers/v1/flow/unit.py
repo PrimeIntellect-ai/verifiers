@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -164,24 +165,28 @@ class Unit:
         self,
         message: str,
         *,
-        files: dict[str, str] | None = None,
+        files: dict[str, str | bytes] | None = None,
+        remove: Iterable[str] = (),
         state: dict[str, Any] | None = None,
     ) -> str:
-        """Write files and merge state in one commit. Refuse preexisting dirt."""
+        """Write `files` (text or bytes), remove `remove`, and merge `state`, in one commit.
+        Refuse preexisting dirt."""
         if state and "_control" in state:
             raise ValueError("_control is reserved for Unit.steer")
         with self._write_lock():
-            return self._commit(message, files=files, state=state)
+            return self._commit(message, files=files, remove=remove, state=state)
 
     def _commit(
         self,
         message: str,
         *,
-        files: dict[str, str] | None = None,
+        files: dict[str, str | bytes] | None = None,
+        remove: Iterable[str] = (),
         state: dict[str, Any] | None = None,
     ) -> str:
         self._check_clean()
         paths = {rel: self._file(rel, write=True) for rel in (files or {})}
+        gone = [self._file(rel, write=True) for rel in remove]
         current: dict[str, Any] = {}
         if state is not None:
             try:
@@ -191,9 +196,15 @@ class Unit:
             else:
                 current = self.state()
             state_text = json.dumps({**current, **state}, indent=1) + "\n"
+        for file in gone:
+            if file.is_dir():
+                shutil.rmtree(file)
+            else:
+                file.unlink(missing_ok=True)
         for rel, file in paths.items():
+            data = (files or {})[rel]
             file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_bytes((files or {})[rel].encode())
+            file.write_bytes(data if isinstance(data, bytes) else data.encode())
         if state is not None:
             self._file(STATE).write_bytes(state_text.encode())
         git(self.path, "add", "-A")
