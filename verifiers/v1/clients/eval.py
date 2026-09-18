@@ -68,7 +68,13 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
+        timeout = httpx.Timeout(
+            connect=DEFAULT_TIMEOUT.connect,
+            read=config.read_timeout,
+            write=DEFAULT_TIMEOUT.write,
+            pool=DEFAULT_TIMEOUT.pool,
+        )
+        self.client = httpx.AsyncClient(timeout=timeout, limits=DEFAULT_LIMITS)
 
     async def get_response(
         self,

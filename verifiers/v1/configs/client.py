@@ -33,6 +33,9 @@ class BaseClientConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
+    read_timeout: float = Field(600.0, gt=0)
+    """Seconds to wait for the provider's next bytes on one call before it fails as a 504. A
+    long generation on a loaded endpoint can legitimately take longer than the default."""
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":
