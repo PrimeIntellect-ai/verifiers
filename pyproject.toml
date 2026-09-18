@@ -47,6 +47,9 @@ dependencies = [
     "uvicorn>=0.52.0",
     "aiohttp>=3.14.1",
     "prime-pydantic-config[toml]>=0.4.3",
+    # 3.28 is the first published release with PID/hostname recovery for stale
+    # SoftFileLock markers.
+    "filelock>=3.28",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
     "renderers[multimodal]>=0.1.12.dev2",

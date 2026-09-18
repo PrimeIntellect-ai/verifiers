@@ -6,13 +6,18 @@ back to the temp dir when no home is resolvable), so a provider's per-account cr
 the single-process eval and all the elastically-spawned env-server worker processes alike — not
 just within one process. Keyed by name: one bucket file per name, shared by every process (and
 run) for the user.
+
+Mutual exclusion uses ``SoftFileLock``, which excludes via atomic lock-file creation and
+works on both local and shared/NFS filesystems. The shared bucket still requires a wall
+clock comparable across hosts and boots.
 """
 
 import asyncio
-import fcntl
 import os
 import time
 from typing import Self
+
+from filelock import SoftFileLock
 
 from verifiers.v1.utils.paths import CACHE_DIR
 
@@ -21,38 +26,40 @@ LIMITER_DIR = CACHE_DIR / "limiter"
 
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
-    reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
-    flock) and sleeps until it, so the aggregate creation rate across all of the user's
-    processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
-    hold the lock. Backlogs over five minutes fail rather than silently stalling creation."""
+    reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an
+    exclusive `filelock` lock) and sleeps until it, so the aggregate creation rate across
+    all of the user's processes stays at `per_sec`. The reservation runs off the event
+    loop; the wait does not hold the lock. Backlogs over five minutes fail rather than
+    silently stalling creation."""
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
         self._path = LIMITER_DIR / f"{name}.bucket"
+        # State and lock live in separate files: SoftFileLock deletes its marker on
+        # release, which would also destroy the bucket cursor if they shared a path.
+        # 60s acquisition cap: a holder wedged mid-reservation surfaces as an error
+        # instead of an endless hang.
+        self._lock = SoftFileLock(f"{self._path}.lock", timeout=60)
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
         # Shared buckets require a clock comparable across hosts and boots.
-        with open(self._path, "a+") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        with self._lock:
+            data = self._path.read_text().strip() if self._path.exists() else ""
             try:
-                f.seek(0)
-                data = f.read().strip()
-                now = time.time()
-                slot = max(now, float(data) if data else 0.0)
-                wait = slot - now
-                if wait > 5 * 60:
-                    raise TimeoutError(
-                        f"{self._path.stem} creation limiter backlog of {wait:.1f}s "
-                        f"exceeds 300s ({self._path})"
-                    )
-                f.seek(0)
-                f.truncate()
-                f.write(repr(slot + self._interval))
-                f.flush()
-                return wait
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                cursor = float(data) if data else 0.0
+            except ValueError:  # corrupt bucket file: reset the cursor
+                cursor = 0.0
+            now = time.time()
+            slot = max(now, cursor)
+            wait = slot - now
+            if wait > 5 * 60:
+                raise TimeoutError(
+                    f"{self._path.stem} creation limiter backlog of {wait:.1f}s "
+                    f"exceeds 300s ({self._path})"
+                )
+            self._path.write_text(repr(slot + self._interval))
+            return wait
 
     async def __aenter__(self) -> Self:
         wait = await asyncio.to_thread(self._reserve)

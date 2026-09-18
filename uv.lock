@@ -5383,6 +5383,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
+    { name = "filelock" },
     { name = "gepa" },
     { name = "h11" },
     { name = "httpx" },
