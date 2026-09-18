@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import logging
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -118,7 +119,9 @@ finds a crashed launch's containers by."""
 
 async def sweep_containers(label: str) -> int:
     """Remove every container labelled with `label` (an earlier launch of the same run, killed
-    with its cleanup skipped); the count."""
+    with its cleanup skipped); the count. A host without docker has no containers to sweep."""
+    if shutil.which("docker") is None:
+        return 0
     ids = (
         await docker("ps", "-aq", "--filter", f"label={RUN_LABEL}={label}")
     ).stdout.split()
