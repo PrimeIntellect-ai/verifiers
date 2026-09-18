@@ -356,10 +356,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={
-            "type": harness_runtime,
-            **({"vm": True} if harness_runtime == "prime" else {}),
-        },
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
