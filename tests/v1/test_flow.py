@@ -1,7 +1,20 @@
-"""The flow core: memoized steps, what a resume keys on, retries, spreads, drain, events."""
+"""The flow core: units and transitions, durable calls, spreads, holds, the campaign, drain."""
+
+import json
 
 import verifiers.v1 as vf
-from verifiers.v1.flow import Ctx, FlowConfig, Run, agent, fn
+from verifiers.v1.flow import (
+    CAMPAIGN,
+    Ctx,
+    Flow,
+    FlowConfig,
+    Pipeline,
+    Result,
+    Transition,
+    agent,
+    fn,
+)
+from verifiers.v1.flow.unit import Unit
 
 
 def seat(**kw) -> vf.AgentConfig:
@@ -13,34 +26,109 @@ class Cfg(FlowConfig):
     beta: vf.AgentConfig = seat()
 
 
-async def test_steps_attach_on_resume_under_scopes_and_config_changes(tmp_path):
-    calls: list[str] = []
-
-    def work(tag: str) -> str:
-        calls.append(tag)
-        return tag
-
-    async def flow(ctx: Ctx, row) -> list[str]:
-        out = [await ctx.step("start", fn(work, "start"))]
-        for i in range(2):
-            with ctx.scope(f"visit{i}"):
-                out.append(await ctx.step("build", fn(work, f"build{i}")))
-        return [*out, await ctx.step("build", fn(work, "again"))]
-
-    (first,) = await Run(tmp_path, Cfg()).run(flow, [{"id": 1}])
-    changed = Cfg(pools={"rows": 1, "runtimes": 1})
-    (again,) = await Run(tmp_path, changed).run(flow, [{"id": 1}])
-    assert first.value == again.value == ["start", "build0", "build1", "again"]
-    assert len(calls) == 4  # the resume ran nothing
+calls: list[str] = []
+failing: set[str] = set()  # which work fails, outside the key: what a rerun redoes
 
 
-def test_agent_steps_key_on_their_resolved_seat_and_nothing_else(tmp_path):
+def work(tag: str) -> str:
+    calls.append(tag)
+    if tag in failing:
+        raise ValueError(f"{tag} is bad")
+    return tag
+
+
+async def plan(ctx: Ctx) -> Transition:
+    for i in range(2):
+        ctx.flow.create_task(f"t{i}", {"stage": "build", "credits": 1})
+    return Transition.wait("planned")
+
+
+async def build(ctx: Ctx) -> Transition:
+    value = await ctx.call(
+        fn(work, f"build-{ctx.unit.id}"), key=f"build/{ctx.unit.head()}"
+    )
+    return Transition.to(
+        "check", "built", value, files={"out.txt": value}, state={"credits": 0}
+    )
+
+
+async def check(ctx: Ctx) -> Transition:
+    results: list[Result[str]] = await ctx.spread(
+        [fn(work, f"item-{ctx.unit.id}-{i}") for i in range(3)],
+        key=lambda i: f"check/{i}",
+    )
+    if failed := [r for r in results if not r.ok]:
+        return Transition.hold(f"{len(failed)} items failed: {failed[0].error}")
+    if ctx.unit.state().get("boom"):
+        raise RuntimeError("stage blew up")
+    return Transition.end("done", ", ".join(r.value or "" for r in results))
+
+
+pipeline = Pipeline(
+    {"plan": plan, "build": build, "check": check}, start="plan", config=Cfg
+)
+
+
+async def run(root) -> dict[str, int]:
+    async with Flow(root, Cfg(), pipeline) as flow:
+        return await flow.run()
+
+
+async def test_units_move_through_stages_and_a_resume_reruns_nothing(tmp_path):
+    calls.clear()
+    assert await run(tmp_path) == {"terminal": 2}
+    t0 = Unit(tmp_path / "tasks" / "t0")
+    assert t0.state() | {"reason": ""} == {
+        "stage": "check",
+        "status": "terminal",
+        "outcome": "done",
+        "credits": 0,
+        "reason": "",
+    }
+    assert t0.read("out.txt") == "build-t0" and [c["message"] for c in t0.log()] == [
+        "check: done",
+        "build: built",
+        "init",
+    ]
+    assert Unit(tmp_path / CAMPAIGN).state()["status"] == "waiting"
+    before = len(calls)
+    assert (
+        await run(tmp_path) == {"terminal": 2} and len(calls) == before
+    )  # nothing was runnable
+
+
+async def test_a_partial_spread_holds_and_a_release_reruns_only_what_failed(tmp_path):
+    calls.clear()
+    failing.add("item-t1-1")
+    counts = await run(tmp_path)
+    assert counts == {"terminal": 1, "held": 1}
+    t1 = Unit(tmp_path / "tasks" / "t1")
+    assert t1.state()["status"] == "held" and "1 items failed" in t1.state()["reason"]
+    failing.clear()
+    t1.commit("release", state={"status": "ready"})  # the operator's commit
+    n = len(calls)
+    assert await run(tmp_path) == {"terminal": 2}
+    assert calls[n:] == ["item-t1-1"]  # items 0 and 2 attached; only the failed one ran
+
+
+async def test_a_stage_that_raises_holds_its_unit_with_the_error(tmp_path):
+    await run(tmp_path)
+    t0 = Unit(tmp_path / "tasks" / "t0")
+    t0.commit("route", state={"stage": "check", "status": "ready", "boom": True})
+    await run(tmp_path)
+    assert (
+        t0.state()["status"] == "held"
+        and t0.state()["reason"] == "RuntimeError: stage blew up"
+    )
+
+
+async def test_agent_calls_key_on_their_resolved_seat_and_nothing_else(tmp_path):
     task = vf.Task(vf.TaskData(prompt="hi"))
     works = {"alpha": agent("alpha", task), "beta": agent("beta", task), "fn": fn(len)}
 
     def keys(cfg: FlowConfig) -> dict[str, str]:
-        ctx = Ctx(Run(tmp_path, cfg), "k", {"id": 1})
-        return {name: ctx._key("p#0", work) for name, work in works.items()}
+        ctx = Ctx(Flow(tmp_path, cfg, pipeline), Unit(tmp_path / "x"), "s")
+        return {name: str(w.content(ctx)) for name, w in works.items()}
 
     base, beta = keys(Cfg()), keys(Cfg(beta=seat(model="beta/2")))
     filled = keys(Cfg(model="run/1"))  # the run's model fills every unpinned seat
@@ -48,53 +136,22 @@ def test_agent_steps_key_on_their_resolved_seat_and_nothing_else(tmp_path):
     assert {k for k in base if filled[k] != base[k]} == {"alpha", "beta"}
 
 
-async def test_failures_consume_retries_and_fail_only_their_row(tmp_path):
-    attempts: list[int] = []
+async def test_drain_leaves_units_ready_and_a_resume_finishes(tmp_path):
+    async def slow(ctx: Ctx) -> Transition:
+        ctx.flow.drain()  # a drain request lands while the stage runs
+        await ctx.call(
+            fn(work, "after-drain"), key="k"
+        )  # refused: no call starts under a drain
+        return Transition.end("done")
 
-    def flaky() -> None:
-        attempts.append(1)
-        raise ValueError("no")
-
-    async def flow(ctx: Ctx, row) -> int:
-        if row["id"] == 1:
-            return await ctx.step("flaky", fn(flaky), retries=2)
-        return await ctx.step("fine", fn(len, "ab"))
-
-    results = await Run(tmp_path, Cfg()).run(flow, [{"id": 1}, {"id": 2}])
-    assert sorted(r.state for r in results) == ["failed", "ok"] and len(attempts) == 3
-    assert any("flaky#0: ValueError: no" in (r.error or "") for r in results)
-
-
-async def test_spread_runs_every_item_and_fails_when_one_does(tmp_path):
-    def item(i: int, bad: int) -> int:
-        if i == bad:
-            raise ValueError("bad item")
-        return i * i
-
-    async def flow(ctx: Ctx, row) -> dict[int, int]:
-        return await ctx.spread("sq", [fn(item, i, row["bad"]) for i in range(3)])
-
-    (ok,) = await Run(tmp_path, Cfg()).run(flow, [{"bad": -1}])
-    (failed,) = await Run(tmp_path, Cfg()).run(flow, [{"bad": 1}])
-    assert ok.value == {0: 0, 1: 1, 2: 4}
-    assert failed.state == "failed" and "1/3 items failed" in failed.error
-
-
-async def test_drain_stops_a_row_and_a_resume_finishes_it_with_events_to_show(tmp_path):
-    draining = True
-
-    async def flow(ctx: Ctx, row) -> int:
-        a = await ctx.step("a", fn(len, "a"))
-        if draining:
-            ctx.run.drain()
-        return a + await ctx.step("b", fn(len, "bb"))
-
-    run = Run(tmp_path, Cfg())
-    (stopped,) = await run.run(flow, [{"id": 1}])
-    assert stopped.state == "stopped" and run.rows == {stopped.row: "stopped"}
-    draining = False
-    (done,) = await Run(tmp_path, Cfg()).run(flow, [{"id": 1}])
-    first = "run row_started step_started step_completed drain row_finished"
-    resume = "run row_started step_attached step_started step_completed row_finished"
-    kinds = [e["type"] for e in run.ledger.events()]
-    assert done.value == 3 and kinds == (first + " " + resume).split()
+    p = Pipeline(
+        {"plan": plan, "build": slow, "check": check}, start="plan", config=Cfg
+    )
+    async with Flow(tmp_path, Cfg(), p) as flow:
+        await flow.run()
+    t0 = Unit(tmp_path / "tasks" / "t0")
+    assert t0.state() == {"status": "ready", "stage": "build", "credits": 1}
+    lines = (tmp_path / "transitions.jsonl").read_text().splitlines()
+    kinds = [json.loads(line)["type"] for line in lines]
+    assert kinds[:2] == ["started", "transition"] and {"drain", "stopped"} <= set(kinds)
+    assert await run(tmp_path) == {"terminal": 2}

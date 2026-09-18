@@ -1,42 +1,54 @@
-"""Durable pipelines over verifiers primitives.
+"""Durable pipelines of agents over git.
 
-    from verifiers.v1.flow import Ctx, FlowConfig, Run, agent, command, fn
+    from verifiers.v1.flow import Ctx, Flow, FlowConfig, Pipeline, Transition, agent, fn
 
-    async def pipeline(ctx: Ctx, row: dict) -> dict:
-        review = await ctx.step("review", agent("reviewer", review_task(row)))
-        async with ctx.runtime("builder") as box:
-            build = await ctx.step("build", agent("builder", build_task(row), runtime=box))
-            lint = await ctx.step("lint", command(["ruff", "check", "."], runtime=box))
-        solves = await ctx.spread("solve", [agent("solver", t) for t in tasks])
-        return await ctx.step("bank", fn(bank, review, build, lint, solves))
+    async def review(ctx: Ctx) -> Transition:
+        trace = await ctx.call(agent("reviewer", task(ctx.unit)), key=f"review/{ctx.unit.head()}")
+        return Transition.to("build", trace.info["decision"], trace.last_reply or "")
 
-    async with Run(run_dir, config) as run:
-        results = await run.run(pipeline, rows)
+    pipeline = Pipeline(stages={"plan": plan, "review": review, "build": build}, start="plan")
 
-A flow is a function; routing, loops and joins are Python. Every step is recorded
-and a re-run against the same directory attaches to what finished.
+A unit is a git repository whose `state.json` names its stage; a stage is a function of a
+`Ctx` that composes calls -- seats, commands, functions, spreads of them -- and returns a
+`Transition`, committed as the unit's next state. A call with a key is recorded and found
+again by a rerun; a stage that holds waits for an operator to edit the state and commit.
 """
 
+from verifiers.v1.flow.calls import (
+    AgentWork,
+    CallFailed,
+    Result,
+    agent,
+    command,
+    fn,
+    should_retry,
+)
 from verifiers.v1.flow.config import FlowConfig
-from verifiers.v1.flow.run import (
+from verifiers.v1.flow.flow import (
+    CAMPAIGN,
     Ctx,
-    RowResult,
-    Run,
-    StepFailed,
+    Flow,
+    Pipeline,
     Stopped,
     drain_on_interrupt,
 )
-from verifiers.v1.flow.work import agent, command, fn
+from verifiers.v1.flow.unit import Transition, Unit
 
 __all__ = [
+    "CAMPAIGN",
+    "AgentWork",
+    "CallFailed",
     "Ctx",
+    "Flow",
     "FlowConfig",
-    "RowResult",
-    "Run",
-    "StepFailed",
+    "Pipeline",
+    "Result",
     "Stopped",
+    "Transition",
+    "Unit",
     "agent",
     "command",
     "drain_on_interrupt",
     "fn",
+    "should_retry",
 ]

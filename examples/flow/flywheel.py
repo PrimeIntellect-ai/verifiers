@@ -1,110 +1,103 @@
-"""A small flywheel as a flow: a builder writes a grading folder while solvers
-attempt the request; a reviewer judges the folder and can send the builder back;
-the attempts are judged against the accepted folder.
+"""A small pipeline on the flow core: a campaign plans folders, each folder is built by a
+seat in a box, reviewed, solved by several seats at once, judged, and banked.
 
-    python -m verifiers.v1.flow examples.flow.flywheel:flywheel rows.jsonl runs/first @ config.toml
+    uv run python -m verifiers.v1.flow run examples.flow.flywheel:pipeline ./out @ cfg.toml
+    uv run python -m verifiers.v1.flow status ./out
+    uv run python -m verifiers.v1.flow release ./out folder-1 --note "the box was the problem"
+
+A stage composes calls (seats, commands, functions, spreads) and returns where the unit
+goes next. The unit's `state.json` is the only state; a stage rerun attaches to the calls it
+already made. A partial spread is the stage's decision: here fewer than three answers holds
+the unit for an operator.
 """
 
 from __future__ import annotations
 
-import asyncio
-
 import verifiers.v1 as vf
-from verifiers.v1.flow import Ctx, FlowConfig, agent, command, fn
+from verifiers.v1.flow import Ctx, FlowConfig, Pipeline, Transition, agent, command, fn
 
 
-class FlywheelConfig(FlowConfig):
-    builder: vf.AgentConfig = vf.AgentConfig(harness={"id": "bash"})
-    solver: vf.AgentConfig = vf.AgentConfig(harness={"id": "bash"})
-    reviewer: vf.AgentConfig = vf.AgentConfig(harness={"id": "bash"})
-    attempts: int = 3
+class Cfg(FlowConfig):
+    planner: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
+    builder: vf.AgentConfig = vf.AgentConfig(
+        harness={"id": "rlm"}, runtime=vf.DockerConfig(image="python:3.12")
+    )
+    reviewer: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
+    solver: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
+    judge: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
+    folders: int = 3
 
 
-class Job(vf.TaskData):
-    request: str
-    folder: str = "/work"
-
-
-class Say(vf.Task[Job]):
-    """A task whose prompt is its data's request; the seat's reply is the work."""
-
-
-def task(prompt: str, **data) -> Say:
-    return Say(Job(prompt=prompt, **data))
+def task(prompt: str) -> vf.Task:
+    return vf.Task(vf.TaskData(prompt=prompt))
 
 
 def decision(trace: vf.Trace) -> str:
     return (
-        trace.last_reply.strip().split()[-1].lower() if trace.last_reply.strip() else ""
+        (trace.last_reply or "").strip().split()[-1].lower()
+        if trace.last_reply
+        else "revise"
     )
 
 
-def bank(judgments: dict[int, vf.Trace]) -> dict:
-    correct = sum(decision(t) == "correct" for t in judgments.values())
-    return {"correct": correct, "judged": len(judgments)}
-
-
-async def flywheel(ctx: Ctx, row: dict) -> dict:
-    request = row["request"]
-    solves = asyncio.ensure_future(  # the solvers run while the folder is built
-        ctx.spread(
-            "solve",
-            [
-                agent("solver", task(request, request=request))
-                for _ in range(ctx.config.attempts)
-            ],
+async def plan(ctx: Ctx) -> Transition:
+    trace = await ctx.call(
+        agent("planner", task(f"Propose {ctx.config.folders} folders.")), key="plan"
+    )
+    for i, line in enumerate(
+        (trace.last_reply or "").splitlines()[: ctx.config.folders]
+    ):
+        ctx.flow.create_task(
+            f"folder-{i}", {"stage": "build", "brief": line, "visits": 0}
         )
-    )
+    return Transition.wait("planned")
+
+
+async def build(ctx: Ctx) -> Transition:
+    state = ctx.unit.state()
     async with ctx.runtime("builder") as box:
-        notes = ""
-        for visit in range(3):
-            with ctx.scope(f"visit{visit}"):
-                await ctx.step(
-                    "build",
-                    agent(
-                        "builder",
-                        task(
-                            f"Write grading checks for: {request}\n{notes}",
-                            request=request,
-                        ),
-                        runtime=box,
-                    ),
-                )
-                lint = await ctx.step(
-                    "lint", command(["sh", "-c", "ls /work/grading"], runtime=box)
-                )
-                review = await ctx.step(
-                    "review",
-                    agent(
-                        "reviewer",
-                        task(
-                            f"Review the grading folder for: {request}. End with accept or revise.",
-                            request=request,
-                        ),
-                        runtime=box,
-                    ),
-                )
-            if lint.exit_code == 0 and decision(review) == "accept":
-                break
-            notes = f"The reviewer said:\n{review.last_reply}"
-        else:
-            return {"rejected": "the folder never passed review"}
-        attempts = await solves
-        judgments = await ctx.spread(
-            "judge",
-            [
-                agent(
-                    "reviewer",
-                    task(
-                        f"Judge this attempt against the grading folder. End with correct or incorrect.\n\n{t.last_reply}",
-                        request=request,
-                    ),
-                    runtime=box,
-                )
-                for t in attempts.values()
-            ],
+        built = await ctx.call(
+            agent("builder", task(state["brief"]), runtime=box),
+            key=f"build/{state['visits']}",
         )
-    return await ctx.step("bank", fn(bank, judgments))
+        lint = await ctx.call(command(["ruff", "check", "."], runtime=box))
+    review = await ctx.call(
+        agent("reviewer", task(f"Review:\n{built.last_reply}\nlint: {lint.exit_code}")),
+        key=f"review/{state['visits']}",
+    )
+    if lint.exit_code == 0 and decision(review) == "accept":
+        return Transition.to("solve", "accepted", review.last_reply or "")
+    if state["visits"] >= 2:
+        return Transition.end("rejected", "the folder never passed review")
+    return Transition.to(
+        "build",
+        "revise",
+        review.last_reply or "",
+        state={"visits": state["visits"] + 1},
+    )
 
 
-__all__ = ["FlywheelConfig", "flywheel"]
+async def solve(ctx: Ctx) -> Transition:
+    head = ctx.unit.head()
+    attempts = await ctx.spread(
+        [agent("solver", task(ctx.unit.state()["brief"])) for _ in range(4)],
+        key=lambda i: f"solve/{head}/{i}",
+    )
+    answers = [r.value for r in attempts if r.ok and r.value is not None]
+    if len(answers) < 3:
+        return Transition.hold(
+            f"{len(answers)}/4 solvers answered: {[r.error for r in attempts if not r.ok]}"
+        )
+    judged = await ctx.call(
+        agent("judge", task("\n".join(a.last_reply or "" for a in answers))),
+        key=f"judge/{head}",
+    )
+    bank = await ctx.call(fn(len, judged.last_reply or ""), key=f"bank/{head}")
+    return Transition.end(
+        "banked", f"{bank} chars", files={"judgment.md": judged.last_reply or ""}
+    )
+
+
+pipeline = Pipeline(
+    {"plan": plan, "build": build, "solve": solve}, start="plan", config=Cfg
+)
