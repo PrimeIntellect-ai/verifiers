@@ -1,19 +1,33 @@
-"""Durable pipelines of agents over git.
+"""Durable stages with typed workflow state and optional immutable Git artifacts.
 
-    from verifiers.v1.flow import Ctx, Flow, FlowConfig, Pipeline, Transition, agent, fn
+    class TaskData(UnitData):
+        revision: Revision | None = None
 
-    async def review(ctx: Ctx) -> Transition:
-        trace = await ctx.call(agent("reviewer", task(ctx.unit)), key="review")
-        return Transition.to("build", trace.info["decision"], trace.last_reply or "")
+    async def review(ctx: Ctx[TaskData]) -> Transition[TaskData]:
+        result = await ctx.call(fn(check, ctx.data.revision), key="check")
+        return Transition.end("done", result)
 
-    pipeline = Pipeline(stages={"plan": plan, "review": review, "build": build}, start="plan")
+    pipeline = Pipeline(stages={"review": review}, start="review", data=TaskData,
+                        campaign_data=TaskData)
 
-A unit is a git repository whose `state.json` names its stage; a stage is a function of a
-`Ctx` that composes calls -- seats, commands, functions, spreads of them -- and returns a
-`Transition`, committed as the unit's next state. A call with a key is recorded and found
-again by a rerun; a stage that holds waits for an operator to call `Unit.steer` or the CLI.
+`UnitState` owns stage/status, controls, and notes; `data` is the pipeline's model.
+`ctx.data` is a private copy of the stage's starting data. Return it (or `ctx.updated`)
+in a Transition to publish it. Successful transitions acknowledge the starting notes;
+holds retain them. Notes arriving during execution remain for the next stage.
+
+`GitArtifacts(unit).write(base=revision, files=changes)` returns an immutable revision
+without moving the workflow HEAD. Capture outputs before recording a successful call,
+then adopt its returned revision through a transition. Call replay restores recorded
+values, not sandbox side effects. Materialize a recorded revision into a fresh workspace.
+
+`Unit.steer` and the CLI share audited controls. A live hold parks after the stage
+finishes; data patches require no active stage and the expected workflow HEAD. Inspect
+that boundary with `status <root> [unit] --json`; update using
+`update <root> <unit> <patch.json> --expected <sha> [--stage <name>] [--status ready]`.
+Run against the same root to resume; Flow exits when nothing is runnable.
 """
 
+from verifiers.v1.flow.artifacts import GitArtifacts, Revision
 from verifiers.v1.flow.calls import (
     AgentWork,
     CallFailed,
@@ -35,7 +49,7 @@ from verifiers.v1.flow.flow import (
     drain_on_interrupt,
     succeeded,
 )
-from verifiers.v1.flow.unit import Transition, Unit
+from verifiers.v1.flow.unit import Transition, Unit, UnitData, UnitState
 
 __all__ = [
     "CAMPAIGN",
@@ -44,12 +58,16 @@ __all__ = [
     "Ctx",
     "Flow",
     "FlowConfig",
+    "GitArtifacts",
     "Pipeline",
     "Record",
     "Result",
+    "Revision",
     "Stopped",
     "Transition",
     "Unit",
+    "UnitData",
+    "UnitState",
     "Work",
     "agent",
     "command",

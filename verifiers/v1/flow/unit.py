@@ -1,30 +1,88 @@
-"""A unit: one git repository whose head is where the unit stands.
-
-`state.json` at the head carries the three fields the loop reads -- `stage`, `status`,
-`reason` -- and whatever else the pipeline's stages keep there (credits, a version, a
-pin). Every stage ends in one commit: its `Transition`, applied to the state, with the files
-the stage wants kept beside it. `Unit.steer` commits operator controls with versions so
-controls accepted during active work still win at the next boundary.
-"""
+"""Committed workflow state and boundary controls for one independently scheduled unit."""
 
 from __future__ import annotations
 
 import fcntl
+import importlib
 import json
-import shutil
+import os
 import subprocess
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Generic, Literal, Self, TypeVar, cast
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from verifiers.v1.flow.calls import now
 
 STATE = "state.json"
+DEFINITION = "unit.json"
 Status = Literal["ready", "held", "waiting", "terminal"]
-"""`ready`: run `stage` when a slot opens. `held`: wait for an operator. `waiting`: wait
-for the pipeline (a campaign stage releases it). `terminal`: never touched again."""
-
 _IDENTITY = ("-c", "user.name=flow", "-c", "user.email=flow@local")
+
+
+class UnitData(BaseModel):
+    """Pipeline-owned durable data. Subclass for each kind of unit."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+D = TypeVar("D", bound=UnitData)
+
+
+class Note(BaseModel):
+    id: int
+    text: str
+
+
+class Controls(BaseModel):
+    version: int = 0
+    fields: dict[str, int] = Field(default_factory=dict)
+
+
+class UnitState(BaseModel, Generic[D]):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str
+    status: Status = "ready"
+    reason: str = ""
+    outcome: str = ""
+    data: D
+    notes: list[Note] = Field(default_factory=list)
+    controls: Controls = Field(default_factory=Controls)
+
+
+@dataclass(frozen=True)
+class Transition(Generic[D]):
+    """Publish a unit's next cursor, optional complete data, and workflow files together."""
+
+    outcome: str
+    summary: str = ""
+    stage: str | None = None
+    status: Status = "ready"
+    data: D | None = None
+    files: Mapping[str, str | bytes] = field(default_factory=dict)
+    report: str | None = None
+    consume_notes: bool = True
+
+    @classmethod
+    def to(cls, stage: str, outcome: str, summary: str = "", **kw: Any) -> Self:
+        return cls(outcome, summary, stage=stage, **kw)
+
+    @classmethod
+    def end(cls, outcome: str, summary: str = "", **kw: Any) -> Self:
+        return cls(outcome, summary, status="terminal", **kw)
+
+    @classmethod
+    def hold(cls, reason: str, **kw: Any) -> Self:
+        return cls("held", reason, status="held", consume_notes=False, **kw)
+
+    @classmethod
+    def wait(cls, reason: str, **kw: Any) -> Self:
+        return cls("waiting", reason, status="waiting", **kw)
 
 
 def git(path: Path, *args: str) -> str:
@@ -36,119 +94,141 @@ def git(path: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-@dataclass(frozen=True)
-class Transition:
-    """How a stage came out and where the unit goes next. `stage` None keeps the current
-    stage (a hold, a wait); `status` is what the loop does with the unit afterwards."""
+class Unit(Generic[D]):
+    """A Git checkpoint. A separate execution lock distinguishes held from settled."""
 
-    outcome: str
-    summary: str = ""
-    stage: str | None = None
-    status: Status = "ready"
-    files: dict[str, str] = field(default_factory=dict)
-    """Files to commit beside `state.json`, by path in the repository."""
-    state: dict[str, Any] = field(default_factory=dict)
-    """Fields to merge into `state.json`: the pipeline's own (credits, a pin, a version)."""
-    report: str | None = None
-    """A report behind this transition, by name: a markdown file the stage wrote (in `files`)
-    citing the traces it judged; what a dashboard shows as the proof of the route."""
-
-    @classmethod
-    def to(cls, stage: str, outcome: str, summary: str = "", **kw: Any) -> Self:
-        """On to `stage`."""
-        return cls(outcome, summary, stage=stage, status="ready", **kw)
-
-    @classmethod
-    def end(cls, outcome: str, summary: str = "", **kw: Any) -> Self:
-        """The unit's end: `outcome` names it (sealed, retired, done...)."""
-        return cls(outcome, summary, status="terminal", **kw)
-
-    @classmethod
-    def hold(cls, reason: str, **kw: Any) -> Self:
-        """Stop at this stage until an operator releases the unit."""
-        return cls("held", reason, status="held", **kw)
-
-    @classmethod
-    def wait(cls, reason: str, **kw: Any) -> Self:
-        """Stop at this stage until the pipeline releases the unit."""
-        return cls("waiting", reason, status="waiting", **kw)
-
-
-class Unit:
-    """One repository. Scheduling state comes only from committed HEAD.
-
-    Writes take a short per-repository lock. Dirty or failed publications require
-    operator repair; they are never adopted as scheduling state.
-    """
-
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, data_type: type[D] | None = None) -> None:
         self.path = Path(path)
         self.id = self.path.name
+        definition = json.loads(self.read(DEFINITION, "HEAD") or "null")
+        if definition is None:
+            raise ValueError(f"{path}: no committed {DEFINITION}")
+        if data_type is None:
+            module, name = definition["data_type"].split(":")
+            data_type = getattr(importlib.import_module(module), name)
+        self.data_type: type[D] = data_type
+        self.state_type = cast(
+            type[UnitState[D]], UnitState.__class_getitem__(data_type)
+        )
+        self.stages = frozenset(definition["stages"])
+        self.events = self.path / definition["events"]
 
     @classmethod
     def create(
-        cls, path: Path, state: dict[str, Any], files: dict[str, str] | None = None
-    ) -> Self:
-        """A new unit at `path`, or the clean unit already there."""
-        unit = cls(path)
-        if not (path / ".git").exists():
-            path.mkdir(parents=True, exist_ok=True)
-            git(path, "init", "-q")
-            unit.commit("init", files=files, state={"status": "ready", **state})
-        else:
+        cls,
+        path: Path,
+        *,
+        stage: str,
+        data: D,
+        stages: Iterable[str],
+        events: Path,
+        files: Mapping[str, str | bytes] | None = None,
+    ) -> Unit[D]:
+        path = Path(path)
+        if (path / ".git").exists():
+            unit = cls(path, type(data))
             unit.check_clean()
-            unit.state()  # refuse incomplete initialization
-        return unit
+            unit.state()
+            return unit
+        allowed = sorted(stages)
+        if stage not in allowed:
+            raise ValueError(f"unknown stage: {stage!r}")
+        if {str(Path(p)) for p in files or {}} & {STATE, DEFINITION}:
+            raise ValueError("reserved unit file")
+        path.mkdir(parents=True, exist_ok=True)
+        git(path, "init", "-q")
+        definition = {
+            "data_type": f"{type(data).__module__}:{type(data).__name__}",
+            "stages": allowed,
+            "events": os.path.relpath(events, path),
+        }
+        (path / DEFINITION).write_text(json.dumps(definition, indent=2) + "\n")
+        (path / STATE).write_text(
+            UnitState(stage=stage, data=data).model_dump_json(indent=2) + "\n"
+        )
+        for rel, value in (files or {}).items():
+            target = cls._file_at(path, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(value.encode() if isinstance(value, str) else value)
+        git(path, "add", "-A")
+        git(path, "commit", "-q", "-m", "init")
+        return cls(path, type(data))
 
-    def head(self) -> str:
-        return git(self.path, "rev-parse", "HEAD")
-
-    def _file(self, rel: str, *, write: bool = False) -> Path:
+    @staticmethod
+    def _file_at(root: Path, rel: str) -> Path:
         path = Path(rel)
         if (
             not rel
             or path.is_absolute()
-            or ".." in path.parts
-            or ".git" in path.parts
-            or (write and path == Path(STATE))
+            or any(p in ("..", ".git") for p in path.parts)
         ):
-            raise ValueError(f"reserved or unsafe unit path: {rel!r}")
-        file = self.path / path
-        if not file.resolve().is_relative_to(self.path.resolve()):
+            raise ValueError(f"unsafe unit path: {rel!r}")
+        file = root / path
+        if not file.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"unit path escapes repository: {rel!r}")
         return file
 
-    def read(self, rel: str, sha: str | None = None) -> str | None:
-        """Read text without trimming whitespace, from the worktree or a Git ref."""
-        file = self._file(rel)
-        if sha is None:
-            return file.read_bytes().decode() if file.exists() else None
-        try:
-            # Decode bytes directly: text-mode subprocess output normalizes CRLF.
-            return subprocess.run(
-                ["git", "-C", str(self.path), "show", f"{sha}:{rel}"],
-                check=True,
-                capture_output=True,
-            ).stdout.decode()
-        except subprocess.CalledProcessError:
-            return None
+    def head(self) -> str:
+        return git(self.path, "rev-parse", "HEAD")
 
-    def read_json(self, rel: str, sha: str | None = None) -> dict[str, Any]:
+    def read(self, rel: str, sha: str = "HEAD") -> str | None:
+        self._file_at(self.path, rel)
+        out = subprocess.run(
+            ["git", "-C", str(self.path), "show", f"{sha}:{rel}"],
+            capture_output=True,
+            check=False,
+        )
+        return out.stdout.decode() if out.returncode == 0 else None
+
+    def read_json(self, rel: str, sha: str = "HEAD") -> Any:
         raw = self.read(rel, sha)
         return json.loads(raw) if raw else {}
 
-    def state(self) -> dict[str, Any]:
-        raw = self.read(STATE, "HEAD")
-        if raw is None:
-            raise RuntimeError(f"{self.path}: no committed {STATE}; repair the unit")
-        return json.loads(raw)
+    def state(self) -> UnitState[D]:
+        state = self.state_type.model_validate_json(self.read(STATE) or "")
+        self._validate_stage(state.stage)
+        return state
+
+    def _validate_stage(self, stage: str) -> None:
+        if stage not in self.stages:
+            raise ValueError(
+                f"unknown stage: {stage!r}; expected {sorted(self.stages)}"
+            )
 
     @contextmanager
     def _write_lock(self) -> Iterator[None]:
-        lock_path = Path(git(self.path, "rev-parse", "--absolute-git-dir"))
-        with (lock_path / "flow-write.lock").open("a") as lock:
+        with (self.path / ".git" / "flow-write.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
+
+    @contextmanager
+    def _execution_lock(self) -> Iterator[None]:
+        with (self.path / ".git" / "flow-stage.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+
+    def _active(self) -> dict[str, str] | None:
+        try:
+            with self._execution_lock():
+                return None
+        except BlockingIOError:
+            return json.loads((self.path / ".git" / "active.json").read_text())
+
+    @contextmanager
+    def executing(self) -> Iterator[tuple[UnitState[D], dict[str, str]]]:
+        with ExitStack() as stack:
+            with self._write_lock():
+                stack.enter_context(self._execution_lock())
+                self._check_clean()
+                state = self.state()
+                execution = {
+                    "id": uuid4().hex,
+                    "stage": state.stage,
+                    "revision": self.head(),
+                    "started_at": now(),
+                }
+                (self.path / ".git" / "active.json").write_text(json.dumps(execution))
+            yield state, execution
 
     def check_clean(self) -> None:
         with self._write_lock():
@@ -157,59 +237,52 @@ class Unit:
     def _check_clean(self) -> None:
         if git(self.path, "status", "--porcelain", "--untracked-files=all"):
             raise RuntimeError(
-                f"{self.path}: dirty or incomplete publication; repair and commit "
-                "or discard changes before continuing"
+                f"{self.path}: dirty or incomplete publication; repair before continuing"
             )
+
+    def _commit(
+        self, message: str, state: UnitState[D], files: Mapping[str, str | bytes]
+    ) -> str:
+        self._check_clean()
+        self._validate_stage(state.stage)
+        # Revalidate even model_copy/update or mutated nested collections before touching disk.
+        state = self.state_type.model_validate(state.model_dump(mode="json"))
+        paths = {rel: self._file_at(self.path, rel) for rel in files}
+        if {str(Path(p)) for p in paths} & {STATE, DEFINITION}:
+            raise ValueError("reserved unit file")
+        for rel, file in paths.items():
+            file.parent.mkdir(parents=True, exist_ok=True)
+            value = files[rel]
+            file.write_bytes(value.encode() if isinstance(value, str) else value)
+        (self.path / STATE).write_text(state.model_dump_json(indent=2) + "\n")
+        git(self.path, "add", "-A")
+        git(self.path, "commit", "-q", "--allow-empty", "-m", message)
+        return self.head()
 
     def commit(
         self,
         message: str,
         *,
-        files: dict[str, str | bytes] | None = None,
-        remove: Iterable[str] = (),
-        state: dict[str, Any] | None = None,
+        data: D | None = None,
+        stage: str | None = None,
+        status: Status | None = None,
+        files: Mapping[str, str | bytes] | None = None,
     ) -> str:
-        """Write `files` (text or bytes), remove `remove`, and merge `state`, in one commit.
-        Refuse preexisting dirt."""
-        if state and "_control" in state:
-            raise ValueError("_control is reserved for Unit.steer")
+        """Publish pipeline files; cursor/data changes require a settled unit."""
         with self._write_lock():
-            return self._commit(message, files=files, remove=remove, state=state)
-
-    def _commit(
-        self,
-        message: str,
-        *,
-        files: dict[str, str | bytes] | None = None,
-        remove: Iterable[str] = (),
-        state: dict[str, Any] | None = None,
-    ) -> str:
-        self._check_clean()
-        paths = {rel: self._file(rel, write=True) for rel in (files or {})}
-        gone = [self._file(rel, write=True) for rel in remove]
-        current: dict[str, Any] = {}
-        if state is not None:
-            try:
-                self.head()
-            except subprocess.CalledProcessError:
-                pass  # the initial commit of a newly initialized repository
-            else:
-                current = self.state()
-            state_text = json.dumps({**current, **state}, indent=1) + "\n"
-        for file in gone:
-            if file.is_dir():
-                shutil.rmtree(file)
-            else:
-                file.unlink(missing_ok=True)
-        for rel, file in paths.items():
-            data = (files or {})[rel]
-            file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_bytes(data if isinstance(data, bytes) else data.encode())
-        if state is not None:
-            self._file(STATE).write_bytes(state_text.encode())
-        git(self.path, "add", "-A")
-        git(self.path, "commit", "-q", "--allow-empty", "-m", message)
-        return self.head()
+            if (
+                any(value is not None for value in (data, stage, status))
+                and self._active() is not None
+            ):
+                raise RuntimeError(f"{self.id}: stage is still active")
+            state = self.state()
+            if data is not None:
+                state.data = data
+            if stage is not None:
+                state.stage = stage
+            if status is not None:
+                state.status = status
+            return self._commit(message, state, files or {})
 
     def steer(
         self,
@@ -218,81 +291,90 @@ class Unit:
         status: Status | None = None,
         reason: str | None = None,
         note: str | None = None,
+        data: dict[str, Any] | None = None,
+        expected: str | None = None,
     ) -> str:
-        """Set boundary controls and append a note, without stopping active work.
-
-        A live hold saves the stage output then parks at its next cursor. A live
-        route overrides that cursor. Only controls newer than the stage's start
-        take precedence; normal application commits do not invalidate a stage.
-        """
-        if status is not None and status not in (
-            "ready",
-            "held",
-            "waiting",
-            "terminal",
-        ):
-            raise ValueError(f"unknown status: {status!r}")
+        """Boundary controls; data patches require a settled unit and the inspected HEAD."""
         with self._write_lock():
-            current = self.state()
-            control = dict(current.get("_control", {}))
-            version = control.get("version", 0) + 1
-            control["version"] = version
-            state: dict[str, Any] = {"_control": control}
-            for field, value in (
+            if expected is not None and expected != self.head():
+                raise ValueError(f"{self.id}: stale workflow revision; inspect again")
+            state = self.state()
+            if data is not None:
+                if expected is None:
+                    raise ValueError("data updates require expected workflow revision")
+                if self._active() is not None:
+                    raise RuntimeError(f"{self.id}: stage is still active")
+                state.data = self.data_type.model_validate(
+                    {**state.data.model_dump(mode="json"), **data}
+                )
+            state.controls.version += 1
+            for key, value in (
                 ("stage", stage),
                 ("status", status),
                 ("reason", reason),
             ):
                 if value is not None:
-                    state[field] = value
-                    control[field] = {"version": version, "value": value}
+                    setattr(state, key, value)
+                    state.controls.fields[key] = state.controls.version
             if note is not None:
-                state["notes"] = [*current.get("notes", []), note]
-            return self._commit("steer" + (f": {note}" if note else ""), state=state)
-
-    def apply(
-        self, transition: Transition, *, control_version: int | None = None
-    ) -> str:
-        """Publish a stage's output, preserving newer operator controls and notes."""
-        if "_control" in transition.state:
-            raise ValueError("_control is reserved for Unit.steer")
-        with self._write_lock():
-            current = self.state()
-            state = {
-                **transition.state,
-                "stage": transition.stage or current.get("stage"),
-                "status": transition.status,
-                "outcome": transition.outcome,
-                "reason": transition.summary,
+                state.notes.append(Note(id=state.controls.version, text=note))
+            sha = self._commit("steer" + (f": {note}" if note else ""), state, {})
+            event = {
+                "type": "steer",
+                "at": now(),
+                "unit": self.id,
+                "sha": sha,
+                "action": {
+                    k: v
+                    for k, v in {
+                        "stage": stage,
+                        "status": status,
+                        "reason": reason,
+                        "note": note,
+                        "data": data,
+                    }.items()
+                    if v is not None
+                },
             }
-            if "notes" in state:
-                state["notes"] = [
-                    *current.get("notes", []),
-                    *(
-                        note
-                        for note in state["notes"]
-                        if note not in current.get("notes", [])
-                    ),
-                ]
-            if control_version is not None:
-                control = current.get("_control", {})
-                for field in ("stage", "status", "reason"):
-                    intent = control.get(field, {})
-                    if intent.get("version", 0) > control_version:
-                        state[field] = intent["value"]
+            with self.events.open("a") as file:
+                file.write(json.dumps(event) + "\n")
+            return sha
+
+    def apply(self, transition: Transition[D], *, before: UnitState[D]) -> str:
+        with self._write_lock():
+            state = self.state()
+            for key, value in (
+                ("stage", transition.stage or before.stage),
+                ("status", transition.status),
+                ("reason", transition.summary),
+            ):
+                if state.controls.fields.get(key, 0) <= before.controls.version:
+                    setattr(state, key, value)
+            state.outcome = transition.outcome
+            if transition.data is not None:
+                state.data = transition.data
+            if transition.consume_notes:
+                consumed = {note.id for note in before.notes}
+                state.notes = [note for note in state.notes if note.id not in consumed]
             return self._commit(
-                f"{current.get('stage')}: {transition.outcome}",
-                files=transition.files,
-                state=state,
+                f"{before.stage}: {transition.outcome}", state, transition.files
             )
 
+    def inspect(self) -> dict[str, Any]:
+        with self._write_lock():
+            return {
+                "unit": self.id,
+                "revision": self.head(),
+                "state": self.state().model_dump(mode="json"),
+                "active": self._active(),
+                "dirty": bool(git(self.path, "status", "--porcelain")),
+            }
+
     def log(self, limit: int | None = None) -> list[dict[str, str]]:
-        """The commits, newest first: `sha`, `at`, `message`."""
         args = ["log", "--format=%H%x1f%aI%x1f%s"]
         if limit:
             args.append(f"-{limit}")
         return [
             dict(zip(("sha", "at", "message"), line.split("\x1f")))
             for line in git(self.path, *args).splitlines()
-            if line
         ]
