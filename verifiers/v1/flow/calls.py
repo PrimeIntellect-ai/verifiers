@@ -41,7 +41,7 @@ LIVE_EVERY_S = 3.0
 
 
 def now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 class CallFailed(Exception):
