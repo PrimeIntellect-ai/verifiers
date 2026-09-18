@@ -311,6 +311,7 @@ class Flow:
             to=committed["stage"],
             status=committed["status"],
             reason=committed["reason"],
+            report=transition.report,
             sha=sha,
             links=links,
         )

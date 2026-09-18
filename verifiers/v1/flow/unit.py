@@ -48,6 +48,9 @@ class Transition:
     """Files to commit beside `state.json`, by path in the repository."""
     state: dict[str, Any] = field(default_factory=dict)
     """Fields to merge into `state.json`: the pipeline's own (credits, a pin, a version)."""
+    report: str | None = None
+    """A report behind this transition, by name: a markdown file the stage wrote (in `files`)
+    citing the traces it judged; what a dashboard shows as the proof of the route."""
 
     @classmethod
     def to(cls, stage: str, outcome: str, summary: str = "", **kw: Any) -> Self:
