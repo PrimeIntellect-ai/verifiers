@@ -11,8 +11,8 @@ from verifiers.v1.runtimes import docker as docker_runtime
 async def test_sweep_containers_is_a_noop_without_docker(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
-    async def no_docker(*args):
-        raise AssertionError("docker must not be invoked when it is not installed")
+    async def no_engine(*args):
+        raise AssertionError("no engine may be invoked when none is installed")
 
-    monkeypatch.setattr(docker_runtime, "docker", no_docker)
+    monkeypatch.setattr(docker_runtime, "cli", no_engine)
     assert await docker_runtime.sweep_containers("verifiers.run:test") == 0

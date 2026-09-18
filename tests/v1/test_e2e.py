@@ -5,6 +5,7 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import shutil
 import subprocess
 import sys
 
@@ -115,6 +116,15 @@ CHAT_PLACEMENTS = [
 # remote row per provider.
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
+    *[
+        pair(
+            "bash",
+            engine,
+            f"bash-harness-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("rlm", "docker", "rlm-harness-in-docker"),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
@@ -148,6 +158,15 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
+    *[
+        pair(
+            "rlm",
+            engine,
+            f"rlm-acp-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("codex", "docker", "codex-acp-in-docker"),
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
@@ -178,6 +197,15 @@ ACP_RESUME_PLACEMENTS = [
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
 TOOL_PLACEMENTS = [
+    *[
+        pair(
+            "subprocess",
+            engine,
+            f"harness-in-subprocess-with-tool-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
     pair("docker", "colocated", "harness-in-docker-with-tool-colocated"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
@@ -328,10 +356,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={
-            "type": harness_runtime,
-            **({"vm": True} if harness_runtime == "prime" else {}),
-        },
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,

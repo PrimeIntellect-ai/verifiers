@@ -1,10 +1,4 @@
-"""Remote Prime sandbox runtime.
-
-`expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
-host-side harness/framework can reach a tool server hosted in the sandbox. The reverse
-direction (a program in the sandbox reaching a host service) is the shared host-side
-`Tunnel` (interception.tunnel), not the runtime's concern.
-"""
+"""Remote Prime VM sandbox runtime."""
 
 import asyncio
 import base64
@@ -25,7 +19,6 @@ from pydantic import Field, model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
-    SERVICE_PORT,
     SWEEPERS,
     BaseRuntimeInfo,
     ProgramResult,
@@ -74,15 +67,11 @@ class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
-    platform auto-builds what the sandbox needs from it (a VM image for `vm` sandboxes,
-    ~10 minutes) and caches the result, so later sandboxes on the same ref start in
+    platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
+    and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
-    vm: bool = True
-    """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
-    guaranteed: bool = False
-    """Request guaranteed (vs best-effort) capacity."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
@@ -107,10 +96,6 @@ class PrimeConfig(NetworkPolicyConfig):
     def _validate_egress(self) -> "PrimeConfig":
         if not self.network_restricted:
             return self
-        if not self.vm:
-            raise ValueError(
-                "Prime allow/block egress lists require a VM sandbox (vm=true)"
-            )
         if not self.allow:
             return self
         validate_egress_lists(
@@ -160,11 +145,7 @@ class PrimeRuntime(Runtime):
 
     @property
     def supports_live_processes(self) -> bool:
-        return self.config.vm
-
-    @property
-    def published_port(self) -> int | None:
-        return SERVICE_PORT
+        return True
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
@@ -190,14 +171,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            # -1 is prime's convention for no lifetime limit; containers with an
-            # idle timeout must carry a finite lifetime as a safety fallback (which
-            # must exceed the idle timeout)
-            "timeout_minutes": (
-                -1
-                if self.config.vm or idle_minutes is None
-                else max(EFFECTIVELY_UNBOUNDED_SECONDS // 60, idle_minutes + 1)
-            ),
+            "timeout_minutes": -1,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -220,8 +194,6 @@ class PrimeRuntime(Runtime):
                                 dict.fromkeys([*BASE_LABELS, *self.config.labels])
                             ),
                             docker_image=self.config.image,
-                            vm=self.config.vm,
-                            guaranteed=self.config.guaranteed,
                             environment_vars=self.env,
                             **{k: v for k, v in options.items() if v is not None},
                         )
@@ -327,11 +299,6 @@ class PrimeRuntime(Runtime):
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        if not self.config.vm:
-            raise SandboxError(
-                "persistent harness sessions on Prime require a VM sandbox; "
-                "set runtime.prime.vm=true"
-            )
         try:
             process = await self._client.open_process(
                 self.info.id,
@@ -343,22 +310,11 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime live process failed to start: {e}") from e
         return PrimeProcess(process)
 
-    async def expose(self, port: int) -> str | None:
-        # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
-        # HTTPS URL. Removed when the sandbox is deleted in stop(), so a tool in its own prime
-        # sandbox needs no host tunnel. Port exposure is region-gated: many regions (incl. the
-        # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
-        # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
-        try:
-            exposed = await self._client.expose(self.info.id, port)
-        except Exception as e:  # surface prime's exposure constraints actionably
-            raise SandboxError(
-                "prime port exposure failed — port exposure isn't supported in this sandbox's "
-                "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
-                f"use a colocated / docker / modal tools.runtime instead. ({e})"
-            ) from e
-        logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
-        return exposed.url.rstrip("/")
+    async def expose(self, port: int) -> str:
+        raise SandboxError(
+            "Prime VM sandboxes do not support port exposure; colocate the service "
+            "with its consumer, or use a docker or modal service runtime"
+        )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -375,7 +331,7 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
-        if max_bytes is not None and self.config.vm:
+        if max_bytes is not None:
             try:
                 # VM execute_command uses bash and returns the complete output stream.
                 result = await self._client.execute_command(
@@ -390,8 +346,6 @@ class PrimeRuntime(Runtime):
             if result.exit_code:
                 raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
             return base64.b64decode(result.stdout)
-        if max_bytes is not None:
-            return await super()._read(path, max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (

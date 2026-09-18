@@ -24,9 +24,11 @@ class PushState:
 
     run: pr.Run | None = None
     error: str | None = None
-    incomplete: str | None = None
-    """Set when the run closed out but the uploader lost records on the way: the run
-    exists and holds what did land, so the footer says so rather than "failed"."""
+
+    @property
+    def incomplete(self) -> str | None:
+        """Current upload errors and record losses, including while the run is active."""
+        return _losses(self.run) if self.run is not None else None
 
     @property
     def url(self) -> str | None:
@@ -157,9 +159,8 @@ def _close(
         if state.error is None:
             state.error = f"{type(e).__name__}: {e}"
     else:
-        state.incomplete = _losses(run)
-        if state.incomplete:
-            logger.warning("--push: %s, but %s", status.value, state.incomplete)
+        if incomplete := state.incomplete:
+            logger.warning("--push: %s, but %s", status.value, incomplete)
         if run.url:
             # The run's own status: `finish()` is a no-op once another caller closed it.
             logger.info("--push: %s -> %s", run.status.value, run.url)
