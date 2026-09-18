@@ -103,6 +103,9 @@ harbor = [
 modal = [
     "modal>=1.5.4",
 ]
+e2b = [
+    "e2b>=2.49.0",
+]
 openenv = [
     "openenv>=0.4.1",
 ]
@@ -231,6 +234,7 @@ markers = [
     "apptainer: v1 e2e cases touching the apptainer runtime",
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
+    "e2b: v1 e2e cases touching the e2b runtime (real sandboxes; local-only, excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
