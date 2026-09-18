@@ -97,7 +97,13 @@ class FakeCommands:
         if kwargs.get("background"):
             callback = kwargs.get("on_stdout")
             if callback is not None:
-                callback("early output")
+                if "base64" in command:  # a live process: framed bytes, split mid-line
+                    wire = base64.b64encode(b"early output").decode() + "\n"
+                    wire += base64.b64encode(b"\x00\xbf\xff").decode() + "\n"
+                    callback(wire[:7])
+                    callback(wire[7:])
+                else:
+                    callback("early output")
             if self.next_error is not None:
                 error, self.next_error = self.next_error, None
                 self.handle = FakeHandle(error=error)
@@ -350,7 +356,10 @@ async def test_open_process_streams_and_signals(fake_e2b):
     runtime._sandbox = sandbox
 
     process = await runtime.open_process(["cat"], {})
+    command, kwargs = sandbox.commands.calls[-1]
+    assert command.startswith("set -o pipefail; ( ") and "base64" in command
     assert await anext(process.stdout) == b"early output"
+    assert await anext(process.stdout) == b"\x00\xbf\xff"  # not UTF-8, arrives intact
     await process.write(b"hello\n")
     assert sandbox.commands.handle.stdin == [b"hello\n"]
     assert await process.wait() == 0

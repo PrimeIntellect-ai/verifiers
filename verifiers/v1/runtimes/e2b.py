@@ -1,6 +1,7 @@
 """Remote E2B sandbox runtime."""
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import ipaddress
@@ -9,7 +10,7 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
@@ -172,6 +173,19 @@ async def _queue_stream(queue: asyncio.Queue[bytes | None]) -> AsyncIterator[byt
         yield chunk
 
 
+_ENCODER = """
+import base64, os, sys
+while True:
+    data = os.read(0, 65536)
+    if not data:
+        break
+    sys.stdout.write(base64.b64encode(data).decode() + "\\n"); sys.stdout.flush()
+"""
+"""Base64 that streams: one padded line per read, flushed at once, so no byte of a harness's
+frame is ever held back waiting for more input (`base64 -w0` blocks on a full block and even
+an unpadded stream would keep a frame's last one or two bytes)."""
+
+
 class E2BProcess(RuntimeProcess):
     def __init__(
         self,
@@ -179,11 +193,13 @@ class E2BProcess(RuntimeProcess):
         commands,
         stdout: asyncio.Queue[bytes | None],
         stderr: asyncio.Queue[bytes | None],
+        flush: Callable[[], None] | None = None,
     ) -> None:
         self._handle = handle
         self._commands = commands
         self._stdout = stdout
         self._stderr = stderr
+        self._flush = flush
         self.stdout = _queue_stream(self._stdout)
         self.stderr = _queue_stream(self._stderr)
         self._exit_code: int | None = None
@@ -205,6 +221,8 @@ class E2BProcess(RuntimeProcess):
         except Exception as e:  # noqa: BLE001 - surfaced to the caller by wait()
             self._error = e
         finally:
+            if self._flush is not None:
+                self._flush()
             self._stdout.put_nowait(None)
             self._stderr.put_nowait(None)
 
@@ -285,11 +303,16 @@ class E2BRuntime(Runtime):
         env: dict[str, str],
         *,
         stdin: bool = False,
+        encode_stdout: bool = False,
         on_stdout: Any = None,
         on_stderr: Any = None,
     ) -> Any:
         sandbox = self._require_sandbox()
         command, process_env = self._command(argv, env)
+        if encode_stdout:  # the process's exit status survives the pipe
+            command = (
+                f"set -o pipefail; ( {command} ) | python3 -c {shlex.quote(_ENCODER)}"
+            )
         handle = None
 
         async def start() -> None:
@@ -389,18 +412,39 @@ class E2BRuntime(Runtime):
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
+        """A live process whose stdout must arrive byte-exact (a harness's framed protocol).
+        The SDK decodes command output as UTF-8 with replacement characters, which would
+        re-align nothing after one stray byte, so the box base64-encodes stdout and this side
+        decodes it; stdin and stderr stay as they are."""
         stdout: asyncio.Queue[bytes | None] = asyncio.Queue()
         stderr: asyncio.Queue[bytes | None] = asyncio.Queue()
+        pending = ""
+
+        def on_stdout(chunk: str) -> None:
+            nonlocal pending
+            pending += chunk
+            *lines, pending = pending.split("\n")  # a line is one padded base64 chunk
+            for line in lines:
+                if line:
+                    stdout.put_nowait(base64.b64decode(line))
+
+        def flush() -> None:
+            nonlocal pending
+            if pending.strip():
+                stdout.put_nowait(base64.b64decode(pending.strip()))
+                pending = ""
+
         try:
             sandbox = self._require_sandbox()
             handle = await self._start_command(
                 argv,
                 env,
                 stdin=True,
-                on_stdout=lambda chunk: stdout.put_nowait(chunk.encode()),
+                encode_stdout=True,
+                on_stdout=on_stdout,
                 on_stderr=lambda chunk: stderr.put_nowait(chunk.encode()),
             )
-            return E2BProcess(handle, sandbox.commands, stdout, stderr)
+            return E2BProcess(handle, sandbox.commands, stdout, stderr, flush)
         except Exception as e:
             raise SandboxError(f"e2b live process failed to start: {e}") from e
 
