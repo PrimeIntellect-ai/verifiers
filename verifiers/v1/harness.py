@@ -104,10 +104,8 @@ class Harness(ABC, Generic[ConfigT]):
             if isinstance(skill, dict):
                 result = await runtime.run(
                     [
-                        "bash",
+                        "sh",
                         "-e",
-                        "-o",
-                        "pipefail",
                         "-c",
                         r"""
 [ -d "$1" ]
@@ -117,7 +115,11 @@ target=$(CDPATH= cd -- "$2/." && pwd -P)
 [ "$source" != "$target" ] || exit 0
 # A source such as "." must not copy the destination back into itself.
 exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
-tar -C "$source" --exclude="$exclude" -cf - . | tar -xpf - -C "$target"
+archive=$(mktemp "$target/.vf-skills.XXXXXX")
+trap 'rm -f -- "$archive"' 0
+tar -C "$source" --exclude="$exclude" -cf "$archive" .
+# Unlink the open archive before tar can restore a read-only destination mode.
+{ rm -f -- "$archive"; tar -xpf - -C "$target"; } < "$archive"
 """,
                         "vf-skills",
                         skill["runtime"],
