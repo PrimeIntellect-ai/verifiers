@@ -1,6 +1,7 @@
 """Shared configuration for execution-time network policy."""
 
 from fnmatch import fnmatchcase
+from ipaddress import IPv6Address
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -29,6 +30,39 @@ def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
     )
 
 
+def check_network_rule(rule: str) -> None:
+    """Refuse a rule that `network_rule_matches` would read differently from the glob it
+    looks like. `urlsplit` sees `?` and `#` as a query and a fragment, and `[...]` as an
+    IPv6 literal, so `api?.example.com` quietly becomes the host `api` and `[a-z]*.com`
+    becomes `a-z`: a policy that matches the wrong destination, or nothing, without
+    saying so. A wrong egress rule should fail at config time, not at match time."""
+    if rule == "*":
+        return
+    if "?" in rule or "#" in rule:
+        raise ValueError(
+            f"network rule {rule!r}: '?' and '#' start a URL query or fragment, not a glob"
+        )
+    value = rule.lower().rstrip("/")
+    try:
+        # A bare scheme (`https://`) loses its slashes to the strip above and comes back as
+        # the host `https`, so an origin-shaped rule is checked for a host before stripping.
+        if "://" in rule and not urlsplit(rule.lower()).hostname:
+            raise ValueError("no host")
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        _ = parsed.port  # raises on a non-numeric port, as the matcher's read does
+        if not parsed.hostname:
+            raise ValueError("no host")
+    except ValueError as e:
+        raise ValueError(f"network rule {rule!r}: {e}") from e
+    if "[" in value:
+        try:
+            IPv6Address(parsed.hostname)
+        except ValueError:
+            raise ValueError(
+                f"network rule {rule!r}: brackets are an IPv6 literal, not a glob class"
+            ) from None
+
+
 class NetworkPolicyConfig(BaseConfig):
     """Shared execution-time policy surface for runtimes that support it."""
 
@@ -48,6 +82,8 @@ class NetworkPolicyConfig(BaseConfig):
             raise ValueError(
                 "non-empty concrete allow and block egress lists are mutually exclusive"
             )
+        for rule in [*self.allow, *self.block]:
+            check_network_rule(rule)
         return self
 
     @property
