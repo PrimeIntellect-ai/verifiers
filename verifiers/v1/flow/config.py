@@ -26,9 +26,3 @@ class FlowConfig(BaseConfig):
     (`runtimes`); a pipeline may hold any name it adds."""
     payload_cap: PositiveInt = 1_000_000
     """Largest call value a record keeps, in bytes of JSON; bulk belongs in traces or files."""
-    attach_by_key: bool = False
-    """A migration switch: a call whose record is not found under its identity attaches the
-    unit's newest record with the same key and kind instead of running again. For a launch
-    after a seat change that does not alter what a call asks (a budget, a runtime size) when
-    the earlier identity carried it. Off, a changed identity reruns the call, which is right
-    whenever the change could alter the answer (a model, a prompt, an input)."""

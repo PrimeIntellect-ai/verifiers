@@ -23,6 +23,7 @@ from verifiers.v1.flow import (
     Pipeline,
     Record,
     Transition,
+    UnitData,
     Work,
     agent,
     command,
@@ -39,6 +40,11 @@ class Cfg(FlowConfig):
     solver: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
     judge: vf.AgentConfig = vf.AgentConfig(harness={"id": "rlm"})
     folders: int = 3
+
+
+class FolderData(UnitData):
+    brief: str
+    visits: int = 0
 
 
 def task(prompt: str) -> vf.Task:
@@ -60,9 +66,7 @@ async def plan(ctx: Ctx) -> Transition:
     for i, line in enumerate(
         (trace.last_reply or "").splitlines()[: ctx.config.folders]
     ):
-        ctx.flow.create_task(
-            f"folder-{i}", {"stage": "build", "brief": line, "visits": 0}
-        )
+        ctx.flow.create_task(f"folder-{i}", stage="build", data=FolderData(brief=line))
     return Transition.wait("planned")
 
 
@@ -93,29 +97,29 @@ class BuildAndLint(Work[dict[str, Any]]):
         return record.payload
 
 
-async def build(ctx: Ctx) -> Transition:
-    state = ctx.unit.state()
-    built = await ctx.call(BuildAndLint(state["brief"]), key=f"build/{state['visits']}")
+async def build(ctx: Ctx[FolderData]) -> Transition[FolderData]:
+    state = ctx.data
+    built = await ctx.call(BuildAndLint(state.brief), key=f"build/{state.visits}")
     review = await ctx.call(
         agent("reviewer", task(f"Review:\n{built['reply']}\nlint: {built['lint']}")),
-        key=f"review/{state['visits']}",
+        key=f"review/{state.visits}",
     )
     if built["lint"] == 0 and decision(review) == "accept":
         return Transition.to("solve", "accepted", review.last_reply or "")
-    if state["visits"] >= 2:
+    if state.visits >= 2:
         return Transition.end("rejected", "the folder never passed review")
     return Transition.to(
         "build",
         "revise",
         review.last_reply or "",
-        state={"visits": state["visits"] + 1},
+        data=ctx.updated(visits=state.visits + 1),
     )
 
 
-async def solve(ctx: Ctx) -> Transition:
-    version = ctx.unit.state()["visits"]
+async def solve(ctx: Ctx[FolderData]) -> Transition[FolderData]:
+    version = ctx.data.visits
     attempts = await ctx.spread(
-        [agent("solver", task(ctx.unit.state()["brief"])) for _ in range(4)],
+        [agent("solver", task(ctx.data.brief)) for _ in range(4)],
         key=lambda i: f"solve/{version}/{i}",
     )
     answers = [r.value for r in attempts if r.ok and r.value is not None]
@@ -134,5 +138,8 @@ async def solve(ctx: Ctx) -> Transition:
 
 
 pipeline = Pipeline(
-    {"plan": plan, "build": build, "solve": solve}, start="plan", config=Cfg
+    {"plan": plan, "build": build, "solve": solve},
+    start="plan",
+    config=Cfg,
+    data=FolderData,
 )

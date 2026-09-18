@@ -1,11 +1,13 @@
 """`python -m verifiers.v1.flow <command> ...`
 
     run <module:pipeline> <root> [@ config.toml] [--<field> <value> ...]   run until nothing is runnable
-    status <root>                                                          every unit: stage, status, reason
+    status <root> [unit] [--json]                                          committed state, active execution, calls
     release <root> <unit> [--note TEXT]                                    a held or waiting unit back to ready
     hold <root> <unit> [--note TEXT]                                       park a unit
     route <root> <unit> <stage> [--note TEXT]                              send a unit to a stage, ready
     note <root> <unit> TEXT                                                leave a note for the unit's next stage
+    update <root> <unit> <file.json> --expected SHA [--stage STAGE] [--status STATUS]
+    drain <root>                                                          finish in-flight calls and stop
 
 The pipeline is a `Pipeline` the module exports by name. `run` against the same root resumes:
 units keep their state, calls keep their records. Ctrl-C once drains (calls in flight finish,
@@ -15,20 +17,21 @@ commits on the unit, so they show in its log beside the pipeline's own.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import importlib
 import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from pydantic_config import cli
 
-from verifiers.v1.flow.calls import now
+from verifiers.v1.flow.calls import Record
 from verifiers.v1.flow.flow import (
     CAMPAIGN,
     TASKS,
-    TRANSITIONS,
     Flow,
     Pipeline,
     drain_on_interrupt,
@@ -41,53 +44,60 @@ USAGE = __doc__ or ""
 
 
 def _unit(root: Path, name: str) -> Unit:
-    unit = Unit(root / CAMPAIGN) if name == CAMPAIGN else Unit(task_path(root, name))
-    if not (unit.path / ".git").exists():
+    path = root / CAMPAIGN if name == CAMPAIGN else task_path(root, name)
+    if not (path / ".git").exists():
         raise SystemExit(f"no unit {name!r} under {root}")
-    return unit
+    return Unit(path)
 
 
-def _steer(root: Path, name: str, message: str, state: dict, note: str | None) -> None:
-    """An operator's commit on a unit, and a `steer` line in the transitions file so the record
-    (and a dashboard) shows who moved the unit and why."""
-    unit = _unit(root, name)
-    sha = unit.steer(**state, note=note)
-    line = {
-        "type": "steer",
-        "at": now(),
-        "unit": name,
-        "action": message,
-        "note": note,
-        "sha": sha,
-    }
-    with (root / TRANSITIONS).open("a") as file:
-        file.write(json.dumps(line) + "\n")
-    print(f"{name}: {message} ({sha[:8]})")
-
-
-def status(root: Path) -> int:
-    units = [
-        Unit(root / CAMPAIGN),
-        *(Unit(p) for p in sorted((root / TASKS).glob("*")) if (p / ".git").exists()),
-    ]
-    width = max(len(u.id) for u in units)
-    for unit in units:
-        st = unit.state()
-        try:
-            unit.check_clean()
-            dirty = ""
-        except RuntimeError:
-            dirty = "DIRTY "
-        line = f"{unit.id:{width}}  {st.get('stage', '?'):12} {dirty}{st.get('status', '?'):9} {st.get('reason', '')}"
-        print(line[:200])
-    live = (
-        sorted(p.stem for p in (root / "live").glob("*.json"))
-        if (root / "live").exists()
-        else []
+def inspect(root: Path, name: str | None = None) -> dict:
+    units = (
+        [_unit(root, name)]
+        if name
+        else [
+            _unit(root, CAMPAIGN),
+            *(
+                Unit(p)
+                for p in sorted((root / TASKS).iterdir())
+                if (p / ".git").exists()
+            ),
+        ]
     )
-    if live:
-        print("live:", ", ".join(live))
-    return 0 if succeeded(units[0], units[1:]) else 1
+    ids = {unit.id for unit in units}
+    calls = [
+        Record.model_validate_json(file.read_text()).model_dump(mode="json")
+        for unit in sorted(ids)
+        for file in sorted((root / "calls" / unit).glob("*.json"))
+    ]
+    return {
+        "units": [unit.inspect() for unit in units],
+        "calls": calls,
+        "draining": (root / "drain").exists(),
+    }
+
+
+def status(root: Path, *, name: str | None = None, as_json: bool = False) -> int:
+    snapshot = inspect(root, name)
+    if as_json:
+        print(json.dumps(snapshot, indent=2))
+    else:
+        for unit in snapshot["units"]:
+            state = unit["state"]
+            activity = (
+                f"running {unit['active']['stage']}" if unit["active"] else "settled"
+            )
+            print(
+                f"{unit['unit']}  {state['stage']}  {state['status']}  {activity}"
+                f"{'  DIRTY' if unit['dirty'] else ''}  {state['reason']}"
+            )
+    return (
+        0
+        if succeeded(
+            _unit(root, CAMPAIGN),
+            [Unit(p) for p in (root / TASKS).iterdir() if (p / ".git").exists()],
+        )
+        else 1
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -107,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
         target, root, *config_args = rest
         module_name, _, name = target.partition(":")
         pipeline: Pipeline = getattr(importlib.import_module(module_name), name)
-        config = cli(pipeline.config, args=config_args, prog="flow")
+        config = cli(pipeline.config, args=config_args)
         logger = logging.getLogger("verifiers.flow")
         logger.setLevel(logging.INFO if verbose else logging.WARNING)
         if verbose and not logger.handlers:
@@ -123,31 +133,54 @@ def main(argv: list[str] | None = None) -> None:
             return 0 if success else 1
 
         sys.exit(asyncio.run(go()))
-    root = Path(rest[0])
+    parser = argparse.ArgumentParser(prog=f"flow {command}")
+    parser.add_argument("root", type=Path)
     if command == "status":
-        sys.exit(status(root))
-    if command == "release":
-        _steer(root, rest[1], "release", {"status": "ready"}, note)
-    elif command == "hold":
-        _steer(
-            root,
-            rest[1],
-            "hold",
-            {"status": "held", "reason": note or "held by operator"},
-            note,
-        )
-    elif command == "route":
-        _steer(
-            root,
-            rest[1],
-            f"route: {rest[2]}",
-            {"stage": rest[2], "status": "ready"},
-            note,
-        )
+        parser.add_argument("unit", nargs="?")
+        parser.add_argument("--json", action="store_true")
+        options = parser.parse_args(rest)
+        sys.exit(status(options.root, name=options.unit, as_json=options.json))
+    if command == "drain":
+        options = parser.parse_args(rest)
+        (options.root / "drain").touch()
+        return
+    parser.add_argument("unit")
+    if command == "route":
+        parser.add_argument("stage")
     elif command == "note":
-        _steer(root, rest[1], "note", {}, " ".join(rest[2:]))
-    else:
+        parser.add_argument("text")
+    elif command == "update":
+        parser.add_argument(
+            "file", type=Path, help="JSON object of pipeline data fields to update"
+        )
+        parser.add_argument(
+            "--expected", required=True, help="workflow revision from status --json"
+        )
+        parser.add_argument("--stage")
+        parser.add_argument(
+            "--status", choices=("ready", "held", "waiting", "terminal")
+        )
+    elif command not in ("hold", "release"):
         raise SystemExit(USAGE)
+    options = parser.parse_args(rest)
+    changes: dict[str, Any] = {"note": note}
+    if command == "hold":
+        changes.update(status="held", reason=note or "held by operator")
+    elif command == "release":
+        changes.update(status="ready")
+    elif command == "route":
+        changes.update(stage=options.stage, status="ready")
+    elif command == "note":
+        changes.update(note=options.text)
+    else:
+        changes.update(
+            data=json.loads(options.file.read_text()),
+            expected=options.expected,
+            stage=options.stage,
+            status=options.status,
+        )
+    sha = _unit(options.root, options.unit).steer(**changes)
+    print(f"{options.unit}: {command} ({sha})")
 
 
 if __name__ == "__main__":

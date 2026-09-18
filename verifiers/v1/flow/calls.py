@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, TypeAdapter
@@ -95,11 +95,6 @@ class Work(ABC, Generic[T]):
     def content(self, ctx: Ctx) -> list[Any]:
         """What keys the call besides its key: the work's inputs, JSON-stable."""
 
-    def legacy_contents(self, ctx: Ctx) -> list[list[Any]]:
-        """Earlier shapes of `content`, for records an older launch wrote: a lookup that misses
-        under the current identity tries these before running the work again."""
-        return []
-
     @abstractmethod
     async def execute(self, ctx: Ctx, name: str) -> T: ...
 
@@ -122,7 +117,7 @@ def _payload(ctx: Ctx, value: Any) -> Any:
 
 
 @dataclass(frozen=True)
-class AgentWork(Work[Trace]):
+class AgentWork(Work[Trace[Any, Any, Any]]):
     kind: ClassVar[Kind] = "agent"
     seat: str
     task: Task
@@ -137,11 +132,6 @@ class AgentWork(Work[Trace]):
         # The resolved seat keys the call too: a model change reruns that seat's calls only.
         seat = ctx.seat(self.seat).model_dump(mode="json", exclude=set(self.BUDGETS))
         return ["agent", self.seat, type(self.task).__name__, self.task.data, seat]
-
-    def legacy_contents(self, ctx: Ctx) -> list[list[Any]]:
-        # Records written while budgets were part of the identity.
-        seat = ctx.seat(self.seat).model_dump(mode="json")
-        return [["agent", self.seat, type(self.task).__name__, self.task.data, seat]]
 
     async def execute(self, ctx: Ctx, name: str) -> Trace:
         flow = ctx.flow
@@ -177,11 +167,11 @@ class AgentWork(Work[Trace]):
     def dump(self, ctx: Ctx, value: Trace) -> dict[str, Any]:
         return {"trace_id": value.id}
 
-    def load(self, ctx: Ctx, record: Record) -> Trace:
+    def load(self, ctx: Ctx, record: Record) -> Trace[Any, Any, Any]:
         trace = ctx.flow.traces.get(record.trace_id or "")
         if trace is None:
             raise LookupError(f"trace {record.trace_id} is not in the flow's traces")
-        return trace  # type: ignore[return-value]
+        return trace
 
 
 def should_retry(trace: Trace, agent: Agent, attempt: int) -> bool:
@@ -225,7 +215,7 @@ class FnWork(Work[T]):
     def content(self, ctx: Ctx) -> list[Any]:
         return [
             "fn",
-            f"{self.func.__module__}.{self.func.__qualname__}",
+            f"{self.func.__module__}.{cast(Any, self.func).__qualname__}",
             self.args,
             self.kwargs,
         ]
@@ -244,7 +234,7 @@ class FnWork(Work[T]):
             with contextlib.suppress(Exception):
                 await asyncio.shield(future)
             raise
-        return await value if inspect.isawaitable(value) else value
+        return cast(T, await value if inspect.isawaitable(value) else value)
 
     def dump(self, ctx: Ctx, value: T) -> dict[str, Any]:
         return {"payload": _payload(ctx, value)}
@@ -278,7 +268,7 @@ def command(
 def fn(func: Callable[..., T | Awaitable[T]], *args: Any, **kwargs: Any) -> FnWork[T]:
     """`func(*args, **kwargs)` on the host, sync or async. The arguments key the call, so
     they must be JSON-stable."""
-    return FnWork(func=func, args=args, kwargs=kwargs)
+    return FnWork[T](func=func, args=args, kwargs=kwargs)
 
 
 class Live:
