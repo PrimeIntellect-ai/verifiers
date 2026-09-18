@@ -17,13 +17,22 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import sys
 from pathlib import Path
 
 from pydantic_config import cli
 
-from verifiers.v1.flow.flow import CAMPAIGN, TASKS, Flow, Pipeline, drain_on_interrupt
+from verifiers.v1.flow.calls import now
+from verifiers.v1.flow.flow import (
+    CAMPAIGN,
+    TASKS,
+    TRANSITIONS,
+    Flow,
+    Pipeline,
+    drain_on_interrupt,
+)
 from verifiers.v1.flow.unit import Unit
 
 USAGE = __doc__ or ""
@@ -37,10 +46,22 @@ def _unit(root: Path, name: str) -> Unit:
 
 
 def _steer(root: Path, name: str, message: str, state: dict, note: str | None) -> None:
+    """An operator's commit on a unit, and a `steer` line in the transitions file so the record
+    (and a dashboard) shows who moved the unit and why."""
     unit = _unit(root, name)
     if note:
         state["notes"] = [*unit.state().get("notes", []), note]
     sha = unit.commit(message + (f": {note}" if note else ""), state=state)
+    line = {
+        "type": "steer",
+        "at": now(),
+        "unit": name,
+        "action": message,
+        "note": note,
+        "sha": sha,
+    }
+    with (root / TRANSITIONS).open("a") as file:
+        file.write(json.dumps(line) + "\n")
     print(f"{name}: {message} ({sha[:8]})")
 
 
