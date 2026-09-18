@@ -115,11 +115,13 @@ target=$(CDPATH= cd -- "$2/." && pwd -P)
 [ "$source" != "$target" ] || exit 0
 # A source such as "." must not copy the destination back into itself.
 exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
-archive=$(mktemp "$target/.vf-skills.XXXXXX")
-trap 'rm -f -- "$archive"' 0
-tar -C "$source" --exclude="$exclude" -cf "$archive" .
-# Unlink the open archive before tar can restore a read-only destination mode.
-{ rm -f -- "$archive"; tar -xpf - -C "$target"; } < "$archive"
+# POSIX sh returns only the extractor's status; fd 3 also reports producer failure.
+copy_failed=$(
+    exec 3>&1
+    { tar -C "$source" --exclude="$exclude" -cf - . || printf failed >&3; } |
+        tar -xpf - -C "$target"
+)
+[ -z "$copy_failed" ]
 """,
                         "vf-skills",
                         skill["runtime"],
