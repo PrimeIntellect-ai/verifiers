@@ -455,12 +455,15 @@ class Ctx:
                     if (old := calls / (digest(key, legacy)[:24] + ".json")).exists():
                         file = old
                         break
-            if not file.exists() and flow.config.attach_by_key:
-                if (old := self._record_by_key(calls, key, work.kind)) is not None:
-                    logger.warning(
-                        "%s/%s: attached by key (attach_by_key)", self.unit.id, name
-                    )
-                    file = old
+            if (
+                not file.exists()
+                and flow.config.attach_by_key
+                and (old := self._record_by_key(calls, key, work.kind)) is not None
+            ):
+                logger.warning(
+                    "%s/%s: attached by key (attach_by_key)", self.unit.id, name
+                )
+                file = old
         if file is not None and file.exists():
             record = Record.model_validate_json(file.read_text())
             try:
@@ -534,9 +537,12 @@ class Ctx:
                 record = Record.model_validate_json(file.read_text())
             except ValueError:
                 continue
-            if record.key == key and record.kind == kind:
-                if found is None or record.finished_at > found[0]:
-                    found = (record.finished_at, file)
+            if (
+                record.key == key
+                and record.kind == kind
+                and (found is None or record.finished_at > found[0])
+            ):
+                found = (record.finished_at, file)
         return found[1] if found else None
 
     @asynccontextmanager
