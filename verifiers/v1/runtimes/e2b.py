@@ -20,6 +20,7 @@ from pydantic import model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    SWEEPERS,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -134,6 +135,39 @@ def _is_address(selector: str) -> bool:
 def _expanded(selector: str) -> list[str]:
     # Shared verifiers semantics make *.example.com match the apex too; E2B does not.
     return [selector, selector[2:]] if selector.startswith("*.") else [selector]
+
+
+RUN_KEY = "verifiers-run"
+"""Sandbox metadata key carrying the run's label (`set_base_sandbox_labels`): what
+`sweep_sandboxes` kills by."""
+
+
+def _run_metadata() -> dict[str, str]:
+    from verifiers.v1.runtimes.prime import BASE_LABELS
+
+    return {RUN_KEY: BASE_LABELS[0]} if BASE_LABELS else {}
+
+
+async def sweep_sandboxes(label: str) -> int:
+    """Kill every running sandbox stamped with `label`; the count. A run calls this at a
+    resume so the boxes a crashed launch left stop costing. Without a key there is nothing
+    of ours to sweep."""
+    if not os.environ.get("E2B_API_KEY"):
+        return 0
+    e2b = _sdk()
+    from e2b.sandbox.sandbox_api import SandboxQuery
+
+    killed = 0
+    paginator = e2b.AsyncSandbox.list(query=SandboxQuery(metadata={RUN_KEY: label}))
+    while paginator.has_next:
+        for info in await paginator.next_items():
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(e2b.Sandbox.kill, info.sandbox_id)
+                killed += 1
+    return killed
+
+
+SWEEPERS.append(sweep_sandboxes)
 
 
 class E2BConfig(NetworkPolicyConfig):
@@ -385,7 +419,7 @@ class E2BRuntime(Runtime):
             template,
             timeout=self.config.timeout,
             envs={key: value for key, value in self.env.items() if key != "PATH"},
-            metadata={"verifiers-runtime": self.name},
+            metadata={"verifiers-runtime": self.name, **_run_metadata()},
         )
         self.info.id = self._sandbox.sandbox_id
 
