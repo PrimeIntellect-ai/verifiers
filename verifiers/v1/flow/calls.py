@@ -69,6 +69,9 @@ class Result(Generic[T]):
     type: str | None = None
     status_code: int | None = None
     trace_id: str | None = None
+    attached: bool = False
+    """The value came from an earlier run's record rather than from running the work now: what
+    a stage checks when a later call assumed this one's side effects in a box."""
 
 
 class Record(BaseModel):

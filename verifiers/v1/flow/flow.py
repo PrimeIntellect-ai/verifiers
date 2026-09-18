@@ -371,7 +371,12 @@ class Ctx:
         if file is not None and file.exists():
             record = Record.model_validate_json(file.read_text())
             try:
-                return Result(True, work.load(self, record), trace_id=record.trace_id)
+                return Result(
+                    True,
+                    work.load(self, record),
+                    trace_id=record.trace_id,
+                    attached=True,
+                )
             except LookupError as exc:
                 logger.warning("%s/%s: %s; running again", self.unit.id, name, exc)
         if flow.draining:
