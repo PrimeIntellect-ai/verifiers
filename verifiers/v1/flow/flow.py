@@ -342,16 +342,16 @@ class Flow:
         return self._draining.is_set()
 
     async def sweep(self) -> int:
-        """Kill what an earlier launch left behind, by the flow's label; the count."""
-        from verifiers.v1.runtimes.docker import sweep_containers
-        from verifiers.v1.runtimes.prime import sweep_sandboxes
+        """Kill what an earlier launch left behind, by the flow's label; the count. Every
+        runtime module registers its own sweeper (`SWEEPERS`) when the package imports."""
+        import verifiers.v1.runtimes  # noqa: F401 - registers the sweepers
+        from verifiers.v1.runtimes.base import SWEEPERS
         from verifiers.v1.runtimes.subprocess import sweep_subprocesses
 
-        return (
-            sweep_subprocesses(self.label)
-            + await sweep_containers(self.label)
-            + await sweep_sandboxes([self.label])
-        )
+        swept = sweep_subprocesses(self.label)
+        for sweeper in SWEEPERS:
+            swept += await sweeper(self.label)
+        return swept
 
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:

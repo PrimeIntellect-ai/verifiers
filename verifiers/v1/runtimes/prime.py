@@ -26,6 +26,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
+    SWEEPERS,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -493,3 +494,10 @@ async def sweep_sandboxes(labels: list[str]) -> int:
             response.failed[:3],
         )
     return len(response.succeeded)
+
+
+async def _sweep(label: str) -> int:
+    return await sweep_sandboxes([label])
+
+
+SWEEPERS.append(_sweep)

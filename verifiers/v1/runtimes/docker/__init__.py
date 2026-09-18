@@ -21,6 +21,7 @@ from pydantic import Field
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    SWEEPERS,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -128,6 +129,9 @@ async def sweep_containers(label: str) -> int:
     if ids:
         await docker("rm", "-f", *ids)
     return len(ids)
+
+
+SWEEPERS.append(sweep_containers)
 
 
 async def docker(*args: str) -> ProgramResult:
