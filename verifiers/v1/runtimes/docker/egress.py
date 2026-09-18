@@ -497,7 +497,9 @@ class EgressProxy:
                                         callback.host_alias,
                                     ).encode("latin-1")
                             headers.append((name, value))
-                        response = replace(response, headers=headers)
+                        response = replace(
+                            response, headers=headers, http_version=b"1.1"
+                        )
                         response_started = True
                         writer.write(client.send(response))
                         await _drain(writer)
@@ -508,6 +510,18 @@ class EgressProxy:
                             return
                         if isinstance(response, h11.Response):
                             break
+                    # h11 may change framing, so serialize the body through it too.
+                    while True:
+                        event = upstream.next_event()
+                        if event is h11.NEED_DATA:
+                            upstream.receive_data(
+                                await _read(upstream_reader, read_timeout)
+                            )
+                            continue
+                        writer.write(client.send(event))
+                        await _drain(writer)
+                        if isinstance(event, h11.EndOfMessage):
+                            return
                 while chunk := await _read(upstream_reader, read_timeout):
                     response_started = True
                     writer.write(chunk)
