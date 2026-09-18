@@ -8,9 +8,14 @@ from openai import AsyncOpenAI
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 
 # No read timeout: agentic completions are slow and the rollout timeout is the real
-# backstop. The connect bound stays so an unreachable endpoint still fails fast.
-DEFAULT_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=None, pool=None)
-DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
+# backstop. Large training waves can legitimately fill a router's TCP accept queue, so
+# leave enough time and reusable connections for the configured rollout concurrency.
+DEFAULT_TIMEOUT = httpx.Timeout(connect=60.0, read=None, write=None, pool=None)
+DEFAULT_LIMITS = httpx.Limits(
+    max_connections=2048,
+    max_keepalive_connections=2048,
+    keepalive_expiry=300.0,
+)
 MAX_RETRIES = 0
 """No client-side retries: failures surface to the harness SDK and the trace instead of
 being silently reattempted."""
@@ -26,7 +31,11 @@ def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
         default_headers=config.headers or None,
         timeout=DEFAULT_TIMEOUT,
         max_retries=MAX_RETRIES,
-        http_client=httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS),
+        http_client=httpx.AsyncClient(
+            timeout=DEFAULT_TIMEOUT,
+            limits=DEFAULT_LIMITS,
+            trust_env=False,
+        ),
     )
 
 
