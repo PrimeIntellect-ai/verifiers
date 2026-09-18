@@ -17,6 +17,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
 from verifiers.v1.cli.output import (
+    ARCHIVE_DIR,
     append_episode,
     output_path,
     save_config,
@@ -94,6 +95,9 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         selected = selected.head(config.num_tasks)
     tasks = list(selected)
     out = output_path(config)
+    if env is not None:
+        env.archive_dir = out / ARCHIVE_DIR
+        env.archive_config = config.archive
     # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
     plan = [(task, config.num_rollouts) for task in tasks]
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.

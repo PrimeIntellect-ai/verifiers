@@ -157,6 +157,7 @@ from verifiers.v1.utils.git import (
 from verifiers.v1.utils.git import (
     resolve_head as resolve_head,
 )
+from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.loaders import (
     default_harness_id,
     env_config_type,
@@ -358,6 +359,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
+    "GradingCollect",
     "collect",
     "restore",
     # scoring

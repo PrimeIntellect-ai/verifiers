@@ -354,7 +354,9 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
     """Judge only collected artifacts in a fresh box with the solver's policy."""
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task, collect_artifacts=True)
+        solution = await agents.solver.run(
+            task, grading_collect=vf.GradingCollect.STRICT
+        )
         if not solution.ok:
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(

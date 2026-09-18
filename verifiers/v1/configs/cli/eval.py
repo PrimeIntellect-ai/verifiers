@@ -7,6 +7,7 @@ from pydantic import AliasChoices, Field, PrivateAttr, SerializeAsAny, model_val
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
@@ -126,6 +127,10 @@ class EvalConfig(BaseConfig):
     )
     """Directory that groups related runs. The run itself (`configs/eval.json` +
     `traces.jsonl`) writes to `output_dir / run.dir`."""
+    archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
+    """Host-side sandbox dump policy. Default is `/logs/artifacts` plus the task's
+    grading artifacts; `extra` adds to that set, `max_mb` caps the dump (256 MiB).
+    Written under `output_dir / run.dir / artifacts / <episode.id> / <trace.id>/`."""
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
