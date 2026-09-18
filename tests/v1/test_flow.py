@@ -453,3 +453,35 @@ async def test_agent_calls_survive_a_budget_change_and_find_older_records(tmp_pa
     (legacy,) = work_.legacy_contents(longer)
     assert legacy != work_.content(longer)
     assert legacy[-1]["timeout"]["rollout"] == 7200
+
+
+async def test_attach_by_key_reuses_a_record_written_under_another_identity(tmp_path):
+    from verifiers.v1.flow.calls import Record
+
+    calls.clear()
+    failing.clear()
+    cfg = Cfg(attach_by_key=True)
+    async with Flow(tmp_path, cfg, pipeline) as flow:
+        unit = Unit(tmp_path / "campaign")
+        ctx = Ctx(flow, unit, "s")
+        stale = tmp_path / "calls" / unit.id / ("0" * 24 + ".json")
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text(
+            Record(
+                key="build",
+                unit=unit.id,
+                stage="s",
+                kind="fn",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at="2026-01-01T00:00:01+00:00",
+                payload="from-before",
+            ).model_dump_json()
+        )
+        assert await ctx.call(fn(work, "build-x"), key="build") == "from-before"
+        assert calls == []  # attached by key; nothing ran
+    async with Flow(tmp_path, Cfg(), pipeline) as flow:
+        ctx = Ctx(flow, Unit(tmp_path / "campaign"), "s")
+        assert await ctx.call(fn(work, "build-x"), key="build") == "build-x"
+        assert calls == [
+            "build-x"
+        ]  # the switch off: an unmatched identity runs the work

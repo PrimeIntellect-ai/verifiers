@@ -455,6 +455,12 @@ class Ctx:
                     if (old := calls / (digest(key, legacy)[:24] + ".json")).exists():
                         file = old
                         break
+            if not file.exists() and flow.config.attach_by_key:
+                if (old := self._record_by_key(calls, key, work.kind)) is not None:
+                    logger.warning(
+                        "%s/%s: attached by key (attach_by_key)", self.unit.id, name
+                    )
+                    file = old
         if file is not None and file.exists():
             record = Record.model_validate_json(file.read_text())
             try:
@@ -518,6 +524,20 @@ class Ctx:
                 tmp.write_text(record.model_dump_json(indent=1))
                 os.replace(tmp, file)
             return Result(True, value, trace_id=fields.get("trace_id"))
+
+    @staticmethod
+    def _record_by_key(calls: Path, key: str, kind: str) -> Path | None:
+        """The unit's newest record with this key and kind, whatever identity wrote it."""
+        found: tuple[str, Path] | None = None
+        for file in calls.glob("*.json"):
+            try:
+                record = Record.model_validate_json(file.read_text())
+            except ValueError:
+                continue
+            if record.key == key and record.kind == kind:
+                if found is None or record.finished_at > found[0]:
+                    found = (record.finished_at, file)
+        return found[1] if found else None
 
     @asynccontextmanager
     async def runtime(
