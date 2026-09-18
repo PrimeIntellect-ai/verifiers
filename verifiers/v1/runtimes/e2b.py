@@ -375,13 +375,17 @@ class E2BRuntime(Runtime):
     async def _resolve_template(self) -> str:
         if self.config.image is None:
             return self.config.template or _DEFAULT_TEMPLATE
+        e2b = _sdk()
+        # A task's image may name a template built ahead of time (a world image built for
+        # E2B): use it as is rather than building a template from a registry image so named.
+        if await e2b.AsyncTemplate.alias_exists(self.config.image):
+            return self.config.image
         spec = json.dumps(
             {"version": 1, "image": self.config.image},
             sort_keys=True,
             separators=(",", ":"),
         )
         name = f"vf-{hashlib.sha256(spec.encode()).hexdigest()[:20]}"
-        e2b = _sdk()
         if await e2b.AsyncTemplate.alias_exists(name):
             return name
         logger.warning(

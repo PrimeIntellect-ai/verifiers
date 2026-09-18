@@ -297,6 +297,12 @@ async def test_image_build_is_deterministic_and_cached(fake_e2b):
     assert kwargs == {}
     assert await second._resolve_template() == name
     assert len(FakeAsyncTemplate.builds) == 1
+    FakeAsyncTemplate.aliases.add(
+        "worlds/investing:7"
+    )  # a template built ahead of time
+    prebuilt = E2BRuntime(E2BConfig(image="worlds/investing:7"))
+    assert await prebuilt._resolve_template() == "worlds/investing:7"
+    assert len(FakeAsyncTemplate.builds) == 1
 
 
 @pytest.mark.asyncio
