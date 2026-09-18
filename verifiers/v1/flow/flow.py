@@ -133,6 +133,7 @@ class Flow:
         self.label = f"flow-{root.name}-{digest(str(root.resolve()))[:12]}"[:60]
         self.interception: Interception | None = None
         self._draining = asyncio.Event()
+        self._dirty: set[str] = set()
         self._lock: IO[str] | None = None
         self._campaign_lock = asyncio.Lock()
 
@@ -239,7 +240,8 @@ class Flow:
     async def _launch(self, running: dict[str, asyncio.Task[None]]) -> bool:
         """Start what may run: the campaign's stage, alone, when it is ready; else every
         admitted ready task up to the `units` pool. Whether anything was started."""
-        self.campaign.check_clean()
+        if not self._clean(self.campaign):
+            return False
         if self.campaign.state().get("status") == "ready":
             if running:
                 return False  # the campaign runs alone: let the tasks in flight finish
@@ -254,14 +256,30 @@ class Flow:
                 continue
             if self.pipeline.admit is not None and not self.pipeline.admit(unit, self):
                 continue
-            unit.check_clean()
+            if not self._clean(unit):
+                continue
             running[unit.id] = asyncio.create_task(self._stage(unit))
             free -= 1
             started += 1
         return started > 0
 
+    def _clean(self, unit: Unit) -> bool:
+        """Whether the unit's repository is clean enough to schedule. A dirty one (a crash between
+        writing files and committing) is left alone with one `dirty` line for the operator to
+        repair, so it parks like a hold instead of taking the run down."""
+        try:
+            unit.check_clean()
+        except RuntimeError as exc:
+            if unit.id not in self._dirty:
+                self._dirty.add(unit.id)
+                self.event("dirty", unit=unit.id, reason=str(exc))
+            return False
+        self._dirty.discard(unit.id)
+        return True
+
     async def _stage(self, unit: Unit) -> None:
-        unit.check_clean()
+        if not self._clean(unit):
+            return
         state = unit.state()
         if state.get("status") != "ready" or self.draining:
             return  # steering may have parked a task after admission

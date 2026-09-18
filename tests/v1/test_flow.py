@@ -206,10 +206,18 @@ async def test_failed_publication_never_schedules_worktree_state(tmp_path, monke
                 flow.campaign.apply(Transition.to("ghost", "not committed"))
         assert flow.campaign.read_json("state.json")["stage"] == "ghost"
         assert flow.campaign.state()["stage"] == "plan"
-        with pytest.raises(RuntimeError, match="dirty or incomplete publication"):
-            await flow.run()
+        await (
+            flow.run()
+        )  # the dirty unit parks with a `dirty` line; the run does not die
         with pytest.raises(RuntimeError, match="dirty or incomplete publication"):
             flow.campaign.steer(status="ready")
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "transitions.jsonl").read_text().splitlines()
+    ]
+    assert [e["type"] for e in events] == ["dirty"] and "dirty or incomplete" in events[
+        0
+    ]["reason"]
     assert not called
 
 

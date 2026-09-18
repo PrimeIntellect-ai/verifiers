@@ -73,7 +73,12 @@ def status(root: Path) -> int:
     width = max(len(u.id) for u in units)
     for unit in units:
         st = unit.state()
-        line = f"{unit.id:{width}}  {st.get('stage', '?'):12} {st.get('status', '?'):9} {st.get('reason', '')}"
+        try:
+            unit.check_clean()
+            dirty = ""
+        except RuntimeError:
+            dirty = "DIRTY "
+        line = f"{unit.id:{width}}  {st.get('stage', '?'):12} {dirty}{st.get('status', '?'):9} {st.get('reason', '')}"
         print(line[:200])
     live = (
         sorted(p.stem for p in (root / "live").glob("*.json"))
