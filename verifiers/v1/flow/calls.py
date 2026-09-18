@@ -75,6 +75,8 @@ class Record(BaseModel):
     """A durable call's record, `calls/<unit>/<digest>.json`."""
 
     key: str
+    unit: str
+    stage: str
     kind: Kind
     payload: Any = None
     trace_id: str | None = None

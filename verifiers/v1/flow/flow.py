@@ -411,6 +411,8 @@ class Ctx:
                 file.parent.mkdir(parents=True, exist_ok=True)
                 record = Record(
                     key=name,
+                    unit=self.unit.id,
+                    stage=self.stage,
                     kind=work.kind,
                     started_at=started,
                     finished_at=now(),
