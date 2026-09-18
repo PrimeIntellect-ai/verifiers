@@ -435,3 +435,21 @@ async def test_flywheel_caches_build_and_lint_as_one_operation(tmp_path, monkeyp
         assert (
             len(boxes) == len(built) == 2
         )  # retry rebuilds; cached success needs no box
+
+
+async def test_agent_calls_survive_a_budget_change_and_find_older_records(tmp_path):
+    task = vf.Task(vf.TaskData(prompt="hi"))
+    work_ = agent("alpha", task)
+
+    def ctx(cfg: FlowConfig) -> Ctx:
+        return Ctx(Flow(tmp_path, cfg, pipeline), Unit(tmp_path / "x"), "s")
+
+    base = ctx(Cfg())
+    longer = ctx(Cfg(alpha=seat(timeout=vf.agent.TimeoutConfig(rollout=7200))))
+    retried = ctx(Cfg(alpha=seat(retries=vf.RetryConfig(max_retries=3))))
+    assert work_.content(longer) == work_.content(base) == work_.content(retried)
+    assert work_.content(ctx(Cfg(alpha=seat(model="alpha/2")))) != work_.content(base)
+    # The identity an older launch used carried the whole seat; it is still looked up.
+    (legacy,) = work_.legacy_contents(longer)
+    assert legacy != work_.content(longer)
+    assert legacy[-1]["timeout"]["rollout"] == 7200

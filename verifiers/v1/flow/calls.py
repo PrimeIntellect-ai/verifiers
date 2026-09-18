@@ -95,6 +95,11 @@ class Work(ABC, Generic[T]):
     def content(self, ctx: Ctx) -> list[Any]:
         """What keys the call besides its key: the work's inputs, JSON-stable."""
 
+    def legacy_contents(self, ctx: Ctx) -> list[list[Any]]:
+        """Earlier shapes of `content`, for records an older launch wrote: a lookup that misses
+        under the current identity tries these before running the work again."""
+        return []
+
     @abstractmethod
     async def execute(self, ctx: Ctx, name: str) -> T: ...
 
@@ -124,10 +129,19 @@ class AgentWork(Work[Trace]):
     runtime: Runtime | None = None
     """A live box to run in; None provisions one for the call."""
 
+    BUDGETS: ClassVar[frozenset[str]] = frozenset({"timeout", "retries"})
+    """Seat fields that bound a call without changing what it asks: raising a budget must not
+    invalidate the work that landed under the smaller one."""
+
     def content(self, ctx: Ctx) -> list[Any]:
         # The resolved seat keys the call too: a model change reruns that seat's calls only.
-        seat = ctx.seat(self.seat).model_dump(mode="json")
+        seat = ctx.seat(self.seat).model_dump(mode="json", exclude=set(self.BUDGETS))
         return ["agent", self.seat, type(self.task).__name__, self.task.data, seat]
+
+    def legacy_contents(self, ctx: Ctx) -> list[list[Any]]:
+        # Records written while budgets were part of the identity.
+        seat = ctx.seat(self.seat).model_dump(mode="json")
+        return [["agent", self.seat, type(self.task).__name__, self.task.data, seat]]
 
     async def execute(self, ctx: Ctx, name: str) -> Trace:
         flow = ctx.flow

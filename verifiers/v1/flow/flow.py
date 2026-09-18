@@ -445,14 +445,16 @@ class Ctx:
     ) -> Result[T]:
         flow = self.flow
         name = key or work.kind
-        file = (
-            flow.root
-            / "calls"
-            / self.unit.id
-            / (digest(key, work.content(self))[:24] + ".json")
-            if key
-            else None
-        )
+        file = None
+        if key:
+            calls = flow.root / "calls" / self.unit.id
+            file = calls / (digest(key, work.content(self))[:24] + ".json")
+            if not file.exists():
+                # An earlier launch may have recorded this call under an older identity.
+                for legacy in work.legacy_contents(self):
+                    if (old := calls / (digest(key, legacy)[:24] + ".json")).exists():
+                        file = old
+                        break
         if file is not None and file.exists():
             record = Record.model_validate_json(file.read_text())
             try:
