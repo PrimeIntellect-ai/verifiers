@@ -13,8 +13,21 @@ the unit for an operator.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any, ClassVar
+
 import verifiers.v1 as vf
-from verifiers.v1.flow import Ctx, FlowConfig, Pipeline, Transition, agent, command, fn
+from verifiers.v1.flow import (
+    Ctx,
+    FlowConfig,
+    Pipeline,
+    Record,
+    Transition,
+    Work,
+    agent,
+    command,
+    fn,
+)
 
 
 class Cfg(FlowConfig):
@@ -53,19 +66,41 @@ async def plan(ctx: Ctx) -> Transition:
     return Transition.wait("planned")
 
 
+@dataclass(frozen=True)
+class BuildAndLint(Work[dict[str, Any]]):
+    """Cache the complete box-dependent operation, never a trace without its files."""
+
+    kind: ClassVar = "fn"
+    brief: str
+
+    def content(self, ctx: Ctx) -> list[Any]:
+        return [
+            "build-and-lint",
+            self.brief,
+            ctx.seat("builder").model_dump(mode="json"),
+        ]
+
+    async def execute(self, ctx: Ctx, name: str) -> dict[str, Any]:
+        async with ctx.runtime("builder") as box:
+            built = await ctx.call(agent("builder", task(self.brief), runtime=box))
+            lint = await ctx.call(command(["ruff", "check", "."], runtime=box))
+        return {"reply": built.last_reply, "lint": lint.exit_code}
+
+    def dump(self, ctx: Ctx, value: dict[str, Any]) -> dict[str, Any]:
+        return {"payload": value}
+
+    def load(self, ctx: Ctx, record: Record) -> dict[str, Any]:
+        return record.payload
+
+
 async def build(ctx: Ctx) -> Transition:
     state = ctx.unit.state()
-    async with ctx.runtime("builder") as box:
-        built = await ctx.call(
-            agent("builder", task(state["brief"]), runtime=box),
-            key=f"build/{state['visits']}",
-        )
-        lint = await ctx.call(command(["ruff", "check", "."], runtime=box))
+    built = await ctx.call(BuildAndLint(state["brief"]), key=f"build/{state['visits']}")
     review = await ctx.call(
-        agent("reviewer", task(f"Review:\n{built.last_reply}\nlint: {lint.exit_code}")),
+        agent("reviewer", task(f"Review:\n{built['reply']}\nlint: {built['lint']}")),
         key=f"review/{state['visits']}",
     )
-    if lint.exit_code == 0 and decision(review) == "accept":
+    if built["lint"] == 0 and decision(review) == "accept":
         return Transition.to("solve", "accepted", review.last_reply or "")
     if state["visits"] >= 2:
         return Transition.end("rejected", "the folder never passed review")
@@ -78,10 +113,10 @@ async def build(ctx: Ctx) -> Transition:
 
 
 async def solve(ctx: Ctx) -> Transition:
-    head = ctx.unit.head()
+    version = ctx.unit.state()["visits"]
     attempts = await ctx.spread(
         [agent("solver", task(ctx.unit.state()["brief"])) for _ in range(4)],
-        key=lambda i: f"solve/{head}/{i}",
+        key=lambda i: f"solve/{version}/{i}",
     )
     answers = [r.value for r in attempts if r.ok and r.value is not None]
     if len(answers) < 3:
@@ -90,9 +125,9 @@ async def solve(ctx: Ctx) -> Transition:
         )
     judged = await ctx.call(
         agent("judge", task("\n".join(a.last_reply or "" for a in answers))),
-        key=f"judge/{head}",
+        key=f"judge/{version}",
     )
-    bank = await ctx.call(fn(len, judged.last_reply or ""), key=f"bank/{head}")
+    bank = await ctx.call(fn(len, judged.last_reply or ""), key=f"bank/{version}")
     return Transition.end(
         "banked", f"{bank} chars", files={"judgment.md": judged.last_reply or ""}
     )

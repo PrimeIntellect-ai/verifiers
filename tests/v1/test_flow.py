@@ -1,6 +1,11 @@
 """The flow core: units and transitions, durable calls, spreads, holds, the campaign, drain."""
 
+import asyncio
+import importlib
 import json
+import subprocess
+
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.flow import (
@@ -13,6 +18,7 @@ from verifiers.v1.flow import (
     Transition,
     agent,
     fn,
+    succeeded,
 )
 from verifiers.v1.flow.unit import Unit
 
@@ -44,9 +50,7 @@ async def plan(ctx: Ctx) -> Transition:
 
 
 async def build(ctx: Ctx) -> Transition:
-    value = await ctx.call(
-        fn(work, f"build-{ctx.unit.id}"), key=f"build/{ctx.unit.head()}"
-    )
+    value = await ctx.call(fn(work, f"build-{ctx.unit.id}"), key="build")
     return Transition.to(
         "check", "built", value, files={"out.txt": value}, state={"credits": 0}
     )
@@ -116,7 +120,7 @@ async def test_a_partial_spread_holds_and_a_release_reruns_only_what_failed(tmp_
     t1 = Unit(tmp_path / "tasks" / "t1")
     assert t1.state()["status"] == "held" and "1 items failed" in t1.state()["reason"]
     failing.clear()
-    t1.commit("release", state={"status": "ready"})  # the operator's commit
+    t1.steer(status="ready")
     n = len(calls)
     assert await run(tmp_path) == {"terminal": 2}
     assert calls[n:] == ["item-t1-1"]  # items 0 and 2 attached; only the failed one ran
@@ -166,3 +170,260 @@ async def test_drain_leaves_units_ready_and_a_resume_finishes(tmp_path):
     kinds = [json.loads(line)["type"] for line in lines]
     assert kinds[:2] == ["started", "transition"] and {"drain", "stopped"} <= set(kinds)
     assert await run(tmp_path) == {"terminal": 2}
+
+
+def test_unit_reads_are_lossless_and_paths_are_contained(tmp_path):
+    text = "  leading\r\ntrailing  \n\n"
+    unit = Unit.create(tmp_path / "unit", {"stage": "build"}, {"out.txt": text})
+    assert unit.read("out.txt") == unit.read("out.txt", unit.head()) == text
+    for rel in ("../escape", ".git/config", "state.json"):
+        with pytest.raises(ValueError, match="unsafe|reserved"):
+            unit.commit("bad", files={rel: "bad"})
+    assert unit.state() == {"status": "ready", "stage": "build"}
+
+
+async def test_failed_publication_never_schedules_worktree_state(tmp_path, monkeypatch):
+    module = importlib.import_module("verifiers.v1.flow.unit")
+    called = []
+
+    async def stage(ctx):
+        called.append(ctx.stage)
+        return Transition.end("done")
+
+    async with Flow(
+        tmp_path, Cfg(), Pipeline({"plan": stage, "ghost": stage}, "plan")
+    ) as flow:
+        real_git = module.git
+
+        def fail_commit(path, *args, **kw):
+            if args[0] == "commit":
+                raise subprocess.CalledProcessError(1, ["git", "commit"])
+            return real_git(path, *args, **kw)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "git", fail_commit)
+            with pytest.raises(subprocess.CalledProcessError):
+                flow.campaign.apply(Transition.to("ghost", "not committed"))
+        assert flow.campaign.read_json("state.json")["stage"] == "ghost"
+        assert flow.campaign.state()["stage"] == "plan"
+        with pytest.raises(RuntimeError, match="dirty or incomplete publication"):
+            await flow.run()
+        with pytest.raises(RuntimeError, match="dirty or incomplete publication"):
+            flow.campaign.steer(status="ready")
+    assert not called
+
+
+async def test_live_hold_and_route_keep_output_notes_and_application_commits(tmp_path):
+    started, finish = asyncio.Event(), asyncio.Event()
+    active = set()
+    next_stages = []
+
+    async def planning(ctx):
+        for name in ("held", "routed"):
+            ctx.flow.create_task(name, {"stage": "working"})
+        return Transition.wait("planned")
+
+    async def working(ctx):
+        active.add(ctx.unit.id)
+        if len(active) == 2:
+            started.set()
+        await finish.wait()
+        # Application commits during a stage are legitimate, not stale HEAD conflicts.
+        ctx.unit.commit("artifact", files={"artifact.txt": "artifact"})
+        return Transition.to(
+            "next", "built", files={"out.txt": "saved"}, state={"notes": []}
+        )
+
+    async def done(ctx):
+        next_stages.append((ctx.unit.id, ctx.stage))
+        return Transition.end("done")
+
+    pipeline = Pipeline(
+        {"plan": planning, "working": working, "next": done, "alternate": done}, "plan"
+    )
+    async with Flow(tmp_path, Cfg(), pipeline) as flow:
+        running = asyncio.create_task(flow.run())
+        await started.wait()
+        held, routed = flow.unit("held"), flow.unit("routed")
+        held.steer(status="held", reason="inspect output", note="keep this note")
+        routed.steer(stage="alternate", status="ready", note="route note")
+        routed.steer(note="a later note does not erase the route")
+        finish.set()
+        assert await running == {"held": 1, "terminal": 1}
+        assert held.state()["stage"] == "next"
+        assert held.state()["reason"] == "inspect output"
+        assert held.state()["outcome"] == "built"
+        assert held.state()["notes"] == ["keep this note"]
+        assert held.read("out.txt", "HEAD") == "saved"
+        assert held.read("artifact.txt", "HEAD") == "artifact"
+        assert next_stages == [("routed", "alternate")]
+        assert len(routed.state()["notes"]) == 2
+        assert not succeeded(flow.campaign, flow.tasks())
+        await flow._stage(held)  # a hold after admission but before start still wins
+        assert held.state()["status"] == "held"
+        held.steer(status="ready")
+        assert await flow.run() == {"terminal": 2}
+        assert succeeded(flow.campaign, flow.tasks())
+
+
+async def test_spread_drain_settles_admitted_children_and_does_not_retry(tmp_path):
+    admitted, drained, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    ran = []
+
+    async def slow():
+        admitted.set()
+        await finish.wait()
+        ran.append("slow")
+        return "saved"
+
+    async def stage(ctx):
+        async def stop():
+            await admitted.wait()
+            ctx.flow.drain()
+            drained.set()
+            return "drained"
+
+        await ctx.spread(
+            [fn(slow), fn(stop), fn(work, "not-admitted")], key=lambda i: str(i)
+        )
+        return Transition.end("unreachable")
+
+    calls.clear()
+    async with Flow(tmp_path, Cfg(), Pipeline({"start": stage}, "start")) as flow:
+        running = asyncio.create_task(flow.run())
+        await drained.wait()
+        assert not running.done()
+        finish.set()
+        await running
+        assert ran == ["slow"] and "not-admitted" not in calls
+        assert len(list((tmp_path / "calls" / CAMPAIGN).glob("*.json"))) == 2
+        assert flow.campaign.state()["status"] == "ready"
+
+    retries = []
+
+    async def retrying(ctx):
+        async def fail():
+            retries.append(1)
+            ctx.flow.drain()
+            raise ValueError("failed while draining")
+
+        await ctx.call(fn(fail), retries=3)
+        return Transition.end("unreachable")
+
+    async with Flow(tmp_path, Cfg(), Pipeline({"start": retrying}, "start")) as flow:
+        await flow.run()
+        assert retries == [1]
+        assert flow.campaign.state()["status"] == "ready"
+
+
+async def test_cancel_joins_stages_and_spread_before_serving_exits(tmp_path):
+    from contextlib import asynccontextmanager
+
+    entered, settled = asyncio.Event(), []
+
+    async def child(index):
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            settled.append(index)
+
+    async def stage(ctx):
+        await ctx.spread([fn(child, 0), fn(child, 1)])
+        return Transition.end("unreachable")
+
+    async def planning(ctx):
+        ctx.flow.create_task("child", {"stage": "work"})
+        return Transition.wait("planned")
+
+    class LocalFlow(Flow):
+        @asynccontextmanager
+        async def _serving(self):
+            try:
+                yield
+            finally:
+                assert sorted(settled) == [0, 1]
+
+    async with LocalFlow(
+        tmp_path, Cfg(), Pipeline({"plan": planning, "work": stage}, "plan")
+    ) as flow:
+        running = asyncio.create_task(flow.run())
+        await entered.wait()
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        assert sorted(settled) == [0, 1]
+
+
+async def test_failed_startup_releases_lock_and_held_campaign_is_not_success(
+    tmp_path, monkeypatch
+):
+    from verifiers.v1.flow.__main__ import status
+
+    module = importlib.import_module("verifiers.v1.flow.flow")
+    flow = Flow(tmp_path, Cfg(), pipeline)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            module,
+            "trim_torn_tail",
+            lambda _: (_ for _ in ()).throw(ValueError("startup")),
+        )
+        with pytest.raises(ValueError, match="startup"):
+            await flow.__aenter__()
+    assert flow._lock is None
+    async with Flow(tmp_path, Cfg(), pipeline) as resumed:
+        resumed.campaign.steer(status="held")
+        assert await resumed.run() == {}
+        assert not succeeded(resumed.campaign, resumed.tasks())
+        assert status(tmp_path) == 1
+        with pytest.raises(ValueError, match="task id"):
+            resumed.create_task("../outside", {"stage": "build"})
+
+
+async def test_flywheel_caches_build_and_lint_as_one_operation(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from examples.flow.flywheel import BuildAndLint
+    from verifiers.v1.flow import AgentWork, CallFailed
+    from verifiers.v1.flow.calls import CommandWork
+    from verifiers.v1.runtimes import ProgramResult
+
+    class BuildConfig(Cfg):
+        builder: vf.AgentConfig = seat()
+
+    boxes = []
+    built = []
+
+    @asynccontextmanager
+    async def runtime(ctx, seat, task=None):
+        box = {}
+        boxes.append(box)
+        yield box
+
+    async def build(work, ctx, name):
+        work.runtime["code"] = "fresh source"
+        built.append(work.runtime)
+        return SimpleNamespace(id="builder-trace", last_reply="built")
+
+    async def lint(work, ctx, name):
+        assert work.runtime["code"] == "fresh source"
+        if len(boxes) == 1:
+            raise ValueError("lint transport failed")
+        return ProgramResult(exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(Ctx, "runtime", runtime)
+    monkeypatch.setattr(AgentWork, "execute", build)
+    monkeypatch.setattr(CommandWork, "execute", lint)
+    async with Flow(tmp_path, BuildConfig(), pipeline) as flow:
+        ctx = Ctx(flow, flow.campaign, "build")
+        with pytest.raises(CallFailed, match="lint transport failed"):
+            await ctx.call(BuildAndLint("brief"), key="build/0")
+        value = await ctx.call(BuildAndLint("brief"), key="build/0")
+        assert value == {"reply": "built", "lint": 0}
+        flow.campaign.steer(status="held", note="ordinary operator commit")
+        flow.campaign.steer(status="ready")
+        assert await ctx.call(BuildAndLint("brief"), key="build/0") == value
+        assert (
+            len(boxes) == len(built) == 2
+        )  # retry rebuilds; cached success needs no box

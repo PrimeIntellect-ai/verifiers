@@ -32,6 +32,8 @@ from verifiers.v1.flow.flow import (
     Flow,
     Pipeline,
     drain_on_interrupt,
+    succeeded,
+    task_path,
 )
 from verifiers.v1.flow.unit import Unit
 
@@ -39,7 +41,7 @@ USAGE = __doc__ or ""
 
 
 def _unit(root: Path, name: str) -> Unit:
-    unit = Unit(root / CAMPAIGN) if name == CAMPAIGN else Unit(root / TASKS / name)
+    unit = Unit(root / CAMPAIGN) if name == CAMPAIGN else Unit(task_path(root, name))
     if not (unit.path / ".git").exists():
         raise SystemExit(f"no unit {name!r} under {root}")
     return unit
@@ -49,9 +51,7 @@ def _steer(root: Path, name: str, message: str, state: dict, note: str | None) -
     """An operator's commit on a unit, and a `steer` line in the transitions file so the record
     (and a dashboard) shows who moved the unit and why."""
     unit = _unit(root, name)
-    if note:
-        state["notes"] = [*unit.state().get("notes", []), note]
-    sha = unit.commit(message + (f": {note}" if note else ""), state=state)
+    sha = unit.steer(**state, note=note)
     line = {
         "type": "steer",
         "at": now(),
@@ -82,7 +82,7 @@ def status(root: Path) -> int:
     )
     if live:
         print("live:", ", ".join(live))
-    return 0 if all(u.state().get("status") == "terminal" for u in units[1:]) else 1
+    return 0 if succeeded(units[0], units[1:]) else 1
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -113,8 +113,9 @@ def main(argv: list[str] | None = None) -> None:
                 drain_on_interrupt(flow)
                 await flow.sweep()
                 counts = await flow.run()
+                success = not flow.draining and succeeded(flow.campaign, flow.tasks())
             print(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no tasks")
-            return 0 if set(counts) <= {"terminal"} else 1
+            return 0 if success else 1
 
         sys.exit(asyncio.run(go()))
     root = Path(rest[0])

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel, TypeAdapter
 from pydantic.errors import PydanticSchemaGenerationError
@@ -132,12 +133,17 @@ class AgentWork(Work[Trace]):
         flow = ctx.flow
         agent = flow.agent(self.seat)
         held = () if self.runtime is not None else ("runtimes",)
-        async with flow.pools.hold(held), agent:
-            trace = await self.rollout(
-                agent, on_trace=flow.live.watch(ctx.unit.id, name)
-            )
-        flow.live.drop(ctx.unit.id, name)
-        await flow.traces.append(trace)
+        execution = f"{name}/{uuid4().hex}"
+        try:
+            async with flow.pools.hold(held):
+                ctx.check_running()
+                async with agent:
+                    trace = await self.rollout(
+                        agent, on_trace=flow.live.watch(ctx.unit.id, execution)
+                    )
+            await flow.traces.append(trace)
+        finally:
+            flow.live.drop(ctx.unit.id, execution)
         if not trace.ok:
             last = trace.last_error
             raise CallFailed(
@@ -272,21 +278,25 @@ class Live:
         for stale in self.dir.glob("*.json"):
             stale.unlink()
         self._due: dict[Path, asyncio.TimerHandle] = {}
+        self._active: set[Path] = set()
 
     def _file(self, unit: str, name: str) -> Path:
         return self.dir / f"{unit}--{name.replace('/', '__')}.json"
 
     def watch(self, unit: str, name: str) -> Callable[[Trace], None]:
         file = self._file(unit, name)
+        self._active.add(file)
 
         def write(trace: Trace) -> None:
             self._due.pop(file, None)
+            if file not in self._active:
+                return
             tmp = file.with_suffix(".tmp")
             tmp.write_text(trace.model_dump_json())
             os.replace(tmp, file)
 
         def changed(trace: Trace) -> None:
-            if file not in self._due:
+            if file in self._active and file not in self._due:
                 loop = asyncio.get_running_loop()
                 self._due[file] = loop.call_later(LIVE_EVERY_S, write, trace)
 
@@ -298,6 +308,7 @@ class Live:
 
     def drop(self, unit: str, name: str) -> None:
         file = self._file(unit, name)
+        self._active.discard(file)
         if (due := self._due.pop(file, None)) is not None:
             due.cancel()
         file.unlink(missing_ok=True)
