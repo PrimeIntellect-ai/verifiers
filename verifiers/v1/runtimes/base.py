@@ -11,7 +11,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
@@ -46,7 +46,7 @@ _ENSURE_UV = (
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
-# modal/prime, a host loopback port on the local container engines. A server placed in such
+# modal/prime/e2b, a host loopback port on the local container engines. A server placed in such
 # a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
 SERVICE_PORT = 8000
 
@@ -122,6 +122,11 @@ def cleanup_at_exit() -> None:
     for runtime in list(_LIVE):
         with contextlib.suppress(Exception):
             runtime.cleanup()
+
+
+SWEEPERS: list[Callable[[str], Awaitable[int]]] = []
+"""What a resumed run calls with its label to kill what an earlier launch left behind: each
+runtime module registers its own (containers, sandboxes), returning the count it freed."""
 
 
 class BaseRuntimeInfo(BaseConfig):
