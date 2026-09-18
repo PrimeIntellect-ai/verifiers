@@ -20,7 +20,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
-    SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -69,10 +68,6 @@ class E2BRuntime(Runtime):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = E2BRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
-
-    @property
-    def published_port(self) -> int | None:
-        return SERVICE_PORT
 
     async def start(self) -> None:
         try:
@@ -138,7 +133,7 @@ class E2BRuntime(Runtime):
                 )
         return name
 
-    async def expose(self, port: int) -> str | None:
+    async def expose(self, port: int) -> str:
         return f"https://{self._sandbox.get_host(port)}"
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
