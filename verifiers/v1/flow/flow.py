@@ -21,6 +21,7 @@ import os
 import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -59,6 +60,8 @@ DRAIN_FILE = "drain"
 """A file of this name in the root drains the flow, as Ctrl-C once does. Remove it to launch again."""
 TRANSITIONS = "transitions.jsonl"
 """One line per stage start and per transition: what a dashboard follows."""
+_LINKS: ContextVar[list[dict[str, str]] | None] = ContextVar("flow_links", default=None)
+"""The other units the running stage touched, `{unit, label}`: the edges between lanes."""
 
 
 class Stopped(Exception):
@@ -152,7 +155,14 @@ class Flow:
         self, name: str, state: dict[str, Any], files: dict[str, str] | None = None
     ) -> Unit:
         """A new task unit, ready at `state["stage"]`."""
+        self.touch(name, "created")
         return Unit.create(self.root / TASKS / name, state, files)
+
+    def touch(self, unit: str, label: str) -> None:
+        """Note that the running stage acted on another unit (created it, released it, made it
+        ready): the transition records the link, so a dashboard can draw the edge between lanes."""
+        if (links := _LINKS.get()) is not None:
+            links.append({"unit": unit, "label": label})
 
     # -- seats ------------------------------------------------------------------------------
 
@@ -220,6 +230,8 @@ class Flow:
         name = state["stage"]
         stage = self.pipeline.stages[name]
         self.event("started", unit=unit.id, stage=name)
+        links: list[dict[str, str]] = []
+        token = _LINKS.set(links)
         try:
             transition = await stage(Ctx(self, unit, name))
         except Stopped:
@@ -230,6 +242,8 @@ class Flow:
         except Exception as exc:
             logger.exception("%s/%s failed", unit.id, name)
             transition = Transition.hold(f"{type(exc).__name__}: {exc}")
+        finally:
+            _LINKS.reset(token)
         sha = unit.apply(transition)
         self.event(
             "transition",
@@ -240,6 +254,7 @@ class Flow:
             status=transition.status,
             reason=transition.summary,
             sha=sha,
+            links=links,
         )
 
     def event(self, kind: str, **fields: Any) -> None:

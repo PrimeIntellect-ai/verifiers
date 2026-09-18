@@ -91,6 +91,17 @@ async def test_units_move_through_stages_and_a_resume_reruns_nothing(tmp_path):
         "init",
     ]
     assert Unit(tmp_path / CAMPAIGN).state()["status"] == "waiting"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "transitions.jsonl").read_text().splitlines()
+    ]
+    planned = next(
+        e for e in events if e["type"] == "transition" and e["unit"] == CAMPAIGN
+    )
+    assert planned["links"] == [
+        {"unit": "t0", "label": "created"},
+        {"unit": "t1", "label": "created"},
+    ]
     before = len(calls)
     assert (
         await run(tmp_path) == {"terminal": 2} and len(calls) == before
