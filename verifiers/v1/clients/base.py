@@ -9,10 +9,7 @@ from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 
 # No read timeout: agentic completions are slow and the rollout timeout is the real
 # backstop. The connect bound stays so an unreachable endpoint still fails fast.
-DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=600.0, write=None, pool=None)
-"""`read` bounds the wait for the next byte from the provider: a stalled call fails
-and the harness SDK retries it instead of hanging the rollout until its deadline.
-600 s leaves room for a long non-streaming completion; a stream is bounded per chunk."""
+DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=None, pool=None)
 DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 MAX_RETRIES = 0
 """No client-side retries: failures surface to the harness SDK and the trace instead of

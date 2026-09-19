@@ -45,12 +45,10 @@ from verifiers.v1.runtimes import (
     Runtime,
     provision_runtime,
     runtime_is_local,
-    set_base_sandbox_labels,
 )
-from verifiers.v1.runtimes.subprocess import RUN_LABEL_VAR
 from verifiers.v1.task import Task
+from verifiers.v1.trace import Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
-from verifiers.v1.utils.retries import backoff
 
 logger = logging.getLogger("verifiers.flow")
 
@@ -120,9 +118,6 @@ class Pipeline:
     stages: dict[str, Stage]
     admit: Callable[[Unit, Flow], bool] | None = None
     """Whether a ready, inactive unit may start. Earlier admissions are already active."""
-    initialize: Callable[[Flow], None] | None = None
-    """Entrypoints call this to seed initial units; create_unit preserves existing work."""
-    config: type[FlowConfig] = FlowConfig
 
 
 class Flow:
@@ -131,7 +126,6 @@ class Flow:
     def __init__(self, root: Path, config: FlowConfig, pipeline: Pipeline) -> None:
         self.root, self.config, self.pipeline = root, config, pipeline
         self.pools = Pools(config.pools)
-        self.label = f"flow-{root.name}-{digest(str(root.resolve()))[:12]}"[:60]
         self.interception: Interception | None = None
         self._draining = asyncio.Event()
         self._dirty: set[str] = set()
@@ -157,6 +151,7 @@ class Flow:
             (self.root / "calls").mkdir(exist_ok=True)
             (self.root / UNITS).mkdir(exist_ok=True)
             trim_torn_tail(self.root / TRANSITIONS)
+            trim_torn_tail(self.root / "traces.jsonl")
             self.traces, self.live = Traces(self.root), Live(self.root)
             return self
         except BaseException:
@@ -337,7 +332,7 @@ class Flow:
             file.write(line + "\n")
         logger.info("%s", line)
 
-    # -- drain, sweep, serving ----------------------------------------------------------------
+    # -- drain, serving ----------------------------------------------------------------
 
     def drain(self) -> None:
         if not self._draining.is_set():
@@ -350,42 +345,20 @@ class Flow:
             self.drain()
         return self._draining.is_set()
 
-    async def sweep(self) -> int:
-        """Kill what an earlier launch left behind, by the flow's label; the count. Every
-        runtime module registers its own sweeper (`SWEEPERS`) when the package imports."""
-        import verifiers.v1.runtimes  # noqa: F401 - registers the sweepers
-        from verifiers.v1.runtimes.base import SWEEPERS
-        from verifiers.v1.runtimes.subprocess import sweep_subprocesses
-
-        swept = sweep_subprocesses(self.label)
-        for sweeper in SWEEPERS:
-            swept += await sweeper(self.label)
-        return swept
-
     @asynccontextmanager
     async def _serving(self) -> AsyncIterator[None]:
-        from verifiers.v1.runtimes import prime
-
-        labels, run_label = prime.BASE_LABELS, os.environ.get(RUN_LABEL_VAR)
-        set_base_sandbox_labels([self.label])
-        os.environ[RUN_LABEL_VAR] = self.label
-        try:
-            remote = any(
-                not runtime_is_local(self.seat(n).runtime)
-                for n in declared_agent_configs(self.config)
-            )
-            async with make_interception(
-                self.config.interception, requires_tunnel=remote
-            ) as interception:
-                self.interception = interception
+        remote = any(
+            not runtime_is_local(self.seat(n).runtime)
+            for n in declared_agent_configs(self.config)
+        )
+        async with make_interception(
+            self.config.interception, requires_tunnel=remote
+        ) as interception:
+            self.interception = interception
+            try:
                 yield
-        finally:
-            self.interception = None
-            set_base_sandbox_labels(labels)
-            if run_label is None:
-                os.environ.pop(RUN_LABEL_VAR, None)
-            else:
-                os.environ[RUN_LABEL_VAR] = run_label
+            finally:
+                self.interception = None
 
 
 class Ctx(Generic[D]):
@@ -421,13 +394,9 @@ class Ctx(Generic[D]):
         work: Work[T],
         *,
         key: str | None = None,
-        retries: int = 0,
-        timeout: float | None = None,
     ) -> T:
-        """Run `work`; the value. With a `key`, durable: the result is recorded under the key
-        and the work's content, and found again by a rerun of the stage. `retries` rerun the
-        work after any failure (an agent has its own policy: leave this at 0 for seats)."""
-        result = await self.attempt(work, key=key, retries=retries, timeout=timeout)
+        """Return the work's value; a key opts into reuse of explicitly declared inputs."""
+        result = await self.attempt(work, key=key)
         if not result.ok:
             raise CallFailed(
                 f"{key or work.kind}: {result.error}",
@@ -442,8 +411,6 @@ class Ctx(Generic[D]):
         works: Iterable[Work[T]],
         *,
         key: Callable[[int], str] | None = None,
-        retries: int = 0,
-        timeout: float | None = None,
     ) -> list[Result[T]]:
         """Every work at once; every item settled, the failures typed beside the values.
         What to make of a partial set is the stage's decision."""
@@ -455,8 +422,6 @@ class Ctx(Generic[D]):
                         self.attempt(
                             work,
                             key=key(i) if key else None,
-                            retries=retries,
-                            timeout=timeout,
                         )
                     )
                 )
@@ -474,39 +439,32 @@ class Ctx(Generic[D]):
 
     def event(self, kind: str, status: str, **fields: Any) -> None:
         """Call and native rollout evidence share one invocation and stage execution."""
-        invocation = asdict(INVOCATION.get())
-        invocation["call"] = invocation.pop("id")
         self.flow.event(
             kind,
             unit=self.unit.id,
             stage=self.stage,
             execution=self.execution.id,
             status=status,
-            **invocation,
+            **asdict(INVOCATION.get()),
             **fields,
         )
 
-    async def attempt(
-        self, work: Work[T], *, key: str | None, retries: int, timeout: float | None
-    ) -> Result[T]:
-        flow = self.flow
-        name, call = key or work.kind, uuid4().hex
-        cache = digest(key, work.content(self))[:24] if key is not None else None
-        file = flow.root / "calls" / self.unit.id / f"{cache}.json" if cache else None
-        parent = INVOCATION.get(None)
-        token = INVOCATION.set(
-            Invocation(
-                call, key, work.kind, cache, parent=parent.id if parent else None
+    async def attempt(self, work: Work[T], *, key: str | None = None) -> Result[T]:
+        """A value or failure. Successful keyed work is recorded; failures remain retryable."""
+        if key is not None and work.inputs is None:
+            raise ValueError(
+                "keyed work requires explicit inputs; use {} for no dependencies"
             )
-        )
+        flow = self.flow
+        name = key if key is not None else work.kind
+        cache = digest(key, work.inputs)[:24] if key is not None else None
+        file = flow.root / "calls" / self.unit.id / f"{cache}.json" if cache else None
+        call = uuid4().hex
+        token = INVOCATION.set(Invocation(call, key, work.kind, cache))
         try:
             if file is not None and file.exists():
                 record = Record.model_validate_json(file.read_text())
-                try:
-                    value = work.load(self, record)
-                except Exception as exc:
-                    self.event("call", "failed", error=f"{type(exc).__name__}: {exc}")
-                    raise
+                value = work.load(self, record)
                 self.event(
                     "call",
                     "attached",
@@ -515,93 +473,54 @@ class Ctx(Generic[D]):
                     trace_id=record.trace_id,
                 )
                 return Result(True, value, trace_id=record.trace_id, attached=True)
-            for attempt in range(1, retries + 2):
-                INVOCATION.set(
-                    Invocation(
-                        call,
-                        key,
-                        work.kind,
-                        cache,
-                        attempt,
-                        parent.id if parent else None,
-                    )
+            self.check_running()
+            self.event("call", "started")
+            try:
+                value = await work.execute(self, name)
+            except (Stopped, asyncio.CancelledError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - work failures become typed results
+                failed = exc if isinstance(exc, CallFailed) else None
+                result: Result[T] = Result(
+                    False,
+                    error=f"{type(exc).__name__}: {exc}",
+                    type=failed.type if failed else type(exc).__name__,
+                    status_code=failed.status_code if failed else None,
+                    trace_id=failed.trace_id if failed else None,
                 )
-                if flow.draining:
-                    self.event("call", "stopped")
-                    raise Stopped(name)
-                started = now()
-                self.event("call", "started")
-                try:
-                    async with asyncio.timeout(timeout):
-                        value = await work.execute(self, name)
-                        fields = work.dump(self, value)
-                except Stopped:
-                    self.event("call", "stopped")
-                    raise
-                except asyncio.CancelledError:
-                    self.event("call", "cancelled")
-                    raise
-                except Exception as exc:  # noqa: BLE001 - a failed work item becomes a typed Result
-                    error = f"{type(exc).__name__}: {exc}"
-                    failed = exc if isinstance(exc, CallFailed) else None
-                    result: Result[T] = Result(
-                        False,
-                        error=error,
-                        type=failed.type if failed else type(exc).__name__,
-                        status_code=failed.status_code if failed else None,
-                        trace_id=failed.trace_id if failed else None,
-                    )
-                    self.event(
-                        "call",
-                        "failed",
-                        error=error,
-                        error_type=result.type,
-                        status_code=result.status_code,
-                        trace_id=result.trace_id,
-                    )
-                    logger.warning(
-                        "%s/%s: attempt %d failed: %s",
-                        self.unit.id,
-                        name,
-                        attempt,
-                        error,
-                    )
-                    if attempt > retries:
-                        return result
-                    try:
-                        await asyncio.sleep(backoff(attempt - 1))
-                    except asyncio.CancelledError:
-                        self.event("call", "cancelled")
-                        raise
-                    continue
-                try:
-                    if file is not None:
-                        file.parent.mkdir(parents=True, exist_ok=True)
-                        record = Record(
-                            key=name,
-                            unit=self.unit.id,
-                            stage=self.stage,
-                            kind=work.kind,
-                            execution=self.execution.id,
-                            call=call,
-                            attempt=attempt,
-                            started_at=started,
-                            finished_at=now(),
-                            **fields,
-                        )
-                        tmp = file.with_suffix(".tmp")
-                        tmp.write_text(record.model_dump_json(indent=1))
-                        os.replace(tmp, file)
-                except Exception as exc:
-                    self.event(
-                        "call",
-                        "failed",
-                        error=f"recording result: {type(exc).__name__}: {exc}",
-                    )
-                    raise
-                self.event("call", "succeeded", trace_id=fields.get("trace_id"))
-                return Result(True, value, trace_id=fields.get("trace_id"))
-            raise ValueError("retries must be nonnegative")
+                self.event(
+                    "call",
+                    "failed",
+                    error=result.error,
+                    error_type=result.type,
+                    status_code=result.status_code,
+                    trace_id=result.trace_id,
+                )
+                return result
+            # Publication failures stop the stage; repeating work is an operator decision.
+            if file is not None:
+                file.parent.mkdir(parents=True, exist_ok=True)
+                record = Record(
+                    key=name,
+                    execution=self.execution.id,
+                    call=call,
+                    **work.dump(self, value),
+                )
+                tmp = file.with_suffix(".tmp")
+                tmp.write_text(record.model_dump_json(indent=1))
+                os.replace(tmp, file)
+            trace_id = value.id if isinstance(value, Trace) else None
+            self.event("call", "succeeded", trace_id=trace_id)
+            return Result(True, value, trace_id=trace_id)
+        except Stopped:
+            self.event("call", "stopped")
+            raise
+        except asyncio.CancelledError:
+            self.event("call", "cancelled")
+            raise
+        except Exception as exc:
+            self.event("call", "failed", error=f"{type(exc).__name__}: {exc}")
+            raise
         finally:
             INVOCATION.reset(token)
 
@@ -610,7 +529,7 @@ class Ctx(Generic[D]):
         self, seat: str, task: Task | None = None
     ) -> AsyncIterator[Runtime]:
         """A box from the seat's runtime policy (resolved for `task` when given), alive for
-        the block and always torn down; seats and commands run in it with `runtime=box`."""
+        the block and always torn down; seats can borrow it with `runtime=box`."""
         config = self.seat(seat).runtime
         if task is not None:
             config = resolve_runtime_config(config, task, set())

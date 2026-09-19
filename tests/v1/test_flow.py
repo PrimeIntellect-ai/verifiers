@@ -3,7 +3,6 @@
 import asyncio
 import io
 import json
-import os
 import tarfile
 from contextlib import suppress
 
@@ -11,6 +10,7 @@ import pytest
 from pydantic import Field, ValidationError
 
 import verifiers.v1 as vf
+from verifiers.v1.cli.output import read_jsonl
 from verifiers.v1.flow import (
     AgentWork,
     Ctx,
@@ -25,6 +25,7 @@ from verifiers.v1.flow import (
     fn,
 )
 from verifiers.v1.flow.__main__ import inspect
+from verifiers.v1.flow.traces import Traces
 from verifiers.v1.flow.unit import Unit, git
 
 
@@ -43,12 +44,7 @@ def pipeline(stage):
 
 async def test_restart_after_call_record_recovers_output_without_repeating_work(
     tmp_path,
-    monkeypatch,
 ):
-    from verifiers.v1.runtimes import prime
-
-    monkeypatch.setenv("VF_RUN_LABEL", "outer")
-    monkeypatch.setattr(prime, "BASE_LABELS", ["outer-label"])
     recorded, blocked = asyncio.Event(), asyncio.Event()
     writes = 0
 
@@ -59,10 +55,17 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
 
     async def stage(ctx: Ctx[Data]) -> Transition[Data]:
         revision = await ctx.call(
-            fn(produce, str(ctx.unit.path), ctx.data.revision), key="author"
+            fn(
+                produce,
+                str(ctx.unit.path),
+                ctx.data.revision,
+                output=str,
+                inputs=ctx.data.revision,
+            ),
+            key="author",
         )
         recorded.set()
-        await ctx.call(fn(blocked.wait))
+        await ctx.call(fn(blocked.wait, output=bool))
         return Transition.end("done", data=ctx.updated(revision=revision))
 
     p = pipeline(stage)
@@ -78,9 +81,16 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
             await running
         assert unit.state().stage == "work"
         assert unit.state().data.revision == base
-        assert os.environ["VF_RUN_LABEL"] == "outer"
-        assert prime.BASE_LABELS == ["outer-label"]
         assert not flow.active
+
+    # Readers leave interrupted appends alone; the next exclusive launch trims them.
+    for name in ("transitions.jsonl", "traces.jsonl"):
+        file = tmp_path / name
+        original = file.read_bytes() + b'{"incomplete":'
+        file.write_bytes(original)
+        read_jsonl(file)
+        Traces(tmp_path).get("missing")
+        assert file.read_bytes() == original
 
     blocked.set()
     async with Flow(tmp_path, FlowConfig(), p) as flow:
@@ -112,9 +122,6 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
             record["execution"] == original["execution"]
             and record["call"] == original["call"]
         )
-        assert os.environ["VF_RUN_LABEL"] == "outer" and prime.BASE_LABELS == [
-            "outer-label"
-        ]
 
 
 async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
@@ -131,7 +138,10 @@ async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
 
     async def stage(ctx: Ctx[Data]) -> Transition:
         results = await ctx.spread(
-            [fn(work, ctx.data.revision, i) for i in range(3)],
+            [
+                fn(work, ctx.data.revision, i, output=str, inputs=ctx.data.revision)
+                for i in range(3)
+            ],
             key=lambda i: f"solve/{i}",
         )
         if any(not result.ok for result in results):
@@ -325,17 +335,8 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
         return trace
 
     monkeypatch.setattr(AgentWork, "rollout", rollout)
-    attempts = 0
-
-    async def flaky():
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("temporary outage")
-        return "done"
 
     async def stage(ctx):
-        await ctx.call(fn(flaky), key="host", retries=1)
         trace = await ctx.call(
             agent("worker", vf.Task(vf.TaskData(prompt="solve")), inputs=grading),
             key="solve",
@@ -354,10 +355,9 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
         cfg.worker.max_turns = 100
         cfg.worker.retries.max_retries = 5
         cfg.client.api_key_var = "DIFFERENT_CREDENTIAL"
-        cfg.client.read_timeout = 900
         unit.steer(status="ready", note="retry budget changed")
         assert (await flow.run()).counts == {"terminal": 1}
-        assert executed == 1 and attempts == 2
+        assert executed == 1
         grading["judge"] = "judge-v2"
         unit.steer(status="ready")
         await flow.run()
@@ -367,23 +367,11 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
         cfg.sampling.max_tokens = 123
         unit.steer(status="ready")
         await flow.run()
-        assert executed == 4
+        assert executed == 2  # Core hashes only declared inputs, not model settings.
         events = [
             json.loads(line)
             for line in (tmp_path / "transitions.jsonl").read_text().splitlines()
         ]
-        host = [
-            e
-            for e in events
-            if e["type"] == "call" and e["key"] == "host" and e["attempt"] > 0
-        ]
-        assert [(e["attempt"], e["status"]) for e in host] == [
-            (1, "started"),
-            (1, "failed"),
-            (2, "started"),
-            (2, "succeeded"),
-        ]
-        assert len({e["call"] for e in host}) == 1
         rollouts = [e for e in events if e["type"] == "rollout"]
         assert [(e["rollout"], e["status"]) for e in rollouts[:4]] == [
             (1, "started"),

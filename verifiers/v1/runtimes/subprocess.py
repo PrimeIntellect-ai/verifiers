@@ -23,37 +23,6 @@ from verifiers.v1.utils.paths import CACHE_DIR
 
 _BACKGROUND_STOP_TIMEOUT = 5
 
-RUN_LABEL_VAR = "VF_RUN_LABEL"
-"""Set on the host by a run; every subprocess spawned here inherits it, which is how
-`sweep_subprocesses` finds what a killed launch left running."""
-
-
-def sweep_subprocesses(label: str) -> int:
-    """SIGKILL the process groups of every host process carrying `RUN_LABEL_VAR=label`
-    (children of an earlier launch, killed with their parent's cleanup skipped); the
-    count. Linux only, by `/proc`; elsewhere 0."""
-    proc = Path("/proc")
-    if not proc.is_dir():
-        return 0
-    marker = f"{RUN_LABEL_VAR}={label}".encode()
-    killed: set[int] = set()
-    for entry in proc.iterdir():
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
-            continue
-        try:
-            environ = (entry / "environ").read_bytes()
-        except OSError:
-            continue
-        if marker not in environ.split(b"\0"):
-            continue
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            pgid = os.getpgid(int(entry.name))
-            if pgid != os.getpgid(os.getpid()):
-                os.killpg(pgid, signal.SIGKILL)
-                killed.add(pgid)
-    return len(killed)
-
-
 # Implicit host inheritance removes every name containing "API_KEY" while keeping
 # harmless settings such as PATH, HOME, and cache locations. The explicit `env`
 # argument is merged afterward, so callers can deliberately pass credentials and
@@ -61,9 +30,6 @@ def sweep_subprocesses(label: str) -> int:
 
 
 class SubprocessConfig(BaseConfig):
-    """A working directory on this host, nothing more: the box shares the host's
-    kernel, users, ports and filesystem, and `Runtime.read` paths anchor on its workdir."""
-
     type: Literal["subprocess"] = "subprocess"
 
 

@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import shlex
-import shutil
 import socket
 import subprocess
 import sys
@@ -20,7 +19,6 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
-    SWEEPERS,
     BaseRuntimeInfo,
     parse_gpu,
 )
@@ -49,30 +47,6 @@ class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
 
 class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
     pass
-
-
-RUN_LABEL = "verifiers.run"
-"""Container label carrying each of the process's base sandbox labels; what `sweep_containers`
-finds a crashed launch's containers by."""
-
-
-async def sweep_containers(label: str) -> int:
-    """Remove every container labelled with `label` (an earlier launch of the same run, killed
-    with its cleanup skipped) on each engine the host has; the count."""
-    swept = 0
-    for engine in ("docker", "podman"):
-        if shutil.which(engine) is None:
-            continue
-        ids = (
-            await cli(engine, "ps", "-aq", "--filter", f"label={RUN_LABEL}={label}")
-        ).stdout.split()
-        if ids:
-            await cli(engine, "rm", "-f", *ids)
-        swept += len(ids)
-    return swept
-
-
-SWEEPERS.append(sweep_containers)
 
 
 _PROXY_HOST = "host.docker.internal"
@@ -188,11 +162,6 @@ class DockerRuntime(ContainerRuntime):
             for arg in ("--env", f"{key}={value}")
         ]
         mount_args = [arg for mount in self.config.mounts for arg in ("-v", mount)]
-        from verifiers.v1.runtimes.prime import BASE_LABELS  # the run's labels, shared
-
-        label_args = [
-            arg for label in BASE_LABELS for arg in ("--label", f"{RUN_LABEL}={label}")
-        ]
         run = await cli(
             self.engine,
             "run",
@@ -200,7 +169,6 @@ class DockerRuntime(ContainerRuntime):
             *options,
             *env_args,
             *mount_args,
-            *label_args,
             "--entrypoint",
             "sleep",
             "--name",
