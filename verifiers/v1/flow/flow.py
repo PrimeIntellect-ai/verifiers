@@ -535,23 +535,6 @@ class Ctx(Generic[D]):
                     async with asyncio.timeout(timeout):
                         value = await work.execute(self, name)
                         fields = work.dump(self, value)
-                    if file is not None:
-                        file.parent.mkdir(parents=True, exist_ok=True)
-                        record = Record(
-                            key=name,
-                            unit=self.unit.id,
-                            stage=self.stage,
-                            kind=work.kind,
-                            execution=self.execution.id,
-                            call=call,
-                            attempt=attempt,
-                            started_at=started,
-                            finished_at=now(),
-                            **fields,
-                        )
-                        tmp = file.with_suffix(".tmp")
-                        tmp.write_text(record.model_dump_json(indent=1))
-                        os.replace(tmp, file)
                 except Stopped:
                     self.event("call", "stopped")
                     raise
@@ -591,6 +574,31 @@ class Ctx(Generic[D]):
                         self.event("call", "cancelled")
                         raise
                     continue
+                try:
+                    if file is not None:
+                        file.parent.mkdir(parents=True, exist_ok=True)
+                        record = Record(
+                            key=name,
+                            unit=self.unit.id,
+                            stage=self.stage,
+                            kind=work.kind,
+                            execution=self.execution.id,
+                            call=call,
+                            attempt=attempt,
+                            started_at=started,
+                            finished_at=now(),
+                            **fields,
+                        )
+                        tmp = file.with_suffix(".tmp")
+                        tmp.write_text(record.model_dump_json(indent=1))
+                        os.replace(tmp, file)
+                except Exception as exc:
+                    self.event(
+                        "call",
+                        "failed",
+                        error=f"recording result: {type(exc).__name__}: {exc}",
+                    )
+                    raise
                 self.event("call", "succeeded", trace_id=fields.get("trace_id"))
                 return Result(True, value, trace_id=fields.get("trace_id"))
             raise ValueError("retries must be nonnegative")

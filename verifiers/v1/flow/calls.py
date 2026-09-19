@@ -109,7 +109,7 @@ class Work(ABC, Generic[T]):
     kind: ClassVar[Kind]
 
     @abstractmethod
-    def content(self, ctx: Ctx) -> list[Any]:
+    def content(self, ctx: Ctx) -> Any:
         """What keys the call besides its key: the work's inputs, JSON-stable."""
 
     @abstractmethod
@@ -180,15 +180,15 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
     runtime: Runtime | None = None
     """A live box to run in; None provisions one for the call."""
 
-    def content(self, ctx: Ctx) -> list[Any]:
-        return [
-            "agent",
-            self.seat,
-            f"{type(self.task).__module__}.{type(self.task).__qualname__}",
-            self.task.data.model_dump(exclude={"timeout", "resources"}),
-            agent_inputs(ctx.seat(self.seat)),
-            self.inputs,
-        ]
+    def content(self, ctx: Ctx) -> dict[str, Any]:
+        return {
+            "kind": "agent",
+            "seat": self.seat,
+            "task_type": f"{type(self.task).__module__}.{type(self.task).__qualname__}",
+            "task": self.task.data.model_dump(exclude={"timeout", "resources"}),
+            "agent": agent_inputs(ctx.seat(self.seat)),
+            "inputs": self.inputs,
+        }
 
     async def execute(self, ctx: Ctx, name: str) -> Trace:
         flow = ctx.flow
