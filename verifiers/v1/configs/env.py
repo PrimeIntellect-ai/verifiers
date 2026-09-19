@@ -6,7 +6,7 @@ from typing import get_args
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.agent import AgentConfig, declared_agent_configs
+from verifiers.v1.configs.agent import AgentConfig, agent_config_fields
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -73,7 +73,7 @@ class EnvConfig(BaseConfig):
         default = default_agent_harness(self.taskset.id)
         return {
             name: cfg.harness if cfg.harness is not None else default
-            for name, cfg in declared_agent_configs(self).items()
+            for name, cfg in agent_config_fields(self).items()
         }
 
     @model_validator(mode="before")

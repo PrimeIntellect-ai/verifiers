@@ -9,18 +9,16 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypedDict, TypeVar
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from verifiers.v1.agent import Agent
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.retries import trace_should_retry
 
 if TYPE_CHECKING:
     from verifiers.v1.flow.flow import Ctx
@@ -30,38 +28,30 @@ LIVE_EVERY_S = 3.0
 """How often at most a live trace snapshot is rewritten while a seat runs."""
 
 
-def now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
-
-
 class CallFailed(Exception):
-    """A call that did not land: `<name>: <error>`. For an agent, `type` and `status_code`
-    are the trace's last error and `trace_id` the failed trace, for a stage routing on it."""
+    """A failed call, carrying the native error and its trace when available."""
 
-    def __init__(
-        self,
-        message: str,
-        type: str = "",
-        status_code: int | None = None,
-        trace_id: str | None = None,
-    ):
-        super().__init__(message)
-        self.type, self.status_code, self.trace_id = type, status_code, trace_id
+    def __init__(self, error: Error, trace_id: str | None = None):
+        super().__init__(f"{error.type}: {error.message}")
+        self.error, self.trace_id = error, trace_id
 
 
-@dataclass
-class Result(Generic[T]):
-    """One item of a spread: the value, or the failure, typed."""
-
-    ok: bool
-    value: T | None = None
-    error: str | None = None
-    type: str | None = None
-    status_code: int | None = None
-    trace_id: str | None = None
+@dataclass(frozen=True)
+class Success(Generic[T]):
+    value: T
     attached: bool = False
-    """The value came from an earlier run's record rather than from running the work now: what
-    a stage checks when a later call assumed this one's side effects in a box."""
+    """Reuse restores a value, never its sandbox side effects."""
+    ok: Literal[True] = field(default=True, init=False)
+
+
+@dataclass(frozen=True)
+class Failure:
+    error: Error
+    trace_id: str | None = None
+    ok: Literal[False] = field(default=False, init=False)
+
+
+Result = Success[T] | Failure
 
 
 @dataclass(frozen=True)
@@ -97,14 +87,14 @@ class Work(ABC, Generic[T]):
     use {} for no dependencies. Core adds no task, configuration, or code identity."""
 
     @abstractmethod
-    async def execute(self, ctx: Ctx, name: str) -> T: ...
+    async def execute(self, ctx: Ctx[Any, Any]) -> T: ...
 
     @abstractmethod
-    def dump(self, ctx: Ctx, value: T) -> StoredValue:
+    def dump(self, value: T) -> StoredValue:
         """The record fields that carry the value: a `payload`, or a `trace_id`."""
 
     @abstractmethod
-    def load(self, ctx: Ctx, record: Record) -> T:
+    def load(self, ctx: Ctx[Any, Any], record: Record) -> T:
         """The value a record carries; `LookupError` when it cannot be rebuilt."""
 
 
@@ -116,7 +106,7 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
     runtime: Runtime | None = None
     inputs: JsonValue | BaseModel | None = None
 
-    async def execute(self, ctx: Ctx, name: str) -> Trace:
+    async def execute(self, ctx: Ctx[Any, Any]) -> Trace:
         flow = ctx.flow
         agent = flow.agent(self.seat)
         held = () if self.runtime is not None else ("runtimes",)
@@ -137,9 +127,7 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
                 status,
                 rollout=attempt,
                 trace_id=trace.id,
-                error=trace.last_error.model_dump(mode="json")
-                if trace.last_error
-                else None,
+                error=trace.last_error,
             )
 
         def on_trace(trace: Trace) -> None:
@@ -154,6 +142,10 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
                 ctx.check_running()
                 async with agent:
                     trace = await self.rollout(agent, on_trace=on_trace)
+        except Exception as exc:
+            if traces and traces[-1].last_error is not None:
+                raise CallFailed(traces[-1].last_error, traces[-1].id) from exc
+            raise
         finally:
             flow.live.drop(ctx.unit.id, call)
             if traces:
@@ -161,40 +153,25 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
                 for recorded in traces:
                     await flow.traces.append(recorded)
         if not trace.ok:
-            last = trace.last_error
             raise CallFailed(
-                f"{last.type}: {last.message}" if last else "rollout failed",
-                last.type if last else "",
-                last.status_code if last else None,
+                trace.last_error
+                or Error(type="RolloutError", message="rollout failed"),
                 trace.id,
             )
         return trace
 
     async def rollout(self, agent: Agent, on_trace: Callable[[Trace], None]) -> Trace:
-        """One rollout of the task on `agent`, with the agent's own retry policy. A seat
-        driven turn by turn (`agent.interaction`) overrides this alone; `should_retry`
-        applies the same policy there."""
+        """Use native retries. Override for caller-driven `agent.interaction` work."""
         return await agent.run(self.task, runtime=self.runtime, on_trace=on_trace)
 
-    def dump(self, ctx: Ctx, value: Trace) -> StoredValue:
+    def dump(self, value: Trace) -> StoredValue:
         return {"trace_id": value.id}
 
-    def load(self, ctx: Ctx, record: Record) -> Trace[Any, Any, Any]:
+    def load(self, ctx: Ctx[Any, Any], record: Record) -> Trace[Any, Any, Any]:
         trace = ctx.flow.traces.get(record.trace_id or "")
         if trace is None:
             raise LookupError(f"trace {record.trace_id} is not in the flow's traces")
         return trace
-
-
-def should_retry(trace: Trace, agent: Agent, attempt: int) -> bool:
-    """Whether a driven rollout that ended in `trace` gets another attempt under the
-    agent's `RetryConfig` (`attempt` counts from 0): one retry owner for both call styles."""
-    retry = agent.config.retries
-    return (
-        attempt < retry.max_retries
-        and not trace.ok
-        and trace_should_retry(trace, retry)
-    )
 
 
 @dataclass(frozen=True)
@@ -206,7 +183,7 @@ class FnWork(Work[T]):
     kwargs: dict[str, Any] = field(default_factory=dict)
     inputs: JsonValue | BaseModel | None = None
 
-    async def execute(self, ctx: Ctx, name: str) -> T:
+    async def execute(self, ctx: Ctx[Any, Any]) -> T:
         if inspect.iscoroutinefunction(self.func):
             value = await self.func(*self.args, **self.kwargs)
         else:
@@ -215,10 +192,10 @@ class FnWork(Work[T]):
             )
         return self.output.validate_python(value)
 
-    def dump(self, ctx: Ctx, value: T) -> StoredValue:
+    def dump(self, value: T) -> StoredValue:
         return {"payload": self.output.dump_python(value, mode="json")}
 
-    def load(self, ctx: Ctx, record: Record) -> T:
+    def load(self, ctx: Ctx[Any, Any], record: Record) -> T:
         return self.output.validate_python(record.payload)
 
 

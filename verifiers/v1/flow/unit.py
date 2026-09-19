@@ -11,16 +11,15 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generic, Literal, Self, TypeVar, cast
+from typing import Generic, TypeVar, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from verifiers.v1.flow.calls import now
+from verifiers.v1.flow.events import Status, SteerEvent, Steering, append_event, now
 
 STATE = "state.json"
 DEFINITION = "unit.json"
-Status = Literal["ready", "held", "waiting", "terminal"]
 _IDENTITY = ("-c", "user.name=flow", "-c", "user.email=flow@local")
 
 
@@ -31,6 +30,7 @@ class UnitData(BaseModel):
 
 
 D = TypeVar("D", bound=UnitData)
+T = TypeVar("T", bound=UnitData)
 
 
 class Note(BaseModel):
@@ -77,21 +77,92 @@ class Transition(Generic[D]):
     files: Mapping[str, str | bytes] = field(default_factory=dict)
     report: str | None = None
 
-    @classmethod
-    def to(cls, stage: str, outcome: str, summary: str = "", **kw: Any) -> Self:
-        return cls(outcome, summary, stage=stage, **kw)
+    @staticmethod
+    def to(
+        stage: str,
+        outcome: str,
+        summary: str = "",
+        *,
+        status: Status = "ready",
+        data: T | None = None,
+        files: Mapping[str, str | bytes] | None = None,
+        report: str | None = None,
+    ) -> Transition[T]:
+        return Transition(
+            outcome,
+            summary,
+            stage=stage,
+            status=status,
+            data=data,
+            files=files or {},
+            report=report,
+        )
 
-    @classmethod
-    def end(cls, outcome: str, summary: str = "", **kw: Any) -> Self:
-        return cls(outcome, summary, status="terminal", **kw)
+    @staticmethod
+    def end(
+        outcome: str,
+        summary: str = "",
+        *,
+        stage: str | None = None,
+        data: T | None = None,
+        files: Mapping[str, str | bytes] | None = None,
+        report: str | None = None,
+    ) -> Transition[T]:
+        return Transition(
+            outcome,
+            summary,
+            stage=stage,
+            status="terminal",
+            data=data,
+            files=files or {},
+            report=report,
+        )
 
-    @classmethod
-    def hold(cls, reason: str, **kw: Any) -> Self:
-        return cls("held", reason, status="held", **kw)
+    @staticmethod
+    def hold(
+        reason: str,
+        *,
+        stage: str | None = None,
+        data: T | None = None,
+        files: Mapping[str, str | bytes] | None = None,
+        report: str | None = None,
+    ) -> Transition[T]:
+        return Transition(
+            "held",
+            reason,
+            stage=stage,
+            status="held",
+            data=data,
+            files=files or {},
+            report=report,
+        )
 
-    @classmethod
-    def wait(cls, reason: str, **kw: Any) -> Self:
-        return cls("waiting", reason, status="waiting", **kw)
+    @staticmethod
+    def wait(
+        reason: str,
+        *,
+        stage: str | None = None,
+        data: T | None = None,
+        files: Mapping[str, str | bytes] | None = None,
+        report: str | None = None,
+    ) -> Transition[T]:
+        return Transition(
+            "waiting",
+            reason,
+            stage=stage,
+            status="waiting",
+            data=data,
+            files=files or {},
+            report=report,
+        )
+
+
+class UnitInspection(BaseModel, Generic[D]):
+    unit: str
+    revision: str
+    state: UnitState[D]
+    active: Execution | None
+    dirty: bool
 
 
 def git(path: Path, *args: str) -> str:
@@ -308,7 +379,7 @@ class Unit(Generic[D]):
         status: Status | None = None,
         reason: str | None = None,
         note: str | None = None,
-        data: dict[str, Any] | None = None,
+        data: dict[str, JsonValue] | None = None,
         expected: str | None = None,
     ) -> str:
         """Boundary controls; data patches require a settled unit and the inspected HEAD."""
@@ -336,25 +407,26 @@ class Unit(Generic[D]):
             if note is not None:
                 state.notes.append(Note(id=state.controls.version, text=note))
             sha = self._commit("steer" + (f": {note}" if note else ""), state, {})
-            event = {
-                "type": "steer",
-                "at": now(),
-                "unit": self.id,
-                "sha": sha,
-                "action": {
-                    k: v
-                    for k, v in {
-                        "stage": stage,
-                        "status": status,
-                        "reason": reason,
-                        "note": note,
-                        "data": data,
-                    }.items()
-                    if v is not None
-                },
-            }
-            with self.events.open("a") as file:
-                file.write(json.dumps(event) + "\n")
+            append_event(
+                self.events,
+                SteerEvent(
+                    unit=self.id,
+                    sha=sha,
+                    action=Steering.model_validate(
+                        {
+                            k: v
+                            for k, v in {
+                                "stage": stage,
+                                "status": status,
+                                "reason": reason,
+                                "note": note,
+                                "data": data,
+                            }.items()
+                            if v is not None
+                        }
+                    ),
+                ),
+            )
             return sha
 
     def apply(self, transition: Transition[D], *, before: UnitState[D]) -> str:
@@ -377,12 +449,12 @@ class Unit(Generic[D]):
                 f"{before.stage}: {transition.outcome}", state, transition.files
             )
 
-    def inspect(self) -> dict[str, Any]:
+    def inspect(self) -> UnitInspection[D]:
         with self._write_lock():
-            return {
-                "unit": self.id,
-                "revision": self.head(),
-                "state": self.state().model_dump(mode="json"),
-                "active": active.model_dump() if (active := self._active()) else None,
-                "dirty": bool(git(self.path, "status", "--porcelain")),
-            }
+            return UnitInspection(
+                unit=self.id,
+                revision=self.head(),
+                state=self.state(),
+                active=self._active(),
+                dirty=bool(git(self.path, "status", "--porcelain")),
+            )
