@@ -11,7 +11,6 @@ by this surface contain episodes only.
 
 import asyncio
 import json
-import logging
 import os
 from functools import cache
 from pathlib import Path
@@ -25,8 +24,6 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
-
-logger = logging.getLogger(__name__)
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
@@ -159,20 +156,14 @@ def write_episode(
 
 
 def read_jsonl(file: Path) -> list[dict[str, Any]]:
-    """The objects in a JSON-lines file, oldest first. A torn last line (a process
-    killed mid-write) is skipped rather than blocking every reader; a torn line
-    anywhere else is corruption and raises."""
-    lines = [
-        line for line in file.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
-    rows: list[dict[str, Any]] = []
-    for i, line in enumerate(lines):
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            if i < len(lines) - 1:
-                raise
-            logger.warning("%s ends in a torn line; skipping it", file)
+    """Complete JSONL records. An unfinished tail stays with the writer; corruption raises."""
+    rows = []
+    with file.open("rb") as stream:
+        for line in stream:
+            if not line.endswith(b"\n"):
+                break
+            if line.strip():
+                rows.append(json.loads(line))
     return rows
 
 

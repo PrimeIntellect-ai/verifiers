@@ -76,7 +76,6 @@ class Transition(Generic[D]):
     data: D | None = None
     files: Mapping[str, str | bytes] = field(default_factory=dict)
     report: str | None = None
-    consume_notes: bool = True
 
     @classmethod
     def to(cls, stage: str, outcome: str, summary: str = "", **kw: Any) -> Self:
@@ -88,7 +87,7 @@ class Transition(Generic[D]):
 
     @classmethod
     def hold(cls, reason: str, **kw: Any) -> Self:
-        return cls("held", reason, status="held", consume_notes=False, **kw)
+        return cls("held", reason, status="held", **kw)
 
     @classmethod
     def wait(cls, reason: str, **kw: Any) -> Self:
@@ -197,10 +196,6 @@ class Unit(Generic[D]):
             check=False,
         )
         return out.stdout.decode() if out.returncode == 0 else None
-
-    def read_json(self, rel: str, sha: str = "HEAD") -> Any:
-        raw = self.read(rel, sha)
-        return json.loads(raw) if raw else {}
 
     def state(self) -> UnitState[D]:
         state = self.state_type.model_validate_json(self.read(STATE) or "")
@@ -375,7 +370,7 @@ class Unit(Generic[D]):
             state.outcome = transition.outcome
             if transition.data is not None:
                 state.data = transition.data
-            if transition.consume_notes:
+            if transition.status != "held":
                 consumed = {note.id for note in before.notes}
                 state.notes = [note for note in state.notes if note.id not in consumed]
             return self._commit(
@@ -391,12 +386,3 @@ class Unit(Generic[D]):
                 "active": active.model_dump() if (active := self._active()) else None,
                 "dirty": bool(git(self.path, "status", "--porcelain")),
             }
-
-    def log(self, limit: int | None = None) -> list[dict[str, str]]:
-        args = ["log", "--format=%H%x1f%aI%x1f%s"]
-        if limit:
-            args.append(f"-{limit}")
-        return [
-            dict(zip(("sha", "at", "message"), line.split("\x1f")))
-            for line in git(self.path, *args).splitlines()
-        ]

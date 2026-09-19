@@ -24,5 +24,3 @@ class FlowConfig(BaseConfig):
     )
     """How many task stages run at once (`units`) and how many boxes live at once
     (`runtimes`); a pipeline may hold any name it adds."""
-    payload_cap: PositiveInt = 1_000_000
-    """Largest call value a record keeps, in bytes of JSON; bulk belongs in traces or files."""

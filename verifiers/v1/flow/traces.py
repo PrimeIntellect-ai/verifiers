@@ -24,28 +24,25 @@ class Traces:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.file = root / TRACES_FILE
-        trim_torn_tail(self.file)
         self.lock = asyncio.Lock()
         self._index: dict[str, tuple[int, int]] | None = None  # id -> (offset, length)
 
     async def append(self, trace: Trace) -> None:
-        async with self.lock:
-            start = self.file.stat().st_size
-            await append_trace(self.root, trace, asyncio.Lock(), env="flow")
-            self.index()[trace.id] = (start, self.file.stat().st_size - start)
+        await append_trace(self.root, trace, self.lock, env="flow")
+        self._index = None
 
     def index(self) -> dict[str, tuple[int, int]]:
         """Trace id to its line, built by one scan of the file on first use."""
         if self._index is None:
             self._index, offset = {}, 0
-            with self.file.open("rb") as file:
-                for line in file:
-                    try:
+            if self.file.exists():
+                with self.file.open("rb") as file:
+                    for line in file:
+                        if not line.endswith(b"\n"):
+                            break
                         for t in json.loads(line)["traces"]:
                             self._index[t["id"]] = (offset, len(line))
-                    except (json.JSONDecodeError, KeyError, TypeError):
-                        pass
-                    offset += len(line)
+                        offset += len(line)
         return self._index
 
     def get(self, trace_id: str) -> WireTrace | None:
