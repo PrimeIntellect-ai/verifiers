@@ -16,17 +16,18 @@ import os
 import typing
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
-from uuid import uuid4
 
 from pydantic import BaseModel, TypeAdapter
 from pydantic.errors import PydanticSchemaGenerationError
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.agent import Agent
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -75,6 +76,19 @@ class Result(Generic[T]):
     a stage checks when a later call assumed this one's side effects in a box."""
 
 
+@dataclass(frozen=True)
+class Invocation:
+    id: str
+    key: str | None
+    kind: Kind
+    cache: str | None
+    attempt: int = 0
+    parent: str | None = None
+
+
+INVOCATION: ContextVar[Invocation] = ContextVar("flow_invocation")
+
+
 class Record(BaseModel):
     """A durable call's record, `calls/<unit>/<digest>.json`."""
 
@@ -82,6 +96,9 @@ class Record(BaseModel):
     unit: str
     stage: str
     kind: Kind
+    execution: str
+    call: str
+    attempt: int
     payload: Any = None
     trace_id: str | None = None
     started_at: str
@@ -116,38 +133,107 @@ def _payload(ctx: Ctx, value: Any) -> Any:
     return payload
 
 
+def agent_inputs(config: AgentConfig) -> dict[str, Any]:
+    """Model behavior, excluding credentials and execution allowances.
+
+    Request sampling (including max_tokens) is semantic; run token/turn ceilings are not.
+    Pipelines can extend or replace this selection in Work.content().
+    """
+    return {
+        "model": config.model,
+        "sampling": config.sampling,
+        "client": config.client.model_dump(
+            include={"type", "base_url", "renderer", "renderer_model_name"}
+        )
+        if config.client
+        else None,
+        "harness": config.harness.model_dump(
+            exclude={
+                "forward_env",
+                "mcp_header_env",
+                "tool_timeout",
+                "exec_timeout",
+                "max_turns",
+                "max_total_turns",
+                "max_total_tokens",
+                "max_concurrent_subagents",
+            }
+        )
+        if config.harness
+        else None,
+        "runtime": config.runtime.model_dump(
+            include={"type", "image", "workdir", "network_allow", "network_block"}
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class AgentWork(Work[Trace[Any, Any, Any]]):
     kind: ClassVar[Kind] = "agent"
     seat: str
     task: Task
+    inputs: Any
+    """Declared task configuration and external dependencies, including grading.
+    These supplement task.data and the resolved seat; use {} when neither applies.
+    Host paths, credentials and mutable ambient context should not key completed work.
+    """
     runtime: Runtime | None = None
     """A live box to run in; None provisions one for the call."""
 
-    BUDGETS: ClassVar[frozenset[str]] = frozenset({"timeout", "retries"})
-    """Seat fields that bound a call without changing what it asks: raising a budget must not
-    invalidate the work that landed under the smaller one."""
-
     def content(self, ctx: Ctx) -> list[Any]:
-        # The resolved seat keys the call too: a model change reruns that seat's calls only.
-        seat = ctx.seat(self.seat).model_dump(mode="json", exclude=set(self.BUDGETS))
-        return ["agent", self.seat, type(self.task).__name__, self.task.data, seat]
+        return [
+            "agent",
+            self.seat,
+            f"{type(self.task).__module__}.{type(self.task).__qualname__}",
+            self.task.data.model_dump(exclude={"timeout", "resources"}),
+            agent_inputs(ctx.seat(self.seat)),
+            self.inputs,
+        ]
 
     async def execute(self, ctx: Ctx, name: str) -> Trace:
         flow = ctx.flow
         agent = flow.agent(self.seat)
         held = () if self.runtime is not None else ("runtimes",)
-        execution = f"{name}/{uuid4().hex}"
+        call = INVOCATION.get().id
+        watch = flow.live.watch(ctx.unit.id, call)
+        traces: list[Trace] = []
+
+        def finished(trace: Trace, attempt: int) -> None:
+            status = (
+                "succeeded"
+                if trace.ok
+                else "failed"
+                if trace.is_completed
+                else "cancelled"
+            )
+            ctx.event(
+                "rollout",
+                status,
+                rollout=attempt,
+                trace_id=trace.id,
+                error=trace.last_error.model_dump(mode="json")
+                if trace.last_error
+                else None,
+            )
+
+        def on_trace(trace: Trace) -> None:
+            if traces:
+                finished(traces[-1], len(traces))
+            traces.append(trace)
+            ctx.event("rollout", "started", rollout=len(traces), trace_id=trace.id)
+            watch(trace)
+
         try:
             async with flow.pools.hold(held):
                 ctx.check_running()
                 async with agent:
-                    trace = await self.rollout(
-                        agent, on_trace=flow.live.watch(ctx.unit.id, execution)
-                    )
-            await flow.traces.append(trace)
+                    trace = await self.rollout(agent, on_trace=on_trace)
         finally:
-            flow.live.drop(ctx.unit.id, execution)
+            flow.live.drop(ctx.unit.id, call)
+            if traces:
+                finished(traces[-1], len(traces))
+                for recorded in traces:
+                    await flow.traces.append(recorded)
         if not trace.ok:
             last = trace.last_error
             raise CallFailed(
@@ -190,10 +276,12 @@ class CommandWork(Work[ProgramResult]):
     kind: ClassVar[Kind] = "command"
     argv: list[str]
     runtime: Runtime
+    inputs: Any
+    """Explicit filesystem/artifact dependencies for reuse; {} for an unkeyed command."""
     env: dict[str, str] = field(default_factory=dict)
 
     def content(self, ctx: Ctx) -> list[Any]:
-        return ["command", self.argv, self.env]
+        return ["command", self.argv, self.env, self.inputs]
 
     async def execute(self, ctx: Ctx, name: str) -> ProgramResult:
         return await self.runtime.run(self.argv, self.env)
@@ -211,13 +299,14 @@ class FnWork(Work[T]):
     func: Callable[..., T | Awaitable[T]]
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
+    inputs: Any = None
+    """Optional semantic inputs in place of arguments that contain operational settings."""
 
     def content(self, ctx: Ctx) -> list[Any]:
         return [
             "fn",
             f"{self.func.__module__}.{cast(Any, self.func).__qualname__}",
-            self.args,
-            self.kwargs,
+            self.inputs if self.inputs is not None else [self.args, self.kwargs],
         ]
 
     async def execute(self, ctx: Ctx, name: str) -> T:
@@ -251,24 +340,31 @@ class FnWork(Work[T]):
             return record.payload
 
 
-def agent(seat: str, task: Task, *, runtime: Runtime | None = None) -> AgentWork:
+def agent(
+    seat: str, task: Task, *, inputs: Any, runtime: Runtime | None = None
+) -> AgentWork:
     """`Agent.run(task)` on the config field `seat`; the value is the `Trace`. What a later
     stage reads back must sit on `trace.info`, metrics or rewards: `trace.state` is not
-    serialized."""
-    return AgentWork(seat=seat, task=task, runtime=runtime)
+    serialized. `inputs` declares task configuration and external dependencies affecting
+    the returned rollout AND its score; use {} only when neither adds dependencies."""
+    return AgentWork(seat=seat, task=task, inputs=inputs, runtime=runtime)
 
 
 def command(
-    argv: list[str], *, runtime: Runtime, env: dict[str, str] | None = None
+    argv: list[str], *, runtime: Runtime, inputs: Any, env: dict[str, str] | None = None
 ) -> CommandWork:
     """`runtime.run(argv)`; the value is the `ProgramResult`, whatever the exit code."""
-    return CommandWork(argv=list(argv), runtime=runtime, env=dict(env or {}))
+    return CommandWork(
+        argv=list(argv), runtime=runtime, inputs=inputs, env=dict(env or {})
+    )
 
 
-def fn(func: Callable[..., T | Awaitable[T]], *args: Any, **kwargs: Any) -> FnWork[T]:
+def fn(
+    func: Callable[..., T | Awaitable[T]], *args: Any, inputs: Any = None, **kwargs: Any
+) -> FnWork[T]:
     """`func(*args, **kwargs)` on the host, sync or async. The arguments key the call, so
-    they must be JSON-stable."""
-    return FnWork[T](func=func, args=args, kwargs=kwargs)
+    they must be JSON-stable. Supply `inputs` to declare semantic dependencies instead."""
+    return FnWork[T](func=func, args=args, kwargs=kwargs, inputs=inputs)
 
 
 class Live:
@@ -305,6 +401,8 @@ class Live:
                 self._due[file] = loop.call_later(LIVE_EVERY_S, write, trace)
 
         def on_trace(trace: Trace) -> None:
+            if (due := self._due.pop(file, None)) is not None:
+                due.cancel()
             trace.watch(changed)
             changed(trace)
 

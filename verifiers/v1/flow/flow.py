@@ -1,15 +1,4 @@
-"""The loop: for every unit that is ready, run the stage its state names, commit the
-transition, repeat until every unit is terminal, held or waiting, or the flow drains.
-
-    pipeline = Pipeline(stages={"plan": plan, "author": author}, start="plan", data=TaskData)
-    async with Flow(root, config, pipeline) as flow:
-        await flow.run()
-
-The campaign is a unit too, at `campaign/`; its stages run alone, so a campaign stage
-that must see every task parked (a fix, a plan) needs no gate. `pipeline.admit` says which
-ready tasks may start. A stage that raises holds its unit with the error as reason; a
-drain lets in-flight calls finish and leaves their units ready to resume.
-"""
+"""Run admitted, ready units until quiescence or drain. Pipelines own scheduling policy."""
 
 from __future__ import annotations
 
@@ -19,14 +8,17 @@ import json
 import logging
 import os
 import signal
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import IO, Any, Generic, Self, TypeVar, cast
+from types import MappingProxyType
+from typing import IO, Any, Generic, Literal, Self, TypeVar, cast
+from uuid import uuid4
 
+from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.agent import Agent, make_agent
@@ -35,10 +27,19 @@ from verifiers.v1.configs.agent import (
     declared_agent_configs,
     resolve_agent,
 )
-from verifiers.v1.flow.calls import CallFailed, Live, Record, Result, Work, now
+from verifiers.v1.flow.calls import (
+    INVOCATION,
+    CallFailed,
+    Invocation,
+    Live,
+    Record,
+    Result,
+    Work,
+    now,
+)
 from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.traces import Traces, trim_torn_tail
-from verifiers.v1.flow.unit import D, Transition, Unit, UnitData, UnitState
+from verifiers.v1.flow.unit import D, Execution, Transition, Unit, UnitState
 from verifiers.v1.interception import Interception, make_interception
 from verifiers.v1.runtimes import (
     Runtime,
@@ -54,8 +55,7 @@ from verifiers.v1.utils.retries import backoff
 logger = logging.getLogger("verifiers.flow")
 
 T = TypeVar("T")
-CAMPAIGN = "campaign"
-TASKS = "tasks"
+UNITS = "units"
 DRAIN_FILE = "drain"
 """A file of this name in the root drains the flow, as Ctrl-C once does. Remove it to launch again."""
 TRANSITIONS = "transitions.jsonl"
@@ -64,25 +64,27 @@ _LINKS: ContextVar[list[dict[str, str]] | None] = ContextVar("flow_links", defau
 """The other units the running stage touched, `{unit, label}`: the edges between lanes."""
 
 
-def task_path(root: Path, name: str) -> Path:
-    if (
-        not name
-        or name in (".", "..", CAMPAIGN)
-        or Path(name).name != name
-        or "\\" in name
-    ):
-        raise ValueError(f"unsafe or reserved task id: {name!r}")
-    path = root / TASKS / name
-    if not path.resolve().is_relative_to((root / TASKS).resolve()):
-        raise ValueError(f"task path escapes root: {name!r}")
+def unit_path(root: Path, name: str) -> Path:
+    if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
+        raise ValueError(f"unsafe unit id: {name!r}")
+    path = root / UNITS / name
+    if not path.resolve().is_relative_to((root / UNITS).resolve()):
+        raise ValueError(f"unit path escapes root: {name!r}")
     return path
 
 
-def succeeded(campaign: Unit, tasks: Iterable[Unit]) -> bool:
-    """Waiting after planning is normal; a held campaign is not success."""
-    return campaign.state().status in ("waiting", "terminal") and all(
-        unit.state().status == "terminal" for unit in tasks
-    )
+class RunResult(BaseModel):
+    """Execution facts; a pipeline decides which outcomes count as success."""
+
+    reason: Literal["quiescent", "draining"]
+    units: dict[str, UnitState[Any]]
+
+    @property
+    def counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for state in self.units.values():
+            counts[state.status] = counts.get(state.status, 0) + 1
+        return counts
 
 
 class Stopped(Exception):
@@ -114,22 +116,19 @@ Stage = Callable[["Ctx"], Awaitable[Transition]]
 
 
 @dataclass(frozen=True)
-class Pipeline(Generic[D]):
+class Pipeline:
     stages: dict[str, Stage]
-    start: str
-    """The campaign's first stage."""
-    data: type[D]
     admit: Callable[[Unit, Flow], bool] | None = None
-    """Whether a ready task may start now; None admits every one."""
+    """Whether a ready, inactive unit may start. Earlier admissions are already active."""
+    initialize: Callable[[Flow], None] | None = None
+    """Entrypoints call this to seed initial units; create_unit preserves existing work."""
     config: type[FlowConfig] = FlowConfig
-    campaign_data: type[UnitData] = UnitData
 
 
-class Flow(Generic[D]):
-    """One campaign root: `campaign/` and `tasks/<id>/` units, `calls/`, `traces.jsonl`,
-    `live/`, `transitions.jsonl`, the config and the lock. `async with Flow(...)` owns it."""
+class Flow:
+    """Owns a run root: units, call results, traces, events, configuration and launch lock."""
 
-    def __init__(self, root: Path, config: FlowConfig, pipeline: Pipeline[D]) -> None:
+    def __init__(self, root: Path, config: FlowConfig, pipeline: Pipeline) -> None:
         self.root, self.config, self.pipeline = root, config, pipeline
         self.pools = Pools(config.pools)
         self.label = f"flow-{root.name}-{digest(str(root.resolve()))[:12]}"[:60]
@@ -137,7 +136,12 @@ class Flow(Generic[D]):
         self._draining = asyncio.Event()
         self._dirty: set[str] = set()
         self._lock: IO[str] | None = None
-        self._campaign_lock = asyncio.Lock()
+        self._active: dict[str, Execution] = {}
+
+    @property
+    def active(self) -> Mapping[str, Execution]:
+        """Reserved executions, including their original stage after a live route."""
+        return MappingProxyType(self._active)
 
     async def __aenter__(self) -> Self:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -151,16 +155,9 @@ class Flow(Generic[D]):
         try:
             (self.root / "flow.json").write_text(self.config.model_dump_json(indent=1))
             (self.root / "calls").mkdir(exist_ok=True)
-            (self.root / TASKS).mkdir(exist_ok=True)
+            (self.root / UNITS).mkdir(exist_ok=True)
             trim_torn_tail(self.root / TRANSITIONS)
             self.traces, self.live = Traces(self.root), Live(self.root)
-            self.campaign = Unit.create(
-                self.root / CAMPAIGN,
-                stage=self.pipeline.start,
-                data=self.pipeline.campaign_data(),
-                stages=self.pipeline.stages,
-                events=self.root / TRANSITIONS,
-            )
             return self
         except BaseException:
             lock.close()
@@ -174,29 +171,24 @@ class Flow(Generic[D]):
 
     # -- units -----------------------------------------------------------------------------
 
-    def tasks(self) -> list[Unit[D]]:
+    def units(self) -> list[Unit]:
         return [
-            Unit(task_path(self.root, p.name), self.pipeline.data)
-            for p in sorted((self.root / TASKS).iterdir())
+            Unit(unit_path(self.root, p.name))
+            for p in sorted((self.root / UNITS).iterdir())
             if (p / ".git").exists()
         ]
 
     def unit(self, name: str) -> Unit:
-        return self.campaign if name == CAMPAIGN else Unit(task_path(self.root, name))
+        return Unit(unit_path(self.root, name))
 
-    def create_task(
-        self,
-        name: str,
-        *,
-        stage: str,
-        data: D,
-        files: dict[str, str] | None = None,
+    def create_unit(
+        self, name: str, *, stage: str, data: D, files: dict[str, str] | None = None
     ) -> Unit[D]:
-        """Create an independently scheduled task with pipeline-typed durable data."""
+        """Seed a typed unit without resetting an existing checkpoint."""
         unit = Unit.create(
-            task_path(self.root, name),
+            unit_path(self.root, name),
             stage=stage,
-            data=self.pipeline.data.model_validate(data),
+            data=data,
             stages=self.pipeline.stages,
             events=self.root / TRANSITIONS,
             files=files,
@@ -226,60 +218,68 @@ class Flow(Generic[D]):
 
     # -- the loop ---------------------------------------------------------------------------
 
-    async def run(self) -> dict[str, int]:
-        """Run stages until nothing is runnable; the units by status. Call inside
-        `async with Flow(...)`, after `sweep` on a resume."""
-        running: dict[str, asyncio.Task[None]] = {}
+    async def run(self) -> RunResult:
+        """Run until nothing is runnable, or drain. Call inside `async with Flow(...)`."""
+        running: dict[str, tuple[asyncio.Task[None], ExitStack]] = {}
+
+        def release(name: str) -> asyncio.Task[None]:
+            task, lease = running.pop(name)
+            lease.close()
+            del self._active[name]
+            return task
+
         async with self._serving():
+            self.event("run_started")
             try:
                 while True:
-                    launched = False if self.draining else await self._launch(running)
+                    if not self.draining:
+                        self._launch(running)
                     if not running:
-                        if launched:
-                            continue
                         break
                     done, _ = await asyncio.wait(
-                        running.values(), return_when=asyncio.FIRST_COMPLETED
+                        [task for task, _ in running.values()],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                    for task in done:
-                        task.result()
-                    running = {k: t for k, t in running.items() if t not in done}
+                    for name, (task, _) in list(running.items()):
+                        if task in done:
+                            release(name).result()
             finally:
-                # Settle stages before closing interception or releasing the launch lock.
-                for task in running.values():
+                # The loop owns reservations even if a task is cancelled before its first turn.
+                for task, _ in running.values():
                     task.cancel()
-                await asyncio.gather(*running.values(), return_exceptions=True)
-        counts: dict[str, int] = {}
-        for unit in self.tasks():
-            status = unit.state().status
-            counts[status] = counts.get(status, 0) + 1
-        return counts
+                await asyncio.gather(
+                    *(task for task, _ in running.values()), return_exceptions=True
+                )
+                for name in list(running):
+                    release(name)
+        result = RunResult(
+            reason="draining" if self.draining else "quiescent",
+            units={unit.id: unit.state() for unit in self.units()},
+        )
+        self.event("run_finished", reason=result.reason, counts=result.counts)
+        return result
 
-    async def _launch(self, running: dict[str, asyncio.Task[None]]) -> bool:
-        """Start what may run: the campaign's stage, alone, when it is ready; else every
-        admitted ready task up to the `units` pool. Whether anything was started."""
-        if not self._clean(self.campaign):
-            return False
-        if self.campaign.state().status == "ready":
-            if running:
-                return False  # the campaign runs alone: let the tasks in flight finish
-            await self._stage(self.campaign)
-            return True
-        started = 0
-        free = self.config.pools.get("units", 4) - len(running)
-        for unit in self.tasks():
-            if free <= 0:
+    def _launch(self, running: dict[str, tuple[asyncio.Task[None], ExitStack]]) -> None:
+        for unit in self.units():
+            if len(running) >= self.config.pools.get("units", 4) or self.draining:
                 break
-            if unit.id in running or unit.state().status != "ready":
+            if (
+                unit.id in running
+                or not self._clean(unit)
+                or unit.state().status != "ready"
+            ):
                 continue
             if self.pipeline.admit is not None and not self.pipeline.admit(unit, self):
                 continue
-            if not self._clean(unit):
-                continue
-            running[unit.id] = asyncio.create_task(self._stage(unit))
-            free -= 1
-            started += 1
-        return started > 0
+            with ExitStack() as stack:
+                before, execution = stack.enter_context(unit.executing())
+                if before.status != "ready":
+                    continue
+                self._active[unit.id] = execution
+                running[unit.id] = (
+                    asyncio.create_task(self._stage(unit, before, execution)),
+                    stack.pop_all(),
+                )
 
     def _clean(self, unit: Unit) -> bool:
         """Whether the unit's repository is clean enough to schedule. A dirty one (a crash between
@@ -295,57 +295,47 @@ class Flow(Generic[D]):
         self._dirty.discard(unit.id)
         return True
 
-    async def _stage(self, unit: Unit) -> None:
-        if not self._clean(unit):
-            return
-        with unit.executing() as (before, execution):
-            if before.status != "ready" or self.draining:
-                return
-            name = before.stage
-            self.event("started", unit=unit.id, stage=name, execution=execution["id"])
-            links: list[dict[str, str]] = []
-            token = _LINKS.set(links)
-            try:
-                transition = await self.pipeline.stages[name](Ctx(self, unit, before))
-            except Stopped:
-                self.event(
-                    "stopped", unit=unit.id, stage=name, execution=execution["id"]
-                )
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.exception("%s/%s failed", unit.id, name)
-                transition = Transition.hold(f"{type(exc).__name__}: {exc}")
-            finally:
-                _LINKS.reset(token)
-            sha = unit.apply(transition, before=before)
-            committed = unit.state()
-            self.event(
-                "transition",
-                unit=unit.id,
-                stage=name,
-                execution=execution["id"],
-                outcome=transition.outcome,
-                to=committed.stage,
-                status=committed.status,
-                reason=committed.reason,
-                report=transition.report,
-                sha=sha,
-                links=links,
+    async def _stage(self, unit: Unit, before: UnitState, execution: Execution) -> None:
+        name = execution.stage
+        self.event("started", unit=unit.id, stage=name, execution=execution.id)
+        links: list[dict[str, str]] = []
+        token = _LINKS.set(links)
+        try:
+            transition = await self.pipeline.stages[name](
+                Ctx(self, unit, before, execution)
             )
+        except Stopped:
+            self.event("stopped", unit=unit.id, stage=name, execution=execution.id)
+            return
+        except asyncio.CancelledError:
+            self.event("cancelled", unit=unit.id, stage=name, execution=execution.id)
+            raise
+        except Exception as exc:
+            logger.exception("%s/%s failed", unit.id, name)
+            transition = Transition.hold(f"{type(exc).__name__}: {exc}")
+        finally:
+            _LINKS.reset(token)
+        sha = unit.apply(transition, before=before)
+        committed = unit.state()
+        self.event(
+            "transition",
+            unit=unit.id,
+            stage=name,
+            execution=execution.id,
+            outcome=transition.outcome,
+            to=committed.stage,
+            status=committed.status,
+            reason=committed.reason,
+            report=transition.report,
+            sha=sha,
+            links=links,
+        )
 
-    def event(self, kind: str, **fields: Any) -> None:
-        line = json.dumps({"type": kind, "at": now(), **fields})
+    def event(self, event_type: str, **fields: Any) -> None:
+        line = json.dumps({"type": event_type, "at": now(), **fields})
         with (self.root / TRANSITIONS).open("a") as file:
             file.write(line + "\n")
         logger.info("%s", line)
-
-    @asynccontextmanager
-    async def commit_campaign(self) -> AsyncIterator[Unit]:
-        """The campaign unit, to write from a task stage: one writer at a time."""
-        async with self._campaign_lock:
-            yield self.campaign
 
     # -- drain, sweep, serving ----------------------------------------------------------------
 
@@ -401,9 +391,12 @@ class Flow(Generic[D]):
 class Ctx(Generic[D]):
     """A stage's handle: its unit, the flow, and the calls."""
 
-    def __init__(self, flow: Flow, unit: Unit[D], state: UnitState[D]) -> None:
+    def __init__(
+        self, flow: Flow, unit: Unit[D], state: UnitState[D], execution: Execution
+    ) -> None:
         self.flow, self.unit, self.state = flow, unit, state
-        self.stage = state.stage
+        self.execution = execution
+        self.stage = execution.stage
         self.data = state.data.model_copy(deep=True)
 
     def notes(self) -> str:
@@ -479,78 +472,130 @@ class Ctx(Generic[D]):
                     child.cancel()
             await asyncio.gather(*children, return_exceptions=True)
 
+    def event(self, kind: str, status: str, **fields: Any) -> None:
+        """Call and native rollout evidence share one invocation and stage execution."""
+        invocation = asdict(INVOCATION.get())
+        invocation["call"] = invocation.pop("id")
+        self.flow.event(
+            kind,
+            unit=self.unit.id,
+            stage=self.stage,
+            execution=self.execution.id,
+            status=status,
+            **invocation,
+            **fields,
+        )
+
     async def attempt(
         self, work: Work[T], *, key: str | None, retries: int, timeout: float | None
     ) -> Result[T]:
         flow = self.flow
-        name = key or work.kind
-        file = None
-        if key:
-            calls = flow.root / "calls" / self.unit.id
-            file = calls / (digest(key, work.content(self))[:24] + ".json")
-        if file is not None and file.exists():
-            record = Record.model_validate_json(file.read_text())
-            try:
-                return Result(
-                    True,
-                    work.load(self, record),
+        name, call = key or work.kind, uuid4().hex
+        cache = digest(key, work.content(self))[:24] if key is not None else None
+        file = flow.root / "calls" / self.unit.id / f"{cache}.json" if cache else None
+        parent = INVOCATION.get(None)
+        token = INVOCATION.set(
+            Invocation(
+                call, key, work.kind, cache, parent=parent.id if parent else None
+            )
+        )
+        try:
+            if file is not None and file.exists():
+                record = Record.model_validate_json(file.read_text())
+                try:
+                    value = work.load(self, record)
+                except Exception as exc:
+                    self.event("call", "failed", error=f"{type(exc).__name__}: {exc}")
+                    raise
+                self.event(
+                    "call",
+                    "attached",
+                    source_call=record.call,
+                    source_execution=record.execution,
                     trace_id=record.trace_id,
-                    attached=True,
                 )
-            except LookupError as exc:
-                logger.warning("%s/%s: %s; running again", self.unit.id, name, exc)
-        if flow.draining:
-            raise Stopped(name)
-        started, attempt = now(), 0
-        while True:
-            if flow.draining:
-                raise Stopped(name)
-            try:
-                async with asyncio.timeout(timeout):
-                    value = await work.execute(self, name)
-                    fields = work.dump(self, value)
-            except Stopped:
-                raise
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                logger.warning(
-                    "%s/%s: attempt %d failed: %s",
-                    self.unit.id,
-                    name,
-                    attempt + 1,
-                    error,
+                return Result(True, value, trace_id=record.trace_id, attached=True)
+            for attempt in range(1, retries + 2):
+                INVOCATION.set(
+                    Invocation(
+                        call,
+                        key,
+                        work.kind,
+                        cache,
+                        attempt,
+                        parent.id if parent else None,
+                    )
                 )
-                if attempt >= retries:
+                if flow.draining:
+                    self.event("call", "stopped")
+                    raise Stopped(name)
+                started = now()
+                self.event("call", "started")
+                try:
+                    async with asyncio.timeout(timeout):
+                        value = await work.execute(self, name)
+                        fields = work.dump(self, value)
+                    if file is not None:
+                        file.parent.mkdir(parents=True, exist_ok=True)
+                        record = Record(
+                            key=name,
+                            unit=self.unit.id,
+                            stage=self.stage,
+                            kind=work.kind,
+                            execution=self.execution.id,
+                            call=call,
+                            attempt=attempt,
+                            started_at=started,
+                            finished_at=now(),
+                            **fields,
+                        )
+                        tmp = file.with_suffix(".tmp")
+                        tmp.write_text(record.model_dump_json(indent=1))
+                        os.replace(tmp, file)
+                except Stopped:
+                    self.event("call", "stopped")
+                    raise
+                except asyncio.CancelledError:
+                    self.event("call", "cancelled")
+                    raise
+                except Exception as exc:  # noqa: BLE001 - a failed work item becomes a typed Result
+                    error = f"{type(exc).__name__}: {exc}"
                     failed = exc if isinstance(exc, CallFailed) else None
-                    return Result(
+                    result: Result[T] = Result(
                         False,
                         error=error,
                         type=failed.type if failed else type(exc).__name__,
                         status_code=failed.status_code if failed else None,
                         trace_id=failed.trace_id if failed else None,
                     )
-                if flow.draining:
-                    raise Stopped(name) from exc
-                await asyncio.sleep(backoff(attempt))
-                attempt += 1
-                continue
-            if file is not None:
-                file.parent.mkdir(parents=True, exist_ok=True)
-                record = Record(
-                    key=name,
-                    unit=self.unit.id,
-                    stage=self.stage,
-                    kind=work.kind,
-                    started_at=started,
-                    finished_at=now(),
-                    **fields,
-                )
-                tmp = file.with_suffix(".tmp")
-                tmp.write_text(record.model_dump_json(indent=1))
-                os.replace(tmp, file)
-            return Result(True, value, trace_id=fields.get("trace_id"))
+                    self.event(
+                        "call",
+                        "failed",
+                        error=error,
+                        error_type=result.type,
+                        status_code=result.status_code,
+                        trace_id=result.trace_id,
+                    )
+                    logger.warning(
+                        "%s/%s: attempt %d failed: %s",
+                        self.unit.id,
+                        name,
+                        attempt,
+                        error,
+                    )
+                    if attempt > retries:
+                        return result
+                    try:
+                        await asyncio.sleep(backoff(attempt - 1))
+                    except asyncio.CancelledError:
+                        self.event("call", "cancelled")
+                        raise
+                    continue
+                self.event("call", "succeeded", trace_id=fields.get("trace_id"))
+                return Result(True, value, trace_id=fields.get("trace_id"))
+            raise ValueError("retries must be nonnegative")
+        finally:
+            INVOCATION.reset(token)
 
     @asynccontextmanager
     async def runtime(
