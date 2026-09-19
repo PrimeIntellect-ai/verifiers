@@ -35,7 +35,7 @@ class Data(UnitData):
 
 
 async def parked(ctx: Ctx) -> Transition:
-    return Transition.wait("planned")
+    return Transition("waiting", "planned", status="waiting")
 
 
 def pipeline(stage):
@@ -67,7 +67,7 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
         recorded.set()
         await ctx.call(fn(blocked.wait, output=bool))
         ctx.data.revision = revision
-        return Transition.end("done", data=ctx.data)
+        return Transition("done", status="terminal", data=ctx.data)
 
     p = pipeline(stage)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
@@ -108,20 +108,25 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
         ]
         calls = [e for e in events if e["type"] == "call"]
         original = next(
-            e for e in calls if e["status"] == "succeeded" and e["key"] == "author"
+            e
+            for e in calls
+            if e["status"] == "succeeded" and e["invocation"]["key"] == "author"
         )
         attached = next(e for e in calls if e["status"] == "attached")
-        assert attached["source_call"] == original["call"] != attached["call"]
+        producer, consumer = original["invocation"], attached["invocation"]
+        assert attached["source_call"] == producer["call"] != consumer["call"]
         assert (
             attached["source_execution"]
-            == original["execution"]
-            != attached["execution"]
+            == producer["execution"]
+            != consumer["execution"]
         )
-        assert any(e["key"] is None and e["status"] == "cancelled" for e in calls)
+        assert any(
+            e["invocation"]["key"] is None and e["status"] == "cancelled" for e in calls
+        )
         record = json.loads(next((tmp_path / "calls/t").glob("*.json")).read_text())
         assert (
-            record["execution"] == original["execution"]
-            and record["call"] == original["call"]
+            record["execution"] == producer["execution"]
+            and record["call"] == producer["call"]
         )
 
 
@@ -146,8 +151,8 @@ async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
             key=lambda i: f"solve/{i}",
         )
         if any(not result.ok for result in results):
-            return Transition.hold("one call failed")
-        return Transition.end("done")
+            return Transition("held", "one call failed", status="held")
+        return Transition("done", status="terminal")
 
     p = pipeline(stage)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
@@ -186,7 +191,7 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
         entered.set()
         await finish.wait()
         ctx.data.credits = 0
-        return Transition.to("review", "built", data=ctx.data)
+        return Transition("built", stage="review", data=ctx.data)
 
     async with Flow(tmp_path, FlowConfig(), pipeline(stage)) as flow:
         unit = flow.create_unit("t", stage="work", data=Data())
@@ -284,7 +289,7 @@ async def test_uniform_admission_reserves_before_next_candidate_and_reports_fact
         seen.append((ctx.unit.id, list(ctx.flow.active)))
         await asyncio.sleep(0)
         assert list(ctx.flow.active) == [ctx.unit.id]
-        return Transition.wait("operator decision")
+        return Transition("waiting", "operator decision", status="waiting")
 
     p = Pipeline({"work": stage}, admit=lambda unit, flow: not flow.active)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
@@ -344,7 +349,7 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
             key="solve",
         )
         assert trace.ok
-        return Transition.end("done")
+        return Transition("done", status="terminal")
 
     cfg = AgentFlowConfig(
         model="solver-v1",
