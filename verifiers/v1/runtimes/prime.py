@@ -5,6 +5,7 @@ import base64
 import contextlib
 import logging
 import math
+import os
 import shlex
 import tempfile
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ from pydantic import Field, model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    RUN_LABEL_VAR,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -172,6 +174,9 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        labels = [*BASE_LABELS, *self.config.labels]
+        if label := os.environ.get(RUN_LABEL_VAR):
+            labels.append(label)
         try:
             async with (
                 creation_limiter(
@@ -186,9 +191,7 @@ class PrimeRuntime(Runtime):
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
-                            labels=list(
-                                dict.fromkeys([*BASE_LABELS, *self.config.labels])
-                            ),
+                            labels=list(dict.fromkeys(labels)),
                             docker_image=self.config.image,
                             environment_vars=self.env,
                             **{k: v for k, v in options.items() if v is not None},

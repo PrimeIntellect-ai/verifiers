@@ -25,7 +25,6 @@ from verifiers.v1.flow.calls import (
     Result,
     Success,
     Work,
-    agent,
     fn,
 )
 from verifiers.v1.flow.config import FlowConfig
@@ -68,7 +67,6 @@ __all__ = [
     "UnitInspection",
     "UnitState",
     "Work",
-    "agent",
     "drain_on_interrupt",
     "fn",
 ]

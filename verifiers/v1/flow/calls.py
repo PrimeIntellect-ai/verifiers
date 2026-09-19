@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypedDict, Ty
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agent import Agent, make_agent
 from verifiers.v1.flow.events import CallEvent, Invocation
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 LIVE_EVERY_S = 3.0
-"""How often at most a live trace snapshot is rewritten while a seat runs."""
+"""How often at most a live trace snapshot is rewritten while a call runs."""
 
 
 class CallFailed(Exception):
@@ -93,6 +93,8 @@ class Work(ABC, Generic[T]):
 
 @dataclass(frozen=True)
 class AgentWork(Work[Trace[Any, Any, Any]]):
+    """A native rollout; cached traces restore durable info, never live state."""
+
     kind: ClassVar[str] = "agent"
     seat: str
     task: Task
@@ -101,7 +103,7 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
 
     async def execute(self, ctx: Ctx[Any, Any]) -> Trace:
         flow = ctx.flow
-        agent = flow.agent(self.seat)
+        agent = make_agent(flow.seat(self.seat), interception=flow.interception)
         held = () if self.runtime is not None else ("runtimes",)
         invocation = INVOCATION.get()
         call = invocation.call
@@ -204,17 +206,6 @@ class FnWork(Work[T]):
         return self.output.validate_python(record.payload)
 
 
-def agent(
-    seat: str,
-    task: Task,
-    *,
-    inputs: JsonValue | BaseModel | None = None,
-    runtime: Runtime | None = None,
-) -> AgentWork:
-    """A native agent rollout. Cached traces retain durable info, never live state."""
-    return AgentWork(seat=seat, task=task, inputs=inputs, runtime=runtime)
-
-
 def fn(
     func: Callable[..., T | Awaitable[T]],
     *args: Any,
@@ -228,49 +219,47 @@ def fn(
 
 
 class Live:
-    """One snapshot file per seat in flight, `live/<unit>--<name>.json`, rewritten as the
-    trace changes (at most every few seconds) and removed when the call ends: what a
-    monitor reads to see a running seat turn by turn. Visibility, not durability."""
+    """Throttled trace snapshots at `live/<unit>--<call>.json`, removed when calls end.
+    These let monitors inspect running calls; completed traces are stored separately."""
 
     def __init__(self, root: Path) -> None:
         self.dir = root / "live"
         self.dir.mkdir(exist_ok=True)
         for stale in self.dir.glob("*.json"):
             stale.unlink()
-        self._due: dict[Path, asyncio.TimerHandle] = {}
-        self._active: set[Path] = set()
+        self._active: dict[Path, asyncio.TimerHandle | None] = {}
 
-    def _file(self, unit: str, name: str) -> Path:
-        return self.dir / f"{unit}--{name.replace('/', '__')}.json"
+    def _file(self, unit: str, call: str) -> Path:
+        return self.dir / f"{unit}--{call}.json"
 
-    def watch(self, unit: str, name: str) -> Callable[[Trace], None]:
-        file = self._file(unit, name)
-        self._active.add(file)
+    def watch(self, unit: str, call: str) -> Callable[[Trace], None]:
+        file = self._file(unit, call)
+        self._active[file] = None
 
         def write(trace: Trace) -> None:
-            self._due.pop(file, None)
             if file not in self._active:
                 return
+            self._active[file] = None
             tmp = file.with_suffix(".tmp")
             tmp.write_text(trace.model_dump_json())
             os.replace(tmp, file)
 
         def changed(trace: Trace) -> None:
-            if file in self._active and file not in self._due:
+            if file in self._active and self._active[file] is None:
                 loop = asyncio.get_running_loop()
-                self._due[file] = loop.call_later(LIVE_EVERY_S, write, trace)
+                self._active[file] = loop.call_later(LIVE_EVERY_S, write, trace)
 
         def on_trace(trace: Trace) -> None:
-            if (due := self._due.pop(file, None)) is not None:
+            if (due := self._active.get(file)) is not None:
                 due.cancel()
+                self._active[file] = None
             trace.watch(changed)
             changed(trace)
 
         return on_trace
 
-    def drop(self, unit: str, name: str) -> None:
-        file = self._file(unit, name)
-        self._active.discard(file)
-        if (due := self._due.pop(file, None)) is not None:
+    def drop(self, unit: str, call: str) -> None:
+        file = self._file(unit, call)
+        if (due := self._active.pop(file, None)) is not None:
             due.cancel()
         file.unlink(missing_ok=True)

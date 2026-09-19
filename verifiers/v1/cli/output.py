@@ -14,7 +14,6 @@ import json
 import os
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -155,30 +154,22 @@ def write_episode(
         f.write(data + b"\n")
 
 
-def read_jsonl(file: Path) -> list[dict[str, Any]]:
-    """Complete JSONL records. An unfinished tail stays with the writer; corruption raises."""
-    rows = []
-    with file.open("rb") as stream:
-        for line in stream:
-            if not line.endswith(b"\n"):
-                break
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
-
-
 def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
     importing it)."""
     trace_adapter = type_adapter(trace_type)
     episodes: list[WireEpisode] = []
-    for row in read_jsonl(results_dir / TRACES_FILE):
-        record = WireEpisode.model_validate({**row, "traces": []})
-        record.traces = [
-            trace_adapter.validate_python(trace) for trace in row["traces"]
-        ]
-        episodes.append(record)
+    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            record = WireEpisode.model_validate({**row, "traces": []})
+            record.traces = [
+                trace_adapter.validate_python(trace) for trace in row["traces"]
+            ]
+            episodes.append(record)
     return episodes
 
 
