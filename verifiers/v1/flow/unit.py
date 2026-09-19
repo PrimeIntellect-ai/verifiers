@@ -332,18 +332,12 @@ class Unit(Generic[D]):
                 SteerEvent(
                     unit=self.id,
                     sha=sha,
-                    action=Steering.model_validate(
-                        {
-                            k: v
-                            for k, v in {
-                                "stage": stage,
-                                "status": status,
-                                "reason": reason,
-                                "note": note,
-                                "data": data,
-                            }.items()
-                            if v is not None
-                        }
+                    action=Steering(
+                        stage=stage,
+                        status=status,
+                        reason=reason,
+                        note=note,
+                        data=data,
                     ),
                 ),
             )

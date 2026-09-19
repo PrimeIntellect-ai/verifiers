@@ -48,6 +48,7 @@ from verifiers.v1.flow.events import (
     RunEvent,
     RunReason,
     StageEvent,
+    Status,
     append_event,
 )
 from verifiers.v1.flow.traces import Traces, trim_torn_tail
@@ -91,8 +92,8 @@ class RunResult(BaseModel):
     units: dict[str, UnitState[Any]]
 
     @property
-    def counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
+    def counts(self) -> dict[Status, int]:
+        counts: dict[Status, int] = {}
         for state in self.units.values():
             counts[state.status] = counts.get(state.status, 0) + 1
         return counts

@@ -26,7 +26,7 @@ class Event(BaseModel):
 class RunEvent(Event):
     type: Literal["run_started", "run_finished", "drain"]
     reason: RunReason | None = None
-    counts: dict[str, int] = Field(default_factory=dict)
+    counts: dict[Status, int] = Field(default_factory=dict)
 
 
 class Link(BaseModel):
