@@ -244,7 +244,8 @@ def test_runtime_requires_auth(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_run_and_teardown(fake_e2b):
+async def test_start_run_and_teardown(fake_e2b, monkeypatch):
+    monkeypatch.setenv("VF_RUN_LABEL", "flow-test")
     sandbox = FakeSandbox()
     FakeSandbox.next = sandbox
     runtime = E2BRuntime(E2BConfig(template="existing", timeout=123), name="vf-test")
@@ -259,7 +260,10 @@ async def test_start_run_and_teardown(fake_e2b):
             {
                 "timeout": 123,
                 "envs": {"BASE": "1"},
-                "metadata": {"verifiers-runtime": "vf-test"},
+                "metadata": {
+                    "verifiers-runtime": "vf-test",
+                    "verifiers-run": "flow-test",
+                },
             },
         )
     ]

@@ -20,6 +20,7 @@ from pydantic import model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    RUN_LABEL_VAR,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -385,11 +386,14 @@ class E2BRuntime(Runtime):
             raise SandboxError(f"e2b sandbox provisioning failed: {e}") from e
 
     async def _create_sandbox(self, e2b, template: str) -> None:
+        metadata = {"verifiers-runtime": self.name}
+        if label := os.environ.get(RUN_LABEL_VAR):
+            metadata["verifiers-run"] = label
         self._sandbox = await e2b.AsyncSandbox.create(
             template,
             timeout=self.config.timeout,
             envs={key: value for key, value in self.env.items() if key != "PATH"},
-            metadata={"verifiers-runtime": self.name},
+            metadata=metadata,
         )
         self.info.id = self._sandbox.sandbox_id
 
