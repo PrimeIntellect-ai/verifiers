@@ -5,6 +5,7 @@ import array
 import contextlib
 import json
 import logging
+import os
 import re
 import shlex
 import socket
@@ -17,7 +18,12 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
+from verifiers.v1.runtimes.base import (
+    RUN_LABEL_VAR,
+    SERVICE_PORT,
+    BaseRuntimeInfo,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
 from verifiers.v1.runtimes.docker.egress import (
     EgressProxy,
@@ -158,9 +164,15 @@ class DockerRuntime(ContainerRuntime):
             for arg in ("--env", f"{key}={value}")
         ]
         mount_args = [arg for mount in self.config.mounts for arg in ("-v", mount)]
+        self._label_args = (
+            ["--label", f"verifiers.run={label}"]
+            if (label := os.environ.get(RUN_LABEL_VAR))
+            else []
+        )
         run = await cli(
             self.engine,
             "run",
+            *self._label_args,
             "--detach",
             *options,
             *env_args,
@@ -298,6 +310,7 @@ class DockerRuntime(ContainerRuntime):
             helper = await cli(
                 self.engine,
                 "run",
+                *self._label_args,
                 "--rm",
                 "--user",
                 "0",
@@ -387,6 +400,7 @@ class DockerRuntime(ContainerRuntime):
         cut = await cli(
             self.engine,
             "run",
+            *self._label_args,
             "--rm",
             "--network",
             f"container:{self._container}",

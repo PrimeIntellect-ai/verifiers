@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import signal
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from contextvars import ContextVar
@@ -59,6 +60,7 @@ from verifiers.v1.runtimes import (
     provision_runtime,
     runtime_is_local,
 )
+from verifiers.v1.runtimes.base import RUN_LABEL_VAR
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -141,6 +143,8 @@ class Flow(Generic[ConfigT]):
         self, root: Path, config: ConfigT, pipeline: Pipeline[ConfigT]
     ) -> None:
         self.root, self.config, self.pipeline = root, config, pipeline
+        label_root = root.resolve()
+        self.label = f"flow-{label_root.name[:32]}-{digest(socket.gethostname(), str(label_root))[:12]}"
         self.pools = Pools(config.pools)
         self.interception: Interception | None = None
         self._draining = asyncio.Event()
@@ -162,7 +166,9 @@ class Flow(Generic[ConfigT]):
             lock.close()
             raise RuntimeError(f"{self.root} is in use by another launch") from None
         self._lock = lock
+        self._previous_label = os.environ.get(RUN_LABEL_VAR)
         try:
+            os.environ[RUN_LABEL_VAR] = self.label
             (self.root / "flow.json").write_text(self.config.model_dump_json(indent=1))
             (self.root / "calls").mkdir(exist_ok=True)
             (self.root / UNITS).mkdir(exist_ok=True)
@@ -171,11 +177,14 @@ class Flow(Generic[ConfigT]):
             self.traces, self.live = Traces(self.root), Live(self.root)
             return self
         except BaseException:
-            lock.close()
-            self._lock = None
+            await self.__aexit__()
             raise
 
     async def __aexit__(self, *exc: object) -> None:
+        if self._previous_label is None:
+            os.environ.pop(RUN_LABEL_VAR, None)
+        else:
+            os.environ[RUN_LABEL_VAR] = self._previous_label
         assert self._lock is not None
         self._lock.close()
         self._lock = None
@@ -240,7 +249,7 @@ class Flow(Generic[ConfigT]):
             return task
 
         async with self._serving():
-            self.event(RunEvent(type="run_started"))
+            self.event(RunEvent(type="run_started", label=self.label))
             try:
                 while True:
                     if not self.draining:

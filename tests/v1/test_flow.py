@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -33,6 +34,7 @@ class AgentFlowConfig(FlowConfig):
 async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     from verifiers.v1.trace import AgentInfo, TraceTask
 
+    monkeypatch.setenv("VF_RUN_LABEL", "outer")
     recorded, finish = asyncio.Event(), asyncio.Event()
     traces = []
 
@@ -66,6 +68,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
         model="offline", client={"type": "eval", "base_url": "http://localhost:1"}
     )
     async with Flow(tmp_path, cfg, pipeline) as flow:
+        assert os.environ["VF_RUN_LABEL"] == flow.label
         unit = flow.create_unit("t", stage="work", data=Data())
         running = asyncio.create_task(flow.run())
         await asyncio.wait_for(recorded.wait(), 10)
@@ -73,6 +76,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await running
         assert unit.state().data.value == 0 and not flow.active
+    assert os.environ["VF_RUN_LABEL"] == "outer"
 
     finish.set()
     async with Flow(tmp_path, cfg, pipeline) as flow:
@@ -81,6 +85,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
         assert all(flow.traces.get(t.id) is not None for t in traces)
     with (tmp_path / "transitions.jsonl").open() as file:
         events = [json.loads(line) for line in file]
+    assert {e["label"] for e in events if e["type"] == "run_started"} == {flow.label}
     produced, attached = [
         e
         for e in events
