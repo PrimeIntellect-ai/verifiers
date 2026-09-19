@@ -11,13 +11,13 @@ import tarfile
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from verifiers.v1.flow.unit import Unit, git
 
-Revision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+ArtifactRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 """An immutable Git commit, addressed within its GitArtifacts repository."""
 KEEP = "refs/flow/artifacts"
 _IDENTITY = {
@@ -38,7 +38,7 @@ class GitArtifacts:
         if not (self.path / ".git").is_dir():
             raise ValueError(f"no Git repository at {self.path}")
 
-    def read_bytes(self, revision: Revision, path: str) -> bytes | None:
+    def read_bytes(self, revision: ArtifactRevision, path: str) -> bytes | None:
         self._relative(path)
         git(self.path, "cat-file", "-e", f"{revision}^{{commit}}")
         out = subprocess.run(
@@ -48,15 +48,15 @@ class GitArtifacts:
         )
         return out.stdout if out.returncode == 0 else None
 
-    def read(self, revision: Revision, path: str) -> str | None:
+    def read(self, revision: ArtifactRevision, path: str) -> str | None:
         value = self.read_bytes(revision, path)
         return value.decode() if value is not None else None
 
-    def read_json(self, revision: Revision, path: str) -> Any:
+    def read_json(self, revision: ArtifactRevision, path: str) -> JsonValue:
         raw = self.read(revision, path)
         return json.loads(raw) if raw else {}
 
-    def listing(self, revision: Revision, prefix: str = "") -> list[str]:
+    def listing(self, revision: ArtifactRevision, prefix: str = "") -> list[str]:
         return git(
             self.path,
             "ls-tree",
@@ -68,7 +68,11 @@ class GitArtifacts:
         ).splitlines()
 
     def archive(
-        self, revision: Revision, *, prefix: str = "", only: tuple[str, ...] = ()
+        self,
+        revision: ArtifactRevision,
+        *,
+        prefix: str = "",
+        only: tuple[str, ...] = (),
     ) -> bytes:
         return subprocess.run(
             [
@@ -85,7 +89,7 @@ class GitArtifacts:
             check=True,
         ).stdout
 
-    def materialize(self, revision: Revision, destination: Path) -> None:
+    def materialize(self, revision: ArtifactRevision, destination: Path) -> None:
         """Restore into a new or empty directory; never overlay an unknown filesystem."""
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
@@ -124,8 +128,11 @@ class GitArtifacts:
             path.unlink(missing_ok=True)
 
     def _snapshot(
-        self, base: Revision | None, change: Callable[[Path], None], message: str
-    ) -> Revision:
+        self,
+        base: ArtifactRevision | None,
+        change: Callable[[Path], None],
+        message: str,
+    ) -> ArtifactRevision:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tree = root / "tree"
@@ -166,10 +173,10 @@ class GitArtifacts:
     def write(
         self,
         *,
-        base: Revision | None,
+        base: ArtifactRevision | None,
         files: dict[str, str | bytes | None],
         message: str = "artifacts",
-    ) -> Revision:
+    ) -> ArtifactRevision:
         """Write or delete (None) paths. Identical inputs produce the same revision."""
 
         def change(tree: Path) -> None:
@@ -187,12 +194,12 @@ class GitArtifacts:
     def capture(
         self,
         *,
-        base: Revision,
+        base: ArtifactRevision,
         archive: bytes,
         prefix: str,
         only: tuple[str, ...],
         message: str = "capture",
-    ) -> Revision:
+    ) -> ArtifactRevision:
         """Replace owned paths from a runtime tar archive, preserving modes and safe symlinks."""
 
         def change(tree: Path) -> None:

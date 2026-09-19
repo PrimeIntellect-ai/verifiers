@@ -18,7 +18,7 @@ from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
 )
-from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -724,12 +724,6 @@ def make_agent(
 
 MakeAgent = Callable[[str, AgentConfig], Agent]
 """An agent factory keyed by name — what `Agents` calls per scraped config field."""
-
-
-def agent_config_fields(config) -> dict[str, AgentConfig]:
-    """The top-level `AgentConfig` fields declared on a config, in declaration
-    order — the env's agents, keyed by field name (the only naming site)."""
-    return {name: value for name, value in config if isinstance(value, AgentConfig)}
 
 
 class Agents:

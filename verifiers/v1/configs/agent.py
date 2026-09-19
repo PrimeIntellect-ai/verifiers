@@ -81,14 +81,9 @@ class WireAgentConfig(AgentConfig):
         return data
 
 
-def declared_agent_configs(config: BaseModel) -> dict[str, AgentConfig]:
-    """The `AgentConfig` fields declared on a config, in declaration order — its
-    seats, each keyed by its field name (the only naming site)."""
-    return {
-        name: getattr(config, name)
-        for name, field in type(config).model_fields.items()
-        if isinstance(field.default, AgentConfig)
-    }
+def agent_config_fields(config: BaseModel) -> dict[str, AgentConfig]:
+    """Top-level agent configs, in declaration order, keyed by their field names."""
+    return {name: value for name, value in config if isinstance(value, AgentConfig)}
 
 
 def resolve_agent(

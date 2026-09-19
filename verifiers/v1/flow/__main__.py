@@ -5,20 +5,30 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from verifiers.v1.flow.flow import DRAIN_FILE, TRANSITIONS, UNITS, unit_path
-from verifiers.v1.flow.unit import Unit
+from verifiers.v1.flow.unit import Unit, UnitInspection
 
 
-def inspect(root: Path, name: str | None = None) -> dict[str, Any]:
+class Inspection(BaseModel):
+    units: list[UnitInspection[Any]]
+    events: Path
+    traces: Path
+    calls: Path
+    draining: bool
+
+
+def inspect(root: Path, name: str | None = None) -> Inspection:
     root = root.resolve()
     paths = [unit_path(root, name)] if name else sorted((root / UNITS).iterdir())
-    return {
-        "units": [Unit(path).inspect() for path in paths if (path / ".git").exists()],
-        "events": str(root / TRANSITIONS),
-        "traces": str(root / "traces.jsonl"),
-        "calls": str(root / "calls"),
-        "draining": (root / DRAIN_FILE).exists(),
-    }
+    return Inspection(
+        units=[Unit(path).inspect() for path in paths if (path / ".git").exists()],
+        events=root / TRANSITIONS,
+        traces=root / "traces.jsonl",
+        calls=root / "calls",
+        draining=(root / DRAIN_FILE).exists(),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -48,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
     drain.add_argument("root", type=Path)
     options = parser.parse_args(argv)
     if options.command == "inspect":
-        print(json.dumps(inspect(options.root, options.unit), indent=2))
+        print(inspect(options.root, options.unit).model_dump_json(indent=2))
     elif options.command == "drain":
         (options.root / DRAIN_FILE).touch()
     else:

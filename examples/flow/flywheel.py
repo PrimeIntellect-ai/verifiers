@@ -46,7 +46,7 @@ async def solve(task: TaskData, slot: int, available: bool) -> Evaluation:
 
 
 async def run(root: Path, available: bool) -> None:
-    async def evaluate(ctx: Ctx[TaskData]) -> Transition:
+    async def evaluate(ctx: Ctx[TaskData]) -> Transition[TaskData]:
         results = await ctx.spread(
             [
                 fn(solve, ctx.data, i, available, output=Evaluation, inputs=ctx.data)
@@ -54,11 +54,11 @@ async def run(root: Path, available: bool) -> None:
             ],
             key=lambda i: f"solve/{i}",
         )
-        if failures := [r.error for r in results if not r.ok]:
+        if failures := [r.error.message for r in results if not r.ok]:
             return Transition.hold(f"{len(failures)}/8 failed: {failures}")
         return Transition.end(
             "evaluated",
-            f"8 completed; score {sum(r.value.score for r in results if r.value is not None) / 8}",
+            f"8 completed; score {sum(r.value.score for r in results if r.ok) / 8}",
         )
 
     async with Flow(root, FlowConfig(), Pipeline({"evaluate": evaluate})) as flow:
@@ -68,10 +68,10 @@ async def run(root: Path, available: bool) -> None:
 
 
 if __name__ == "__main__":
-    from examples.flow.flywheel import run
+    from examples.flow import flywheel
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("--available", action="store_true")
     args = parser.parse_args()
-    asyncio.run(run(args.root, args.available))
+    asyncio.run(flywheel.run(args.root, args.available))

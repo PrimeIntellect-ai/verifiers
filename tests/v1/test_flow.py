@@ -13,12 +13,12 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.output import read_jsonl
 from verifiers.v1.flow import (
     AgentWork,
+    ArtifactRevision,
     Ctx,
     Flow,
     FlowConfig,
     GitArtifacts,
     Pipeline,
-    Revision,
     Transition,
     UnitData,
     agent,
@@ -30,7 +30,7 @@ from verifiers.v1.flow.unit import Unit, git
 
 
 class Data(UnitData):
-    revision: Revision | None = None
+    revision: ArtifactRevision | None = None
     credits: int = Field(default=1, ge=0)
 
 
@@ -48,7 +48,7 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
     recorded, blocked = asyncio.Event(), asyncio.Event()
     writes = 0
 
-    async def produce(repo: str, base: str) -> Revision:
+    async def produce(repo: str, base: str) -> ArtifactRevision:
         nonlocal writes
         writes += 1
         return GitArtifacts(repo).write(base=base, files={"rubric.md": "revised"})
@@ -66,7 +66,8 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
         )
         recorded.set()
         await ctx.call(fn(blocked.wait, output=bool))
-        return Transition.end("done", data=ctx.updated(revision=revision))
+        ctx.data.revision = revision
+        return Transition.end("done", data=ctx.data)
 
     p = pipeline(stage)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
@@ -136,7 +137,7 @@ async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
             raise RuntimeError("provider unavailable")
         return revision
 
-    async def stage(ctx: Ctx[Data]) -> Transition:
+    async def stage(ctx: Ctx[Data]) -> Transition[Data]:
         results = await ctx.spread(
             [
                 fn(work, ctx.data.revision, i, output=str, inputs=ctx.data.revision)
@@ -184,7 +185,8 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
         assert ctx.notes() == "first note"
         entered.set()
         await finish.wait()
-        return Transition.to("review", "built", data=ctx.updated(credits=0))
+        ctx.data.credits = 0
+        return Transition.to("review", "built", data=ctx.data)
 
     async with Flow(tmp_path, FlowConfig(), pipeline(stage)) as flow:
         unit = flow.create_unit("t", stage="work", data=Data())
@@ -197,11 +199,11 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
                 stage="plan" if route else None,
                 note="arrived during work",
             )
-            snapshot = inspect(tmp_path, "t")["units"][0]
-            assert snapshot["active"]["stage"] == flow.active["t"].stage == "work"
+            snapshot = inspect(tmp_path, "t").units[0]
+            assert snapshot.active.stage == flow.active["t"].stage == "work"
             with pytest.raises(TypeError):
                 flow.active["other"] = flow.active["t"]
-            assert snapshot["state"]["status"] == "held"
+            assert snapshot.state.status == "held"
             with pytest.raises(RuntimeError, match="still active"):
                 unit.steer(data={"credits": 2}, expected=unit.head())
         finally:
@@ -214,7 +216,7 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
             0,
         )
         assert [note.text for note in state.notes] == ["arrived during work"]
-        assert inspect(tmp_path, "t")["units"][0]["active"] is None
+        assert inspect(tmp_path, "t").units[0].active is None
         old = unit.head()
         with pytest.raises(ValidationError):
             unit.steer(data={"credits": -1}, expected=old)

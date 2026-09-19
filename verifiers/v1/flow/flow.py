@@ -11,33 +11,46 @@ import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Generic, Literal, Self, TypeVar, cast
+from typing import IO, Any, Generic, Literal, Self, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
+from typing_extensions import TypeVar
 
 from verifiers.v1.agent import Agent, make_agent
 from verifiers.v1.configs.agent import (
     AgentConfig,
-    declared_agent_configs,
+    agent_config_fields,
     resolve_agent,
 )
 from verifiers.v1.flow.calls import (
     INVOCATION,
     CallFailed,
+    Failure,
     Invocation,
     Live,
     Record,
     Result,
+    Success,
     Work,
-    now,
 )
 from verifiers.v1.flow.config import FlowConfig
+from verifiers.v1.flow.events import (
+    CallEvent,
+    CallStatus,
+    DirtyEvent,
+    EventRecord,
+    Link,
+    RunEvent,
+    RunReason,
+    StageEvent,
+    append_event,
+)
 from verifiers.v1.flow.traces import Traces, trim_torn_tail
 from verifiers.v1.flow.unit import D, Execution, Transition, Unit, UnitState
 from verifiers.v1.interception import Interception, make_interception
@@ -47,18 +60,19 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
 
 logger = logging.getLogger("verifiers.flow")
 
 T = TypeVar("T")
+ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)
 UNITS = "units"
 DRAIN_FILE = "drain"
 """A file of this name in the root drains the flow, as Ctrl-C once does. Remove it to launch again."""
 TRANSITIONS = "transitions.jsonl"
 """One line per stage start and per transition: what a dashboard follows."""
-_LINKS: ContextVar[list[dict[str, str]] | None] = ContextVar("flow_links", default=None)
+_LINKS: ContextVar[list[Link] | None] = ContextVar("flow_links", default=None)
 """The other units the running stage touched, `{unit, label}`: the edges between lanes."""
 
 
@@ -74,7 +88,7 @@ def unit_path(root: Path, name: str) -> Path:
 class RunResult(BaseModel):
     """Execution facts; a pipeline decides which outcomes count as success."""
 
-    reason: Literal["quiescent", "draining"]
+    reason: RunReason
     units: dict[str, UnitState[Any]]
 
     @property
@@ -109,21 +123,23 @@ def digest(*parts: Any) -> str:
     ).hexdigest()
 
 
-Stage = Callable[["Ctx"], Awaitable[Transition]]
+Stage = Callable[["Ctx[Any, ConfigT]"], Awaitable[Transition[Any]]]
 """A stage: `async def stage(ctx) -> Transition`."""
 
 
 @dataclass(frozen=True)
-class Pipeline:
-    stages: dict[str, Stage]
-    admit: Callable[[Unit, Flow], bool] | None = None
+class Pipeline(Generic[ConfigT]):
+    stages: dict[str, Stage[ConfigT]]
+    admit: Callable[[Unit[Any], Flow[ConfigT]], bool] | None = None
     """Whether a ready, inactive unit may start. Earlier admissions are already active."""
 
 
-class Flow:
+class Flow(Generic[ConfigT]):
     """Owns a run root: units, call results, traces, events, configuration and launch lock."""
 
-    def __init__(self, root: Path, config: FlowConfig, pipeline: Pipeline) -> None:
+    def __init__(
+        self, root: Path, config: ConfigT, pipeline: Pipeline[ConfigT]
+    ) -> None:
         self.root, self.config, self.pipeline = root, config, pipeline
         self.pools = Pools(config.pools)
         self.interception: Interception | None = None
@@ -195,7 +211,7 @@ class Flow:
         """Note that the running stage acted on another unit (created it, released it, made it
         ready): the transition records the link, so a dashboard can draw the edge between lanes."""
         if (links := _LINKS.get()) is not None:
-            links.append({"unit": unit, "label": label})
+            links.append(Link(unit=unit, label=label))
 
     # -- seats ------------------------------------------------------------------------------
 
@@ -224,7 +240,7 @@ class Flow:
             return task
 
         async with self._serving():
-            self.event("run_started")
+            self.event(RunEvent(type="run_started"))
             try:
                 while True:
                     if not self.draining:
@@ -251,7 +267,9 @@ class Flow:
             reason="draining" if self.draining else "quiescent",
             units={unit.id: unit.state() for unit in self.units()},
         )
-        self.event("run_finished", reason=result.reason, counts=result.counts)
+        self.event(
+            RunEvent(type="run_finished", reason=result.reason, counts=result.counts)
+        )
         return result
 
     def _launch(self, running: dict[str, tuple[asyncio.Task[None], ExitStack]]) -> None:
@@ -285,25 +303,35 @@ class Flow:
         except RuntimeError as exc:
             if unit.id not in self._dirty:
                 self._dirty.add(unit.id)
-                self.event("dirty", unit=unit.id, reason=str(exc))
+                self.event(DirtyEvent(unit=unit.id, reason=str(exc)))
             return False
         self._dirty.discard(unit.id)
         return True
 
     async def _stage(self, unit: Unit, before: UnitState, execution: Execution) -> None:
         name = execution.stage
-        self.event("started", unit=unit.id, stage=name, execution=execution.id)
-        links: list[dict[str, str]] = []
+        self.event(
+            StageEvent(type="started", unit=unit.id, stage=name, execution=execution.id)
+        )
+        links: list[Link] = []
         token = _LINKS.set(links)
         try:
             transition = await self.pipeline.stages[name](
                 Ctx(self, unit, before, execution)
             )
         except Stopped:
-            self.event("stopped", unit=unit.id, stage=name, execution=execution.id)
+            self.event(
+                StageEvent(
+                    type="stopped", unit=unit.id, stage=name, execution=execution.id
+                )
+            )
             return
         except asyncio.CancelledError:
-            self.event("cancelled", unit=unit.id, stage=name, execution=execution.id)
+            self.event(
+                StageEvent(
+                    type="cancelled", unit=unit.id, stage=name, execution=execution.id
+                )
+            )
             raise
         except Exception as exc:
             logger.exception("%s/%s failed", unit.id, name)
@@ -313,30 +341,29 @@ class Flow:
         sha = unit.apply(transition, before=before)
         committed = unit.state()
         self.event(
-            "transition",
-            unit=unit.id,
-            stage=name,
-            execution=execution.id,
-            outcome=transition.outcome,
-            to=committed.stage,
-            status=committed.status,
-            reason=committed.reason,
-            report=transition.report,
-            sha=sha,
-            links=links,
+            StageEvent(
+                type="transition",
+                unit=unit.id,
+                stage=name,
+                execution=execution.id,
+                outcome=transition.outcome,
+                to=committed.stage,
+                status=committed.status,
+                reason=committed.reason,
+                report=transition.report,
+                sha=sha,
+                links=links,
+            )
         )
 
-    def event(self, event_type: str, **fields: Any) -> None:
-        line = json.dumps({"type": event_type, "at": now(), **fields})
-        with (self.root / TRANSITIONS).open("a") as file:
-            file.write(line + "\n")
-        logger.info("%s", line)
+    def event(self, event: EventRecord) -> None:
+        logger.info("%s", append_event(self.root / TRANSITIONS, event))
 
     # -- drain, serving ----------------------------------------------------------------
 
     def drain(self) -> None:
         if not self._draining.is_set():
-            self.event("drain")
+            self.event(RunEvent(type="drain"))
             self._draining.set()
 
     @property
@@ -349,7 +376,7 @@ class Flow:
     async def _serving(self) -> AsyncIterator[None]:
         remote = any(
             not runtime_is_local(self.seat(n).runtime)
-            for n in declared_agent_configs(self.config)
+            for n in agent_config_fields(self.config)
         )
         async with make_interception(
             self.config.interception, requires_tunnel=remote
@@ -361,11 +388,15 @@ class Flow:
                 self.interception = None
 
 
-class Ctx(Generic[D]):
+class Ctx(Generic[D, ConfigT]):
     """A stage's handle: its unit, the flow, and the calls."""
 
     def __init__(
-        self, flow: Flow, unit: Unit[D], state: UnitState[D], execution: Execution
+        self,
+        flow: Flow[ConfigT],
+        unit: Unit[D],
+        state: UnitState[D],
+        execution: Execution,
     ) -> None:
         self.flow, self.unit, self.state = flow, unit, state
         self.execution = execution
@@ -376,14 +407,8 @@ class Ctx(Generic[D]):
         """Notes present at stage start; successful transitions acknowledge only these."""
         return "\n\n".join(note.text for note in self.state.notes)
 
-    def updated(self, **fields: Any) -> D:
-        """A validated copy for a transition; core scheduling fields cannot enter data."""
-        return self.unit.data_type.model_validate(
-            {**self.data.model_dump(mode="json"), **fields}
-        )
-
     @property
-    def config(self) -> FlowConfig:
+    def config(self) -> ConfigT:
         return self.flow.config
 
     def seat(self, name: str) -> AgentConfig:
@@ -398,13 +423,8 @@ class Ctx(Generic[D]):
         """Return the work's value; a key opts into reuse of explicitly declared inputs."""
         result = await self.attempt(work, key=key)
         if not result.ok:
-            raise CallFailed(
-                f"{key or work.kind}: {result.error}",
-                result.type or "",
-                result.status_code,
-                result.trace_id,
-            )
-        return cast(T, result.value)
+            raise CallFailed(result.error, result.trace_id)
+        return result.value
 
     async def spread(
         self,
@@ -437,16 +457,36 @@ class Ctx(Generic[D]):
                     child.cancel()
             await asyncio.gather(*children, return_exceptions=True)
 
-    def event(self, kind: str, status: str, **fields: Any) -> None:
+    def event(
+        self,
+        kind: Literal["call", "rollout"],
+        status: CallStatus,
+        *,
+        trace_id: str | None = None,
+        error: Error | None = None,
+        rollout: int | None = None,
+        source_call: str | None = None,
+        source_execution: str | None = None,
+    ) -> None:
         """Call and native rollout evidence share one invocation and stage execution."""
+        invocation = INVOCATION.get()
         self.flow.event(
-            kind,
-            unit=self.unit.id,
-            stage=self.stage,
-            execution=self.execution.id,
-            status=status,
-            **asdict(INVOCATION.get()),
-            **fields,
+            CallEvent(
+                type=kind,
+                status=status,
+                unit=self.unit.id,
+                stage=self.stage,
+                execution=self.execution.id,
+                call=invocation.call,
+                key=invocation.key,
+                kind=invocation.kind,
+                cache=invocation.cache,
+                trace_id=trace_id,
+                error=error,
+                rollout=rollout,
+                source_call=source_call,
+                source_execution=source_execution,
+            )
         )
 
     async def attempt(self, work: Work[T], *, key: str | None = None) -> Result[T]:
@@ -472,29 +512,22 @@ class Ctx(Generic[D]):
                     source_execution=record.execution,
                     trace_id=record.trace_id,
                 )
-                return Result(True, value, trace_id=record.trace_id, attached=True)
+                return Success(value, attached=True)
             self.check_running()
             self.event("call", "started")
             try:
-                value = await work.execute(self, name)
+                value = await work.execute(self)
             except (Stopped, asyncio.CancelledError):
                 raise
             except Exception as exc:  # noqa: BLE001 - work failures become typed results
-                failed = exc if isinstance(exc, CallFailed) else None
-                result: Result[T] = Result(
-                    False,
-                    error=f"{type(exc).__name__}: {exc}",
-                    type=failed.type if failed else type(exc).__name__,
-                    status_code=failed.status_code if failed else None,
-                    trace_id=failed.trace_id if failed else None,
+                result = Failure(
+                    exc.error
+                    if isinstance(exc, CallFailed)
+                    else Error(type=type(exc).__name__, message=str(exc)),
+                    exc.trace_id if isinstance(exc, CallFailed) else None,
                 )
                 self.event(
-                    "call",
-                    "failed",
-                    error=result.error,
-                    error_type=result.type,
-                    status_code=result.status_code,
-                    trace_id=result.trace_id,
+                    "call", "failed", error=result.error, trace_id=result.trace_id
                 )
                 return result
             # Publication failures stop the stage; repeating work is an operator decision.
@@ -504,14 +537,14 @@ class Ctx(Generic[D]):
                     key=name,
                     execution=self.execution.id,
                     call=call,
-                    **work.dump(self, value),
+                    **work.dump(value),
                 )
                 tmp = file.with_suffix(".tmp")
                 tmp.write_text(record.model_dump_json(indent=1))
                 os.replace(tmp, file)
             trace_id = value.id if isinstance(value, Trace) else None
             self.event("call", "succeeded", trace_id=trace_id)
-            return Result(True, value, trace_id=trace_id)
+            return Success(value)
         except Stopped:
             self.event("call", "stopped")
             raise
@@ -519,7 +552,9 @@ class Ctx(Generic[D]):
             self.event("call", "cancelled")
             raise
         except Exception as exc:
-            self.event("call", "failed", error=f"{type(exc).__name__}: {exc}")
+            self.event(
+                "call", "failed", error=Error(type=type(exc).__name__, message=str(exc))
+            )
             raise
         finally:
             INVOCATION.reset(token)
@@ -532,11 +567,11 @@ class Ctx(Generic[D]):
         the block and always torn down; seats can borrow it with `runtime=box`."""
         config = self.seat(seat).runtime
         if task is not None:
-            config = resolve_runtime_config(config, task, set())
-        env = task.runtime_env() if task is not None else None
+            config = resolve_runtime_config(config, task)
         async with self.flow.pools.hold(("runtimes",)):
             self.check_running()
-            async with provision_runtime(config, env=env) as box:
+            async with provision_runtime(config) as box:
+                box.env = dict(task.runtime_env()) if task is not None else {}
                 yield box
 
     def check_running(self) -> None:
@@ -545,7 +580,7 @@ class Ctx(Generic[D]):
             raise Stopped(self.stage)
 
 
-def drain_on_interrupt(flow: Flow) -> None:
+def drain_on_interrupt(flow: Flow[Any]) -> None:
     """SIGINT and SIGTERM: the first drains (calls in flight finish, units stay ready), the
     second cancels."""
     loop, task = asyncio.get_running_loop(), asyncio.current_task()

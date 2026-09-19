@@ -16,7 +16,7 @@ from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import (
     AgentConfig,
-    declared_agent_configs,
+    agent_config_fields,
     resolve_agent,
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
@@ -105,7 +105,7 @@ class Env(ABC, Generic[ConfigT]):
         self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
-        self._agent_specs: dict[str, AgentConfig] = declared_agent_configs(self.config)
+        self._agent_specs: dict[str, AgentConfig] = agent_config_fields(self.config)
         if not self._agent_specs:
             raise ValueError(
                 f"{type(self).__name__} declares no agents; declare each as an "
