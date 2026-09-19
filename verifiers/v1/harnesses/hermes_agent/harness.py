@@ -6,17 +6,28 @@ from pathlib import Path
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.utils.install import remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
+INSTALL = f"""
+set -e
+{_ENSURE_UV}
+command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
+curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$VF_HERMES_VERSION.tar.gz" \\
+    | tar -xz --strip-components=1 -C "$VF_HERMES_DIR"
+uv sync --project "$VF_HERMES_DIR" --locked --no-dev --extra acp --extra mcp
+touch "$VF_HERMES_DIR/.ready"
+"""
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.19.0"
-    """Hermes Agent release to install, pinned for reproducibility."""
+    version: PinnedVersion = "v2026.9.11"
+    """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
 
@@ -27,9 +38,20 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(
-            PROGRAM_SOURCE.replace("{version}", self.config.version),
-            self.config.resolved_env,
+        # Hermes needs its source-tree assets and supports editable installs only.
+        directory = HERMES_DIR.format(version=self.config.version)
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"test -f {directory}/.ready",
+            install=INSTALL,
+            env={
+                **self.config.resolved_env,
+                "VF_HERMES_DIR": directory,
+                "VF_HERMES_VERSION": self.config.version,
+            },
+            label="Hermes Agent",
+            shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)
 
@@ -87,9 +109,12 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env=env,
-            command=await runtime.prepare_uv_script(
-                PROGRAM_SOURCE.replace("{version}", self.config.version), env
-            ),
+            command=[
+                f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
+                "-P",  # Keep task files from shadowing installed Hermes modules.
+                "-c",
+                PROGRAM_SOURCE,
+            ],
             prompt=prompt,
             system_prompt=system_prompt,
         )

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.21.0"
+    version: PinnedVersion = "0.23.0"
     """Harbor release to install, pinned for reproducibility."""
 
 

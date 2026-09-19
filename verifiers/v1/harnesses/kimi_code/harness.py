@@ -37,7 +37,7 @@ env \
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.36.0"
+    version: PinnedVersion = "0.43.0"
     """Kimi Code release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"

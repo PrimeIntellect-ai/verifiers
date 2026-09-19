@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["81ae3cb34d27d38ee37f9e205a1e73694993b344"] = (
-    "81ae3cb34d27d38ee37f9e205a1e73694993b344"
+PRIME_AGENT_COMMIT: Literal["f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"] = (
+    "f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"
 )
-PRIME_AGENT_VERSION = "0.9.1"
+PRIME_AGENT_VERSION = "0.9.4"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -50,10 +50,10 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    '573bce0cd004fc62052e9a924089941b7f39266ab71e66a94c85a1f9d35835ba' "$agent_tarball" \
-    '11b5b4cf67b6bb2d3420a44fb69181bc9d94d81e69a2b4fde07eb9c99f5faf4f' "$ai_tarball" \
-    'fb6f3a5dcc8b69c5eeb3beff722b5e0f09885c14849db50bc1d7c0f1d064151c' "$core_tarball" \
-    '4f3eaca2814944d3993073e0b88c0bde54a641ddb5132fbe107e392b997e38ec' "$tui_tarball" \
+    'b8d752a53d11a8c9a7580e1fb5fc24f7ce74ccad979c7e6e6aa8880fc3ad90b0' "$agent_tarball" \
+    'ac2798a204f06004776807e3160812fb72877c85718d8024c6d5add8242ece18' "$ai_tarball" \
+    '200b86d62c1502ef0d56acb8a4c306f25b57b378e4c4afddfa592e8110b0be1f' "$core_tarball" \
+    '7a64042e8c4de83bdd453cc9d429a44f0bd860f78e22ebba35e8468ac31642e7' "$tui_tarball" \
     > "$download_dir/SHA256SUMS"
 (cd "$download_dir" && sha256sum -c SHA256SUMS)
 mkdir "$download_dir/package-root"
@@ -87,8 +87,8 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["81ae3cb34d27d38ee37f9e205a1e73694993b344"] = PRIME_AGENT_COMMIT
-    """Prime Agent main commit to install."""
+    commit: Literal["f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"] = PRIME_AGENT_COMMIT
+    """Prime Agent release commit to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
