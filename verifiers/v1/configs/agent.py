@@ -1,6 +1,6 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import BaseModel, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
@@ -8,6 +8,7 @@ from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.generic import deep_merge
 
 
 class TimeoutConfig(BaseConfig):
@@ -78,3 +79,37 @@ class WireAgentConfig(AgentConfig):
     def _resolve_harness(cls, data):
         """Override: a record read resolves no plugins."""
         return data
+
+
+def agent_config_fields(config: BaseModel) -> dict[str, AgentConfig]:
+    """Top-level agent configs, in declaration order, keyed by their field names."""
+    return {name: value for name, value in config if isinstance(value, AgentConfig)}
+
+
+def resolve_agent(
+    spec: AgentConfig,
+    *,
+    model: str | None = None,
+    client: ClientConfig | None = None,
+    sampling: SamplingConfig | None = None,
+    harness: HarnessConfig | None = None,
+) -> AgentConfig:
+    """`spec` with what it leaves unset filled from the run's defaults; its own
+    sampling values merge over the run's. The one place a seat's identity resolves,
+    for an env's roles and a flow's seats alike."""
+    merged = spec.sampling if sampling is None else sampling
+    if sampling is not None and spec.sampling is not None:
+        merged = sampling.model_copy(
+            update=deep_merge(
+                sampling.model_dump(exclude_unset=True),
+                spec.sampling.model_dump(exclude_unset=True),
+            )
+        )
+    return spec.model_copy(
+        update={
+            "harness": spec.harness if spec.harness is not None else harness,
+            "model": spec.model if spec.model is not None else model,
+            "client": spec.client if spec.client is not None else client,
+            "sampling": merged,
+        }
+    )
