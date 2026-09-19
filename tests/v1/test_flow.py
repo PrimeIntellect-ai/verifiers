@@ -139,7 +139,7 @@ async def test_partial_spread_reuses_successes_until_inputs_change(tmp_path):
         assert {i for value, i in calls if value == 1} == {0, 1}
 
 
-@pytest.mark.parametrize("route", [None, "repair"])
+@pytest.mark.parametrize("route", [None, "work"])
 async def test_live_controls_survive_stage_publication(tmp_path, route):
     entered, finish = asyncio.Event(), asyncio.Event()
 
@@ -157,6 +157,8 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
         running = asyncio.create_task(flow.run())
         await asyncio.wait_for(entered.wait(), 10)
         try:
+            if route is not None:
+                unit.steer(stage="repair")
             unit.steer(status="held", stage=route, note="late")
             assert unit.inspect().active.stage == flow.active["t"].stage == "work"
             with pytest.raises(RuntimeError, match="still active"):
@@ -170,7 +172,7 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
             "held",
             1,
         )
-        assert [note.text for note in state.notes] == ["late"]
+        assert state.notes == ["late"]
         assert unit.inspect().active is None
         old = unit.head()
         unit.steer(data={"value": 2}, expected=old)

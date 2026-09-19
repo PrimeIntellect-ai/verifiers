@@ -389,7 +389,7 @@ class Ctx(Generic[D, ConfigT]):
 
     def notes(self) -> str:
         """Notes present at stage start; successful transitions acknowledge only these."""
-        return "\n\n".join(note.text for note in self.state.notes)
+        return "\n\n".join(self.state.notes)
 
     @property
     def config(self) -> ConfigT:

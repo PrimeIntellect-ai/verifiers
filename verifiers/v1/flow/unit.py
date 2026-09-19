@@ -32,16 +32,6 @@ class UnitData(BaseModel):
 D = TypeVar("D", bound=UnitData)
 
 
-class Note(BaseModel):
-    id: int
-    text: str
-
-
-class Controls(BaseModel):
-    version: int = 0
-    fields: dict[str, int] = Field(default_factory=dict)
-
-
 class UnitState(BaseModel, Generic[D]):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,8 +40,8 @@ class UnitState(BaseModel, Generic[D]):
     reason: str = ""
     outcome: str = ""
     data: D
-    notes: list[Note] = Field(default_factory=list)
-    controls: Controls = Field(default_factory=Controls)
+    notes: list[str] = Field(default_factory=list)
+    controls: dict[str, int] = Field(default_factory=dict)
 
 
 class Execution(BaseModel):
@@ -100,9 +90,7 @@ class Unit(Generic[D]):
     def __init__(self, path: Path, data_type: type[D] | None = None) -> None:
         self.path = Path(path)
         self.id = self.path.name
-        definition = json.loads(self.read(DEFINITION, "HEAD") or "null")
-        if definition is None:
-            raise ValueError(f"{path}: no committed {DEFINITION}")
+        definition = json.loads(git(self.path, "show", f"HEAD:{DEFINITION}"))
         if (
             data_type is not None
             and definition["data_type"]
@@ -136,13 +124,11 @@ class Unit(Generic[D]):
         if (path / ".git").exists():
             unit = cls(path, type(data))
             unit.check_clean()
-            unit.state()
             return unit
         allowed = sorted(stages)
         if stage not in allowed:
             raise ValueError(f"unknown stage: {stage!r}")
-        if {str(Path(p)) for p in files or {}} & {STATE, DEFINITION}:
-            raise ValueError("reserved unit file")
+        cls._write_files(path, files or {})
         path.mkdir(parents=True, exist_ok=True)
         git(path, "init", "-q")
         definition = {
@@ -154,33 +140,36 @@ class Unit(Generic[D]):
         (path / STATE).write_text(
             UnitState(stage=stage, data=data).model_dump_json(indent=2) + "\n"
         )
-        for rel, value in (files or {}).items():
-            target = cls._file_at(path, rel)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(value.encode() if isinstance(value, str) else value)
         git(path, "add", "-A")
         git(path, "commit", "-q", "-m", "init")
         return cls(path, type(data))
 
     @staticmethod
-    def _file_at(root: Path, rel: str) -> Path:
-        path = Path(rel)
-        if (
-            not rel
-            or path.is_absolute()
-            or any(p in ("..", ".git") for p in path.parts)
-        ):
-            raise ValueError(f"unsafe unit path: {rel!r}")
-        file = root / path
-        if not file.resolve().is_relative_to(root.resolve()):
-            raise ValueError(f"unit path escapes repository: {rel!r}")
-        return file
+    def _write_files(root: Path, files: Mapping[str, str | bytes]) -> None:
+        paths = {}
+        for rel in files:
+            path = Path(rel)
+            if (
+                not rel
+                or path.is_absolute()
+                or any(p in ("..", ".git") for p in path.parts)
+            ):
+                raise ValueError(f"unsafe unit path: {rel!r}")
+            if str(path) in (STATE, DEFINITION):
+                raise ValueError("reserved unit file")
+            file = root / path
+            if not file.resolve().is_relative_to(root.resolve()):
+                raise ValueError(f"unit path escapes repository: {rel!r}")
+            paths[rel] = file
+        for rel, file in paths.items():
+            file.parent.mkdir(parents=True, exist_ok=True)
+            value = files[rel]
+            file.write_bytes(value.encode() if isinstance(value, str) else value)
 
     def head(self) -> str:
         return git(self.path, "rev-parse", "HEAD")
 
     def read(self, rel: str, sha: str = "HEAD") -> str | None:
-        self._file_at(self.path, rel)
         out = subprocess.run(
             ["git", "-C", str(self.path), "show", f"{sha}:{rel}"],
             capture_output=True,
@@ -189,7 +178,9 @@ class Unit(Generic[D]):
         return out.stdout.decode() if out.returncode == 0 else None
 
     def state(self) -> UnitState[D]:
-        state = self.state_type.model_validate_json(self.read(STATE) or "")
+        state = self.state_type.model_validate_json(
+            git(self.path, "show", f"HEAD:{STATE}")
+        )
         self._validate_stage(state.stage)
         return state
 
@@ -255,13 +246,7 @@ class Unit(Generic[D]):
         self._validate_stage(state.stage)
         # Revalidate even model_copy/update or mutated nested collections before touching disk.
         state = self.state_type.model_validate(state.model_dump(mode="json"))
-        paths = {rel: self._file_at(self.path, rel) for rel in files}
-        if {str(Path(p)) for p in paths} & {STATE, DEFINITION}:
-            raise ValueError("reserved unit file")
-        for rel, file in paths.items():
-            file.parent.mkdir(parents=True, exist_ok=True)
-            value = files[rel]
-            file.write_bytes(value.encode() if isinstance(value, str) else value)
+        self._write_files(self.path, files)
         (self.path / STATE).write_text(state.model_dump_json(indent=2) + "\n")
         git(self.path, "add", "-A")
         git(self.path, "commit", "-q", "--allow-empty", "-m", message)
@@ -272,24 +257,15 @@ class Unit(Generic[D]):
         message: str,
         *,
         data: D | None = None,
-        stage: str | None = None,
-        status: Status | None = None,
         files: Mapping[str, str | bytes] | None = None,
     ) -> str:
-        """Publish pipeline files; cursor/data changes require a settled unit."""
+        """Publish pipeline data/files; data changes require a settled unit."""
         with self._write_lock():
-            if (
-                any(value is not None for value in (data, stage, status))
-                and self._active() is not None
-            ):
+            if data is not None and self._active() is not None:
                 raise RuntimeError(f"{self.id}: stage is still active")
             state = self.state()
             if data is not None:
                 state.data = data
-            if stage is not None:
-                state.stage = stage
-            if status is not None:
-                state.status = status
             return self._commit(message, state, files or {})
 
     def steer(
@@ -315,7 +291,6 @@ class Unit(Generic[D]):
                 state.data = self.data_type.model_validate(
                     {**state.data.model_dump(mode="json"), **data}
                 )
-            state.controls.version += 1
             for key, value in (
                 ("stage", stage),
                 ("status", status),
@@ -323,9 +298,9 @@ class Unit(Generic[D]):
             ):
                 if value is not None:
                     setattr(state, key, value)
-                    state.controls.fields[key] = state.controls.version
+                    state.controls[key] = state.controls.get(key, 0) + 1
             if note is not None:
-                state.notes.append(Note(id=state.controls.version, text=note))
+                state.notes.append(note)
             sha = self._commit("steer" + (f": {note}" if note else ""), state, {})
             append_event(
                 self.events,
@@ -347,18 +322,20 @@ class Unit(Generic[D]):
         with self._write_lock():
             state = self.state()
             for key, value in (
-                ("stage", transition.stage or before.stage),
+                (
+                    "stage",
+                    before.stage if transition.stage is None else transition.stage,
+                ),
                 ("status", transition.status),
                 ("reason", transition.summary),
             ):
-                if state.controls.fields.get(key, 0) <= before.controls.version:
+                if state.controls.get(key, 0) == before.controls.get(key, 0):
                     setattr(state, key, value)
             state.outcome = transition.outcome
             if transition.data is not None:
                 state.data = transition.data
             if transition.status != "held":
-                consumed = {note.id for note in before.notes}
-                state.notes = [note for note in state.notes if note.id not in consumed]
+                state.notes = state.notes[len(before.notes) :]
             return self._commit(
                 f"{before.stage}: {transition.outcome}", state, transition.files
             )
