@@ -654,6 +654,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def is_truncated(self) -> bool:
         """True for framework limits, failed compaction, or a length-finished response."""
         if self.stop_condition in (
+            "context_length",
             "max_turns",
             "max_input_tokens",
             "max_output_tokens",
