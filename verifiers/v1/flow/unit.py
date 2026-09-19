@@ -65,6 +65,7 @@ class Transition(Generic[D]):
     data: D | None = None
     files: Mapping[str, str | bytes] = field(default_factory=dict)
     report: str | None = None
+    """A pipeline-written filename under the run's reports/, published by this transition."""
 
 
 class UnitInspection(BaseModel, Generic[D]):

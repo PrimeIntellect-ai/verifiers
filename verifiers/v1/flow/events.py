@@ -31,6 +31,8 @@ class RunEvent(Event):
 
 
 class Link(BaseModel):
+    """A unit affected by a stage; does not identify a target execution."""
+
     unit: str
     label: str
 
@@ -45,6 +47,7 @@ class StageEvent(Event):
     status: Status | None = None
     reason: str | None = None
     report: str | None = None
+    """Filename under the run's reports/; contents are owned by the pipeline."""
     sha: str | None = None
     links: list[Link] = Field(default_factory=list)
 
