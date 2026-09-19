@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypedDict, Ty
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agent import Agent, make_agent
 from verifiers.v1.flow.events import CallEvent, Invocation
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
@@ -103,7 +103,7 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
 
     async def execute(self, ctx: Ctx[Any, Any]) -> Trace:
         flow = ctx.flow
-        agent = flow.agent(self.seat)
+        agent = make_agent(flow.seat(self.seat), interception=flow.interception)
         held = () if self.runtime is not None else ("runtimes",)
         invocation = INVOCATION.get()
         call = invocation.call

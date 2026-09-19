@@ -61,7 +61,7 @@ class Invocation(BaseModel):
 
 
 class CallEvent(Event):
-    type: Literal["call", "rollout"]
+    type: Literal["call", "rollout"] = "call"
     invocation: Invocation
     status: CallStatus
     trace_id: str | None = None
@@ -86,13 +86,7 @@ class SteerEvent(Event):
     action: Steering
 
 
-class DirtyEvent(Event):
-    type: Literal["dirty"] = "dirty"
-    unit: str
-    reason: str
-
-
-EventRecord = RunEvent | StageEvent | CallEvent | SteerEvent | DirtyEvent
+EventRecord = RunEvent | StageEvent | CallEvent | SteerEvent
 event_adapter = TypeAdapter(Annotated[EventRecord, Field(discriminator="type")])
 
 
