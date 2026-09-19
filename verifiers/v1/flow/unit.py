@@ -55,6 +55,16 @@ class UnitState(BaseModel, Generic[D]):
     controls: Controls = Field(default_factory=Controls)
 
 
+class Execution(BaseModel):
+    """An immutable reservation; the committed next stage may change independently."""
+
+    model_config = ConfigDict(frozen=True)
+    id: str
+    stage: str
+    revision: str
+    started_at: str
+
+
 @dataclass(frozen=True)
 class Transition(Generic[D]):
     """Publish a unit's next cursor, optional complete data, and workflow files together."""
@@ -103,6 +113,14 @@ class Unit(Generic[D]):
         definition = json.loads(self.read(DEFINITION, "HEAD") or "null")
         if definition is None:
             raise ValueError(f"{path}: no committed {DEFINITION}")
+        if (
+            data_type is not None
+            and definition["data_type"]
+            != f"{data_type.__module__}:{data_type.__name__}"
+        ):
+            raise ValueError(
+                f"{path}: unit data model does not match {definition['data_type']}"
+            )
         if data_type is None:
             module, name = definition["data_type"].split(":")
             data_type = getattr(importlib.import_module(module), name)
@@ -207,27 +225,31 @@ class Unit(Generic[D]):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             yield
 
-    def _active(self) -> dict[str, str] | None:
+    def _active(self) -> Execution | None:
         try:
             with self._execution_lock():
                 return None
         except BlockingIOError:
-            return json.loads((self.path / ".git" / "active.json").read_text())
+            return Execution.model_validate_json(
+                (self.path / ".git" / "active.json").read_text()
+            )
 
     @contextmanager
-    def executing(self) -> Iterator[tuple[UnitState[D], dict[str, str]]]:
+    def executing(self) -> Iterator[tuple[UnitState[D], Execution]]:
         with ExitStack() as stack:
             with self._write_lock():
                 stack.enter_context(self._execution_lock())
                 self._check_clean()
                 state = self.state()
-                execution = {
-                    "id": uuid4().hex,
-                    "stage": state.stage,
-                    "revision": self.head(),
-                    "started_at": now(),
-                }
-                (self.path / ".git" / "active.json").write_text(json.dumps(execution))
+                execution = Execution(
+                    id=uuid4().hex,
+                    stage=state.stage,
+                    revision=self.head(),
+                    started_at=now(),
+                )
+                (self.path / ".git" / "active.json").write_text(
+                    execution.model_dump_json()
+                )
             yield state, execution
 
     def check_clean(self) -> None:
@@ -366,7 +388,7 @@ class Unit(Generic[D]):
                 "unit": self.id,
                 "revision": self.head(),
                 "state": self.state().model_dump(mode="json"),
-                "active": self._active(),
+                "active": active.model_dump() if (active := self._active()) else None,
                 "dirty": bool(git(self.path, "status", "--porcelain")),
             }
 

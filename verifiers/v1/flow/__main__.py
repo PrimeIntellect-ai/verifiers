@@ -30,13 +30,11 @@ from pydantic_config import cli
 
 from verifiers.v1.flow.calls import Record
 from verifiers.v1.flow.flow import (
-    CAMPAIGN,
-    TASKS,
+    UNITS,
     Flow,
     Pipeline,
     drain_on_interrupt,
-    succeeded,
-    task_path,
+    unit_path,
 )
 from verifiers.v1.flow.unit import Unit
 
@@ -44,7 +42,7 @@ USAGE = __doc__ or ""
 
 
 def _unit(root: Path, name: str) -> Unit:
-    path = root / CAMPAIGN if name == CAMPAIGN else task_path(root, name)
+    path = unit_path(root, name)
     if not (path / ".git").exists():
         raise SystemExit(f"no unit {name!r} under {root}")
     return Unit(path)
@@ -55,12 +53,7 @@ def inspect(root: Path, name: str | None = None) -> dict:
         [_unit(root, name)]
         if name
         else [
-            _unit(root, CAMPAIGN),
-            *(
-                Unit(p)
-                for p in sorted((root / TASKS).iterdir())
-                if (p / ".git").exists()
-            ),
+            Unit(p) for p in sorted((root / UNITS).glob("*")) if (p / ".git").exists()
         ]
     )
     ids = {unit.id for unit in units}
@@ -90,14 +83,7 @@ def status(root: Path, *, name: str | None = None, as_json: bool = False) -> int
                 f"{unit['unit']}  {state['stage']}  {state['status']}  {activity}"
                 f"{'  DIRTY' if unit['dirty'] else ''}  {state['reason']}"
             )
-    return (
-        0
-        if succeeded(
-            _unit(root, CAMPAIGN),
-            [Unit(p) for p in (root / TASKS).iterdir() if (p / ".git").exists()],
-        )
-        else 1
-    )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -127,10 +113,11 @@ def main(argv: list[str] | None = None) -> None:
             async with Flow(Path(root), config, pipeline) as flow:
                 drain_on_interrupt(flow)
                 await flow.sweep()
-                counts = await flow.run()
-                success = not flow.draining and succeeded(flow.campaign, flow.tasks())
-            print(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no tasks")
-            return 0 if success else 1
+                if pipeline.initialize is not None:
+                    pipeline.initialize(flow)
+                result = await flow.run()
+            print(result.model_dump_json(indent=2))
+            return 0
 
         sys.exit(asyncio.run(go()))
     parser = argparse.ArgumentParser(prog=f"flow {command}")

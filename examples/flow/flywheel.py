@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 import verifiers.v1 as vf
 from verifiers.v1.flow import (
     Ctx,
+    Flow,
     FlowConfig,
     Pipeline,
     Record,
@@ -26,6 +27,7 @@ from verifiers.v1.flow import (
     UnitData,
     Work,
     agent,
+    agent_inputs,
     command,
     fn,
 )
@@ -61,12 +63,13 @@ def decision(trace: vf.Trace) -> str:
 
 async def plan(ctx: Ctx) -> Transition:
     trace = await ctx.call(
-        agent("planner", task(f"Propose {ctx.config.folders} folders.")), key="plan"
+        agent("planner", task(f"Propose {ctx.config.folders} folders."), inputs={}),
+        key="plan",
     )
     for i, line in enumerate(
         (trace.last_reply or "").splitlines()[: ctx.config.folders]
     ):
-        ctx.flow.create_task(f"folder-{i}", stage="build", data=FolderData(brief=line))
+        ctx.flow.create_unit(f"folder-{i}", stage="build", data=FolderData(brief=line))
     return Transition.wait("planned")
 
 
@@ -81,13 +84,17 @@ class BuildAndLint(Work[dict[str, Any]]):
         return [
             "build-and-lint",
             self.brief,
-            ctx.seat("builder").model_dump(mode="json"),
+            agent_inputs(ctx.seat("builder")),
         ]
 
     async def execute(self, ctx: Ctx, name: str) -> dict[str, Any]:
         async with ctx.runtime("builder") as box:
-            built = await ctx.call(agent("builder", task(self.brief), runtime=box))
-            lint = await ctx.call(command(["ruff", "check", "."], runtime=box))
+            built = await ctx.call(
+                agent("builder", task(self.brief), inputs={}, runtime=box)
+            )
+            lint = await ctx.call(
+                command(["ruff", "check", "."], runtime=box, inputs={})
+            )
         return {"reply": built.last_reply, "lint": lint.exit_code}
 
     def dump(self, ctx: Ctx, value: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +108,11 @@ async def build(ctx: Ctx[FolderData]) -> Transition[FolderData]:
     state = ctx.data
     built = await ctx.call(BuildAndLint(state.brief), key=f"build/{state.visits}")
     review = await ctx.call(
-        agent("reviewer", task(f"Review:\n{built['reply']}\nlint: {built['lint']}")),
+        agent(
+            "reviewer",
+            task(f"Review:\n{built['reply']}\nlint: {built['lint']}"),
+            inputs={},
+        ),
         key=f"review/{state.visits}",
     )
     if built["lint"] == 0 and decision(review) == "accept":
@@ -119,7 +130,7 @@ async def build(ctx: Ctx[FolderData]) -> Transition[FolderData]:
 async def solve(ctx: Ctx[FolderData]) -> Transition[FolderData]:
     version = ctx.data.visits
     attempts = await ctx.spread(
-        [agent("solver", task(ctx.data.brief)) for _ in range(4)],
+        [agent("solver", task(ctx.data.brief), inputs={}) for _ in range(4)],
         key=lambda i: f"solve/{version}/{i}",
     )
     answers = [r.value for r in attempts if r.ok and r.value is not None]
@@ -128,7 +139,7 @@ async def solve(ctx: Ctx[FolderData]) -> Transition[FolderData]:
             f"{len(answers)}/4 solvers answered: {[r.error for r in attempts if not r.ok]}"
         )
     judged = await ctx.call(
-        agent("judge", task("\n".join(a.last_reply or "" for a in answers))),
+        agent("judge", task("\n".join(a.last_reply or "" for a in answers)), inputs={}),
         key=f"judge/{version}",
     )
     bank = await ctx.call(fn(len, judged.last_reply or ""), key=f"bank/{version}")
@@ -137,9 +148,12 @@ async def solve(ctx: Ctx[FolderData]) -> Transition[FolderData]:
     )
 
 
+def initialize(flow: Flow) -> None:
+    flow.create_unit("planner", stage="plan", data=UnitData())
+
+
 pipeline = Pipeline(
     {"plan": plan, "build": build, "solve": solve},
-    start="plan",
+    initialize=initialize,
     config=Cfg,
-    data=FolderData,
 )

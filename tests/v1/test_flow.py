@@ -3,13 +3,16 @@
 import asyncio
 import io
 import json
+import os
 import tarfile
 from contextlib import suppress
 
 import pytest
 from pydantic import Field, ValidationError
 
+import verifiers.v1 as vf
 from verifiers.v1.flow import (
+    AgentWork,
     Ctx,
     Flow,
     FlowConfig,
@@ -18,6 +21,7 @@ from verifiers.v1.flow import (
     Revision,
     Transition,
     UnitData,
+    agent,
     fn,
 )
 from verifiers.v1.flow.__main__ import inspect
@@ -34,14 +38,17 @@ async def parked(ctx: Ctx) -> Transition:
 
 
 def pipeline(stage):
-    return Pipeline(
-        {"plan": parked, "work": stage, "review": parked}, start="plan", data=Data
-    )
+    return Pipeline({"plan": parked, "work": stage, "review": parked})
 
 
 async def test_restart_after_call_record_recovers_output_without_repeating_work(
     tmp_path,
+    monkeypatch,
 ):
+    from verifiers.v1.runtimes import prime
+
+    monkeypatch.setenv("VF_RUN_LABEL", "outer")
+    monkeypatch.setattr(prime, "BASE_LABELS", ["outer-label"])
     recorded, blocked = asyncio.Event(), asyncio.Event()
     writes = 0
 
@@ -55,12 +62,12 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
             fn(produce, str(ctx.unit.path), ctx.data.revision), key="author"
         )
         recorded.set()
-        await blocked.wait()
+        await ctx.call(fn(blocked.wait))
         return Transition.end("done", data=ctx.updated(revision=revision))
 
     p = pipeline(stage)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
-        unit = flow.create_task("t", stage="work", data=Data())
+        unit = flow.create_unit("t", stage="work", data=Data())
         artifacts = GitArtifacts(unit)
         base = artifacts.write(base=None, files={"rubric.md": "initial"})
         unit.steer(data={"revision": base}, expected=unit.head())
@@ -71,16 +78,43 @@ async def test_restart_after_call_record_recovers_output_without_repeating_work(
             await running
         assert unit.state().stage == "work"
         assert unit.state().data.revision == base
+        assert os.environ["VF_RUN_LABEL"] == "outer"
+        assert prime.BASE_LABELS == ["outer-label"]
+        assert not flow.active
 
     blocked.set()
     async with Flow(tmp_path, FlowConfig(), p) as flow:
-        assert await flow.run() == {"terminal": 1}
+        assert (await flow.run()).counts == {"terminal": 1}
         unit = flow.unit("t")
         revision = unit.state().data.revision
         assert writes == 1 and revision != base
         GitArtifacts(unit).materialize(revision, tmp_path / "fresh")
         assert (tmp_path / "fresh" / "rubric.md").read_text() == "revised"
         assert GitArtifacts(unit).read(base, "rubric.md") == "initial"
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "transitions.jsonl").read_text().splitlines()
+        ]
+        calls = [e for e in events if e["type"] == "call"]
+        original = next(
+            e for e in calls if e["status"] == "succeeded" and e["key"] == "author"
+        )
+        attached = next(e for e in calls if e["status"] == "attached")
+        assert attached["source_call"] == original["call"] != attached["call"]
+        assert (
+            attached["source_execution"]
+            == original["execution"]
+            != attached["execution"]
+        )
+        assert any(e["key"] is None and e["status"] == "cancelled" for e in calls)
+        record = json.loads(next((tmp_path / "calls/t").glob("*.json")).read_text())
+        assert (
+            record["execution"] == original["execution"]
+            and record["call"] == original["call"]
+        )
+        assert os.environ["VF_RUN_LABEL"] == "outer" and prime.BASE_LABELS == [
+            "outer-label"
+        ]
 
 
 async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
@@ -106,13 +140,13 @@ async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
 
     p = pipeline(stage)
     async with Flow(tmp_path, FlowConfig(), p) as flow:
-        unit = flow.create_task("t", stage="work", data=Data())
+        unit = flow.create_unit("t", stage="work", data=Data())
         base = GitArtifacts(unit).write(base=None, files={"task.txt": "v1"})
         unit.steer(data={"revision": base}, expected=unit.head())
-        assert await flow.run() == {"held": 1}
+        assert (await flow.run()).counts == {"held": 1}
         unit.steer(status="ready", note="retry the failed call")
         unavailable = False
-        assert await flow.run() == {"terminal": 1}
+        assert (await flow.run()).counts == {"terminal": 1}
         assert executions.count((base, 0)) == executions.count((base, 2)) == 1
         assert executions.count((base, 1)) == 2
         edited = GitArtifacts(unit).write(base=base, files={"task.txt": "v2"})
@@ -122,7 +156,7 @@ async def test_partial_spread_reuses_successes_and_artifact_edit_changes_inputs(
             stage="work",
             status="ready",
         )
-        assert await flow.run() == {"terminal": 1}
+        assert (await flow.run()).counts == {"terminal": 1}
         assert [index for revision, index in executions if revision == edited] == [
             0,
             1,
@@ -143,7 +177,7 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
         return Transition.to("review", "built", data=ctx.updated(credits=0))
 
     async with Flow(tmp_path, FlowConfig(), pipeline(stage)) as flow:
-        unit = flow.create_task("t", stage="work", data=Data())
+        unit = flow.create_unit("t", stage="work", data=Data())
         unit.steer(note="first note")
         running = asyncio.create_task(flow.run())
         await asyncio.wait_for(entered.wait(), 10)
@@ -154,7 +188,9 @@ async def test_live_controls_win_and_updates_require_settled_current_state(
                 note="arrived during work",
             )
             snapshot = inspect(tmp_path, "t")["units"][0]
-            assert snapshot["active"]["stage"] == "work"
+            assert snapshot["active"]["stage"] == flow.active["t"].stage == "work"
+            with pytest.raises(TypeError):
+                flow.active["other"] = flow.active["t"]
             assert snapshot["state"]["status"] == "held"
             with pytest.raises(RuntimeError, match="still active"):
                 unit.steer(data={"credits": 2}, expected=unit.head())
@@ -225,3 +261,134 @@ def test_artifacts_are_retained_isolated_and_cannot_escape(tmp_path):
         store.capture(
             base=base, archive=archive.getvalue(), prefix="task", only=("link",)
         )
+
+
+async def test_uniform_admission_reserves_before_next_candidate_and_reports_facts(
+    tmp_path,
+):
+    seen = []
+
+    async def stage(ctx):
+        seen.append((ctx.unit.id, list(ctx.flow.active)))
+        await asyncio.sleep(0)
+        assert list(ctx.flow.active) == [ctx.unit.id]
+        return Transition.wait("operator decision")
+
+    p = Pipeline({"work": stage}, admit=lambda unit, flow: not flow.active)
+    async with Flow(tmp_path, FlowConfig(), p) as flow:
+        assert flow.units() == []
+        unit = flow.create_unit("campaign", stage="work", data=Data(credits=2))
+        head = unit.head()
+        assert flow.create_unit("campaign", stage="work", data=Data()).head() == head
+        assert unit.state().data.credits == 2
+        flow.create_unit("other", stage="work", data=UnitData())
+        result = await flow.run()
+        assert result.reason == "quiescent" and result.counts == {"waiting": 2}
+        assert set(result.units) == {"campaign", "other"}
+        assert seen == [("campaign", ["campaign"]), ("other", ["other"])]
+        assert isinstance(flow.unit("campaign").state().data, Data)
+        assert type(flow.unit("other").state().data) is UnitData
+        unit.steer(status="ready")
+        flow.drain()
+        result = await flow.run()
+        assert (
+            result.reason == "draining" and result.units["campaign"].status == "ready"
+        )
+        assert len(seen) == 2 and not flow.active
+
+
+class AgentFlowConfig(FlowConfig):
+    worker: vf.AgentConfig = vf.AgentConfig(
+        harness={"id": "null"}, runtime=vf.SubprocessConfig()
+    )
+
+
+async def test_agent_retry_evidence_and_declared_semantic_identity(
+    tmp_path, monkeypatch
+):
+    from verifiers.v1.trace import AgentInfo, TraceTask
+
+    executed = 0
+    grading = {"rubric": "v1", "judge": "judge-v1"}
+
+    async def rollout(work, agent, on_trace):
+        nonlocal executed
+        executed += 1
+        for ok in (False, True):
+            trace = vf.Trace(
+                task=TraceTask(type="Task", data=work.task.data),
+                agent=AgentInfo(config=agent.config),
+                ok=ok,
+                is_completed=True,
+            )
+            on_trace(trace)
+        return trace
+
+    monkeypatch.setattr(AgentWork, "rollout", rollout)
+    attempts = 0
+
+    async def flaky():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary outage")
+        return "done"
+
+    async def stage(ctx):
+        await ctx.call(fn(flaky), key="host", retries=1)
+        trace = await ctx.call(
+            agent("worker", vf.Task(vf.TaskData(prompt="solve")), inputs=grading),
+            key="solve",
+        )
+        assert trace.ok
+        return Transition.end("done")
+
+    cfg = AgentFlowConfig(
+        model="solver-v1",
+        client={"type": "eval", "base_url": "http://localhost:1"},
+        sampling={},
+    )
+    async with Flow(tmp_path, cfg, Pipeline({"work": stage})) as flow:
+        unit = flow.create_unit("t", stage="work", data=Data())
+        assert (await flow.run()).counts == {"terminal": 1}
+        cfg.worker.max_turns = 100
+        cfg.worker.retries.max_retries = 5
+        cfg.client.api_key_var = "DIFFERENT_CREDENTIAL"
+        cfg.client.read_timeout = 900
+        unit.steer(status="ready", note="retry budget changed")
+        assert (await flow.run()).counts == {"terminal": 1}
+        assert executed == 1 and attempts == 2
+        grading["judge"] = "judge-v2"
+        unit.steer(status="ready")
+        await flow.run()
+        cfg.model = "solver-v2"
+        unit.steer(status="ready")
+        await flow.run()
+        cfg.sampling.max_tokens = 123
+        unit.steer(status="ready")
+        await flow.run()
+        assert executed == 4
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "transitions.jsonl").read_text().splitlines()
+        ]
+        host = [
+            e
+            for e in events
+            if e["type"] == "call" and e["key"] == "host" and e["attempt"] > 0
+        ]
+        assert [(e["attempt"], e["status"]) for e in host] == [
+            (1, "started"),
+            (1, "failed"),
+            (2, "started"),
+            (2, "succeeded"),
+        ]
+        assert len({e["call"] for e in host}) == 1
+        rollouts = [e for e in events if e["type"] == "rollout"]
+        assert [(e["rollout"], e["status"]) for e in rollouts[:4]] == [
+            (1, "started"),
+            (1, "failed"),
+            (2, "started"),
+            (2, "succeeded"),
+        ]
+        assert all(flow.traces.get(e["trace_id"]) is not None for e in rollouts)
