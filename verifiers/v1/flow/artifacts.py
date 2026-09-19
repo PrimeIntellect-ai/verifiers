@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -13,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, JsonValue
+from pydantic import Field
 
 from verifiers.v1.flow.unit import Unit, git
 
@@ -52,10 +51,6 @@ class GitArtifacts:
         value = self.read_bytes(revision, path)
         return value.decode() if value is not None else None
 
-    def read_json(self, revision: ArtifactRevision, path: str) -> JsonValue:
-        raw = self.read(revision, path)
-        return json.loads(raw) if raw else {}
-
     def listing(self, revision: ArtifactRevision, prefix: str = "") -> list[str]:
         return git(
             self.path,
@@ -89,15 +84,6 @@ class GitArtifacts:
             check=True,
         ).stdout
 
-    def materialize(self, revision: ArtifactRevision, destination: Path) -> None:
-        """Restore into a new or empty directory; never overlay an unknown filesystem."""
-        destination = Path(destination)
-        destination.mkdir(parents=True, exist_ok=True)
-        if any(destination.iterdir()):
-            raise ValueError(f"artifact destination is not empty: {destination}")
-        with tarfile.open(fileobj=io.BytesIO(self.archive(revision))) as archive:
-            archive.extractall(destination, filter="data")
-
     @staticmethod
     def _relative(path: str) -> Path:
         rel = Path(path)
@@ -111,14 +97,10 @@ class GitArtifacts:
 
     @classmethod
     def _target(cls, root: Path, path: str) -> Path:
-        target = root / cls._relative(path)
-        if any(
-            parent.is_symlink()
-            for parent in target.parents
-            if parent != root and root in parent.parents
-        ):
+        relative = cls._relative(path)
+        if any((root / parent).is_symlink() for parent in relative.parents):
             raise ValueError(f"artifact path traverses a symlink: {path!r}")
-        return target
+        return root / relative
 
     @staticmethod
     def _remove(path: Path) -> None:
@@ -138,7 +120,8 @@ class GitArtifacts:
             tree = root / "tree"
             tree.mkdir()
             if base is not None:
-                self.materialize(base, tree)
+                with tarfile.open(fileobj=io.BytesIO(self.archive(base))) as archive:
+                    archive.extractall(tree, filter="data")
             change(tree)
             env = {**os.environ, **_IDENTITY, "GIT_INDEX_FILE": str(root / "index")}
 
@@ -223,7 +206,7 @@ class GitArtifacts:
                             item,
                             target,
                             symlinks=True,
-                            ignore=shutil.ignore_patterns("__pycache__", ".git"),
+                            ignore=shutil.ignore_patterns(".git"),
                         )
                     elif item.exists():
                         shutil.copy2(item, target)
