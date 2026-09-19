@@ -1,11 +1,11 @@
 """Offline checks for Flow's checkpoints, call reuse, steering, and admission."""
 
 import asyncio
+import json
 
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import read_jsonl
 from verifiers.v1.flow import (
     AgentWork,
     Ctx,
@@ -80,7 +80,8 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
         assert (await flow.run()).counts == {"terminal": 1}
         assert flow.unit("t").state().data.value == 1 and len(traces) == 2
         assert all(flow.traces.get(t.id) is not None for t in traces)
-    events = read_jsonl(tmp_path / "transitions.jsonl")
+    with (tmp_path / "transitions.jsonl").open() as file:
+        events = [json.loads(line) for line in file]
     produced, attached = [
         e
         for e in events
