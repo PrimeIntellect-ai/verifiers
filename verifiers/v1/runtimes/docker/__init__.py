@@ -17,11 +17,7 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import (
-    SERVICE_PORT,
-    BaseRuntimeInfo,
-    parse_gpu,
-)
+from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
 from verifiers.v1.runtimes.docker.egress import (
     EgressProxy,
