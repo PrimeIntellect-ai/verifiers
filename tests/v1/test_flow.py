@@ -15,7 +15,6 @@ from verifiers.v1.flow import (
     Pipeline,
     Transition,
     UnitData,
-    agent,
     fn,
 )
 from verifiers.v1.flow.unit import Unit, git
@@ -53,7 +52,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
 
     async def stage(ctx: Ctx[Data]):
         trace = await ctx.call(
-            agent("worker", vf.Task(vf.TaskData(prompt="solve")), inputs={}),
+            AgentWork("worker", vf.Task(vf.TaskData(prompt="solve")), inputs={}),
             key="solve",
         )
         assert trace.id == traces[-1].id
