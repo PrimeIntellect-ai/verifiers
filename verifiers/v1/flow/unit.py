@@ -30,7 +30,6 @@ class UnitData(BaseModel):
 
 
 D = TypeVar("D", bound=UnitData)
-T = TypeVar("T", bound=UnitData)
 
 
 class Note(BaseModel):
@@ -76,85 +75,6 @@ class Transition(Generic[D]):
     data: D | None = None
     files: Mapping[str, str | bytes] = field(default_factory=dict)
     report: str | None = None
-
-    @staticmethod
-    def to(
-        stage: str,
-        outcome: str,
-        summary: str = "",
-        *,
-        status: Status = "ready",
-        data: T | None = None,
-        files: Mapping[str, str | bytes] | None = None,
-        report: str | None = None,
-    ) -> Transition[T]:
-        return Transition(
-            outcome,
-            summary,
-            stage=stage,
-            status=status,
-            data=data,
-            files=files or {},
-            report=report,
-        )
-
-    @staticmethod
-    def end(
-        outcome: str,
-        summary: str = "",
-        *,
-        stage: str | None = None,
-        data: T | None = None,
-        files: Mapping[str, str | bytes] | None = None,
-        report: str | None = None,
-    ) -> Transition[T]:
-        return Transition(
-            outcome,
-            summary,
-            stage=stage,
-            status="terminal",
-            data=data,
-            files=files or {},
-            report=report,
-        )
-
-    @staticmethod
-    def hold(
-        reason: str,
-        *,
-        stage: str | None = None,
-        data: T | None = None,
-        files: Mapping[str, str | bytes] | None = None,
-        report: str | None = None,
-    ) -> Transition[T]:
-        return Transition(
-            "held",
-            reason,
-            stage=stage,
-            status="held",
-            data=data,
-            files=files or {},
-            report=report,
-        )
-
-    @staticmethod
-    def wait(
-        reason: str,
-        *,
-        stage: str | None = None,
-        data: T | None = None,
-        files: Mapping[str, str | bytes] | None = None,
-        report: str | None = None,
-    ) -> Transition[T]:
-        return Transition(
-            "waiting",
-            reason,
-            stage=stage,
-            status="waiting",
-            data=data,
-            files=files or {},
-            report=report,
-        )
 
 
 class UnitInspection(BaseModel, Generic[D]):

@@ -55,10 +55,13 @@ async def run(root: Path, available: bool) -> None:
             key=lambda i: f"solve/{i}",
         )
         if failures := [r.error.message for r in results if not r.ok]:
-            return Transition.hold(f"{len(failures)}/8 failed: {failures}")
-        return Transition.end(
+            return Transition(
+                "held", f"{len(failures)}/8 failed: {failures}", status="held"
+            )
+        return Transition(
             "evaluated",
             f"8 completed; score {sum(r.value.score for r in results if r.ok) / 8}",
+            status="terminal",
         )
 
     async with Flow(root, FlowConfig(), Pipeline({"evaluate": evaluate})) as flow:

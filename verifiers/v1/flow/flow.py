@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Generic, Literal, Self, cast
+from typing import IO, Any, Generic, Self, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -32,7 +32,6 @@ from verifiers.v1.flow.calls import (
     INVOCATION,
     CallFailed,
     Failure,
-    Invocation,
     Live,
     Record,
     Result,
@@ -42,9 +41,9 @@ from verifiers.v1.flow.calls import (
 from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.events import (
     CallEvent,
-    CallStatus,
     DirtyEvent,
     EventRecord,
+    Invocation,
     Link,
     RunEvent,
     RunReason,
@@ -335,7 +334,9 @@ class Flow(Generic[ConfigT]):
             raise
         except Exception as exc:
             logger.exception("%s/%s failed", unit.id, name)
-            transition = Transition.hold(f"{type(exc).__name__}: {exc}")
+            transition = Transition(
+                "held", f"{type(exc).__name__}: {exc}", status="held"
+            )
         finally:
             _LINKS.reset(token)
         sha = unit.apply(transition, before=before)
@@ -457,38 +458,6 @@ class Ctx(Generic[D, ConfigT]):
                     child.cancel()
             await asyncio.gather(*children, return_exceptions=True)
 
-    def event(
-        self,
-        kind: Literal["call", "rollout"],
-        status: CallStatus,
-        *,
-        trace_id: str | None = None,
-        error: Error | None = None,
-        rollout: int | None = None,
-        source_call: str | None = None,
-        source_execution: str | None = None,
-    ) -> None:
-        """Call and native rollout evidence share one invocation and stage execution."""
-        invocation = INVOCATION.get()
-        self.flow.event(
-            CallEvent(
-                type=kind,
-                status=status,
-                unit=self.unit.id,
-                stage=self.stage,
-                execution=self.execution.id,
-                call=invocation.call,
-                key=invocation.key,
-                kind=invocation.kind,
-                cache=invocation.cache,
-                trace_id=trace_id,
-                error=error,
-                rollout=rollout,
-                source_call=source_call,
-                source_execution=source_execution,
-            )
-        )
-
     async def attempt(self, work: Work[T], *, key: str | None = None) -> Result[T]:
         """A value or failure. Successful keyed work is recorded; failures remain retryable."""
         if key is not None and work.inputs is None:
@@ -500,21 +469,33 @@ class Ctx(Generic[D, ConfigT]):
         cache = digest(key, work.inputs)[:24] if key is not None else None
         file = flow.root / "calls" / self.unit.id / f"{cache}.json" if cache else None
         call = uuid4().hex
-        token = INVOCATION.set(Invocation(call, key, work.kind, cache))
+        invocation = Invocation(
+            unit=self.unit.id,
+            stage=self.stage,
+            execution=self.execution.id,
+            call=call,
+            key=key,
+            kind=work.kind,
+            cache=cache,
+        )
+        token = INVOCATION.set(invocation)
         try:
             if file is not None and file.exists():
                 record = Record.model_validate_json(file.read_text())
                 value = work.load(self, record)
-                self.event(
-                    "call",
-                    "attached",
-                    source_call=record.call,
-                    source_execution=record.execution,
-                    trace_id=record.trace_id,
+                flow.event(
+                    CallEvent(
+                        type="call",
+                        invocation=invocation,
+                        status="attached",
+                        source_call=record.call,
+                        source_execution=record.execution,
+                        trace_id=record.trace_id,
+                    )
                 )
                 return Success(value, attached=True)
             self.check_running()
-            self.event("call", "started")
+            flow.event(CallEvent(type="call", invocation=invocation, status="started"))
             try:
                 value = await work.execute(self)
             except (Stopped, asyncio.CancelledError):
@@ -526,8 +507,14 @@ class Ctx(Generic[D, ConfigT]):
                     else Error(type=type(exc).__name__, message=str(exc)),
                     exc.trace_id if isinstance(exc, CallFailed) else None,
                 )
-                self.event(
-                    "call", "failed", error=result.error, trace_id=result.trace_id
+                flow.event(
+                    CallEvent(
+                        type="call",
+                        invocation=invocation,
+                        status="failed",
+                        error=result.error,
+                        trace_id=result.trace_id,
+                    )
                 )
                 return result
             # Publication failures stop the stage; repeating work is an operator decision.
@@ -543,17 +530,31 @@ class Ctx(Generic[D, ConfigT]):
                 tmp.write_text(record.model_dump_json(indent=1))
                 os.replace(tmp, file)
             trace_id = value.id if isinstance(value, Trace) else None
-            self.event("call", "succeeded", trace_id=trace_id)
+            flow.event(
+                CallEvent(
+                    type="call",
+                    invocation=invocation,
+                    status="succeeded",
+                    trace_id=trace_id,
+                )
+            )
             return Success(value)
         except Stopped:
-            self.event("call", "stopped")
+            flow.event(CallEvent(type="call", invocation=invocation, status="stopped"))
             raise
         except asyncio.CancelledError:
-            self.event("call", "cancelled")
+            flow.event(
+                CallEvent(type="call", invocation=invocation, status="cancelled")
+            )
             raise
         except Exception as exc:
-            self.event(
-                "call", "failed", error=Error(type=type(exc).__name__, message=str(exc))
+            flow.event(
+                CallEvent(
+                    type="call",
+                    invocation=invocation,
+                    status="failed",
+                    error=Error(type=type(exc).__name__, message=str(exc)),
+                )
             )
             raise
         finally:

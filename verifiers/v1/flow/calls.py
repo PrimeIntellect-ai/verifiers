@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypedDict, Ty
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from verifiers.v1.agent import Agent
+from verifiers.v1.flow.events import CallEvent, Invocation
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -52,14 +53,6 @@ class Failure:
 
 
 Result = Success[T] | Failure
-
-
-@dataclass(frozen=True)
-class Invocation:
-    call: str
-    key: str | None
-    kind: str
-    cache: str | None
 
 
 INVOCATION: ContextVar[Invocation] = ContextVar("flow_invocation")
@@ -110,7 +103,8 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
         flow = ctx.flow
         agent = flow.agent(self.seat)
         held = () if self.runtime is not None else ("runtimes",)
-        call = INVOCATION.get().call
+        invocation = INVOCATION.get()
+        call = invocation.call
         watch = flow.live.watch(ctx.unit.id, call)
         traces: list[Trace] = []
 
@@ -122,19 +116,30 @@ class AgentWork(Work[Trace[Any, Any, Any]]):
                 if trace.is_completed
                 else "cancelled"
             )
-            ctx.event(
-                "rollout",
-                status,
-                rollout=attempt,
-                trace_id=trace.id,
-                error=trace.last_error,
+            flow.event(
+                CallEvent(
+                    type="rollout",
+                    invocation=invocation,
+                    status=status,
+                    rollout=attempt,
+                    trace_id=trace.id,
+                    error=trace.last_error,
+                )
             )
 
         def on_trace(trace: Trace) -> None:
             if traces:
                 finished(traces[-1], len(traces))
             traces.append(trace)
-            ctx.event("rollout", "started", rollout=len(traces), trace_id=trace.id)
+            flow.event(
+                CallEvent(
+                    type="rollout",
+                    invocation=invocation,
+                    status="started",
+                    rollout=len(traces),
+                    trace_id=trace.id,
+                )
+            )
             watch(trace)
 
         try:

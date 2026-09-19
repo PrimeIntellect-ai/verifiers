@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, JsonValue, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from verifiers.v1.trace import Error
 
@@ -48,15 +48,20 @@ class StageEvent(Event):
     links: list[Link] = Field(default_factory=list)
 
 
-class CallEvent(Event):
-    type: Literal["call", "rollout"]
+class Invocation(BaseModel):
+    model_config = ConfigDict(frozen=True)
     unit: str
     stage: str
     execution: str
     call: str
-    key: str | None = None
+    key: str | None
     kind: str
-    cache: str | None = None
+    cache: str | None
+
+
+class CallEvent(Event):
+    type: Literal["call", "rollout"]
+    invocation: Invocation
     status: CallStatus
     trace_id: str | None = None
     error: Error | None = None
