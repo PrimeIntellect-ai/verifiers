@@ -352,6 +352,8 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
     async with Flow(tmp_path, cfg, Pipeline({"work": stage})) as flow:
         unit = flow.create_unit("t", stage="work", data=Data())
         assert (await flow.run()).counts == {"terminal": 1}
+        cfg.model = "solver-v2"
+        cfg.sampling.max_tokens = 123
         cfg.worker.max_turns = 100
         cfg.worker.retries.max_retries = 5
         cfg.client.api_key_var = "DIFFERENT_CREDENTIAL"
@@ -359,12 +361,6 @@ async def test_agent_retry_evidence_and_declared_semantic_identity(
         assert (await flow.run()).counts == {"terminal": 1}
         assert executed == 1
         grading["judge"] = "judge-v2"
-        unit.steer(status="ready")
-        await flow.run()
-        cfg.model = "solver-v2"
-        unit.steer(status="ready")
-        await flow.run()
-        cfg.sampling.max_tokens = 123
         unit.steer(status="ready")
         await flow.run()
         assert executed == 2  # Core hashes only declared inputs, not model settings.
