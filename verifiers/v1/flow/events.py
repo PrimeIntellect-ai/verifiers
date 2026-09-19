@@ -37,6 +37,15 @@ class Link(BaseModel):
     label: str
 
 
+class LinkEvent(Event):
+    """The target execution selected work originating from the source execution."""
+
+    type: Literal["link"] = "link"
+    source_execution: str
+    target_execution: str
+    label: str
+
+
 class StageEvent(Event):
     type: Literal["started", "stopped", "cancelled", "transition"]
     unit: str
@@ -89,7 +98,7 @@ class SteerEvent(Event):
     action: Steering
 
 
-EventRecord = RunEvent | StageEvent | CallEvent | SteerEvent
+EventRecord = RunEvent | StageEvent | CallEvent | SteerEvent | LinkEvent
 event_adapter = TypeAdapter(Annotated[EventRecord, Field(discriminator="type")])
 
 
