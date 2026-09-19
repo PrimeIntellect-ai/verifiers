@@ -45,6 +45,7 @@ from verifiers.v1.flow.events import (
     EventRecord,
     Invocation,
     Link,
+    LinkEvent,
     RunEvent,
     RunReason,
     StageEvent,
@@ -390,6 +391,16 @@ class Ctx(Generic[D, ConfigT]):
     def notes(self) -> str:
         """Notes present at stage start; successful transitions acknowledge only these."""
         return "\n\n".join(self.state.notes)
+
+    def link_from(self, source_execution: str, *, label: str) -> None:
+        """Record where this execution's selected work came from, before running it."""
+        self.flow.event(
+            LinkEvent(
+                source_execution=source_execution,
+                target_execution=self.execution.id,
+                label=label,
+            )
+        )
 
     @property
     def config(self) -> ConfigT:

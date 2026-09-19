@@ -5,6 +5,8 @@ Run returns all unit states and a quiescent/draining reason; pipelines decide su
 Stages can annotate `Ctx[MyData, MyConfig] -> Transition[MyData]`; edit `ctx.data`
 and publish it with `data=ctx.data`. Different stages may use different data models.
 Admission sees reserved executions in `flow.active`, including their executing stage.
+When accepting work from another execution, use `ctx.link_from(source_id, label="...")`.
+This records provenance, not scheduling or successful completion.
 
 Keyed work requires explicit `inputs`: core fingerprints only the key and those inputs.
 Agent results use native traces; host work declares its output type with `fn(..., output=...)`.
