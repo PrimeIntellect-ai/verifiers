@@ -28,7 +28,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FieldSerializationInfo,
+    field_serializer,
+    field_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
@@ -65,6 +72,14 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
+RECORD_FLOAT_DECIMALS = 4
+"""Default precision of per-token float streams in JSON records (`to_record`). Full-precision
+digits are noise to every record reader and the least compressible bytes of a trace; four
+decimals leave a logprob within 1e-4 of what the trainer saw. `to_record(float_decimals=...)`
+overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="python"`) keeps
+full precision — training never reads the record."""
+
+
 class MessageNode(BaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -72,6 +87,8 @@ class MessageNode(BaseModel):
 
     parent: int | None = None
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
+    tools: list[Tool] = Field(default_factory=list, exclude_if=lambda tools: not tools)
+    """Tools rendered into this branch's prompt. Populated only on root nodes."""
     semantic_parents: list[ParentLink] = Field(default_factory=list)
     """Additional harness-declared parents in the semantic execution graph.
 
@@ -149,6 +166,22 @@ class MessageNode(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_serializer(
+        "logprobs",
+        "advantages",
+        "reference_logprobs",
+        "trainer_logprobs",
+        "entropies",
+        when_used="json",
+    )
+    def serialize_record_floats(
+        self, values: list[float] | None, info: FieldSerializationInfo
+    ) -> list[float] | None:
+        decimals = (info.context or {}).get("float_decimals", RECORD_FLOAT_DECIMALS)
+        if values is None or decimals is None:
+            return values
+        return [round(value, decimals) for value in values]
 
     @field_serializer("multi_modal_data")
     def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
@@ -246,9 +279,8 @@ def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant reasoning content when present, assistant tool calls,
     opaque continuation state, tool call id. Two messages hash equal iff they're the same
-    conversational message, so a re-stated prefix message dedups to one node. The dedup key
-    for sharing a prefix across turns/branches; salt-free so it is identical across processes
-    and after deserialization."""
+    conversational message, so a re-stated prefix message dedups to one node. The message part
+    of the prefix key; salt-free so it is identical across processes and after deserialization."""
     digest = hashlib.blake2b(digest_size=16)
 
     def add(value: str) -> None:
@@ -319,14 +351,52 @@ def message_hash(message: Message) -> str:
     return digest.hexdigest()
 
 
-def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
-    """`(parent, msg_hash) -> node_id`, rebuilt lazily from `nodes` after deserialization."""
+def _tools_hash(tools: list[Tool] | None) -> str:
+    payload = [tool.model_dump(mode="json", exclude_none=True) for tool in tools or []]
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.blake2b(data, digest_size=16).hexdigest()
+
+
+def _node_key(
+    parent: int | None, message: Message, tools: list[Tool] | None = None
+) -> tuple[int | None, str | None, str]:
+    return (
+        parent,
+        _tools_hash(tools) if parent is None else None,
+        message_hash(message),
+    )
+
+
+def _head_index(trace: Trace) -> dict[tuple[int | None, str | None, str], int]:
+    """Physical node key -> id, rebuilt lazily after deserialization."""
     if not trace._head_index and trace.nodes:
         trace._head_index = {
-            (node.parent, message_hash(node.message)): nid
+            _node_key(node.parent, node.message, node.tools): nid
             for nid, node in enumerate(trace.nodes)
         }
     return trace._head_index
+
+
+def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
+    """Length of the longest message-only graph prefix matching `prompt`."""
+    children: dict[int | None, list[int]] = {}
+    for node_id, node in enumerate(trace.nodes):
+        children.setdefault(node.parent, []).append(node_id)
+
+    parents: list[int | None] = [None]
+    matched = 0
+    for message in prompt:
+        key = message_hash(message)
+        parents = [
+            node_id
+            for parent in parents
+            for node_id in children.get(parent, [])
+            if message_hash(trace.nodes[node_id].message) == key
+        ]
+        if not parents:
+            break
+        matched += 1
+    return matched
 
 
 def _matching_node(
@@ -334,6 +404,7 @@ def _matching_node(
     parent: int | None,
     message: Message,
     token_ids: list[int] | None = None,
+    tools: list[Tool] | None = None,
 ) -> int | None:
     """Find an existing child, optionally requiring its exact physical token span.
 
@@ -341,7 +412,7 @@ def _matching_node(
     prefix breaks can leave older physical variants under the same key, so a token mismatch falls
     back to a reverse scan rather than materializing a duplicate of an already-existing variant.
     """
-    key = (parent, message_hash(message))
+    key = _node_key(parent, message, tools)
     indexed = _head_index(trace).get(key)
     if indexed is not None and (
         token_ids is None or trace.nodes[indexed].token_ids == token_ids
@@ -356,7 +427,7 @@ def _matching_node(
         if (
             node.parent == parent
             and node.token_ids == token_ids
-            and message_hash(node.message) == key[1]
+            and _node_key(node.parent, node.message, node.tools) == key
         ):
             return node_id
     return None
@@ -369,6 +440,7 @@ def _matching_prefix_node(
     prompt_ids: list[int],
     start: int,
     stop: int,
+    tools: list[Tool] | None = None,
 ) -> int | None:
     """Find the longest content-equivalent child matching inside `[start, stop]`.
 
@@ -377,7 +449,7 @@ def _matching_prefix_node(
     otherwise-missing message boundary. The next attributed message's start bounds the match:
     a sampled variant must never consume tokens that the renderer assigned to that message.
     """
-    key = (parent, message_hash(message))
+    key = _node_key(parent, message, tools)
     indexed = _head_index(trace).get(key)
     candidates: list[int] = []
     if indexed is not None:
@@ -386,8 +458,12 @@ def _matching_prefix_node(
         node_id
         for node_id in range(len(trace.nodes) - 1, -1, -1)
         if node_id != indexed
-        and trace.nodes[node_id].parent == parent
-        and message_hash(trace.nodes[node_id].message) == key[1]
+        and _node_key(
+            trace.nodes[node_id].parent,
+            trace.nodes[node_id].message,
+            trace.nodes[node_id].tools,
+        )
+        == key
     )
     matches = [
         node_id
@@ -412,6 +488,7 @@ class PendingTurn:
 
     trace: Trace
     prompt: list[Message]
+    tools: list[Tool]
     prefix_node_ids: list[int]
     path_len: int
 
@@ -467,33 +544,49 @@ class PendingTurn:
             for span in tail_spans
         ]
 
-    def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
+    def commit(self, response: Response) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
-        if tools:
-            self.trace.tools = tools
+        self.trace.tools = self.tools
+        self.trace.clear_preview(self)
         return assistant_id
 
-    def commit_prompt(self, tools: list[Tool] | None = None) -> None:
+    def abandon(self) -> None:
+        """The request failed or was cancelled before a commit: its preview goes."""
+        self.trace.clear_preview(self)
+
+    def commit_prompt(self) -> None:
         """Record an input that terminated before model inference."""
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
         index = _head_index(self.trace)
         for message in self.tail:
-            existing = _matching_node(self.trace, parent, message)
+            existing = _matching_node(self.trace, parent, message, tools=self.tools)
             if existing is not None:
                 parent = existing
                 continue
             previous = parent
-            self.trace.nodes.append(MessageNode(parent=parent, message=message))
+            self.trace.nodes.append(
+                MessageNode(
+                    parent=parent,
+                    message=message,
+                    tools=self.tools if parent is None else [],
+                )
+            )
             parent = len(self.trace.nodes) - 1
-            index[(previous, message_hash(message))] = parent
-        if tools:
-            self.trace.tools = tools
+            index[_node_key(previous, message, self.tools)] = parent
+        self.trace.tools = self.tools
+        self.trace.clear_preview(self)
 
 
-def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
-    """Resolve `prompt` against the trace graph without mutating it."""
+def prepare_turn(
+    trace: Trace,
+    prompt: list[Message],
+    tools: list[Tool] | None = None,
+) -> PendingTurn:
+    """Resolve a physical message-and-tools prefix without mutating the trace."""
     idx = _head_index(trace)
+    tools = list(tools or [])
+    tools_hash = _tools_hash(tools)
     parent: int | None = None
     path_len = 0
     prefix_node_ids: list[int] = []
@@ -506,15 +599,19 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
         ):
             children = [
                 node_id
-                for (node_parent, _), node_id in idx.items()
+                for (node_parent, node_tools_hash, _), node_id in idx.items()
                 if node_parent == parent
+                and (parent is not None or node_tools_hash == tools_hash)
             ]
             # Repeated image URLs are cheaper to compare than to encode and hash again.
             # Only scan short, unambiguous parents; all other cases use the stable index.
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            existing = idx.get((parent, message_hash(msg)))
+            message_key = message_hash(msg)
+            existing = idx.get(
+                (parent, tools_hash if parent is None else None, message_key)
+            )
         if existing is None:
             break
         prefix_node_ids.append(existing)
@@ -523,6 +620,7 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     return PendingTurn(
         trace=trace,
         prompt=prompt,
+        tools=tools,
         prefix_node_ids=prefix_node_ids,
         path_len=path_len,
     )
@@ -575,8 +673,41 @@ def _attribute_mm(
             )
 
 
+def _replace_placeholder_routing_row(
+    trace: Trace, prefix_node_ids: list[int], arr: np.ndarray, off: int
+) -> None:
+    """Replace the prefix's placeholder routing row with the one this turn's prefill forwarded."""
+    if not 1 <= off <= arr.shape[0]:
+        return
+    # Only assistant (`sampled`) nodes are affected: the model forward isn't run on  the final
+    # generated token for such turns, meaning its routing decisions are fundamentally unavailable.
+    # But, because routing needs one row per token, that row instead receives an inaccurate
+    # placeholder, attempt to fix up below.
+    node_with_placeholder = None
+    for nid in reversed(prefix_node_ids):
+        if trace.nodes[nid].token_ids:
+            node_with_placeholder = trace.nodes[nid]
+            break
+    if node_with_placeholder is None or not node_with_placeholder.sampled:
+        return
+    node_rows = node_with_placeholder.routed_experts
+    if (
+        node_rows is None
+        or node_rows.shape[0] == 0
+        or node_rows.shape[1:] != arr.shape[1:]
+    ):
+        return
+    # Row `i` of this turn's array is sequence position `start + i`, so the prefix's final position
+    # is `arr[off - 1]`. Concatenating widens the node when this turn serialized `uint16`, where an
+    # in-place write would truncate.
+    node_with_placeholder.routed_experts = np.concatenate(
+        [node_rows[:-1], arr[off - 1 : off]], axis=0
+    )
+
+
 def _attribute_routed_experts(
     trace: Trace,
+    prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
     payload: Any,
@@ -585,7 +716,8 @@ def _attribute_routed_experts(
     payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
-    the routing attributed when they were first created. A node whose slice falls outside the
+    the routing attributed when they were first created, except for the one position this turn
+    corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
     array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
     if payload is None:
@@ -595,6 +727,7 @@ def _attribute_routed_experts(
         payload["shape"]
     )
     off = path_len - int(payload.get("start", 0) or 0)
+    _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
@@ -603,8 +736,8 @@ def _attribute_routed_experts(
             # Own only this node's rows; a view would retain the turn's full-context array.
             trace.nodes[nid].routed_experts = arr[off:end].copy()
         elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
-            # The engine omits the turn's final position because no forward pass follows it.
-            # Pad only the final node's suffix instead of copying the full-context array.
+            # No forward pass follows the turn's final position, so it gets a placeholder: a
+            # copy of the previous row, appended to this node's slice of the array.
             trace.nodes[nid].routed_experts = np.concatenate(
                 [arr[off:], arr[-1:]], axis=0
             )
@@ -687,7 +820,13 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 len(prompt_ids),
             )
             existing = _matching_prefix_node(
-                trace, parent, prompt[i], prompt_ids, path_len, next_start
+                trace,
+                parent,
+                prompt[i],
+                prompt_ids,
+                path_len,
+                next_start,
+                turn.tools,
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
@@ -698,6 +837,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 parent,
                 prompt[i],
                 node_tokens if tokens is not None else None,
+                turn.tools,
             )
         if existing is None:
             break
@@ -708,14 +848,14 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
-    # Track new nodes separately so routed-expert attribution does not need this full path.
+    # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     # Materialize the reused message path only for multimodal cursor attribution.
     mm_path: list[tuple[int, Message]] | None = None
     if multi_modal_data is not None:
         mm_path = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
-        key = (parent, message_hash(msg))
+        key = _node_key(parent, msg, turn.tools)
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
@@ -725,6 +865,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             # potentially huge token slices a second time.
             MessageNode.model_construct(
                 parent=parent,
+                tools=turn.tools if parent is None else [],
                 message=msg,
                 token_ids=node_tokens,
                 mask=[False] * len(node_tokens),
@@ -745,6 +886,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace.nodes.append(
         MessageNode.model_construct(
             parent=parent,
+            tools=turn.tools if parent is None else [],
             message=response.message,
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
@@ -758,7 +900,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     assistant_id = len(trace.nodes) - 1
-    idx[(parent, message_hash(response.message))] = assistant_id
+    idx[_node_key(parent, response.message, turn.tools)] = assistant_id
     new_node_ids.append(assistant_id)
 
     # Attribute this turn's images onto the input nodes that introduced them (by content part).
@@ -767,8 +909,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
+    # The prefix goes in too, so the position the previous turn could only pad can be corrected.
     _attribute_routed_experts(
-        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.

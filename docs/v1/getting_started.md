@@ -9,7 +9,7 @@ cd verifiers
 uv sync
 ```
 
-You can now run tasksets directly, e.g. `uv run eval <taskset-id>`, and scaffold new ones with `uv run init <name>`.
+You can now run tasksets directly, e.g. `uv run vf-eval <taskset-id>`, and scaffold new ones with `uv run vf-init <name>`.
 
 ## Skills
 

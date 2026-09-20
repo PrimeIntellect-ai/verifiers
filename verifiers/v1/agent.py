@@ -9,9 +9,9 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Self
 
 from verifiers.v1.clients import (
@@ -52,6 +52,35 @@ from verifiers.v1.utils.retries import backoff, trace_should_retry
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_ROLLOUT_TIMEOUT = 4 * 3600.0
+"""Agent solve-attempt budget when neither the eval config nor the task sets one."""
+
+
+def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
+    """Apply an agent's stage-timeout precedence to one task."""
+    agent_timeout = (
+        timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
+    )
+    if agent_timeout is None:
+        agent_timeout = DEFAULT_ROLLOUT_TIMEOUT
+    elif agent_timeout == 0:
+        agent_timeout = None  # explicit: unbounded
+    return RolloutTimeouts(
+        setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
+        agent=agent_timeout,
+        finalize=(
+            timeout.finalize
+            if timeout.finalize is not None
+            else task.data.timeout.finalize
+        ),
+        scoring=(
+            timeout.scoring
+            if timeout.scoring is not None
+            else task.data.timeout.scoring
+        ),
+    )
 
 
 def _check_borrowed_placement(
@@ -515,6 +544,13 @@ class Agent:
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
+        harness = self.harness
+        skills = [*task.data.skills, *harness.config.skills]
+        if skills:
+            # Skill installations can hold run-specific state, such as RLM's package environment.
+            harness = type(harness)(
+                harness.config.model_copy(update={"skills": skills})
+            )
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -525,39 +561,20 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
-            self.harness,
+            harness,
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
-        # Timeout precedence: agent-level wins, else the task's, else no limit.
-        agent_timeout = (
-            self.timeout.rollout
-            if self.timeout.rollout is not None
-            else task.data.timeout.agent
-        )
+        timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
             "agent_config": self.config,
-            "harness": self.harness,
+            "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "timeouts": RolloutTimeouts(
-                setup=(
-                    self.timeout.setup
-                    if self.timeout.setup is not None
-                    else task.data.timeout.setup
-                ),
-                agent=cap_remote_agent_timeout(agent_timeout, runtime_config, task),
-                finalize=(
-                    self.timeout.finalize
-                    if self.timeout.finalize is not None
-                    else task.data.timeout.finalize
-                ),
-                scoring=(
-                    self.timeout.scoring
-                    if self.timeout.scoring is not None
-                    else task.data.timeout.scoring
-                ),
+            "timeouts": replace(
+                timeouts,
+                agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
@@ -737,9 +754,3 @@ class Agents:
                 f"{sorted(agents) if agents else []}"
             )
         return agents[name]
-
-    def __iter__(self) -> Iterator[Agent]:
-        return iter(self._agents.values())
-
-    def __len__(self) -> int:
-        return len(self._agents)

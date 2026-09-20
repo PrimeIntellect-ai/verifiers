@@ -49,9 +49,9 @@ REASONS = ("valid", "invalid", "unchecked", "error", "timeout")
 ResultRow = dict[str, Any]
 
 USAGE = (
-    "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
+    "usage: uv run vf-validate [<taskset-id>] [--only-setup | --only-gold] "
     "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       uv run validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
+    "       uv run vf-validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and setup-only checks per task (no model)"
 )
 

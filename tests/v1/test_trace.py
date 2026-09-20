@@ -45,6 +45,41 @@ class EnvTask(vf.TaskData):
     """An endpoint authenticated through its query string."""
 
 
+@pytest.mark.parametrize(
+    "reason,condition",
+    [
+        ("max_total_tokens", "max_total_tokens"),
+        ("max_total_turns", "max_turns"),
+        ("token_budget", "max_output_tokens"),
+        ("compaction_failed", "compaction_failed"),
+        ("done", "agent_completed"),
+        (None, "agent_completed"),
+    ],
+)
+def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    metadata = {
+        RLM_SESSION_METADATA_KEY: {
+            "session_id": trace.id,
+            "metrics": {"turns": 1},
+            "last_stop_reason": reason,
+        }
+    }
+    harness.acp_turn_result(
+        trace, vf.ACPTurn(reply="partial", response_metadata=metadata)
+    )
+    trace.stop("agent_completed")
+    harness.acp_close_result(trace, metadata)
+
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.stop_condition == condition
+    assert restored.is_truncated is (condition != "agent_completed")
+
+
 class FailingSegmentRollout:
     ok = Rollout.ok
     closed = Rollout.closed
@@ -446,6 +481,134 @@ def test_acp_semantic_edge_metadata_is_optional():
     assert all(not node.semantic_parents for node in trace.nodes)
 
 
+def test_acp_derives_compaction_attempt_branch_trainability():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="work")),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="working"),
+                sampled=True,
+                token_ids=[1],
+                mask=[True],
+                logprobs=[-0.1],
+            ),
+            MessageNode(parent=1, message=UserMessage(content="summarize")),
+            MessageNode(
+                parent=2,
+                message=AssistantMessage(content="bad tool call"),
+                sampled=True,
+                token_ids=[2, 3],
+                mask=[True, True],
+                logprobs=[-0.2, -0.3],
+            ),
+            MessageNode(
+                parent=2,
+                message=AssistantMessage(content="accepted summary"),
+                sampled=True,
+                token_ids=[4, 5],
+                mask=[True, True],
+                logprobs=[-0.4, -0.5],
+            ),
+            MessageNode(parent=0, message=UserMessage(content="compacted context")),
+            MessageNode(
+                parent=5,
+                message=AssistantMessage(content="answer"),
+                sampled=True,
+                token_ids=[6],
+                mask=[True],
+                logprobs=[-0.6],
+            ),
+        ],
+        calls=[
+            vf.ModelCall(node=1, acp=vf.ACPInfo(request_id="work")),
+            vf.ModelCall(node=3, acp=vf.ACPInfo(request_id="rejected")),
+            vf.ModelCall(node=4, acp=vf.ACPInfo(request_id="accepted")),
+            vf.ModelCall(node=6, acp=vf.ACPInfo(request_id="resumed")),
+        ],
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness._consume_protocol_metadata(
+        trace,
+        {
+            ACP_SEMANTIC_EDGES_METADATA_KEY: {
+                "edges": [
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "rejected",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "accepted",
+                        "type": "compaction_attempt",
+                    },
+                ]
+            },
+        },
+    )
+
+    attempts = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert attempts["bad tool call"].trainable is False
+    assert attempts["accepted summary"].trainable is False
+
+    harness._consume_protocol_metadata(
+        trace,
+        {
+            ACP_SEMANTIC_EDGES_METADATA_KEY: {
+                "edges": [
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "rejected",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "work",
+                        "target_request_id": "accepted",
+                        "type": "compaction_attempt",
+                    },
+                    {
+                        "source_request_id": "accepted",
+                        "target_request_id": "resumed",
+                        "type": "compaction",
+                    },
+                ]
+            },
+        },
+    )
+
+    assert trace.nodes[3].sampled is True
+    assert trace.nodes[3].mask == [True, True]
+    assert trace.nodes[4].mask == [True, True]
+    assert trace.nodes[6].mask == [True]
+    assert trace.nodes[3].semantic_parents == [
+        vf.ParentLink(node=1, type="compaction_attempt")
+    ]
+    assert trace.nodes[4].semantic_parents == [
+        vf.ParentLink(node=1, type="compaction_attempt")
+    ]
+    assert trace.nodes[6].semantic_parents == [vf.ParentLink(node=4, type="compaction")]
+    assert trace.num_branches == 3
+    branches = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert branches["bad tool call"].trainable is False
+    assert branches["accepted summary"].trainable is True
+    assert branches["answer"].trainable is True
+    assert branches["bad tool call"].nodes[-2] is trace.nodes[2]
+    assert branches["accepted summary"].nodes[-2] is trace.nodes[2]
+
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.nodes[3].sampled is True
+    assert restored.nodes[3].mask == [True, True]
+    assert restored.nodes[4].mask == [True, True]
+    restored_branches = {
+        branch.nodes[-1].message.content: branch for branch in restored.branches
+    }
+    assert restored_branches["bad tool call"].trainable is False
+    assert restored_branches["accepted summary"].trainable is True
+
+
 def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():
     edge_set = _semantic_edge_set().model_dump(mode="json")
     edge_set["edges"].append(edge_set["edges"][0])
@@ -492,12 +655,11 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     assert len(edge_set.edges) == 2_000
 
 
-def test_push_traces_uploads_redacted_projection(monkeypatch):
+def test_log_episodes_uploads_redacted_projection(monkeypatch):
     """`--push` drops the config fields that carry credentials and replaces every known
     secret the agent echoed — including one the harness printed inside a quoted JSON
     tool result — while the saved record keeps its config and the tokens never touch
     disk. Ordinary text and short or non-credential values stay as they are."""
-    import httpx
 
     from verifiers.v1.clients import EvalClientConfig
     from verifiers.v1.configs.cli.eval import EvalConfig
@@ -630,26 +792,11 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         upload_secrets=["retry-token-0001"],
     )
 
-    posted: dict[str, bytes] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        posted[request.url.path] = request.content
-        if request.url.path.endswith("/environmentshub/resolve"):
-            return httpx.Response(200, json={"data": {"id": "env-1"}})
-        if request.url.path.endswith("/evaluations/"):
-            return httpx.Response(200, json={"evaluation_id": "eval-1"})
-        return httpx.Response(200, json={})
-
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        platform.httpx,
-        "Client",
-        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
-    )
-    url = platform.push_traces([episode], config)
-
-    assert url is not None and url.endswith("/dashboard/evaluations/eval-1")
-    body = posted["/api/v1/evaluations/eval-1/samples"].decode()
+    queued = []
+    run = SimpleNamespace(log_episodes=queued.extend)
+    platform.log_episodes(run, [episode], config)
+    assert len(queued) == 1
+    body = json.dumps({"samples": platform.build_samples(queued)})
     for secret in secrets:
         assert secret not in body and secret.replace('"', '\\"') not in body
     payload = json.loads(body)
@@ -658,12 +805,12 @@ def test_push_traces_uploads_redacted_projection(monkeypatch):
         "verifier_env"
     ] == {"ROOT_TOKEN": "[REDACTED]"}
     native = payload["samples"][0]["info"]["native_wrapper"]["traces"][0]
-    assert "headers" not in native["agent"]["config"]["client"]
+    assert not native["agent"]["config"]["client"].get("headers")
     assert (
         native["agent"]["config"]["client"]["base_url"]
         == "https://svc:[REDACTED]@models.example/v1"
     )
-    assert "env" not in native["agent"]["config"]["harness"]
+    assert not native["agent"]["config"]["harness"].get("env")
     assert native["agent"]["config"]["harness"]["forward_env"] == ["HOME"]
     assert "upload_secrets" not in native
     messages = payload["samples"][0]["completion"]

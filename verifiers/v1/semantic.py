@@ -63,8 +63,8 @@ class SemanticEdgeSet(BaseModel):
     """A harness-published set of semantic edges over logical request IDs.
 
     Edge labels are intentionally extensible. Initial harnesses use ``continuation``,
-    ``compaction``, ``subagent_call``, and ``subagent_return``; consumers must preserve
-    unknown labels.
+    ``compaction_attempt``, ``compaction``, ``subagent_call``, and ``subagent_return``;
+    consumers must preserve unknown labels.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)

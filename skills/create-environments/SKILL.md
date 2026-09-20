@@ -12,14 +12,14 @@ Create native v1 tasksets that are installable and runnable with verifiers.
 To start, ALWAYS use the CLI to create a package with the correct files:
 
 ```bash
-uv run init my-task-v1
+uv run vf-init my-task-v1
 ```
 
 Add only the components the contract needs:
 
 ```bash
-uv run init my-task-v1 -T      # task toolset
-uv run init my-agent-v1 -H     # custom reusable harness
+uv run vf-init my-task-v1 -T      # task toolset
+uv run vf-init my-agent-v1 -H     # custom reusable harness
 ```
 
 Often, the user does not want nor need a custom reusable harness, as verifiers offer a lot of built-in ones.
@@ -51,7 +51,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass — and optionally one `vf.Env` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run init`.
+A package exports one `vf.Taskset` subclass — and optionally one `vf.Env` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run vf-init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader resolves classes and their config types from `__all__` and generic bases.
 

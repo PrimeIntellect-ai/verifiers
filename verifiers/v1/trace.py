@@ -18,13 +18,9 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
-from verifiers.v1.graph import MessageNode
+from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
-from verifiers.v1.semantic import (
-    ACPInfo,
-    ParentLink,
-    SemanticEdgeSet,
-)
+from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
@@ -203,12 +199,18 @@ class Branch(BaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
+    trainable: bool = True
+    """Whether this physical path contributes a training sample."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
     @property
     def messages(self) -> Messages:
         return [n.message for n in self.nodes]
+
+    @property
+    def tools(self) -> list[Tool]:
+        return self.nodes[0].tools if self.nodes else []
 
     @property
     def token_ids(self) -> list[int]:
@@ -451,7 +453,36 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     redacts them; never written to disk."""
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder."""
+    """Physical node key -> node id for the graph builder."""
+    _on_change: Any = PrivateAttr(default=None)
+    _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
+    """The messages of the request in flight that no node holds yet (the harness's tool
+    results and user turns): a preview for live watchers until the turn commits."""
+
+    def watch(self, on_change: Callable[[Trace], None]) -> None:
+        """Have `on_change` called at each of this trace's phase changes and turns."""
+        self._on_change = on_change
+
+    def notify(self) -> None:
+        """The trace just changed shape (a phase span, a committed turn)."""
+        if self._on_change is not None:
+            self._on_change(self)
+
+    @property
+    def pending(self) -> list[Message]:
+        """The uncommitted messages of every request in flight, in request order."""
+        return [message for messages in self._pending.values() for message in messages]
+
+    def preview(self, key: object, messages: Iterable[Message]) -> None:
+        """Show watchers the uncommitted messages of one request in flight. Requests
+        run concurrently (parallel agents share a trace), so each previews under its
+        own `key` (the request object, held by identity) and only clears its own."""
+        self._pending[id(key)] = list(messages)
+        self.notify()
+
+    def clear_preview(self, key: object) -> None:
+        """The request's previewed messages are committed (or abandoned)."""
+        self._pending.pop(id(key), None)
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
@@ -489,8 +520,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence lengths (last prompt + completion) summed across branches."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        """New input plus generated tokens, counted once per call across branches.
+        Input is a lower bound when the engine drops tokens between calls."""
+        usage = self.usage
+        return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
     @property
     def usage(self) -> Usage | None:
@@ -499,8 +532,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def branches(self) -> list[Branch]:
-        """One root-to-leaf path per graph leaf, its calls attached in path order."""
+        """One root-to-leaf view per graph leaf, with no duplicated node storage.
+
+        A compaction attempt is a dangling physical leaf. It is trainable only when
+        the final semantic graph shows that the harness resumed from it.
+        """
         by_node = {c.node: c for c in self.calls if c.node is not None}
+        accepted_compaction_attempts = {
+            link.node
+            for node in self.nodes
+            for link in node.semantic_parents
+            if link.type == "compaction"
+        }
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -509,11 +552,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
+            is_compaction_attempt = any(
+                link.type == "compaction_attempt"
+                for link in self.nodes[leaf].semantic_parents
+            )
             branches.append(
                 Branch(
                     index=i,
                     nodes=[self.nodes[n] for n in path],
                     calls=[by_node[n] for n in path if n in by_node],
+                    trainable=(
+                        not is_compaction_attempt
+                        or leaf in accepted_compaction_attempts
+                    ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
                 )
             )
@@ -608,12 +659,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def is_truncated(self) -> bool:
-        """True for framework limits or a length-finished final response."""
+        """True for framework limits, failed compaction, or a length-finished response."""
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
+            "compaction_failed",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)
@@ -735,9 +787,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.ok = False
         self.stop("error")
 
-    def to_record(self) -> dict[str, Any]:
-        """JSON record without raw tensors, which remain available on the msgpack wire."""
-        return self.model_dump(mode="json", exclude=EXCLUDE_FIELDS)
+    def to_record(
+        self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
+    ) -> dict[str, Any]:
+        """JSON record without raw tensors, which remain available on the msgpack wire.
+        Per-token float streams are rounded to `float_decimals` (`None` keeps every digit)."""
+        return self.model_dump(
+            mode="json",
+            exclude=EXCLUDE_FIELDS,
+            context={"float_decimals": float_decimals},
+        )
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

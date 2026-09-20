@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -59,7 +60,7 @@ class TaskResources(BaseModel):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
-    """Disk in GB (enforced by prime; advisory on docker/modal)."""
+    """Disk in GB (enforced by prime; advisory on local containers and modal)."""
 
 
 class TaskTimeout(BaseModel):
@@ -97,11 +98,13 @@ class TaskData(BaseModel):
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
 
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Skill sources installed before the harness's configured skills for this task."""
+
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
     allowlist unchanged; a concrete list replaces a wildcard or retains entries also
-    present in an existing allowlist. Prime runtimes accept host-level entries and
-    require `vm=true`."""
+    present in an existing allowlist. Prime runtimes accept host-level entries."""
     network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
@@ -173,15 +176,36 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        """Prepare trusted verifier-only inputs after artifacts are restored."""
+        return
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None
+
+    def defer_scoring(self) -> Self:
+        """An independent copy whose task signals are deferred.
+
+        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
+        state before declared artifacts are collected and the solver runtime is
+        destroyed. Only task metrics, rewards, and judges are skipped; harness
+        metrics remain attached to the solver trace.
+        """
+        clone = copy.deepcopy(self)
+        clone.scoring_deferred = True
+        return clone
+
+    scoring_deferred: bool = False
 
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        if self.scoring_deferred:
+            return
+
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
             # A defaulted runtime parameter can still be called offline with None.

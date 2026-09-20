@@ -91,12 +91,33 @@ async def collect(
             raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
         seen.add(artifact.source)
 
+    # Batch roots to save remote round trips. Leave room below the shell argument
+    # limit for the command itself and further quoting by runtime transports.
+    batches: list[list[str]] = [[]]
+    batch_bytes = 0
+    for artifact in entries:
+        source_bytes = len(shlex.quote(artifact.source).encode()) + 1
+        if batches[-1] and batch_bytes + source_bytes > 8 * 1024:
+            batches.append([])
+            batch_bytes = 0
+        batches[-1].append(artifact.source)
+        batch_bytes += source_bytes
+
+    existence: list[str] = []
+    for sources in batches:
+        output = await _run(
+            runtime,
+            f"for source in {shlex.join(sources)}; do "
+            'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
+            "done",
+            "check artifact roots",
+        )
+        existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
-    for artifact in entries:
+    for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
-        exists = f"test -e {shlex.quote(source)} || test -L {shlex.quote(source)}"
-        if (await runtime.run(["sh", "-c", exists], {})).exit_code != 0:
+        if exists != "1":
             if not artifact.required:
                 collected[source] = None
                 continue
@@ -205,8 +226,9 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
 
 
-async def _run(runtime: Runtime, command: str, action: str) -> None:
+async def _run(runtime: Runtime, command: str, action: str) -> str:
     result = await runtime.run(["sh", "-c", command], {})
     if result.exit_code:
         detail = (result.stderr or result.stdout).strip()[-500:]
         raise RuntimeError(f"failed to {action}: {detail}")
+    return result.stdout
