@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -42,14 +41,6 @@ UPLOAD_EXCLUDE = {
 """The episode projection uploaded: the disk record minus the config fields that carry
 credentials (`harness.forward_env` names variables without their values and stays)."""
 
-CREDENTIAL_MAPPING = re.compile(r"(?:^|_)(?:env|headers)$")
-"""Config and task-data fields holding an environment or header mapping (a harness
-`env`, Harbor's `verifier_env`, a client's or a task config's `headers`). Name-based
-discovery stays inside these: applied to every field it would take `api_key_var`'s
-value, the *name* of a variable, for a credential, and keeping it out would need the
-reference-suffix lists this design avoids. A credential stored under a bare task-data
-field (`api_key: ...`) is recognised only through its value's URL shape."""
-
 
 def strings(value: Any) -> Iterator[str]:
     """Every string in a JSON tree."""
@@ -61,19 +52,6 @@ def strings(value: Any) -> Iterator[str]:
     elif isinstance(value, list):
         for child in value:
             yield from strings(child)
-
-
-def credential_mappings(value: Any, name: str = "") -> Iterator[dict]:
-    """Environment and header mappings anywhere in a JSON tree, nested ones included
-    (a harness config's `env`, Harbor's `verifier.env`, a task config's `headers`)."""
-    if isinstance(value, dict):
-        if CREDENTIAL_MAPPING.search(name):
-            yield value
-        for key, child in value.items():
-            yield from credential_mappings(child, key)
-    elif isinstance(value, list):
-        for child in value:
-            yield from credential_mappings(child, name)
 
 
 def redactable(secrets: Iterator[str] | list[str] | set[str]) -> set[str]:
@@ -106,7 +84,7 @@ def known_secrets(
     ]
     named = [
         os.environ,
-        *(mapping for dump in dumps for mapping in credential_mappings(dump)),
+        *dumps,
     ]
     secrets = {
         *values,
@@ -257,7 +235,8 @@ def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
         status, message = pr.RunStatus.CANCELLED, "interrupted"
     else:
-        status, message = pr.RunStatus.FAILED, f"{type(error).__name__}: {error}"
+        # Exception text can contain runtime credentials; full details stay in local logs.
+        status, message = pr.RunStatus.FAILED, type(error).__name__
     _close(run, state, status=status, error=message)
 
 

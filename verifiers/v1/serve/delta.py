@@ -45,7 +45,6 @@ HEADER_FIELDS = ("version", "id", "verifiers", "task")
 """Sent once, when a trace first appears."""
 
 LIST_FIELDS = (
-    "upload_secrets",
     "nodes",
     "calls",
     "errors",
@@ -56,6 +55,7 @@ LIST_FIELDS = (
 """Append-only on the worker: each delta carries the items past the sent count."""
 
 SCALAR_FIELDS = (
+    "upload_secrets",
     "agent",
     "tools",
     "mm_token_type_id_map",

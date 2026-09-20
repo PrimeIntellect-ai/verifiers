@@ -137,6 +137,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
     push_state = PushState()
 
+    if finished and config.push:
+        raise ValueError(
+            "Cannot upload restored episodes without their runtime secrets; "
+            "resume with --no-push."
+        )
+
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
     # Resumed rollouts are part of this run too.
@@ -144,7 +150,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
-        await append_episode(out, episode, write_lock)
+        await run_shielded(append_episode(out, episode, write_lock))
         await asyncio.to_thread(log_episodes, run, [episode], config)
 
     # The run is closed out whatever breaks, env setup and teardown included.

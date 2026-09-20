@@ -24,6 +24,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.utils.redact import env_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +409,10 @@ class DockerRuntime(ContainerRuntime):
 
     @property
     def secrets(self) -> list[str]:
-        return [self._proxy.token] if self._proxy is not None else []
+        return [
+            *env_credentials(self._image_env),
+            *([self._proxy.token, *self._proxy._callbacks] if self._proxy else []),
+        ]
 
     def _proxy_env(self) -> dict[str, str]:
         assert self._proxy is not None

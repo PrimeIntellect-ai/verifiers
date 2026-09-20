@@ -269,6 +269,11 @@ class ACPHarnessSession(HarnessSession):
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
         }
+        self.trace.upload_secrets.extend(
+            value
+            for headers in config["mcp_headers"].values()
+            for value in headers.values()
+        )
         async with self._lock:
             if self._closed:
                 raise HarnessError(

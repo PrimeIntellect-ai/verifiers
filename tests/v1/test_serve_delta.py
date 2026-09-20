@@ -41,6 +41,7 @@ async def settle() -> None:
 
 def make_trace() -> vf.Trace:
     return vf.Trace(
+        upload_secrets=["private-transport-capability"],
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
     )
@@ -112,6 +113,7 @@ async def test_failed_send_is_diffed_again():
         assembly.apply(unpack(frame))
     assert len(assembly.traces[trace.id]["nodes"]) == 3
     assert len(assembly.traces[trace.id]["calls"]) == 2
+    assert assembly.traces[trace.id]["upload_secrets"] == trace.upload_secrets
 
 
 @pytest.mark.asyncio
