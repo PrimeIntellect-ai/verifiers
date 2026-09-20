@@ -120,7 +120,7 @@ class ContainerProcess(RuntimeProcess):
             *self._runtime._exec({}),
             "sh",
             "-c",
-            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null || ! kill -0 "$2" 2>/dev/null',
+            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
             "vf-signal",
             signal,
             str(self._pid),
