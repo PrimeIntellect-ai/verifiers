@@ -9,6 +9,7 @@ from pathlib import Path
 
 from verifiers.v1.cli.output import TRACES_FILE, append_trace, type_adapter
 from verifiers.v1.trace import Trace, WireTrace
+from verifiers.v1.types import Usage
 
 
 def trim_torn_tail(file: Path) -> None:
@@ -25,24 +26,37 @@ class Traces:
         self.root = root
         self.file = root / TRACES_FILE
         self.lock = asyncio.Lock()
-        self._index: dict[str, tuple[int, int]] | None = None  # id -> (offset, length)
+        self._index: dict[str, tuple[int, int]] = {}  # id -> (offset, length)
+        self._offset = 0
+        self.usage: dict[str, Usage | None] = {}
 
     async def append(self, trace: Trace) -> None:
         await append_trace(self.root, trace, self.lock, env="flow")
-        self._index = None
 
     def index(self) -> dict[str, tuple[int, int]]:
-        """Trace id to its line, built by one scan of the file on first use."""
-        if self._index is None:
-            self._index, offset = {}, 0
-            if self.file.exists():
-                with self.file.open("rb") as file:
-                    for line in file:
-                        if not line.endswith(b"\n"):
-                            break
-                        for t in json.loads(line)["traces"]:
-                            self._index[t["id"]] = (offset, len(line))
-                        offset += len(line)
+        """Index new complete records, retaining native usage alongside their offsets."""
+        if self.file.exists():
+            with self.file.open("rb") as file:
+                offset = self._offset
+                file.seek(offset)
+                for line in file:
+                    if not line.endswith(b"\n"):
+                        break
+                    for t in json.loads(line)["traces"]:
+                        self._index[t["id"]] = (offset, len(line))
+                        self.usage[t["id"]] = Usage.aggregate(
+                            Usage.model_validate(u)
+                            for u in [
+                                *(
+                                    c["usage"]
+                                    for c in t["calls"]
+                                    if c.get("usage") is not None
+                                ),
+                                *t.get("extra_usage", []),
+                            ]
+                        )
+                    offset += len(line)
+                self._offset = offset
         return self._index
 
     def get(self, trace_id: str) -> WireTrace | None:
