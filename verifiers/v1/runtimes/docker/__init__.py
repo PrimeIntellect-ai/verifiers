@@ -342,8 +342,7 @@ class DockerRuntime(ContainerRuntime):
             raise SandboxError(
                 f"{self.engine} workdir setup failed: {made.stderr.strip()}"
             )
-        await validate_runtime_mounts(self, [])
-        if self.config.mounts:
+        if await validate_runtime_mounts(self, []):
             await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
