@@ -59,7 +59,7 @@ class HarborSwarmEnv(SwarmEnv, HarborEvidenceEnv, vf.Env[HarborSwarmEnvConfig]):
     async def finalize(self, task, episode):
         if not isinstance(task, HarborSwarmTask):
             raise TypeError("harbor-swarm requires HarborSwarmTask")
-        if not episode.traces or any(not trace.ok for trace in episode.traces):
+        if not episode.traces or not hasattr(task, "snapshot"):
             return
         solution = episode.traces[0]
         task.validate_files(task.snapshot["files"])
@@ -73,6 +73,11 @@ class HarborSwarmEnv(SwarmEnv, HarborEvidenceEnv, vf.Env[HarborSwarmEnvConfig]):
         )
         # Retain the exact shared input and grading evidence on the first trace.
         graded.info["repository_snapshot"] = task.snapshot
+        graded.info["participant_failures"] = [
+            trace.info.get("swarm", {}).get("account")
+            for trace in episode.traces
+            if not trace.ok
+        ]
         episode.traces[0] = graded
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for trace in episode.traces:

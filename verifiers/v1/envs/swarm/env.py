@@ -152,6 +152,7 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                 review = None
                 team_stop = asyncio.Event()
                 review_result = {}
+                submission = None
                 if task.review_repository:
                     coordinators = [
                         account for role, account in seats if role == "coordinator"
@@ -171,6 +172,7 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                     task.review_round = review["id"]
 
                 async def review_progress():
+                    nonlocal submission
                     assert review is not None
                     deadline = (
                         asyncio.get_running_loop().time() + self.config.review_timeout
@@ -181,6 +183,9 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         if remaining <= 0:
                             review_result.update(state, termination="budget")
                             team_stop.set()
+                            submission = await task.capture(world)
+                            for account in accounts:
+                                await deactivate(world_id, account)
                             return
                         if state["status"] == "requested":
                             try:
@@ -191,6 +196,9 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                             except TimeoutError:
                                 review_result.update(state, termination="budget")
                                 team_stop.set()
+                                submission = await task.capture(world)
+                                for account in accounts:
+                                    await deactivate(world_id, account)
                                 return
                             if not isinstance(checks.get("passed"), bool):
                                 raise TypeError(
@@ -274,7 +282,8 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         f"/worlds/{world_id}/accounts/{account}",
                         {"active": False},
                     )
-                submission = await task.capture(world)
+                if submission is None:
+                    submission = await task.capture(world)
                 if review:
                     submission["review"] = review_result
                 for result in running:

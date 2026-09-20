@@ -6,6 +6,8 @@ A fresh task runtime supplies the initial workspace. Agents exchange UTF-8 file 
 
 After solving, credentials are revoked and the accepted commit is captured. On deadline or when all agents finish without agreement, current main is captured with `accepted=false` and an explicit termination reason. Harbor's native isolated-verifier lifecycle restores that snapshot into a separate grading runtime and runs the task's original verifier once for the team. The first trace records the source snapshot and verifier metrics; every trace receives the same rewards. The world remains available in the local viewer.
 
+At the coordination deadline, the controller captures main immediately and revokes participant access. A participant failure does not discard that artifact: grading still runs, while the failed traces and episode retain their error status. Configure each role's native `retries` policy to restart transient sandbox failures under the same world account. A replacement sandbox must recover committed work from the persistent world. The shared deadline remains unchanged.
+
 ## Run
 
 Install the package with `uv pip install -e environments/harbor_swarm`. Set `WORLDS_ADMIN_TOKEN` in the controller environment and supply an authenticated Worlds server. `agent-url` must reach that same server from the sandboxes.

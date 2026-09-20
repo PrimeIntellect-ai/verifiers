@@ -118,7 +118,16 @@ class HarborSwarmTask(SwarmTask, vf.Task[HarborSwarmData]):
 You share repository solution with your team. Your local workspace is {self.data.workspace}.
 Only files matching {self.data.editable} may change. Use public checks: {self.data.public_check}
 Coordinate implementation through general and the issue/PR tools. Solvers implement and test;
-the coordinator integrates reviewed PRs and organizes the final unanimous submission.
+the coordinator prioritizes integration, reviews, and final unanimous submission.
+Publish small working increments and merge reviewed, buildable changes throughout the budget.
+Do not wait for complete Git parity before integrating useful progress; document known limitations
+and open follow-up issues. Review for correctness of the proposed increment, not perfection of
+the whole task. Any teammate can merge an independently approved PR; integration must continue
+if the coordinator is temporarily unavailable. The coordinator should not build another complete
+competing implementation. Divide work into complementary modules with agreed interfaces.
+If this is a restarted session, first read general, open PRs, your own branch, and current main:
+the world and account persist, but your local sandbox starts fresh. Recover committed work there.
+Only committed main is scored at the deadline. Unmerged branches are not submissions.
 Follow the task's rules for reference implementations. Repository tools run on the world server:
 - repository {{"repository":"solution"}} lists branches and exact commit IDs.
 - read_tree {{"repository":"solution","commit_oid":"OID"}} returns files at an exact commit.

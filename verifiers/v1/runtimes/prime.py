@@ -333,16 +333,34 @@ class PrimeRuntime(Runtime):
         async def read(stream):
             return b"".join([chunk async for chunk in stream]).decode(errors="replace")
 
+        failed = True
+        cancelled = False
         try:
             code, stdout, stderr = await asyncio.gather(
                 process.wait(), read(process.stdout), read(process.stderr)
             )
+            failed = False
             return ProgramResult(code, stdout, stderr)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as error:
+            raise SandboxError(f"prime program failed: {error}") from error
         finally:
             # Stop the harness before finalization can snapshot a timed-out run.
             # Polling a background job alone leaves it writing after cancellation.
-            await process.kill()
-            await process.aclose()
+            if failed and not cancelled:
+                # Preserve the transport failure that caused this attempt to end.
+                # The runtime teardown still destroys its sandbox before a retry.
+                with contextlib.suppress(Exception):
+                    await process.kill()
+                with contextlib.suppress(Exception):
+                    await process.aclose()
+            else:
+                try:
+                    await process.kill()
+                finally:
+                    await process.aclose()
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
