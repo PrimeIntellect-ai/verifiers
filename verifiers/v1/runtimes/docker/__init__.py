@@ -111,12 +111,14 @@ class DockerRuntime(ContainerRuntime):
         runtime._container = container
         runtime._owns_container = False
         try:
-            inspected = await runtime._run_host(
+            code, data, stderr = await runtime._communicate_host(
                 runtime.engine, "inspect", "--format", "{{json .Config}}", container
             )
-            if inspected.exit_code:
-                raise SandboxError(f"Container inspection failed: {inspected.stderr}")
-            info = json.loads(inspected.stdout)
+            if code:
+                raise SandboxError(
+                    f"Container inspection failed: {stderr.decode(errors='replace')}"
+                )
+            info = json.loads(data)
             runtime._image_env = dict(
                 entry.split("=", 1) for entry in info["Env"] or []
             )
