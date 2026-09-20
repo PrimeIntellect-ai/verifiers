@@ -146,15 +146,15 @@ class ComposeProject:
             async with asyncio.timeout(60):
                 while (await self._run_host("docker", "info")).exit_code:
                     await asyncio.sleep(1)
-            project_dir = "/harbor/environment"
+            project_dir = "/harbor/task/environment"
             await self._host.write(
-                "/harbor/environment.tar.gz",
-                pack_dir_to_bytes(environment, compress=True).getvalue(),
+                "/harbor/task.tar.gz",
+                pack_dir_to_bytes(task_dir, compress=True).getvalue(),
             )
             staged = await self._run_host(
                 "sh",
                 "-c",
-                remote_unpack_command("/harbor/environment.tar.gz", project_dir),
+                remote_unpack_command("/harbor/task.tar.gz", "/harbor/task"),
             )
             if staged.exit_code:
                 raise SandboxError(
