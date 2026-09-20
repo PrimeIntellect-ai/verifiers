@@ -80,6 +80,23 @@ resource_multiplier = 2.0
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
+## Docker Compose
+
+Select `runtime.type = "docker"` to run Compose tasks locally.
+
+With the default Harbor env, tasks containing `environment/docker-compose.yaml`
+run their topology through Harbor on an unrestricted local Docker runtime. Compose
+preserves service entrypoints, commands, dependencies, health checks and networking;
+the agent executes in a single `main` container. Host networking is unsupported.
+Runtime defaults preserve the authored image and working directory; task settings
+and non-default runtime overrides take precedence. The rollout removes the project.
+GPU and restricted-network Compose runs are rejected. Separate graders still use
+the ordinary verifier runtime; sidecar artifacts and collect hooks are unsupported.
+
+Compose projects are owned by the Harbor environment; agents borrow the existing
+Docker main container. Failures retry with a fresh project through
+`--env.retries`, rather than retrying an agent inside the same project.
+
 ## Network policies
 
 Harbor's effective agent network policy is applied to Docker or Prime VM harness
@@ -132,8 +149,8 @@ Under any other env, a separate-verifier task refuses to grade in the agent's bo
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
-- Image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
+- Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
-- Sidecar services, and the sidecar artifacts and collect hooks that go with them ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
+- Sidecar artifacts and collect hooks ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
