@@ -11,6 +11,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
 from verifiers.v1.cli.output import write_episode
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
 from verifiers.v1.harnesses.rlm.harness import (
@@ -183,6 +184,8 @@ def test_wire_trace_round_trip(history_type):
         "server_url": "https://example.invalid/mcp",
         "authorization": "trace-test-oauth-token",
         "headers": {"Authorization": "Bearer trace-test-header-token"},
+        "Authorization": "trace-test-case-oauth-token",
+        "Headers": {"X-Api-Key": "trace-test-case-header-token"},
     }
     function = {
         "type": "function",
@@ -251,10 +254,22 @@ def test_wire_trace_round_trip(history_type):
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))
-    assert "trace-test-oauth-token" not in json.dumps(data)
-    assert "trace-test-header-token" not in json.dumps(data)
+    assert "trace-test-" not in json.dumps(data)
     assert mcp["authorization"] == "trace-test-oauth-token"
     assert mcp["headers"] == {"Authorization": "Bearer trace-test-header-token"}
+    assert mcp["Authorization"] == "trace-test-case-oauth-token"
+    assert mcp["Headers"] == {"X-Api-Key": "trace-test-case-header-token"}
+    chat_request = ChatDialect().parse_request(
+        {"tools": [mcp, mcp | {"server_label": "beta"}]}
+    )
+    chat_trace = tr.model_copy(update={"tools": []})
+    prepare_turn(chat_trace, [], chat_request.tools).commit_prompt()
+    assert [tool.name for tool in chat_trace.tools] == ["alpha", "beta"]
+    assert "trace-test-" not in chat_trace.model_dump_json()
+    assert (
+        vf.WireTrace.model_validate_json(chat_trace.model_dump_json()).tools
+        == chat_request.tools
+    )
     assert "reward" not in data and "is_truncated" not in data
     # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
     assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None

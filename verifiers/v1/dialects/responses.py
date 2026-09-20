@@ -605,7 +605,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                     tool = {
                         key: value
                         for key, value in tool.items()
-                        if key not in ("authorization", "headers")
+                        if key.lower() not in ("authorization", "headers")
                     }
                 tools.append(
                     Tool.model_validate(
@@ -613,7 +613,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                         | {
                             "name": tool.get("name")
                             or tool.get("server_label")
-                            or tool["type"],
+                            or tool.get("type"),
                             "namespace": namespace,
                             "description": tool.get("description") or "",
                             "parameters": tool.get("parameters") or {},

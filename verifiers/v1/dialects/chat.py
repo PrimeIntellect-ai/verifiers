@@ -140,8 +140,20 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
     for declaration in raw or []:
         kind = declaration.get("type", "function")
         tool = declaration.get(kind, declaration)
+        if kind == "mcp":
+            tool = {
+                key: value
+                for key, value in tool.items()
+                if key.lower() not in ("authorization", "headers")
+            }
         tools.append(
-            Tool.model_validate(tool | {"type": kind, "name": tool.get("name") or kind})
+            Tool.model_validate(
+                tool
+                | {
+                    "type": kind,
+                    "name": tool.get("name") or tool.get("server_label") or kind,
+                }
+            )
         )
     return tools or None
 
