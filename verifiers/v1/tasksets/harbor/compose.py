@@ -27,16 +27,36 @@ async def compose_services(
     config: DockerConfig,
     task: HarborTask,
     *,
+    trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[tuple[dict[str, DockerRuntime], Callable[[], Awaitable[str]]]]:
     """Own one Compose attempt and lend its services until the context exits."""
+    if not trust_compose:
+        raise ValueError(
+            "Local Compose tasks can access host files and Docker privileges; "
+            "only run trusted tasks with --env.trust-compose"
+        )
     if config.network_restricted or config.gpu:
         raise ValueError("This Compose adapter supports public-network CPU tasks")
     name = f"vf-{uuid.uuid4().hex}"
     temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
     stack = AsyncExitStack()
     compose_argv: list[str] = []
-    compose_env: dict[str, str] = {}
+    # Docker routing and credential-helper lookup need these; Compose must not see
+    # unrelated evaluator secrets through shell interpolation.
+    compose_env = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "HOME",
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        )
+        if key in os.environ
+    }
 
     async def compose(*args: str, timeout: float | None = None) -> str:
         async with asyncio.timeout(timeout):
@@ -51,7 +71,7 @@ async def compose_services(
         # Keep the files and atexit backstop if teardown fails so cleanup can retry.
         subprocess.run(
             [*compose_argv, "down", "--volumes", "--remove-orphans"],
-            env={**os.environ, **compose_env},
+            env=compose_env,
             capture_output=True,
             timeout=60,
             check=True,
@@ -152,6 +172,10 @@ async def compose_services(
                 name,
                 "--project-directory",
                 str(environment),
+                "--env-file",
+                str(environment / ".env")
+                if (environment / ".env").is_file()
+                else os.devnull,
                 *(
                     arg
                     for path in (
@@ -163,11 +187,13 @@ async def compose_services(
                     for arg in ("-f", str(path))
                 ),
             ]
-            compose_env = ComposeInfraEnvVars(
-                main_image_name=name,
-                context_dir=str(environment),
-                prebuilt_image_name=config.image,
-            ).to_env_dict()
+            compose_env.update(
+                ComposeInfraEnvVars(
+                    main_image_name=name,
+                    context_dir=str(environment),
+                    prebuilt_image_name=config.image,
+                ).to_env_dict()
+            )
             await compose("config", "--quiet")
             atexit.register(cleanup)
             stack.push_async_callback(asyncio.to_thread, cleanup)
