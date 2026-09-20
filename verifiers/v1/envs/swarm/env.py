@@ -1,6 +1,7 @@
 """Run an episode's agents against a persistent Worlds server."""
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -33,6 +34,8 @@ class SwarmEnvConfig(vf.EnvConfig):
     """Copies per declared agent role. Subclasses can declare additional roles."""
     world: WorldConfig = WorldConfig()
     max_concurrent_agents: int | None = Field(2, ge=1)
+    review_timeout: float = Field(600, gt=0)
+    """Maximum seconds for a coordinated submission, including agent startup."""
 
 
 class SwarmEnv(vf.Env[SwarmEnvConfig]):
@@ -94,6 +97,7 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                                 :128
                             ],
                             "accounts": [{"handle": controller, "role": "owner"}],
+                            "services": ["chat", "forge", "decisions"],
                             "conversations": [{"handle": "general"}],
                         },
                     )
@@ -145,6 +149,74 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                     )
                 await task.prepare_world(world)
                 accounts = [account for _, account in seats]
+                review = None
+                team_stop = asyncio.Event()
+                review_result = {}
+                if task.review_repository:
+                    coordinators = [
+                        account for role, account in seats if role == "coordinator"
+                    ]
+                    if len(coordinators) != 1:
+                        raise ValueError(
+                            "Revision review needs exactly one coordinator"
+                        )
+                    review = await world.mutate(
+                        "create_review_round",
+                        repository=task.review_repository,
+                        electorate=accounts,
+                        coordinator=coordinators[0],
+                    )
+
+                async def review_progress():
+                    assert review is not None
+                    deadline = (
+                        asyncio.get_running_loop().time() + self.config.review_timeout
+                    )
+                    while True:
+                        state = await world.call("review_round", round_id=review["id"])
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            review_result.update(state, termination="budget")
+                            team_stop.set()
+                            return
+                        if state["status"] == "requested":
+                            try:
+                                async with asyncio.timeout(remaining):
+                                    checks = await task.check_revision(
+                                        world, state["candidate"]["commit_oid"]
+                                    )
+                            except TimeoutError:
+                                review_result.update(state, termination="budget")
+                                team_stop.set()
+                                return
+                            if not isinstance(checks.get("passed"), bool):
+                                raise TypeError(
+                                    "Public revision checks must return a boolean passed field"
+                                )
+                            try:
+                                state = await world.mutate(
+                                    "accept_revision",
+                                    round_id=review["id"],
+                                    proposal=state["proposal"],
+                                    checks_passed=checks["passed"],
+                                    evidence=json.dumps(checks),
+                                )
+                            except httpx.HTTPStatusError as exc:
+                                if exc.response.status_code != 409:
+                                    raise
+                                # A changed candidate or withdrawn vote invalidates checks.
+                                await asyncio.sleep(1)
+                                continue
+                        if state["status"] == "accepted":
+                            review_result.update(state)
+                            team_stop.set()
+                            return
+                        if all(run.done() for run in running):
+                            raise RuntimeError(
+                                "All participants finished without an accepted submission"
+                            )
+                        await asyncio.sleep(1)
+
                 running = []
                 async with asyncio.TaskGroup() as group:
                     for index, ((role, account), connection) in enumerate(
@@ -158,14 +230,38 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                                 "run_id": run_id,
                             }
 
+                        participant = task.participant(connection, index, accounts)
+                        participant.team_stop = team_stop
+                        if review:
+                            participant.review_round = review["id"]
+                            participant.data = participant.data.model_copy(
+                                update={
+                                    "prompt": participant.data.prompt_text
+                                    + f"\nYour role is {role}. Review round: {review['id']}. "
+                                    f"Submission coordinator: {review['coordinator']}.\n"
+                                    "Structured operations (use --mutate for writes):\n"
+                                    "review_round {round_id}\n"
+                                    "propose_revision {round_id, commit_oid, reason}\n"
+                                    "vote_revision {round_id, proposal, verdict: approve|object|withdraw, reason}\n"
+                                    "request_acceptance {round_id, proposal} (coordinator only)\n"
+                                    "Read repository {repository} to obtain main's exact commit. "
+                                    "Any participant can propose. Read the proposal, independently check it, "
+                                    "then vote on its exact ID. Everyone including the coordinator must approve. "
+                                    "Only the coordinator requests acceptance. If checks fail, read evidence "
+                                    "and address the problem. Remain available until status is accepted; "
+                                    "wait with bash sleep 3 between polls. The controller will run public checks."
+                                }
+                            )
                         running.append(
                             group.create_task(
                                 getattr(agents, role).run(
-                                    task.participant(connection, index, accounts),
+                                    participant,
                                     on_trace=identify,
                                 )
                             )
                         )
+                    if review:
+                        group.create_task(review_progress())
                 # Seal participant access before capturing a shared submission.
                 for account in accounts:
                     await request(
@@ -174,6 +270,8 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         {"active": False},
                     )
                 submission = await task.capture(world)
+                if review:
+                    submission["review"] = review_result
                 for result in running:
                     result.result().info["swarm"]["submission"] = submission
 

@@ -1,5 +1,6 @@
 """Task-owned world preparation and team scoring for SwarmEnv."""
 
+import asyncio
 from abc import abstractmethod
 from typing import Any
 
@@ -18,6 +19,17 @@ class SwarmTask(vf.Task):
 
     NEEDS_CONTAINER = True
     connection: WorldConnection | None = None
+    review_repository: str | None = None
+    review_round: str | None = None
+    team_stop: asyncio.Event | None = None
+
+    @vf.stop
+    def team_finished(self, trace: vf.Trace) -> bool:
+        return self.team_stop is not None and self.team_stop.is_set()
+
+    async def check_revision(self, world: WorldConnection, commit_oid: str) -> dict:
+        """Run public checks on the proposed commit; return passed and evidence."""
+        raise NotImplementedError("A review task must implement public revision checks")
 
     async def prepare_world(self, world: WorldConnection) -> None:
         """Seed this episode's shared resources before any participant runs."""
