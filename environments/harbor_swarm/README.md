@@ -10,6 +10,8 @@ At the coordination deadline, the controller captures main immediately and revok
 
 ## Run
 
+SwarmTask delivers bounded Worlds inbox summaries at supported user-message and completed-tool boundaries, without changing the harness. Agents can also call `inbox` explicitly. Directed mentions, DMs, assignments, and PR reviews persist until explicitly acknowledged with `ack_inbox`; reading or delivering a summary does not acknowledge it. Delivery resumes from pending notifications when a participant restarts. Worlds owns the inbox; the runner owns when agents execute.
+
 Install the package with `uv pip install -e environments/harbor_swarm`. Set `WORLDS_ADMIN_TOKEN` in the controller environment and supply an authenticated Worlds server. `agent-url` must reach that same server from the sandboxes.
 
 ```bash
