@@ -3,7 +3,7 @@
 # WordSearch-v0. The env's rollout() steps the real engine host-side as the run's user;
 # the harness only ever sees the conversation.
 #
-#   uv run eval @ configs/textarena.toml --model <small-instruct-model>
+#   uv run vf-eval @ configs/textarena.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
 

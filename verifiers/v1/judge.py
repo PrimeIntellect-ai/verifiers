@@ -32,7 +32,8 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
 A judge is cheap to construct (the HTTP client is opened per call, inside `complete`, and
 closed when the call returns), so build it where you use it.
 
-Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
+Passing `trace=` records the call onto it — a request/response record appended to
+`trace.info["judge_calls"]` and
 the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
 so judge behaviour and spend are no longer invisible. The record lands even if the judge refuses, an
 empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
@@ -210,7 +211,14 @@ class Judge(Generic[ParsedT, ConfigT]):
             return response
         finally:
             if trace is not None and response is not None:
-                trace.record_judge(response)
+                trace.record_judge_call(
+                    name=self.reward_name,
+                    request={
+                        "model": kwargs["model"],
+                        "messages": kwargs["messages"],
+                    },
+                    response=response,
+                )
 
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any

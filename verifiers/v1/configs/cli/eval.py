@@ -9,7 +9,6 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -48,22 +47,34 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # TODO: fetch the id from the Prime SDK once runs are registered there.
-    _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+    attach: str | None = None
+    """Stream into a run the launcher already created on the platform instead of opening a
+    new one — its evaluation id. Hosted evaluations pass the sandbox's `$EVALUATION_ID`
+    here; the platform owns that run's record and status, and a run that cannot be
+    attached to is an error rather than a local fallback. Requires `push`."""
+
+    _id: str | None = PrivateAttr(default=None)
 
     @property
     def id(self) -> str:
+        """The run's one id, assigned by `open_run` from the prime-runs handle: the
+        platform's evaluation id online, the SDK's local id otherwise. The run mints
+        none of its own, so the run dir, every trace and the dashboard agree."""
+        if self._id is None:
+            raise RuntimeError("the run has no id until `open_run` has opened it")
         return self._id
+
+    def assign_id(self, run_id: str) -> None:
+        """Called once by `open_run`, before the first rollout."""
+        if self._id is not None and self._id != run_id:
+            raise RuntimeError(f"the run already has id {self._id!r}")
+        self._id = run_id
 
 
 class EvalConfig(BaseConfig):
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
-    serve: ServeConfig | None = Field(default_factory=ServeConfig)
-    """How the env is hosted: the env-server worker pool (elastic by default) and each
-    worker's episode bound — the path prime-rl trains through. `--no-serve` runs the
-    rollouts in-process instead."""
     run: RunConfig = Field(default_factory=RunConfig)
     """Run identity: `run.name` is the display name, `run.dir` names the directory
     under `output_dir`, and `run.id` is stamped on traces."""
@@ -94,8 +105,7 @@ class EvalConfig(BaseConfig):
     )
     """Episodes in flight at once, `None` for no limit. An episode plays its agents one
     at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
-    says otherwise. Under `[serve]` it also seeds each worker's bound, unless
-    `--serve.max-concurrent` pins one."""
+    says otherwise."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)
@@ -106,8 +116,7 @@ class EvalConfig(BaseConfig):
     previous run's results. Excluded from the saved config."""
     rich: RichConfig | None = Field(default_factory=RichConfig)
     """The live dashboard (on by default; `--no-rich` streams logs to the console
-    instead). A served run has no live per-turn view, so its rollout rows fill in as
-    each episode completes; `--rich.show-logs` swaps the rows for the run's logs."""
+    instead); `--rich.show-logs` swaps the rollout rows for the run's logs."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -120,7 +129,7 @@ class EvalConfig(BaseConfig):
     resume: bool = Field(False, exclude=True)
     """Re-run the run's missing/errored rollouts in place instead of starting fresh. The
     run dir comes from the resolved config (`output_dir / run.dir`), so resume with the
-    run's own config — e.g. `uv run eval @ <run-dir>/configs/eval.json --resume`. Excluded
+    run's own config — e.g. `uv run vf-eval @ <run-dir>/configs/eval.json --resume`. Excluded
     from the saved config."""
 
     @model_validator(mode="before")
@@ -134,4 +143,12 @@ class EvalConfig(BaseConfig):
             self.run.name = default_run_name(self.env, self.model)
         if self.run.dir is None:
             self.run.dir = self.run.name
+        return self
+
+    @model_validator(mode="after")
+    def attach_needs_push(self):
+        if self.run.attach and not self.push:
+            raise ValueError(
+                "run.attach names a run on the platform, so it needs push (drop --no-push)"
+            )
         return self

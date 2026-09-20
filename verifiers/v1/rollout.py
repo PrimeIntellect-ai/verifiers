@@ -32,6 +32,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ class RolloutTimeouts:
     """Per-stage rollout timeouts, each bounding one rollout stage."""
 
     setup: float | None = None
-    """Timeout (in seconds) for the task + harness setup hooks."""
+    """Timeout (in seconds) for task/harness setup through session preparation."""
     agent: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None
@@ -69,6 +70,7 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -81,6 +83,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -109,14 +112,12 @@ class Rollout:
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                runtime_config
+                NetworkPolicyConfig(allow=[])
+                if isinstance(runtime_config, ModalConfig)
+                and not runtime_config.network_access
+                else runtime_config
                 if isinstance(runtime_config, NetworkPolicyConfig)
-                else NetworkPolicyConfig(
-                    allow=[]
-                    if isinstance(runtime_config, ModalConfig)
-                    and not runtime_config.network_access
-                    else ["*"]
-                )
+                else NetworkPolicyConfig()
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,
@@ -184,6 +185,7 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
+        self.trace.notify()
         if self._borrowed_runtime is None:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
@@ -223,7 +225,8 @@ class Rollout:
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
-            # Task setup and harness provisioning share one setup-stage deadline.
+            self.trace.notify()
+            # Setup hooks and harness session preparation share one deadline.
             setup_deadline = (
                 None
                 if self._timeouts.setup is None
@@ -259,7 +262,7 @@ class Rollout:
                 )
             )
             self.trace.upload_secrets.extend((model_secret, state_secret))
-            self._endpoint = f"{runtime.host_url(base_url)}/v1"
+            self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -274,7 +277,10 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-            async with boundary(HarnessError, "opening harness session"):
+            async with (
+                boundary(HarnessError, "opening harness session"),
+                asyncio.timeout_at(setup_deadline),
+            ):
                 harness_data = self.trace.task.data
                 if (
                     self._session.request_interceptors
@@ -317,7 +323,11 @@ class Rollout:
                     )
                 if not self._session.stopped:
                     session_kwargs = (
-                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        {
+                            "tool_interception_url": runtime.host_url(
+                                f"{base_url.rstrip('/')}/tool"
+                            )
+                        }
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
                             self._session.request_interceptors
@@ -347,6 +357,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
+        self.trace.notify()
         return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -469,18 +480,23 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
+                trace.notify()
             if not self._failed and self._opened:
+                assert runtime is not None
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
-                    await asyncio.wait_for(
-                        invoke(
+                    async with asyncio.timeout(self._timeouts.finalize):
+                        await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
-                        ),
-                        self._timeouts.finalize,
-                    )
+                        )
+                        if self._collect_artifacts and not trace.state.artifacts:
+                            trace.state.artifacts = await collect(
+                                runtime, self.task.data.artifacts
+                            )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
+                trace.notify()
                 async with boundary(TaskError, "scoring"):
                     # Cross-trace judgement runs later, after the runtime is gone.
                     await asyncio.wait_for(
@@ -491,6 +507,7 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
+                trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:

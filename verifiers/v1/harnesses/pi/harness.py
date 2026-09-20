@@ -5,12 +5,11 @@ import logging
 import shlex
 from typing import Literal
 
-from pydantic import Field
-
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -22,8 +21,7 @@ KEY_VAR = "PI_INTERCEPT_KEY"
 PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
-SKILLS_DIR = ".agents/skills"
-MCP_VERSION = "2.25.0"
+MCP_VERSION = "2.34.0"
 ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
@@ -46,12 +44,14 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.84.1", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "0.86.1"
     """Pi release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
     )
     """Model API transport."""
+    supports_developer_role: bool | None = None
+    """Override Pi's chat-completions role detection for custom model endpoints."""
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
@@ -62,34 +62,23 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info(
             "pi: ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )
-        lock = f"{PI_DIR}/install.lock"
-        guarded = (
-            f"mkdir -p {PI_DIR} && "
-            f'until ln -s "$$" {lock} 2>/dev/null; do '
-            f"owner=$(readlink {lock}); "
-            f'if ! kill -0 "$owner" 2>/dev/null; then '
-            f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
-            f"sleep 0.1; done; "
-            f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
-            f"sh -c {shlex.quote(INSTALL)}"
-        )
-        install = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=PI_DIR,
+            install=INSTALL,
+            env={
                 "VF_PI_VERSION": self.config.version,
                 "VF_PI_MCP_VERSION": MCP_VERSION,
                 "VF_PI_ACP_VERSION": ACP_VERSION,
             },
+            label="pi",
         )
-        if install.exit_code != 0:
-            raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -104,6 +93,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         agent_dir = f".vf-pi-agent-{trace.id}"
+        skills_dir = f"{agent_dir}/skills"
+        await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -131,6 +122,13 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 else {}
             ),
         }
+        if (
+            self.config.transport == "chat_completions"
+            and self.config.supports_developer_role is not None
+        ):
+            model_config["compat"] = {
+                "supportsDeveloperRole": self.config.supports_developer_role
+            }
         models = {
             "providers": {
                 provider: {
@@ -148,7 +146,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             extension_path = f"{agent_dir}/mcp.js"
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "lifecycle": "eager"}
+                    name: {"url": url, "lifecycle": "eager", "directTools": True}
                     for name, url in mcp_urls.items()
                 }
             }
@@ -170,8 +168,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         skill_args = [
             arg
             for skill in self.config.skills
-            # Resolve like `install_skills` so the path matches what it wrote.
-            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+            for arg in ("--skill", skill_destination(skill, skills_dir))
         ]
         pi_args = [
             PI_BIN,
@@ -201,3 +198,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
         )
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")

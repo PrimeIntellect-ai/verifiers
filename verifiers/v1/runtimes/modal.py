@@ -10,14 +10,18 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 import asyncio
 import contextlib
 import logging
+import re
 import shlex
 import uuid
 from collections.abc import AsyncIterator
+from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
-from pydantic_config import BaseConfig
+from pydantic import model_validator
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -27,6 +31,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +40,49 @@ logger = logging.getLogger(__name__)
 _APP_NAME = "verifiers-v1"
 
 
-class ModalConfig(BaseConfig):
+def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
+    """Translate only domains Modal can filter without broadening the rule."""
+    parsed = urlsplit(rule if "://" in rule else f"//{rule}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        address = None
+    # Colocated tools are container-local; they need no external network grant.
+    if (
+        framework
+        and parsed.scheme in ("http", "https")
+        and (host == "localhost" or (address is not None and address.is_loopback))
+    ):
+        return None
+    if (
+        parsed.scheme not in (("https",) if framework else ("", "https"))
+        or parsed.port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or address is not None
+        or not re.fullmatch(
+            r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+            host,
+        )
+        or (framework and "*" in host)
+    ):
+        raise ValueError(
+            f"Modal egress rule {rule!r} is unsupported; use DNS names or HTTPS "
+            "origins on port 443 (only a leading *. wildcard is supported)"
+        )
+    return host
+
+
+class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
-    workdir: str = "/app"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
+    """Allow network access at creation. False blocks all egress, including setup;
+    it cannot be combined with execution-time allow/block policies."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
@@ -56,6 +99,22 @@ class ModalConfig(BaseConfig):
     """Pace sandbox creation to this many per second, enforced user-wide across every
     env-server worker process (None/<= 0 disables it)."""
 
+    @model_validator(mode="after")
+    def _validate_egress(self) -> "ModalConfig":
+        if not self.network_restricted:
+            return self
+        if not self.network_access:
+            raise ValueError(
+                "Modal allow/block policies require network_access=true for trusted setup"
+            )
+        if self.allow == ["*"]:
+            raise ValueError(
+                "Modal does not support egress deny lists; use an allowlist or allow=[]"
+            )
+        for rule in self.allow:
+            _egress_domain(rule)
+        return self
+
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
     pass
@@ -71,7 +130,7 @@ class ModalProcess(RuntimeProcess):
         self.stderr: AsyncIterator[bytes] = process.stderr
 
     async def write(self, data: bytes) -> None:
-        await self._process.stdin.write.aio(data)
+        self._process.stdin.write(data)
         await self._process.stdin.drain.aio()
 
     async def wait(self) -> int:
@@ -106,8 +165,8 @@ class ModalRuntime(Runtime):
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config
-        self.info = ModalRuntimeInfo(**config.model_dump())
+        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.info = ModalRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
 
     @property
@@ -128,25 +187,7 @@ class ModalRuntime(Runtime):
                 creation_limiter(self.config.creates_per_sec, "modal-sandbox")
                 or contextlib.nullcontext()
             ):
-                self._sandbox = await modal.Sandbox.create.aio(
-                    "sleep",
-                    "infinity",  # keep-alive entrypoint; the harness runs via `exec`
-                    app=app,
-                    name=self.name,
-                    # Clear the image's ENTRYPOINT so `sleep infinity` runs as the command
-                    # rather than as args to it — otherwise an image with its own entrypoint
-                    # (e.g. SWE task images) never starts the keep-alive and the sandbox dies.
-                    image=modal.Image.from_registry(self.config.image).entrypoint([]),
-                    workdir=self.config.workdir,
-                    env=self.env,
-                    cpu=self.config.cpu,
-                    memory=int(self.config.memory * 1024),  # Modal memory is MB
-                    gpu=self.config.gpu,
-                    region=self.config.region,
-                    block_network=not self.config.network_access,
-                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
-                    encrypted_ports=[SERVICE_PORT],
-                )
+                await run_shielded(self._create_sandbox(app))
             self.info.id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
@@ -156,6 +197,75 @@ class ModalRuntime(Runtime):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"modal sandbox provisioning failed: {e}") from e
+
+    async def _create_sandbox(self, app) -> None:
+        """Create the sandbox and take ownership of the handle, as one shielded step.
+
+        Modal schedules the sandbox before `Sandbox.create` returns, so a cancellation
+        landing between those two points leaves a sandbox that boots and bills with
+        `_sandbox` still unset — invisible to both `teardown` and the atexit backstop, and
+        alive until its 24h maximum lifetime. Assigning inside the coroutine that
+        `run_shielded` owns keeps the cancellation pending until the handle is ours.
+        """
+        import modal
+
+        # Modal requires both allowlist types at creation before they can be updated.
+        # Trusted setup runs open; prepare_execution removes the broad CIDR grant.
+        self._sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",  # keep-alive entrypoint; the harness runs via `exec`
+            app=app,
+            name=self.name,
+            # Clear the image's ENTRYPOINT so `sleep infinity` runs as the command rather
+            # than as args to it — otherwise an image with its own entrypoint (e.g. SWE
+            # task images) never starts the keep-alive and the sandbox dies.
+            image=modal.Image.from_registry(self.config.image).entrypoint([]),
+            workdir=self.config.workdir,
+            env=self.env,
+            cpu=self.config.cpu,
+            memory=int(self.config.memory * 1024),  # Modal memory is MB
+            gpu=self.config.gpu,
+            region=self.config.region,
+            block_network=not self.config.network_access,
+            outbound_domain_allowlist=["*"] if self.network_restricted else None,
+            outbound_cidr_allowlist=(
+                ["0.0.0.0/0"] if self.network_restricted else None
+            ),
+            timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+            encrypted_ports=[SERVICE_PORT],
+        )
+
+    async def prepare_execution(self, routes: list[str] | None) -> None:
+        """Apply TLS domain filtering after setup, retaining framework endpoints.
+
+        Modal filters TLS SNI on port 443, not HTTP Host headers or URL paths.
+        This inherits Modal's domain-fronting limitations on shared TLS endpoints.
+        """
+        if not self.network_restricted:
+            return
+        try:
+            if routes is None:
+                domains, cidrs = ["*"], ["0.0.0.0/0"]
+            else:
+                domains = [_egress_domain(route, framework=True) for route in routes]
+                domains.extend(_egress_domain(rule) for rule in self.config.allow)
+                domains = list(dict.fromkeys(d for d in domains if d is not None))
+                cidrs = []
+            # Always send both lists: leaving the setup CIDR grant would bypass domains.
+            # The awaited RPC applies the policy and closes newly disallowed connections.
+            async with asyncio.timeout(60):
+                await self._sandbox._experimental_set_outbound_network_policy.aio(
+                    outbound_domain_allowlist=domains,
+                    outbound_cidr_allowlist=cidrs,
+                )
+        except Exception as e:
+            raise SandboxError(f"modal egress policy failed: {e}") from e
+        logger.info(
+            "modal: egress policy applied on sandbox %s (domains=%s cidrs=%s)",
+            self.info.id,
+            domains,
+            cidrs,
+        )
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox: Modal forwards `port` (named via
@@ -265,7 +375,9 @@ class ModalRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def _read(self, path: str) -> bytes:
+    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None:
+            return await super()._read(path, max_bytes)
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
         except Exception as e:

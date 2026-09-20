@@ -4,15 +4,13 @@ import hashlib
 import json
 import logging
 import re
-import shlex
 from collections import Counter
 
-from pydantic import Field
-
-from verifiers.v1.acp import ACPConfig, ACPHarness
+from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -21,10 +19,9 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "1.2.0"
+ACP_VERSION = "1.12.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -38,7 +35,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.147.0", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: PinnedVersion = "0.155.1"
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -49,8 +46,17 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
+        failure = (
+            result.response_metadata.get("jetbrains", {})
+            .get("air", {})
+            .get("sessionFailure")
+        )
+        if failure and failure["phase"] == "active":
+            raise RuntimeError(f"Codex {failure['category']}: {failure['safeMessage']}")
+
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
@@ -64,24 +70,18 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         acp_bin = ACP_BIN.format(**versions)
         ready = f"{directory}/.ready"
         script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
-        ensure = shlex.quote(
-            f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})"
-        )
-        guarded = (
-            f"mkdir -p {directory} && "
-            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
-            f"sh -c {ensure}"
-        )
-        install = await runtime.run(
-            ["sh", "-c", guarded],
-            {
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ]",
+            install=script,
+            env={
                 **self.config.resolved_env,
                 "VF_CODEX_VERSION": self.config.version,
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
+            label="codex",
         )
-        if install.exit_code != 0:
-            raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -109,14 +109,17 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            client_capabilities={
+                "_meta": {
+                    "jetbrains": {
+                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                    }
+                }
+            },
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", self.trace_home(trace)], {})
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"failed to clean up Codex home: {result.stderr.strip()[-500:]}"
-            )
+        await remove_dir(runtime, self.trace_home(trace), "Codex home")
 
     @staticmethod
     def trace_home(trace: Trace) -> str:
@@ -132,12 +135,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
-        created = await runtime.run(["mkdir", "-p", home], {})
-        if created.exit_code != 0:
-            raise RuntimeError(
-                f"failed to create Codex home: {created.stderr.strip()[-500:]}"
-            )
-
+        await self.install_skills(runtime, f"{home}/skills")
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(

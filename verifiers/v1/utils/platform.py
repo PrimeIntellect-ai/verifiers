@@ -1,36 +1,27 @@
-"""Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
+"""The eval's run on the Prime Intellect platform (`--no-push` to keep it local)."""
 
-Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
-samples -> finalize). Each sample keeps a reviewable native Episode projection and
-a flat summary for older Platform consumers. Run-local configuration remains in the
-saved output directory. Auth + base URL come from `$PRIME_API_KEY` /
-`~/.prime/config.json`.
-"""
-
+import asyncio
 import logging
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from prime_evals import (
-    MAX_SAMPLES_PAYLOAD_BYTES,
-    APIClient,
-    Config,
-    CreateEvaluationRequest,
-    EvalsClient,
-    prepare_upload,
-    secret_values,
-    serialize_json,
+import prime_runs as pr
+from prime_evals import Config, prepare_upload, secret_values
+from prime_runs.projection import (
+    build_samples,  # noqa: F401 - prime-rl imports it from here
 )
-from pydantic import BaseModel
 
 from verifiers.v1.cli.output import read_upload_secret_fingerprints
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.client import resolve_api_key, resolve_headers
-from verifiers.v1.episode import Episode
-from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.trace import EXCLUDE_FIELDS
 
 logger = logging.getLogger(__name__)
+
 
 PROVIDER_STATE_FIELDS = {
     "encrypted_content",
@@ -68,281 +59,217 @@ PLATFORM_TRACE_EXCLUDE = {
 }
 
 
-class PushState(BaseModel):
-    """Mutable upload status shared with the dashboard."""
+@dataclass
+class PushState:
+    """The dashboard's view of the run: reads through to it, owns no I/O."""
 
-    started: bool = False
-    done: bool = False
-    url: str | None = None
+    run: pr.Run | None = None
     error: str | None = None
 
+    @property
+    def incomplete(self) -> str | None:
+        """Current upload errors and record losses, including while the run is active."""
+        return _losses(self.run) if self.run is not None else None
 
-def dump_messages(messages: Messages) -> list[dict[str, Any]]:
-    return [
-        message.model_dump(
-            mode="json",
-            exclude={"provider_state": {"__all__": PROVIDER_STATE_FIELDS}},
-            exclude_none=True,
-        )
-        for message in messages
-    ]
+    @property
+    def url(self) -> str | None:
+        return self.run.url if self.run is not None else None
 
+    @property
+    def finished(self) -> bool:
+        return self.run is not None and self.run.finished
 
-def finish_push(
-    state: PushState | None,
-    url: str | None = None,
-    error: str | None = None,
-) -> str | None:
-    if state is not None:
-        state.url = url
-        state.error = error
-        state.done = True
-    return url
+    @property
+    def started(self) -> bool:
+        """A live run, or a reason there isn't one."""
+        return self.error is not None or self.url is not None
 
 
-def trace_to_sample(
-    trace: Trace,
-    rollout_number: int = 1,
-    episode_id: str | None = None,
-) -> dict[str, Any]:
-    """One trace -> the platform's sample dict (the v0 eval-sample format).
-
-    The hub table stays flat — one row per trace; its episode is denormalized onto
-    the row (`episode_id` from the envelope, plus the trace's own `agent`/`trainable`),
-    so a multi-trace rollout's grouping travels with each row without a nested
-    schema. No prompt/completion split (meaningless mid-branch): `completion` is the
-    final branch's messages, `trajectory` one message list per branch."""
-
-    task = trace.task.data.model_dump(mode="json", exclude_none=True)
-    branches = trace.branches
-    sample = {
-        "sample_id": trace.id,
-        "example_id": trace.task.data.idx,
-        "rollout_number": rollout_number,
-        "episode_id": episode_id,
-        "agent": trace.agent.name,
-        "trainable": trace.agent.trainable,
-        "task": task,
-        "prompt": [],
-        "completion": dump_messages(branches[-1].messages) if branches else [],
-        "answer": task.get("answer"),
-        # Keyed `tool_defs` because the v0 sample format already carries it there.
-        "tool_defs": [t.model_dump(mode="json", exclude_none=True) for t in trace.tools]
-        if trace.tools
-        else None,
-        "reward": trace.reward,
-        "timing": trace.timing.model_dump(mode="json", exclude_none=True),
-        "is_completed": trace.is_completed,
-        "is_truncated": trace.is_truncated,
-        "metrics": trace.metrics,
-        "error": trace.last_error.model_dump(mode="json", exclude_none=True)
-        if trace.last_error
-        else None,
-        "stop_condition": trace.stop_condition,
-        "trajectory": [
-            {
-                "messages": dump_messages(branch.messages),
-                "num_input_tokens": branch.num_input_tokens,
-                "num_output_tokens": branch.num_output_tokens,
-            }
-            for branch in branches
-        ],
-        "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
-        if trace.usage
-        else None,
-        "info": dict(trace.info) or None,
+def open_run(config: EvalConfig, state: PushState, *, num_examples: int) -> pr.Run:
+    """Open the run this eval streams into, before the first rollout, and give the
+    config the run's id. A run that cannot be opened is logged and replaced by a
+    disabled one; the eval goes on. With `run.attach` the run already exists on the
+    platform (a hosted evaluation's launcher created it and is waiting on it), so
+    there is no local fallback: failing to attach fails the eval."""
+    attach = config.run.attach
+    identity: dict[str, Any] = {
+        "name": config.run.name,
+        # Resolved by name via the hub's get-or-create; no taskset, nothing to attach to.
+        "environments": [config.env.taskset.id] if config.env.taskset.id else [],
+        "model": config.model,
+        "framework": "verifiers",
+        # The v0 keys the dashboard's lists read. The config itself is a follow-up:
+        # a dump or the launched file can carry credentials and needs masking first.
+        "config": {
+            "model": config.model,
+            "num_examples": num_examples,
+            "rollouts_per_example": config.num_rollouts,
+        },
     }
-    # Flatten sub-rewards to top-level keys the way v0 does (raw scores, as v0's
-    # per-function outputs were); env metrics stay nested.
-    for name, reward in trace.rewards.items():
-        if reward is not None:
-            sample.setdefault(name, reward.score)
-    return sample
+    identity = prepare_upload(
+        identity,
+        secret_values(Config().api_key or ""),
+        [resolve_headers(config.client)],
+    ).data
+    if config.push and os.getenv(pr.MODE_ENV, "").strip().lower() == "disabled":
+        if attach:
+            raise RuntimeError(
+                f"run.attach={attach!r} names a run on the platform, but "
+                f"{pr.MODE_ENV}=disabled would keep this eval local"
+            )
+        # The SDK's own kill switch; the explicit `mode="online"` below would override it.
+        logger.info("--push: %s=disabled; running without a platform run", pr.MODE_ENV)
+    elif config.push:
+        try:
+            state.run = pr.init(mode="online", id=attach, **identity)
+        except Exception as e:
+            if attach:
+                # The launcher's run would sit at running until it times out; a local
+                # run nobody reads is not a substitute.
+                raise RuntimeError(
+                    f"--run.attach: could not attach to run {attach!r} ({type(e).__name__}: {e})"
+                ) from e
+            logger.warning(
+                "--push: could not open the run (%s: %s); running without it",
+                type(e).__name__,
+                e,
+            )
+            state.error = f"{type(e).__name__}: {e}"
+    if state.run is None:
+        state.run = pr.init(mode="disabled", **identity)
+    # The run's one id: the platform's when online, the SDK's local one otherwise.
+    # The SDK keys every upload to it regardless; this is for the local records.
+    config.run.assign_id(state.run.id)
+    return state.run
 
 
-def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
-    """Run-level aggregates as v0's `GenerateMetadata`. Rewards/metrics aggregate
-    over the trainable traces only — fixed agents (a judge, a modeled user) often
-    carry no rewards and would dilute every mean with structural zeros — falling
-    back to all traces when none are trainable (same rule as the dashboard).
-    `avg_error` is the share of EPISODES that aren't ok: a hook failure counts
-    even when its traces are clean or it left none."""
-    scored = [t for t in traces if t.agent.trainable] or traces
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for trace in scored:
-        scores = {
-            name: reward.score
-            for name, reward in trace.rewards.items()
-            if reward is not None
-        }
-        metrics = {
-            name: value for name, value in trace.metrics.items() if value is not None
-        }
-        for name, value in {**scores, **metrics}.items():
-            sums[name] = sums.get(name, 0.0) + value
-            counts[name] = counts.get(name, 0) + 1
-    n = len(scored)
-    avg_error = sum(not e.ok for e in episodes) / len(episodes) if episodes else 0.0
-    return {
-        "avg_reward": sum(t.reward for t in scored) / n if n else 0.0,
-        "avg_metrics": {name: sums[name] / counts[name] for name in sums},
-        "avg_error": avg_error,
-    }
-
-
-def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
-    """One Platform sample per Episode, with a legacy-compatible trace summary.
-
-    The Episode projection in `info.native_wrapper` contains every trace's review
-    data, without transport, runtime identity, opaque continuation, or per-token
-    training state. One trainable trace (or the first trace) supplies the flat
-    summary used by older consumers. `native_trace_index` identifies that trace.
-    """
-    counts: dict[int, int] = {}
-    samples = []
-    for episode in episodes:
-        if not episode.traces:
-            continue
-        summary_trace_index = next(
-            (
-                index
-                for index, candidate in enumerate(episode.traces)
-                if candidate.agent.trainable
-            ),
-            0,
-        )
-        summary_trace = episode.traces[summary_trace_index]
-        idx = summary_trace.task.data.idx
-        counts[idx] = number = counts.get(idx, 0) + 1
-        sample = trace_to_sample(summary_trace, number, episode.id)
-        sample["sample_id"] = episode.id
-        sample["info"] = {
-            **(sample["info"] or {}),
-            "native_wrapper": episode.model_dump(
-                mode="json",
-                exclude={
-                    "upload_secrets": True,
-                    "traces": {"__all__": PLATFORM_TRACE_EXCLUDE},
-                },
-                exclude_none=True,
-            ),
-            "native_trace_index": summary_trace_index,
-        }
-        if len(serialize_json({"samples": [sample]})) <= MAX_SAMPLES_PAYLOAD_BYTES:
-            samples.append(sample)
-            continue
-        logger.warning(
-            "Episode %s exceeds the Platform sample limit; uploading projected traces",
-            episode.id,
-        )
-        samples.extend(
-            trace_to_sample(candidate, number, episode.id)
-            for candidate in episode.traces
-        )
-    return samples
-
-
-def push_traces(
+def log_episodes(
+    run: pr.Run,
     episodes: list[Episode],
     config: EvalConfig,
-    state: "PushState | None" = None,
     results_dir: Path | None = None,
-) -> str | None:
-    """Upload a finished run to the platform; return the viewer URL (None if
-    skipped/failed). Resolves the env by name (get-or-create, so a local run
-    uploads without a prior `prime env push`); when `state` is given, records the
-    outcome on it so the dashboard's status line resolves."""
-
-    prime_config = Config()
-    api_key = prime_config.api_key
-    if not api_key:
-        logger.warning(
-            "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
-        )
-        return finish_push(state, error="no PRIME_API_KEY (run `prime login`)")
-
-    traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = config.env.taskset.id
-    metrics = run_metrics(episodes, traces)
-    num_examples = len({t.task.data.idx for t in traces})
-    metadata = {
-        "framework": "verifiers",
-        "run_id": config.run.id,
-        "model": config.model,
-        "num_examples": num_examples,
-        "rollouts_per_example": config.num_rollouts,
-        **metrics,
-    }
-
-    # The run is done and its results saved; a network blip here must not crash it
-    # — log and skip the upload instead.
+) -> None:
+    """Hand finished episodes to the run, best effort: the SDK already keeps upload
+    failures on its own thread, so this only guards the hand-off itself. A problem
+    here is the platform's, never the eval's."""
+    if not episodes:
+        return
     try:
         clients = [config.client]
-        known_secrets = list(
+        known = list(
             secret_values(
-                api_key,
+                Config().api_key or "",
                 *(secret for episode in episodes for secret in episode.upload_secrets),
             )
         )
-        secret_sources = []
-        for trace in traces:
-            agent = trace.agent.config
-            known_secrets.extend(trace.upload_secrets)
-            if agent.client is not None:
-                clients.append(agent.client)
-            if agent.harness is not None:
-                secret_sources.append(agent.harness.resolved_env)
+        sources = []
+        for episode in episodes:
+            for trace in episode.traces:
+                known.extend(trace.upload_secrets)
+                if trace.agent.config.client is not None:
+                    clients.append(trace.agent.config.client)
+                if trace.agent.config.harness is not None:
+                    sources.append(trace.agent.config.harness.resolved_env)
         for client in clients:
-            known_secrets.append(resolve_api_key(client))
-            secret_sources.append(resolve_headers(client))
-
-        saved_episode_ids = {episode.id for episode in episodes if episode.traces}
-        secret_fingerprints = (
-            read_upload_secret_fingerprints(results_dir, saved_episode_ids)
+            known.append(resolve_api_key(client))
+            sources.append(resolve_headers(client))
+        fingerprints = (
+            read_upload_secret_fingerprints(
+                results_dir, {episode.id for episode in episodes}
+            )
             if results_dir is not None
             else ()
         )
-
-        samples = build_samples(episodes)
-        request = CreateEvaluationRequest(
-            name=config.run.name,
-            environments=[{"name": env_name}],
-            model_name=config.model,
-            dataset=env_name,
-            framework="verifiers",
-            metadata=metadata,
-            metrics=metrics,
-        )
         prepared = prepare_upload(
             {
-                "request": request.model_dump(mode="json"),
-                "samples": samples,
+                "episodes": [
+                    episode.model_dump(
+                        mode="json",
+                        exclude={
+                            "upload_secrets": True,
+                            "traces": {"__all__": PLATFORM_TRACE_EXCLUDE},
+                        },
+                        exclude_none=True,
+                    )
+                    for episode in episodes
+                ]
             },
-            known_secrets,
-            secret_sources,
-            secret_fingerprints,
+            known,
+            sources,
+            fingerprints,
         )
-        payload = prepared.data
-        redactions = prepared.report.locations
-        request = CreateEvaluationRequest.model_validate(payload["request"])
-        samples = payload["samples"]
-        if redactions:
-            logger.warning(
-                "--push: preflight redacted %d credential-bearing value(s); "
-                "saved traces were not changed",
-                redactions,
-            )
-        with APIClient(config=prime_config) as api_client:
-            eval_id = EvalsClient(api_client).push_evaluation(
-                request,
-                samples,
-                max_payload_bytes=MAX_SAMPLES_PAYLOAD_BYTES,
-            )
-    except Exception as e:  # noqa: BLE001 - push is best-effort across the full upload
-        logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
-        return finish_push(state, error=f"{type(e).__name__}: {e}")
+        run.log_episodes(
+            [WireEpisode.model_validate(value) for value in prepared.data["episodes"]]
+        )
+    except Exception as e:  # noqa: BLE001 - the rollouts are on disk; report, don't raise
+        logger.warning(
+            "--push: could not queue %d episode(s) (%s: %s)",
+            len(episodes),
+            type(e).__name__,
+            e,
+        )
 
-    url = f"{prime_config.frontend_url.rstrip('/')}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
-    return finish_push(state, url=url)
+
+def finish_run(run: pr.Run, episodes: list[Episode], state: PushState) -> None:
+    """Drain, write the run's aggregates, close it out. Blocking: call it off the loop."""
+    try:
+        summary = pr.metrics.from_episodes(episodes)
+    except Exception as e:  # noqa: BLE001 - close the run even without its headline
+        logger.warning(
+            "--push: could not aggregate the run's metrics (%s: %s)",
+            type(e).__name__,
+            e,
+        )
+        summary = None
+    _close(run, state, summary=summary)
+
+
+def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
+    """Close the run out after the eval broke, so it doesn't sit at running. Not
+    for a break during `finish_run`: that close-out completes on its own thread
+    and the SDK lets the first `finish()` decide the status — it sets `run.status`
+    as it starts, so an in-flight one is visible here before it is `finished`."""
+    if run.finished or run.status is not pr.RunStatus.RUNNING:
+        return
+    if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
+        status, message = pr.RunStatus.CANCELLED, "interrupted"
+    else:
+        status, message = pr.RunStatus.FAILED, f"{type(error).__name__}: {error}"
+    _close(run, state, status=status, error=message)
+
+
+def _close(
+    run: pr.Run,
+    state: PushState,
+    summary: Mapping[str, Any] | None = None,
+    status: pr.RunStatus = pr.RunStatus.COMPLETED,
+    error: str | None = None,
+) -> None:
+    """`run.finish()`, best effort: the results are on disk, so nothing here may raise."""
+    try:
+        run.finish(summary, status=status, error=error)
+    except Exception as e:  # noqa: BLE001 - the run is over; report, don't raise
+        logger.warning(
+            "--push: could not close out the run (%s: %s)", type(e).__name__, e
+        )
+        if state.error is None:
+            state.error = f"{type(e).__name__}: {e}"
+    else:
+        if incomplete := state.incomplete:
+            logger.warning("--push: %s, but %s", status.value, incomplete)
+        if run.url:
+            # The run's own status: `finish()` is a no-op once another caller closed it.
+            logger.info("--push: %s -> %s", run.status.value, run.url)
+
+
+def _losses(run: pr.Run) -> str | None:
+    """What the run could not finish or store, or `None`."""
+    parts = list(run.errors)
+    parts.extend(
+        f"{count} record(s) not stored by the {sink} sink"
+        for sink, count in sorted(run.failed_records.items())
+        if count
+    )
+    if run.dropped_records:
+        parts.append(f"{run.dropped_records} record(s) never queued (uploader overrun)")
+    return "; ".join(parts) or None

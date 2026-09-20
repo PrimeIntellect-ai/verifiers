@@ -1,6 +1,6 @@
 # wordle — the textarena taskset pinned to Wordle, the engine playing the user.
 #
-#   uv run eval @ configs/wordle.toml --model <small-instruct-model>
+#   uv run vf-eval @ configs/wordle.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
 

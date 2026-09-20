@@ -1,9 +1,11 @@
-"""Artifact collection and restoration across runtimes."""
+"""Bounded, validated artifact collection and restoration across runtimes."""
 
 from __future__ import annotations
 
+import io
 import logging
 import shlex
+import tarfile
 import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -89,12 +91,33 @@ async def collect(
             raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
         seen.add(artifact.source)
 
+    # Batch roots to save remote round trips. Leave room below the shell argument
+    # limit for the command itself and further quoting by runtime transports.
+    batches: list[list[str]] = [[]]
+    batch_bytes = 0
+    for artifact in entries:
+        source_bytes = len(shlex.quote(artifact.source).encode()) + 1
+        if batches[-1] and batch_bytes + source_bytes > 8 * 1024:
+            batches.append([])
+            batch_bytes = 0
+        batches[-1].append(artifact.source)
+        batch_bytes += source_bytes
+
+    existence: list[str] = []
+    for sources in batches:
+        output = await _run(
+            runtime,
+            f"for source in {shlex.join(sources)}; do "
+            'if test -e "$source" || test -L "$source"; then echo 1; else echo 0; fi; '
+            "done",
+            "check artifact roots",
+        )
+        existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
-    for artifact in entries:
+    for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
-        exists = f"test -e {shlex.quote(source)} || test -L {shlex.quote(source)}"
-        if (await runtime.run(["sh", "-c", exists], {})).exit_code != 0:
+        if exists != "1":
             if not artifact.required:
                 collected[source] = None
                 continue
@@ -110,7 +133,12 @@ async def collect(
 
 
 async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
-    """Extract `collected` in `runtime` at the original absolute paths."""
+    """Extract `collected` in `runtime` at the original absolute paths.
+
+    Archive bytes are untrusted: the agent controls both their source files and the
+    runtime tooling that creates them. Every archive is therefore validated on the host
+    before the grading runtime is changed. Only regular files and directories travel.
+    """
     if not collected:
         return
     # Restoring into the subprocess runtime would extract absolute paths onto the
@@ -120,6 +148,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
+    for root, archive in collected.items():
+        _validate_restore(root, archive)
     # Clear every root up front, not per entry: a later nested root would otherwise
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
@@ -141,23 +171,16 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
+        # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
             runtime,
-            f"tar -cf {shlex.quote(path)} -C / {excludes} -- "
+            f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
             f"{shlex.quote(artifact.source.lstrip('/'))}",
             f"collect artifact {artifact.source!r}",
         )
-        # Size it in the box: an oversized collection is refused before it reaches host
-        # memory, not after.
-        sized = await runtime.run(["sh", "-c", f"wc -c < {shlex.quote(path)}"], {})
-        if (raw := sized.stdout.strip()).isdigit() and int(raw) > budget:
-            raise RuntimeError(
-                f"artifact {artifact.source!r} takes the collection over the "
-                f"{MAX_ARTIFACT_BYTES} byte limit. The grading box boots from the "
-                "agent's image, so only the delta needs to travel — narrow the source "
-                "or add `exclude` patterns."
-            )
-        return await runtime.read(path)
+        # The runtime enforces the remaining collection budget while transferring the
+        # bytes, so replacing or growing the archive cannot race a separate size probe.
+        return await runtime.read(path, max_bytes=budget)
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
@@ -166,8 +189,46 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
             logger.debug("failed to remove %s", path, exc_info=True)
 
 
-async def _run(runtime: Runtime, command: str, action: str) -> None:
+def _validate_restore(root: str, archive: bytes | None) -> None:
+    """Reject archive content that could restore outside its declared root."""
+    root_path = PurePosixPath(root)
+    if (
+        root_path.anchor != "/"
+        or ".." in root_path.parts
+        or root_path == PurePosixPath("/")
+    ):
+        raise RuntimeError(
+            f"artifact root {root!r} must be an absolute path below '/' with no '..'"
+        )
+    if archive is None:
+        return
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            for member in tar:
+                member_path = PurePosixPath(member.name)
+                destination = PurePosixPath("/") / member_path
+                if (
+                    not member.name
+                    or member_path.is_absolute()
+                    or ".." in member_path.parts
+                    or not destination.is_relative_to(root_path)
+                ):
+                    raise RuntimeError(
+                        f"artifact member {member.name!r} is outside declared root "
+                        f"{root!r}"
+                    )
+                if not (member.isfile() or member.isdir()):
+                    raise RuntimeError(
+                        f"artifact member {member.name!r} is a link or special file"
+                    )
+    except tarfile.TarError as exc:
+        raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
+
+
+async def _run(runtime: Runtime, command: str, action: str) -> str:
     result = await runtime.run(["sh", "-c", command], {})
     if result.exit_code:
         detail = (result.stderr or result.stdout).strip()[-500:]
         raise RuntimeError(f"failed to {action}: {detail}")
+    return result.stdout

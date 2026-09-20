@@ -1,4 +1,4 @@
-"""The GEPA entrypoint: `uv run gepa [<taskset-id>] --model <model> [options]`.
+"""The GEPA entrypoint: `uv run vf-gepa [<taskset-id>] --model <model> [options]`.
 
 Registered as the `gepa` console script. Optimizes a v1 taskset's `Task.system_prompt` via
 GEPA (Genetic-Pareto): alternating rollouts with a teacher LM reflecting on results — see
@@ -28,7 +28,7 @@ from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
-USAGE = "usage: uv run gepa [<taskset-id>] [--env.id <id>] --model <model> [options] [@ file.toml]"
+USAGE = "usage: uv run vf-gepa [<taskset-id>] [--env.id <id>] --model <model> [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(GEPAConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
+    typed_axis = any(a.startswith("--env.") for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)

@@ -27,6 +27,7 @@ from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
     DeniedOutcome,
+    HttpHeader,
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
@@ -132,7 +133,15 @@ def user_content_blocks(contents: list, supports_images: bool) -> list:
 
 def mcp_servers(config: dict) -> list[HttpMcpServer]:
     return [
-        HttpMcpServer(type="http", name=name, url=url, headers=[])
+        HttpMcpServer(
+            type="http",
+            name=name,
+            url=url,
+            headers=[
+                HttpHeader(name=key, value=value)
+                for key, value in config.get("mcp_headers", {}).get(name, {}).items()
+            ],
+        )
         for name, url in config["mcp_urls"].items()
     ]
 
@@ -194,7 +203,9 @@ class ACPSession:
             self.connection = agent_process[0]
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
-                client_capabilities=ClientCapabilities(),
+                client_capabilities=ClientCapabilities.model_validate(
+                    config["client_capabilities"]
+                ),
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(

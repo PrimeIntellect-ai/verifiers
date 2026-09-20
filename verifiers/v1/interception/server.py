@@ -43,6 +43,7 @@ from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.configs.client import (
     BaseClientConfig,
+    TrainClientConfig,
     resolve_api_key,
     resolve_headers,
 )
@@ -131,15 +132,18 @@ def _capture_response(response: web.Response) -> ReplayResponse:
         data = bytes(body)
     else:
         raise TypeError("coalesced interception responses must have a byte body")
-    return ReplayResponse(status=response.status, body=data)
+    return ReplayResponse(
+        status=response.status,
+        body=data,
+        content_type=response.headers["Content-Type"],
+    )
 
 
 def _replay_response(response: ReplayResponse) -> web.Response:
     return web.Response(
         body=response.body,
         status=response.status,
-        content_type="application/json",
-        charset="utf-8",
+        headers={"Content-Type": response.content_type},
     )
 
 
@@ -480,6 +484,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        session.trace.notify()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -494,13 +499,16 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        streaming = dialect.streaming(body)
+        relay_streaming = streaming and not isinstance(
+            session.ctx.client, TrainClientConfig
+        )
+        req_hash = await _request_digest(raw) if not relay_streaming else b""
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        streaming = dialect.streaming(body)
         try:
             acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
@@ -511,7 +519,7 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries: one logical non-streaming call must commit at most
+        # Graph atomicity under retries: one logical buffered call must commit at most
         # one turn. An explicit key identifies that call directly; otherwise only the SDK's
         # retry marker activates body-digest replay, since an unmarked repeated body can be a
         # legitimate later turn.
@@ -521,14 +529,14 @@ class InterceptionServer(Interception):
         replay_key: str | None = None
         binding = (request.path, req_hash)
         if idempotency_key:
-            if streaming and acp is None:
+            if relay_streaming and acp is None:
                 return web.json_response(
                     dialect.error_body(
                         "Idempotency-Key is not supported for streaming requests"
                     ),
                     status=400,
                 )
-            if not streaming:
+            if not relay_streaming:
                 replay_key = f"explicit:{idempotency_key}"
             # This key identifies the harness-to-interception hop. The server owns its
             # replay semantics, and the body has since been rewritten with rollout model
@@ -538,7 +546,7 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
-        elif not streaming:
+        elif not relay_streaming:
             replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
         if replay_key is not None:
@@ -632,8 +640,10 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
-            turn = graph.prepare_turn(session.trace, model_request.messages)
-            turn.commit_prompt(model_request.tools)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
+            turn.commit_prompt()
             session.trace.stop(stopped)
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {stopped}"),
@@ -642,15 +652,22 @@ class InterceptionServer(Interception):
 
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
-            model_request = dialect.parse_request(body)
-            turn = graph.prepare_turn(session.trace, model_request.messages)
+            # Restricted mediation can mutate the body without reporting policy paths.
+            if request_rewrites or session.network_policy.network_restricted:
+                model_request = dialect.parse_request(body)
+            turn = graph.prepare_turn(
+                session.trace, model_request.messages, model_request.tools
+            )
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # The tail is what the harness added since the last turn (tool results, user
+        # turns): live watchers see it now rather than with the model's reply.
+        session.trace.preview(turn, turn.tail)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
-        if streaming:
+        if relay_streaming:
             return await self._stream(
                 request,
                 session,
@@ -665,7 +682,15 @@ class InterceptionServer(Interception):
             )
 
         def serve(response: Response) -> web.Response:
-            served = _completion_response(response.raw)
+            if streaming:
+                # Training generates a complete response with token metadata.
+                # Commit it through the normal path, then frame it for SSE clients.
+                served = web.Response(
+                    body=b"".join(dialect.stream_events(response.raw or {})),
+                    content_type="text/event-stream",
+                )
+            else:
+                served = _completion_response(response.raw)
             if idempotent is not None:
                 idempotent.response = _capture_response(served)
                 idempotent.completed_at = time.monotonic()
@@ -723,7 +748,7 @@ class InterceptionServer(Interception):
                             ),
                             status=400,
                         )
-                    node = turn.commit(call_response, model_request.tools)
+                    node = turn.commit(call_response)
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is not None:
@@ -762,6 +787,8 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if node is None:
+                    turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and
                 # the error that ended it (if any).
                 self.record_call(
@@ -889,7 +916,7 @@ class InterceptionServer(Interception):
                         ),
                         status=409 if session.released else 400,
                     )
-                node = turn.commit(response, model_request.tools)
+                node = turn.commit(response)
                 session.consume_prepared(turn.tail)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if stopped is not None:
@@ -997,7 +1024,7 @@ class InterceptionServer(Interception):
                     raise parser_error
                 response = parser.finish()
                 if not session.released and not session.stopped:
-                    node = turn.commit(response, model_request.tools)
+                    node = turn.commit(response)
                     session.consume_prepared(turn.tail)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
                 elif session.stopped:
@@ -1027,6 +1054,8 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
+            if node is None:
+                turn.abandon()
             # The turn's one per-exchange record: settings, timing, outcome, and the
             # error that ended it (if any).
             self.record_call(
