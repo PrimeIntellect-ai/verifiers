@@ -6,9 +6,27 @@ import verifiers.v1 as vf
 from harbor_swarm.repository import archive
 from harbor_swarm.taskset import HarborSwarmTask
 from verifiers.v1.envs.swarm import SwarmEnv, SwarmEnvConfig
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.tasksets.harbor.env import HarborEnv, HarborEnvConfig
 from verifiers.v1.tasksets.harbor.taskset import HarborTask, verifier_box_data
 from verifiers.v1.utils.compile import resolve_runtime_config
+
+
+class HarborEvidenceEnv(HarborEnv):
+    async def verify(self, task, solution, runtime):
+        try:
+            return await super().verify(task, solution, runtime)
+        finally:
+            evidence = {}
+            for name in ("reward.json", "reward.txt", "evidence.json", "verifier.log"):
+                try:
+                    payload = await runtime.read(
+                        f"/logs/verifier/{name}", max_bytes=2 * 1024 * 1024
+                    )
+                    evidence[name] = payload.decode(errors="replace")
+                except (SandboxError, OSError, ValueError) as error:
+                    evidence[name] = {"unavailable": type(error).__name__}
+            solution.info["verifier_evidence"] = evidence
 
 
 class HarborSwarmEnvConfig(SwarmEnvConfig, HarborEnvConfig):
@@ -20,7 +38,7 @@ class HarborSwarmEnvConfig(SwarmEnvConfig, HarborEnvConfig):
     max_concurrent_agents: int | None = 5
 
 
-class HarborSwarmEnv(SwarmEnv, HarborEnv, vf.Env[HarborSwarmEnvConfig]):
+class HarborSwarmEnv(SwarmEnv, HarborEvidenceEnv, vf.Env[HarborSwarmEnvConfig]):
     config: HarborSwarmEnvConfig
 
     def verifier_config(self, task):

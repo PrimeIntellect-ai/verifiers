@@ -2,14 +2,15 @@
 
 import asyncio
 import fnmatch
-import json
+import io
+import tarfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import Field
 
 import verifiers.v1 as vf
-from harbor_swarm.repository import READ_WORKSPACE, archive
+from harbor_swarm.repository import archive
 from verifiers.v1.envs.swarm import SwarmTask, WorldConnection
 from verifiers.v1.runtimes import RuntimeConfig, provision_runtime
 from verifiers.v1.tasksets.harbor.taskset import (
@@ -49,14 +50,21 @@ class HarborSwarmTask(SwarmTask, vf.Task[HarborSwarmData]):
         ):
             await runtime.prepare_setup()
             await self.harbor().setup(runtime)
-            result = await runtime.run(
-                ["python3", "-c", READ_WORKSPACE, self.data.workspace], {}
-            )
-            if result.exit_code:
-                raise RuntimeError(
-                    "Cannot capture seed workspace: " + result.stderr[-2000:]
-                )
-            self.seed_files = json.loads(result.stdout)
+            collected = await vf.collect(runtime, self.data.artifacts)
+            payload = collected[self.data.workspace]
+            if payload is None:
+                raise ValueError("Missing seed workspace")
+            self.seed_files = {}
+            root = self.data.workspace.lstrip("/") + "/"
+            with tarfile.open(fileobj=io.BytesIO(payload)) as source:
+                for entry in source:
+                    if entry.isdir():
+                        continue
+                    if not entry.isfile() or not entry.name.startswith(root):
+                        raise ValueError("Seed workspace must contain regular files")
+                    stream = source.extractfile(entry)
+                    assert stream is not None
+                    self.seed_files[entry.name[len(root) :]] = stream.read().decode()
         repo = await world.mutate("create_repository", name="solution")
         initial = repo["branches"][0]["oid"]
         edits = {"README.md": None, **self.seed_files}
@@ -111,7 +119,7 @@ You share repository solution with your team. Your local workspace is {self.data
 Only files matching {self.data.editable} may change. Use public checks: {self.data.public_check}
 Coordinate implementation through general and the issue/PR tools. Solvers implement and test;
 the coordinator integrates reviewed PRs and organizes the final unanimous submission.
-Do not install or invoke a reference Git implementation. Repository tools run on the world server:
+Follow the task's rules for reference implementations. Repository tools run on the world server:
 - repository {{"repository":"solution"}} lists branches and exact commit IDs.
 - read_tree {{"repository":"solution","commit_oid":"OID"}} returns files at an exact commit.
 - commit_files {{"repository":"solution","branch":"my-branch","base_oid":"OID", "message":"Summary","files":{{"path":"UTF-8 content"}}}} --mutate creates a branch.
@@ -214,7 +222,7 @@ class HarborSwarmTaskset(vf.Taskset[HarborSwarmTask, HarborSwarmConfig]):
         )
         if data.verifier is None:
             raise ValueError(
-                "A separate Harbor verifier is required. The public FrontierSWE v1 Git task is not v2."
+                "Declare a separate Harbor verifier to grade the shared repository in a fresh runtime."
             )
         if data.collect or data.mcp_servers:
             raise ValueError(
@@ -223,10 +231,9 @@ class HarborSwarmTaskset(vf.Taskset[HarborSwarmTask, HarborSwarmConfig]):
         if (
             len(data.artifacts) != 1
             or data.artifacts[0].source != self.config.workspace
-            or data.artifacts[0].exclude
         ):
             raise ValueError(
-                "Declare exactly one unfiltered Harbor artifact at the configured workspace"
+                "Declare exactly one Harbor artifact at the configured workspace"
             )
         row = HarborSwarmData(
             **data.model_dump(),

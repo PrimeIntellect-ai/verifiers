@@ -23,15 +23,17 @@ uv run eval harbor-swarm \
 
 Run with `--dry-run` first to resolve configuration. The default roles use Prime runtimes and have no turn or token caps. Task-authored agent and verifier timeouts are retained; explicit agent timeout settings take precedence. `review-timeout` bounds coordination including public checks. Setup and teardown are separate from that deadline. Configure `--env.verifier.runtime.*` to place the independent verifier and `--env.agent.timeout.scoring` to override its task deadline.
 
-For the native single-agent baseline, use `harbor-swarm-baseline` with the same task directory and workspace settings. It exports Harbor's single-agent environment and original task, without world orchestration. Keep model, harness, resources, and solving time comparable; record total token usage separately because five agents can consume more inference than one.
+For the native single-agent baseline, use `harbor-swarm-baseline` with the same task directory and workspace settings. It runs Harbor's original task and isolated grading, without world orchestration. Both variants retain bounded verifier logs and reward files in trace info. Keep model, harness, resources, and solving time comparable; record total token usage separately because five agents can consume more inference than one.
+
+For experiments that score partial work at a fixed deadline, set `timeout.rollout_as_stop=true` on every solving role (the baseline uses `agent`). This marks the trace as truncated and runs artifact collection and grading. Other failures remain errors. Prime VM harness processes stop before collection. The swarm grades committed main at the coordination deadline, so agents should integrate changes throughout the run.
 
 ## Supported task contract
 
 - A pullable agent image and a declared separate Harbor verifier.
-- Exactly one unfiltered artifact directory matching `workspace`.
+- Exactly one artifact directory matching `workspace`; artifact exclusions also apply when capturing the pristine seed.
 - A small UTF-8 source workspace, bounded by Worlds to 1,000 regular files and 2 MiB; no symlinks, binaries, or submodules.
 - No collect hooks or task MCP services. The adapter rejects unsupported transfer semantics explicitly.
 - `editable` identifies source paths allowed to differ from the pristine seed. Protected-file edits fail the public check and cannot be graded as a valid submission.
 - Only the world host is added to the task's network allowlist. The isolated verifier receives no world credentials or agent-added network access.
 
-FrontierSWE v2 requires its actual task package and pinned agent/verifier images, plus validation of its execution-user restrictions on the selected runtime. The public Git-to-Zig v1 task has an in-place verifier and is rejected. A coding fixture validates this adapter's integration; it does not establish a FrontierSWE result.
+An in-place Harbor task needs an explicit adapted manifest declaring a separate verifier and the source artifact to transfer. Preserve the original instructions and grader files, record their source revision and hashes, and validate grading in a fresh copy of the original image. Report adapted benchmark results with their solving budget and resource allocation.
