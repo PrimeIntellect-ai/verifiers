@@ -167,6 +167,9 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         coordinator=coordinators[0],
                     )
 
+                if review:
+                    task.review_round = review["id"]
+
                 async def review_progress():
                     assert review is not None
                     deadline = (
@@ -212,9 +215,11 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                             team_stop.set()
                             return
                         if all(run.done() for run in running):
-                            raise RuntimeError(
-                                "All participants finished without an accepted submission"
+                            review_result.update(
+                                state, termination="participants_finished"
                             )
+                            team_stop.set()
+                            return
                         await asyncio.sleep(1)
 
                 running = []
