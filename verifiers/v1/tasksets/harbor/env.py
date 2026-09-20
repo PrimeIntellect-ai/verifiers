@@ -10,6 +10,7 @@ box is alive), a fresh box is provisioned from the task's verifier declaration,
 No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """
 
+import asyncio
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -19,7 +20,14 @@ from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnv,
     IsolatedVerifierEnvConfig,
 )
-from verifiers.v1.runtimes import DockerConfig, Runtime, RuntimeConfig
+from verifiers.v1.errors import TaskError, boundary
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    ModalConfig,
+    PrimeConfig,
+    Runtime,
+    RuntimeConfig,
+)
 from verifiers.v1.tasksets.harbor.compose import ComposeProject
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
@@ -41,19 +49,34 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         separate = task.data.verifier is not None
         if separate:
             self.verifier_config(task)
-        project: ComposeProject | nullcontext[None] = nullcontext(None)
+        project = None
         if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
             config = resolve_runtime_config(agents.agent.runtime_config, task)
-            if not isinstance(config, DockerConfig):
-                raise TypeError("Harbor Compose currently requires local Docker")
+            if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
+                raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
             timeouts = resolve_rollout_timeouts(agents.agent.timeout, task)
             project = ComposeProject(config, task, setup_timeout=timeouts.setup)
-        async with project as runtime:
-            await agents.agent.run(
+        async with project or nullcontext(None) as runtime:
+            trace = await agents.agent.run(
                 task.defer_scoring() if separate else task,
                 runtime=runtime,
                 collect_artifacts=separate,
+                on_trace=(lambda trace: trace.state.services.update(project.services))
+                if project is not None
+                else None,
             )
+            services = {
+                *(artifact.service for artifact in task.data.artifacts),
+                *(hook.service for hook in task.data.collect),
+            } - {"main"}
+            if project is not None and separate and trace.ok and services:
+                # Harness cleanup has finished; freeze main before collecting sidecars.
+                async with (
+                    boundary(TaskError, "collecting Compose sidecars"),
+                    asyncio.timeout(timeouts.finalize),
+                ):
+                    await project.stop_service("main")
+                    await task.finalize(trace, runtime, services=services)
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
