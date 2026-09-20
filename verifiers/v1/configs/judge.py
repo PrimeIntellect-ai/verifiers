@@ -17,7 +17,7 @@ class JudgeConfig(BaseClientConfig):
     name: str = ""
     """Reward key override for a plugged judge."""
     weight: FiniteFloat = 1.0
-    model: str = "openai/gpt-5.4-nano"
+    model: str = "openai/gpt-5.6-luna"
     sampling: SamplingConfig = SamplingConfig()
     prompt: Path | None = None
     """File whose text overrides the judge's default prompt template."""
