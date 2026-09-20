@@ -130,7 +130,9 @@ class VerifiersACPClient(Client):
                 )
             if decision != "allow":
                 kinds = ("reject_once", "reject_always")
-        option = next((item for item in options if item.kind in kinds), None)
+        option = next(
+            (item for kind in kinds for item in options if item.kind == kind), None
+        )
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
             if option
