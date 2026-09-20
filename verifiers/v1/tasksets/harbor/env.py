@@ -28,7 +28,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
 )
-from verifiers.v1.tasksets.harbor.compose import ComposeProject
+from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
     verifier_box_data,
@@ -49,20 +49,20 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         separate = task.data.verifier is not None
         if separate:
             self.verifier_config(task)
-        project = None
+        context = None
         if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
             config = resolve_runtime_config(agents.agent.runtime_config, task)
             if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
                 raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
             timeouts = resolve_rollout_timeouts(agents.agent.timeout, task)
-            project = ComposeProject(config, task, setup_timeout=timeouts.setup)
-        async with project or nullcontext(None) as runtime:
+            context = compose_services(config, task, setup_timeout=timeouts.setup)
+        async with context or nullcontext(({}, None)) as (runtimes, stop_main):
             trace = await agents.agent.run(
                 task.defer_scoring() if separate else task,
-                runtime=runtime,
+                runtime=runtimes.get("main"),
                 collect_artifacts=separate,
-                on_trace=(lambda trace: trace.state.services.update(project.services))
-                if project is not None
+                on_trace=(lambda trace: trace.state.services.update(runtimes))
+                if runtimes
                 else None,
             )
             try:
@@ -70,14 +70,14 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
                     *(artifact.service for artifact in task.data.artifacts),
                     *(hook.service for hook in task.data.collect),
                 } - {"main"}
-                if project is not None and separate and trace.ok and services:
+                if stop_main is not None and separate and trace.ok and services:
                     # Harness cleanup has finished; freeze main before collecting sidecars.
                     async with (
                         boundary(TaskError, "collecting Compose sidecars"),
                         asyncio.timeout(timeouts.finalize),
                     ):
-                        await project.stop_service("main")
-                        await task.finalize(trace, runtime, services=services)
+                        await stop_main()
+                        await task.finalize(trace, runtimes["main"], services=services)
             finally:
                 trace.state.services.clear()
 
