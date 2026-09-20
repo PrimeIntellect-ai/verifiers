@@ -125,11 +125,12 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                 world = WorldConnection(
                     self.config.world.url, world_id, controller, controller_token
                 )
+                await world.mutate("join", conversation="general")
                 logger.info(
                     "Swarm world %s — viewer %s", world_id, self.config.world.url
                 )
                 connections = []
-                for _, account in seats:
+                for role, account in seats:
                     created = await request(
                         "POST",
                         f"/worlds/{world_id}/accounts",
@@ -139,6 +140,23 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         },
                     )
                     retire(account)
+                    await world.mutate(
+                        "membership", conversation="general", account=account
+                    )
+                    try:
+                        await world.mutate(
+                            "set_alias",
+                            alias=f"{role.replace('_', '-')[:24]}-{account.rsplit('-', 1)[1]}",
+                            account=account,
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code not in (404, 409):
+                            raise
+                        # Older servers and occupied aliases retain the full handle.
+                        logger.info(
+                            "Short alias unavailable for %s; use its full handle",
+                            account,
+                        )
                     connections.append(
                         WorldConnection(
                             self.config.world.agent_url or self.config.world.url,

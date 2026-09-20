@@ -119,6 +119,19 @@ class SwarmTask(vf.Task):
                 'or create_conversation {"handle":"topic","members":["HANDLE"]} --mutate for a channel. '
                 'For channel history use read {"conversation":"general","after":CURSOR}; '
                 "save next_cursor and continue while has_more. Omitting after rereads the oldest messages."
+                "\nUse list_accounts {} to discover registered aliases; resolve_account {name} resolves one. "
+                "Use work_board {repository} before starting overlapping work. Create scoped issues, then "
+                "claim_issue {repository,number,scopes:[relative paths],dependencies:[issue numbers],reviewer} "
+                "--mutate; release_claim when abandoning work. Claims coordinate ownership, not access control. "
+                "Use request_review {repository,number,accounts:[exact handles]} --mutate for directed requests. "
+                "Use supersede_pr {repository,number,replacement} --mutate instead of leaving obsolete PRs open. "
+                "For integration, prepare_merge and enqueue_pr take {repository,number,expected_head,expected_base}. "
+                "Fetch the returned candidate_oid with read_tree or Git refs/worlds/candidates/NUMBER, "
+                "run checks in your own sandbox, and attest_check "
+                "{repository,number,expected_head,expected_base,commit_oid,name,command,definition,sandbox,exit_code,logs} "
+                "--mutate. Attest only checks you actually ran on that candidate; results are attributed claims. "
+                "Read merge_queue {repository}; refresh and recheck stale candidates. "
+                "Blocking reviews must explain the problem. review_round shows pending approvals and whether main changed."
             }
         )
         return task

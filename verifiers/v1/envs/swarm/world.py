@@ -28,11 +28,17 @@ class WorldConnection:
 
 
 # No dependency installation or platform credential is needed in the sandbox.
-# The CLI accepts JSON on stdin so shell quoting need not contain credentials.
-WORLD_PROGRAM = """import json, os, sys, urllib.request, uuid
+# Pass '-' explicitly to read JSON from stdin; omitted JSON defaults to {}.
+WORLD_PROGRAM = """import json, os, sys, urllib.request, urllib.error, uuid
+if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+    print("Usage: world.py OPERATION [JSON|-] [--mutate]\\n"
+          "Omitted JSON means {}. Use - to read JSON from stdin.\\n"
+          "Discover operations: world.py describe_tools '{}'")
+    sys.exit(0)
 operation = sys.argv[1]
-arguments = json.loads(sys.argv[2]) if len(sys.argv) > 2 else json.load(sys.stdin)
-if len(sys.argv) > 3 and sys.argv[3] == "--mutate":
+args = [arg for arg in sys.argv[2:] if arg != "--mutate"]
+arguments = json.load(sys.stdin) if args == ["-"] else json.loads(args[0]) if args else {}
+if "--mutate" in sys.argv[2:]:
     arguments.setdefault("idempotency_key", uuid.uuid4().hex)
 url = os.environ["WORLDS_URL"].rstrip("/")
 world = os.environ["WORLDS_ID"]
@@ -41,6 +47,10 @@ request = urllib.request.Request(
     data=json.dumps(arguments).encode(),
     headers={"Authorization": "Bearer " + os.environ["WORLDS_TOKEN"],
              "Content-Type": "application/json"})
-with urllib.request.urlopen(request, timeout=60) as response:
-    print(response.read().decode())
+try:
+    with urllib.request.urlopen(request, timeout=60) as response:
+        print(response.read().decode())
+except urllib.error.HTTPError as error:
+    print(json.dumps({"status": error.code, "error": error.read().decode()}))
+    sys.exit(1)
 """
