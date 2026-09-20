@@ -78,6 +78,7 @@ class Rollout:
         self.runtime_config = runtime_config
         self._has_user = has_user
         self._timeouts = timeouts
+        self._timeout_as_stop = agent_config.timeout.rollout_as_stop
         self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
@@ -379,16 +380,18 @@ class Rollout:
                         return False
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
-            # An expired rollout deadline is the agent breaking its time budget —
-            # an agent failure, never a clean stop. A TimeoutError from the
-            # harness's own I/O with no expired deadline stays the raw failure.
+            # Only an explicitly scoreable solve deadline is a normal stop.
+            # A timeout from the harness's own I/O remains a failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.fail(
-                    HarnessError(
-                        f"agent timeout: rollout exceeded its "
-                        f"{self._timeouts.agent:g}s budget"
+                if self._timeout_as_stop:
+                    trace.stop("rollout_timeout")
+                else:
+                    self.fail(
+                        HarnessError(
+                            f"agent timeout: rollout exceeded its "
+                            f"{self._timeouts.agent:g}s budget"
+                        )
                     )
-                )
             else:
                 self.fail(e)
             return False

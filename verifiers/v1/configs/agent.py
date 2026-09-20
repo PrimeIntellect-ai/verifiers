@@ -17,6 +17,9 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for the task + harness setup hooks."""
     rollout: float | None = None
     """Timeout (in seconds) for the agent's solve attempt."""
+    rollout_as_stop: bool = False
+    """Collect and score partial work when the rollout deadline expires. Other
+    stage timeouts and harness failures remain errors."""
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None

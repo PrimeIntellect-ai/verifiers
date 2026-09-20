@@ -320,6 +320,30 @@ class PrimeRuntime(Runtime):
             stderr=result.stderr or "",
         )
 
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        if not self.config.vm:
+            return await super().run_program(argv, env)
+        process = await self._client.open_process(
+            self.info.id,
+            shlex.join(argv),
+            working_dir=self.config.workdir,
+            env=self.process_env(env),
+        )
+
+        async def read(stream):
+            return b"".join([chunk async for chunk in stream]).decode(errors="replace")
+
+        try:
+            code, stdout, stderr = await asyncio.gather(
+                process.wait(), read(process.stdout), read(process.stderr)
+            )
+            return ProgramResult(code, stdout, stderr)
+        finally:
+            # Stop the harness before finalization can snapshot a timed-out run.
+            # Polling a background job alone leaves it writing after cancellation.
+            await process.kill()
+            await process.aclose()
+
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
