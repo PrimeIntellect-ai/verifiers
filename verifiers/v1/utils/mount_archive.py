@@ -1,4 +1,5 @@
 # /// script
+# requires-python = ">=3.11"
 # dependencies = []
 # ///
 """Archive through directory descriptors without traversing dataset mounts."""
