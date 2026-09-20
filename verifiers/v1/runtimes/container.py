@@ -98,11 +98,13 @@ class ContainerProcess(RuntimeProcess):
         try:
             return await self._process.wait()
         finally:
-            await run_shielded(
-                self._runtime._run_host(
-                    *self._runtime._exec({}), "rm", "-f", self._pidfile
+            # Removing bookkeeping files must not replace the process result.
+            with contextlib.suppress(Exception):
+                await run_shielded(
+                    self._runtime._run_host(
+                        *self._runtime._exec({}), "rm", "-f", self._pidfile
+                    )
                 )
-            )
 
     async def poll(self) -> int | None:
         return await self._process.poll()
@@ -201,9 +203,11 @@ class ContainerRuntime(Runtime):
             data = await self._host.read(f"{temporary}.out")
             return result.exit_code, data, result.stderr.encode()
         finally:
-            await run_shielded(
-                self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
-            )
+            # Temporary-file cleanup is best-effort after command completion/failure.
+            with contextlib.suppress(Exception):
+                await run_shielded(
+                    self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
+                )
 
     def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
         """Host argv that runs a command inside the container, in the workdir, with

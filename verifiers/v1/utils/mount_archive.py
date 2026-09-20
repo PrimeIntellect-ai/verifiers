@@ -25,7 +25,7 @@ def archive_node(
         return
     descriptor = os.open(
         "/" + name if parent is None else parts[-1],
-        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+        os.O_PATH | os.O_NOFOLLOW,
         dir_fd=parent,
     )
     try:
@@ -44,15 +44,28 @@ def archive_node(
         info.mtime = status.st_mtime
         if stat.S_ISREG(status.st_mode):
             info.size = status.st_size
-            with os.fdopen(os.dup(descriptor), "rb") as source:
+            # Reopen the pinned inode, not its path, which the agent can replace.
+            with open(f"/proc/self/fd/{descriptor}", "rb") as source:
                 archive.addfile(info, source)
         elif stat.S_ISDIR(status.st_mode):
             info.type = tarfile.DIRTYPE
             archive.addfile(info)
-            for child in os.listdir(descriptor):
+            for child in os.listdir(f"/proc/self/fd/{descriptor}"):
                 archive_node(archive, f"{name}/{child}", descriptor, blocked, excludes)
-        else:
-            raise ValueError(f"artifact is not a regular file or directory: {name}")
+        elif stat.S_ISLNK(status.st_mode):
+            info.type = tarfile.SYMTYPE
+            info.linkname = os.readlink("", dir_fd=descriptor)
+            archive.addfile(info)
+        elif stat.S_ISFIFO(status.st_mode):
+            info.type = tarfile.FIFOTYPE
+            archive.addfile(info)
+        elif stat.S_ISCHR(status.st_mode) or stat.S_ISBLK(status.st_mode):
+            info.type = (
+                tarfile.CHRTYPE if stat.S_ISCHR(status.st_mode) else tarfile.BLKTYPE
+            )
+            info.devmajor = os.major(status.st_rdev)
+            info.devminor = os.minor(status.st_rdev)
+            archive.addfile(info)
     finally:
         os.close(descriptor)
 

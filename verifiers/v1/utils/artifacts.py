@@ -95,7 +95,10 @@ async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> s
                 "do not move mount targets or their parent directories"
             )
         blocked.add(mounted[escaped])
-    parents = {int(record[0]): int(record[1]) for record in records}
+    # The mount-tree root can name itself as its parent; it has no ancestor edge.
+    parents = {
+        int(record[0]): int(record[1]) for record in records if record[0] != record[1]
+    }
     for mount in parents:
         ancestor = mount
         while ancestor in parents and ancestor not in blocked:

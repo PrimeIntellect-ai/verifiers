@@ -43,10 +43,11 @@ class DockerConfig(ContainerConfig, NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     mounts: dict[str, BindMount] = Field(default_factory=dict)
     """Container paths mapped to host bind mounts, attached before task setup.
-    Read-only mounts include read-only submounts and require Linux kernel >=5.12
-    on the Docker daemon (including Docker Desktop's Linux VM). Mount targets and
-    artifact paths must not traverse symlinks inside the container. Mount targets
-    and their parent directories must not be moved. Harbor Compose is unsupported."""
+    Read-only mounts include read-only submounts and require Docker Engine/CLI >=25.0
+    (API >=1.44) with Linux kernel >=5.12, including Docker Desktop's Linux VM.
+    Mount targets and artifact paths must not traverse symlinks inside the container.
+    Mount targets and their parent directories must not be moved.
+    Harbor Compose is unsupported."""
 
     @field_validator("mounts")
     @classmethod
