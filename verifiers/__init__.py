@@ -1,9 +1,4 @@
-"""The verifiers package root.
-
-The v1 stack lives in `verifiers.v1` (`import verifiers.v1 as vf`). The
-classic v0 stack (`verifiers.legacy`, which also answered at its historical
-top-level paths — `verifiers.envs`, `verifiers.types`, ...) has been removed.
-"""
+"""The verifiers package root; the stack lives in `verifiers.v1` (`import verifiers.v1 as vf`)."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
