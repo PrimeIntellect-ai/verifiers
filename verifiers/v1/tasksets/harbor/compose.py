@@ -260,6 +260,14 @@ async def compose_services(
             )
             # Validate authored ports after interpolation, before adding our callback port.
             rendered = json.loads(await compose("config", "--format", "json"))
+            for service in rendered["services"].values():
+                if service.get("gpus") or (
+                    service.get("deploy", {})
+                    .get("resources", {})
+                    .get("reservations", {})
+                    .get("devices")
+                ):
+                    raise SandboxError("Harbor Compose currently supports CPU tasks")
             if any(
                 port.get("published") not in (None, "", 0, "0")
                 for service in rendered["services"].values()
