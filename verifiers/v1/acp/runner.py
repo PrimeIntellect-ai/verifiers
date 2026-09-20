@@ -56,21 +56,22 @@ class ToolGate:
             timeout=httpx.Timeout(120, connect=5),
         )
 
-    async def allows(self, tool_call_id: str, arguments: Any) -> bool:
+    async def decision(self, tool_call_id: str, arguments: Any) -> str:
         try:
             response = await self.client.post(
                 self.url, json={"tool_call_id": tool_call_id, "arguments": arguments}
             )
             response.raise_for_status()
-            return response.json()["action"] == "allow"
+            return response.json()["action"]
         except Exception as error:  # noqa: BLE001 - an unreachable gate lets nothing run
             print(f"tool gate denied {tool_call_id}: {error}", file=sys.stderr)
-            return False
+            return "deny"
 
 
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.gate: ToolGate | None = None
+        self.prompt_task: asyncio.Task | None = None
         self.visible_reply = ""
         self.message_id: str | None = None
         self.stop_reason: str | None = None
@@ -114,13 +115,21 @@ class VerifiersACPClient(Client):
         options: list[PermissionOption],
         **kwargs: Any,
     ) -> RequestPermissionResponse:
-        """Every agent awaits this before a gated tool runs: allow unless the rollout's
-        gate denies, in which case the agent's own reject option keeps the turn going."""
+        """Ask the rollout before execution: deny rejects one call; stop cancels the turn."""
         kinds = ("allow_once", "allow_always")
-        if self.gate is not None and not await self.gate.allows(
-            tool_call.tool_call_id, tool_call.raw_input
-        ):
-            kinds = ("reject_once", "reject_always")
+        if self.gate is not None:
+            decision = await self.gate.decision(
+                tool_call.tool_call_id, tool_call.raw_input
+            )
+            if decision == "stop":
+                self.stop_reason = "cancelled"
+                if self.prompt_task is not None:
+                    self.prompt_task.cancel()
+                return RequestPermissionResponse(
+                    outcome=DeniedOutcome(outcome="cancelled")
+                )
+            if decision != "allow":
+                kinds = ("reject_once", "reject_always")
         option = next((item for item in options if item.kind in kinds), None)
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
@@ -193,12 +202,21 @@ async def prompt(
     if not blocks:
         raise ValueError("ACP prompt has no content")
     try:
-        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.prompt_task = asyncio.create_task(
+            connection.prompt(session_id=session_id, prompt=blocks)
+        )
+        response = await client.prompt_task
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
+    except asyncio.CancelledError:
+        if client.stop_reason != "cancelled":
+            raise
+        await connection.cancel(session_id=session_id)
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+    finally:
+        client.prompt_task = None
     return client.turn_result()
 
 

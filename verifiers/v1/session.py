@@ -29,6 +29,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
+from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -69,7 +70,9 @@ async def call_hook(handler: Callable, available: dict[type, object]) -> object:
 def same_arguments(call: ToolCall, arguments: object) -> bool:
     """Whether a gate's view of a call's arguments is the model's call, ignoring JSON form."""
     try:
-        return json.loads(call.arguments) == arguments
+        return json.dumps(json.loads(call.arguments), sort_keys=True) == json.dumps(
+            arguments, sort_keys=True
+        )
     except (json.JSONDecodeError, TypeError):
         return call.arguments == arguments
 
@@ -192,7 +195,7 @@ class RolloutSession:
             if not isinstance(message, ToolMessage):
                 continue
             pinned = self.pinned_tool_results.get(message.tool_call_id)
-            if pinned is None or pinned == message:
+            if pinned is None:
                 continue
             if (
                 self.tool_decisions.get(message.tool_call_id) is not None
@@ -265,6 +268,10 @@ class RolloutSession:
                         raise TypeError(
                             f"expected {type(before).__name__}, got {type(after).__name__}"
                         )
+                    if isinstance(after, ToolMessage):
+                        after.content = bound_tool_message(after.model_dump())[
+                            "content"
+                        ]
                     if isinstance(before, ToolMessage) and (
                         after.tool_call_id != before.tool_call_id
                         or after.name != before.name
@@ -390,6 +397,10 @@ class RolloutSession:
             return None
         branch = graph.path(self.trace, node)
         for call in assistant.tool_calls:
+            if call.id in self.tool_decisions:
+                raise HarnessError(
+                    f"tool call id {call.id!r} was reused in this rollout"
+                )
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
             request, records, stopped = await self.rewrite_request(
                 Request(messages=[*branch, probe], tools=self.trace.tools or None)
@@ -427,7 +438,11 @@ class RolloutSession:
         calls = [call for _, message in leaves for call in message.tool_calls or []]
         keys = {tool_call_id}
         if isinstance(arguments, dict):
-            keys.update(value for value in arguments.values() if isinstance(value, str))
+            keys.update(
+                arguments[key]
+                for key in ("tool_call_id", "call_id", "toolCallId")
+                if isinstance(arguments.get(key), str)
+            )
         matches = [
             call
             for call in calls
@@ -437,7 +452,11 @@ class RolloutSession:
                 or key.endswith(f":{call.id}")
                 for key in keys
             )
-        ] or [call for call in calls if same_arguments(call, arguments)]
+        ] or [
+            call
+            for call in calls
+            if (name is None or call.name == name) and same_arguments(call, arguments)
+        ]
         if len(matches) == 1:
             call = matches[0]
             self.gated_tools.add(call.id)

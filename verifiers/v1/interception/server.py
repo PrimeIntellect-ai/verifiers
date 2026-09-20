@@ -933,6 +933,7 @@ class InterceptionServer(Interception):
                     try:
                         stopped = await session.gate_tool_calls(node)
                     except RolloutError as e:
+                        error = e
                         buffered.close()
                         return self._fail(session, dialect, e)
                 if stopped is not None:

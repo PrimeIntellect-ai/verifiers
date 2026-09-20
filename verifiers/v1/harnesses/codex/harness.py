@@ -175,9 +175,38 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             .replace("__SECRET__", json.dumps(secret))
             .encode(),
         )
+        home = config.env["CODEX_HOME"]
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'if test -f /etc/codex/config.toml; then cp /etc/codex/config.toml "$1/system-config.toml"; else touch "$1/no-system-config"; fi',
+                "vf-gate",
+                home,
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise RuntimeError(
+                f"could not preserve Codex system config: {result.stderr}"
+            )
         await runtime.write("/etc/codex/config.toml", GATE_CONFIG.encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'if test -f "$1/system-config.toml"; then mv "$1/system-config.toml" /etc/codex/config.toml; elif test -f "$1/no-system-config"; then rm -f /etc/codex/config.toml; fi',
+                "vf-gate",
+                self.trace_home(trace),
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise RuntimeError(
+                f"could not restore Codex system config: {result.stderr}"
+            )
         await remove_dir(runtime, self.trace_home(trace), "Codex home")
 
     @staticmethod
