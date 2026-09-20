@@ -86,6 +86,11 @@ Select `runtime.type = "docker"` to run Compose tasks locally.
 
 With the default Harbor env, tasks containing `environment/docker-compose.yaml`
 run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
+Local Docker requires `--env.trust-compose`: task definitions can mount host files
+and request Docker privileges, so only enable it for trusted packages. Local Compose
+receives Docker connection settings and infrastructure variables rather than the
+evaluator's full environment. Task-local `.env` files and declared task env remain available.
+
 Compose preserves service entrypoints, commands, dependencies, health checks,
 networking, and volumes; the agent executes in a single `main` container.
 Host networking is unsupported. Runtime defaults preserve the authored image and
@@ -107,7 +112,9 @@ main's runtime service port through its encrypted tunnel, including when main sh
 another service's network namespace.
 
 The Harbor environment removes the entire project or confirms remote sandbox termination before
-separate grading, which retains the ordinary fresh verifier runtime.
+separate grading, which retains the ordinary fresh verifier runtime. A fresh-copy
+verifier inherits the resolved main image and working directory. Images built only
+inside a cloud host must be published separately and declared in the verifier environment.
 
 Compose projects are owned by the Harbor environment; agents borrow the existing
 Docker main container. Failures retry with a fresh project through

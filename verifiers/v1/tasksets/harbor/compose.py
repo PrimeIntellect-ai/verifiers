@@ -34,9 +34,15 @@ async def compose_services(
     config: DockerConfig | PrimeConfig | ModalConfig,
     task: HarborTask,
     *,
+    trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[tuple[dict[str, DockerRuntime], Callable[[], Awaitable[str]]]]:
     """Own one Compose attempt and lend its services until the context exits."""
+    if isinstance(config, DockerConfig) and not trust_compose:
+        raise ValueError(
+            "Local Compose tasks can access host files and Docker privileges; "
+            "only run trusted tasks with --env.trust-compose"
+        )
     if config.gpu:
         raise ValueError("Harbor Compose currently supports CPU tasks")
     if isinstance(config, DockerConfig) and config.mounts:
@@ -64,7 +70,21 @@ async def compose_services(
     temporary = tempfile.TemporaryDirectory(prefix="vf-harbor-")
     stack = AsyncExitStack()
     compose_argv: list[str] = []
-    compose_env: dict[str, str] = {}
+    # Docker routing and credential-helper lookup need these; Compose must not see
+    # unrelated evaluator secrets through shell interpolation.
+    compose_env = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "HOME",
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        )
+        if host is None and key in os.environ
+    }
     runtimes: dict[str, DockerRuntime] = {}
 
     async def run_host(*args: str, env: dict[str, str] | None = None) -> ProgramResult:
@@ -88,7 +108,7 @@ async def compose_services(
         else:
             subprocess.run(
                 [*compose_argv, "down", "--volumes", "--remove-orphans"],
-                env={**os.environ, **compose_env},
+                env=compose_env,
                 capture_output=True,
                 timeout=60,
                 check=True,
@@ -249,13 +269,19 @@ async def compose_services(
                 name,
                 "--project-directory",
                 project_dir,
+                "--env-file",
+                f"{project_dir}/.env"
+                if (environment / ".env").is_file()
+                else "/dev/null",
                 *(arg for path in paths for arg in ("-f", str(path))),
             ]
-            compose_env = ComposeInfraEnvVars(
-                main_image_name=name,
-                context_dir=project_dir,
-                prebuilt_image_name=config.image,
-            ).to_env_dict()
+            compose_env.update(
+                ComposeInfraEnvVars(
+                    main_image_name=name,
+                    context_dir=project_dir,
+                    prebuilt_image_name=config.image,
+                ).to_env_dict()
+            )
             await compose("config", "--quiet")
             if host is None:
                 atexit.register(cleanup)
