@@ -209,7 +209,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
         # Drain remote writes and installs before cancellation releases the lock.
         for source in pending:
-            project = tomllib.loads((Path(source) / "pyproject.toml").read_text())
+            pyproject = (Path(source) / "pyproject.toml").read_bytes()
+            project = tomllib.loads(pyproject.decode())
             uv_sources = project.get("tool", {}).get("uv", {}).get("sources", {})
             if any(
                 "git" in entry
@@ -225,13 +226,12 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             name, data = await _cached_sdist(Path(source))
             remote = f"{root}/{name}"
             await run_shielded(runtime.write(remote, data))
-            unpacked = shlex.quote(f"{remote}.src")
-            # Installing the directory preserves uv sources from its pyproject.toml;
-            # installing the archive resolves only the published dependency metadata.
+            requirements = f"{remote}.src/pyproject.toml"
+            await run_shielded(runtime.write(requirements, pyproject))
+            # The requirements input retains uv sources absent from archive metadata.
             setup += (
-                f"mkdir -p {unpacked}; tar -xf {shlex.quote(remote)} "
-                f"--strip-components=1 -C {unpacked}; "
-                f"uv pip install --python {venv_q} {unpacked}; "
+                f"uv pip install --python {venv_q} "
+                f"-r {shlex.quote(requirements)} {shlex.quote(remote)}; "
             )
         result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
         if result.exit_code != 0:
