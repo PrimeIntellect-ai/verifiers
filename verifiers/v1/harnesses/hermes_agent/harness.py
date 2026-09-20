@@ -26,7 +26,7 @@ touch "$VF_HERMES_DIR/.ready"
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "v2026.9.11"
+    version: PinnedVersion = "v2026.9.14"
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""

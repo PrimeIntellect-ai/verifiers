@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "1.11.0"
+ACP_VERSION = "1.12.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 INSTALL = r"""
@@ -35,7 +35,7 @@ touch {ready}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.154.0"
+    version: PinnedVersion = "0.155.1"
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""

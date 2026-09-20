@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"] = (
-    "f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"
+PRIME_AGENT_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
+    "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
 )
-PRIME_AGENT_VERSION = "0.9.4"
+PRIME_AGENT_VERSION = "0.9.5"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -50,10 +50,10 @@ for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
         "$release_url/$tarball" -o "$download_dir/$tarball"
 done
 printf '%s  %s\n' \
-    'b8d752a53d11a8c9a7580e1fb5fc24f7ce74ccad979c7e6e6aa8880fc3ad90b0' "$agent_tarball" \
-    'ac2798a204f06004776807e3160812fb72877c85718d8024c6d5add8242ece18' "$ai_tarball" \
-    '200b86d62c1502ef0d56acb8a4c306f25b57b378e4c4afddfa592e8110b0be1f' "$core_tarball" \
-    '7a64042e8c4de83bdd453cc9d429a44f0bd860f78e22ebba35e8468ac31642e7' "$tui_tarball" \
+    '349f1682c7909550842f1b04a71ba95814341b136474ade736df93f8ec006876' "$agent_tarball" \
+    '9ad0184b7b5f3d5c3b1677c0663335de32c092cbdb72697aeaf997f17910bb92' "$ai_tarball" \
+    '59aafeffb4b64eb997399d56a03f529b2f6604b228e5674372195277db52f04a' "$core_tarball" \
+    'e49f41170edfd1d0e72418729d2c117969ccf8df784dc55fe8c1a9d91778e103' "$tui_tarball" \
     > "$download_dir/SHA256SUMS"
 (cd "$download_dir" && sha256sum -c SHA256SUMS)
 mkdir "$download_dir/package-root"
@@ -87,7 +87,7 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["f771dfcedd684d1afff84ca2c6fa95c7a21efbc2"] = PRIME_AGENT_COMMIT
+    commit: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
     autonomous: bool = False

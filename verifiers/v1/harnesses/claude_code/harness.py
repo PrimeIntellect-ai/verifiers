@@ -11,7 +11,7 @@ from verifiers.v1.trace import Trace
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
-ACP_VERSION = "0.77.0"
+ACP_VERSION = "0.79.0"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
@@ -28,7 +28,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.1.270"
+    version: PinnedVersion = "2.1.278"
     """Claude Code release to install, pinned for reproducibility."""
 
 

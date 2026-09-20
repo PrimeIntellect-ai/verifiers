@@ -21,7 +21,7 @@ KEY_VAR = "PI_INTERCEPT_KEY"
 PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
-MCP_VERSION = "2.33.0"
+MCP_VERSION = "2.34.0"
 ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
@@ -44,7 +44,7 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.85.1"
+    version: PinnedVersion = "0.86.1"
     """Pi release to install, pinned for reproducibility."""
     transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
         "chat_completions"
