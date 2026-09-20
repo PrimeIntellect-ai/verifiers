@@ -68,6 +68,8 @@ class DockerConfig(ContainerConfig, NetworkPolicyConfig):
                 for other in paths
             ):
                 raise ValueError(f"mount target {target!r} overlaps another mount")
+            if path == PurePosixPath("/tmp"):
+                raise ValueError("/tmp is reserved for runtime and artifact staging")
             paths[path] = mount
         return {str(path): mount for path, mount in paths.items()}
 
