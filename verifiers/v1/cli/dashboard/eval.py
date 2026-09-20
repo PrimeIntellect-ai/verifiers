@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
+from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
 from verifiers.v1.cli.output import attempt_log_file, output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
@@ -280,18 +281,30 @@ def Overview(config: EvalConfig) -> Table:
     return grid
 
 
+def _prime_rl_footer() -> Group:
+    return Group(Text(""), Text(PRIME_RL_HINT, style="dim", overflow="fold"))
+
+
 def _push_footer(push: "PushState | None") -> Group | None:
-    """The `--push` status line under the rollouts, shown once the run finishes and the upload
-    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
-    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    """The `--push` line under the rollouts: dim with the run's URL while it streams,
+    white once pushed, red when it failed. `None` when `--push` is off or the run stayed
+    local."""
     if push is None or not push.started:
         return None
-    if not push.done:
-        line = Text("Pushing traces...", style="dim")
-    elif push.url:
+    if push.error and push.url:
+        # The run exists and holds what streamed up; only closing it out failed.
         line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-    else:
+        line.append(f"  not closed out: {push.error}", style="red")
+    elif push.error:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    elif (incomplete := push.incomplete) and push.url:
+        label = "Traces pushed" if push.finished else "Pushing traces"
+        line = Text(f"{label} ({push.url})", style="white", overflow="fold")
+        line.append(f"  incomplete: {incomplete}", style="red")
+    elif not push.finished:
+        line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
+    else:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
     return Group(Rule(style="dim"), line)
 
 
@@ -825,13 +838,15 @@ def _render(
     # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
-    footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
-    footer = Group(*footers) if footers else None
+    footers = [
+        f
+        for f in (_push_footer(push), _interrupt_footer(), _prime_rl_footer())
+        if f is not None
+    ]
+    footer = Group(*footers)
     progress = Progress(slots, start, completed)
     top = Group(header, progress, Rule(style="dim"))
-    reserved = len(_CONSOLE.render_lines(top))
-    if footer is not None:
-        reserved += len(_CONSOLE.render_lines(footer))
+    reserved = len(_CONSOLE.render_lines(top)) + len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     if tail is not None:  # --show-logs: the run's log stream in place of rollout rows
         parts = [
@@ -839,9 +854,8 @@ def _render(
             progress,
             Rule(style="dim"),
             tail.view(rows_per_page),
+            footer,
         ]
-        if footer is not None:
-            parts.append(footer)
         return Group(*parts)
     page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     if count > 1:
@@ -851,9 +865,8 @@ def _render(
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, runtime_type, completed),
+        footer,
     ]
-    if footer is not None:
-        parts.append(footer)
     return Group(*parts)
 
 

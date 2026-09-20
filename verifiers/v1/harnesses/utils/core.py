@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI, omit
+from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
-        CompactionFailed,
         Compactor,
         bound_tool_message,
         compactable,
@@ -181,6 +181,57 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
+_STREAMED_MESSAGE_FIELDS = (
+    "role",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+)
+
+
+def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
+    """Accumulate message fields whose stream semantics differ from the SDK defaults."""
+    if role := delta.get("role"):
+        accumulated["role"] = role
+
+    for field_name in ("reasoning", "reasoning_content"):
+        if value := delta.get(field_name):
+            accumulated[field_name] = accumulated.get(field_name, "") + value
+
+    delta_details = delta.get("reasoning_details") or []
+    if not delta_details:
+        return
+    reasoning_details = accumulated.setdefault("reasoning_details", [])
+    for detail in delta_details:
+        previous = reasoning_details[-1] if reasoning_details else {}
+        detail_type = detail.get("type")
+        content_field = {
+            "reasoning.summary": "summary",
+            "reasoning.text": "text",
+        }.get(detail_type)
+        if (
+            content_field
+            and detail_type == previous.get("type")
+            and all(
+                previous.get(field_name) is None
+                or detail.get(field_name) is None
+                or previous[field_name] == detail[field_name]
+                for field_name in ("id", "index", "format")
+            )
+        ):
+            previous[content_field] = (previous.get(content_field) or "") + (
+                detail.get(content_field) or ""
+            )
+            for field_name in ("id", "index", "signature", "format"):
+                if (
+                    previous.get(field_name) is None
+                    and detail.get(field_name) is not None
+                ):
+                    previous[field_name] = detail[field_name]
+        else:
+            reasoning_details.append(dict(detail))
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -192,7 +243,39 @@ async def chat(
     kwargs = {"model": model, "messages": messages, "tools": tools or None}
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    return await client.chat.completions.create(**kwargs)
+    raw_stream = await client.chat.completions.create(
+        **kwargs, stream=True, stream_options={"include_usage": True}
+    )
+    # Accumulate native deltas without auto-parsing tool arguments or treating
+    # finish_reason="length" as an exception: compaction owns that decision.
+    async with AsyncChatCompletionStream(
+        raw_stream=raw_stream, response_format=omit, input_tools=[]
+    ) as response:
+        completion = None
+        message_overrides: dict[int, dict] = {}
+        async for event in response:
+            if event.type == "chunk":
+                completion = event.snapshot
+                for choice in event.chunk.choices:
+                    delta = choice.delta.model_dump(exclude_none=True)
+                    if any(
+                        delta.get(field_name) for field_name in _STREAMED_MESSAGE_FIELDS
+                    ):
+                        _accumulate_streamed_message(
+                            message_overrides.setdefault(choice.index, {}), delta
+                        )
+        if (
+            completion is None
+            or not completion.choices
+            or any(choice.finish_reason is None for choice in completion.choices)
+        ):
+            raise RuntimeError("model stream ended before a completion finished")
+        for choice in completion.choices:
+            overrides = message_overrides.setdefault(choice.index, {})
+            overrides.setdefault("role", "assistant")
+            for field_name, value in overrides.items():
+                setattr(choice.message, field_name, value)
+        return completion
 
 
 async def run_tool_hook(
@@ -226,13 +309,13 @@ async def run_chat_loop(
     while True:
         try:
             completion, messages = await compactor.complete(messages)
-        except CompactionFailed:
-            # The context is exhausted and could not be summarized: end the run
-            # cleanly with what the conversation holds - still a trainable sample.
-            return
         except APIStatusError as error:
-            # Null cannot compact, so context exhaustion ends it with the transcript so far.
-            if args.bash or not is_context_overflow(error):
+            # Without compaction (off, or on with no discoverable window to compact
+            # against), context exhaustion is a budget limit, not a crash: end the run
+            # with the transcript so far. When the compactor could act, it already
+            # tried, so an overflow reaching here is a real failure.
+            compacting = compactor.enabled and compactor.threshold is not None
+            if compacting or not is_context_overflow(error):
                 raise
             return
         message = completion.choices[0].message
@@ -310,10 +393,7 @@ async def run_chat_loop(
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):
-            try:
-                messages = await compactor.compact(messages)
-            except CompactionFailed:
-                return
+            messages = await compactor.compact(messages)
 
 
 def parse_args() -> argparse.Namespace:

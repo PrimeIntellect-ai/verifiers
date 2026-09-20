@@ -207,6 +207,10 @@ class Branch(BaseModel):
         return [n.message for n in self.nodes]
 
     @property
+    def tools(self) -> list[Tool]:
+        return self.nodes[0].tools if self.nodes else []
+
+    @property
     def token_ids(self) -> list[int]:
         """Training input IDs formed by concatenating node token spans."""
         tokens: list[int] = []
@@ -442,7 +446,36 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder."""
+    """Physical node key -> node id for the graph builder."""
+    _on_change: Any = PrivateAttr(default=None)
+    _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
+    """The messages of the request in flight that no node holds yet (the harness's tool
+    results and user turns): a preview for live watchers until the turn commits."""
+
+    def watch(self, on_change: Callable[[Trace], None]) -> None:
+        """Have `on_change` called at each of this trace's phase changes and turns."""
+        self._on_change = on_change
+
+    def notify(self) -> None:
+        """The trace just changed shape (a phase span, a committed turn)."""
+        if self._on_change is not None:
+            self._on_change(self)
+
+    @property
+    def pending(self) -> list[Message]:
+        """The uncommitted messages of every request in flight, in request order."""
+        return [message for messages in self._pending.values() for message in messages]
+
+    def preview(self, key: object, messages: Iterable[Message]) -> None:
+        """Show watchers the uncommitted messages of one request in flight. Requests
+        run concurrently (parallel agents share a trace), so each previews under its
+        own `key` (the request object, held by identity) and only clears its own."""
+        self._pending[id(key)] = list(messages)
+        self.notify()
+
+    def clear_preview(self, key: object) -> None:
+        """The request's previewed messages are committed (or abandoned)."""
+        self._pending.pop(id(key), None)
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
@@ -480,8 +513,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence lengths (last prompt + completion) summed across branches."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        """New input plus generated tokens, counted once per call across branches.
+        Input is a lower bound when the engine drops tokens between calls."""
+        usage = self.usage
+        return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
     @property
     def usage(self) -> Usage | None:
@@ -617,12 +652,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def is_truncated(self) -> bool:
-        """True for framework limits or a length-finished final response."""
+        """True for framework limits, failed compaction, or a length-finished response."""
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
+            "compaction_failed",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)

@@ -5,6 +5,7 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import shutil
 import subprocess
 import sys
 
@@ -16,6 +17,80 @@ mark = pytest.mark
 def pair(a: str, b: str, id: str, *extra_marks):
     marks = [getattr(mark, a.replace("-", "_")), getattr(mark, b.replace("-", "_"))]
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
+
+
+@pytest.mark.asyncio
+async def test_chat_harness_preserves_streamed_reasoning():
+    import json
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    from verifiers.v1.harnesses.utils.core import chat
+
+    def chunk(text: str, finish_reason: str | None = None) -> dict:
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning": text,
+                        "reasoning_content": text,
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.text",
+                                "index": 0,
+                                "id": "r1",
+                                "format": "unknown",
+                                "signature": "sig",
+                                "text": text,
+                            }
+                        ],
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
+    events = [chunk("Plan: "), chunk("call ls", "stop")]
+    content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    content += "data: [DONE]\n\n"
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="https://example.test/v1",
+            http_client=http_client,
+        )
+        completion = await chat(client, "test-model", [], [])
+
+    message = completion.choices[0].message.model_dump(exclude_none=True)
+    assert message["role"] == "assistant"
+    assert message["reasoning"] == "Plan: call ls"
+    assert message["reasoning_content"] == "Plan: call ls"
+    assert message["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "index": 0,
+            "id": "r1",
+            "format": "unknown",
+            "signature": "sig",
+            "text": "Plan: call ls",
+        }
+    ]
 
 
 # harness x harness runtime: every harness once, both local runtimes hit (subprocess
@@ -41,6 +116,15 @@ CHAT_PLACEMENTS = [
 # remote row per provider.
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
+    *[
+        pair(
+            "bash",
+            engine,
+            f"bash-harness-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("rlm", "docker", "rlm-harness-in-docker"),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
@@ -53,6 +137,12 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pytest.param(
+        "bash",
+        {"type": "modal", "allow": []},
+        marks=[mark.bash, mark.modal],
+        id="bash-harness-in-modal-framework-only",
+    ),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -68,6 +158,15 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
+    *[
+        pair(
+            "rlm",
+            engine,
+            f"rlm-acp-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("codex", "docker", "codex-acp-in-docker"),
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
@@ -84,9 +183,7 @@ ACP_RESUME_PLACEMENTS = [
         marks=[mark.pi, mark.docker],
         id="pi-responses-acp-in-docker",
     ),
-    pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    pair("pool", "prime", "pool-acp-in-prime"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
     pytest.param(
         "prime-agent",
@@ -100,6 +197,15 @@ ACP_RESUME_PLACEMENTS = [
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
 TOOL_PLACEMENTS = [
+    *[
+        pair(
+            "subprocess",
+            engine,
+            f"harness-in-subprocess-with-tool-in-{engine}",
+            mark.skipif(shutil.which(engine) is None, reason=f"needs {engine}"),
+        )
+        for engine in ("podman", "apptainer")
+    ],
     pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
     pair("docker", "colocated", "harness-in-docker-with-tool-colocated"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
@@ -250,10 +356,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={
-            "type": harness_runtime,
-            **({"vm": True} if harness_runtime == "prime" else {}),
-        },
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
@@ -274,6 +377,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness.id == "pi":
+        recall = next(tool for tool in trace.tools if tool.name == "resume_recall")
+        assert recall.parameters["properties"]["codeword"]["type"] == "string"
+        assert "codeword" in recall.parameters["required"]
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
         assert all(call.acp is not None for call in trace.calls)
@@ -417,7 +524,9 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime=harness_runtime
+        if isinstance(harness_runtime, dict)
+        else {"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
         max_tokens=8192,

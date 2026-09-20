@@ -37,7 +37,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             await agents.agent.run(task)
             return
         # Resolve the verifier's box before the solve, so an impossible pairing
-        # (e.g. a restricted Prime verifier without vm=true) costs nothing
+        # (e.g. an invalid network policy) costs nothing
         # rather than a full agent run.
         self.verifier_config(task)
         await agents.agent.run(task.defer_scoring(), collect_artifacts=True)

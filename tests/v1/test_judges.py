@@ -242,7 +242,7 @@ async def test_reference_score(fake_judge_model):
     assert len(trace.info["judge_calls"]) == 1  # the call is recorded onto the trace
     judge_record = trace.info["judge_calls"][0]
     assert judge_record["name"] == "reference"
-    assert judge_record["request"]["model"] == "openai/gpt-5.4-nano"
+    assert judge_record["request"]["model"] == "openai/gpt-5.6-luna"
     assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
     assert judge_record["response"]["message"] == {
         "role": "assistant",
