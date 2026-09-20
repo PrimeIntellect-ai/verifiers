@@ -105,19 +105,6 @@ async def compose_services(
                     for value in authored.get(kind, {}).values()
                 ):
                     raise SandboxError(f"Compose {kind} must use project-scoped names")
-            for service in services.values():
-                for port in service.get("ports", []):
-                    published = (
-                        port.get("published")
-                        if isinstance(port, dict)
-                        else str(port).split(":")[-2]
-                        if ":" in str(port)
-                        else None
-                    )
-                    if published not in (None, "", 0, "0"):
-                        raise SandboxError(
-                            "Compose ports must use dynamically assigned host ports"
-                        )
             if any(service.get("container_name") for service in services.values()):
                 raise SandboxError(
                     "Remove container_name so Compose can name each rollout's services"
@@ -194,7 +181,22 @@ async def compose_services(
                     prebuilt_image_name=config.image,
                 ).to_env_dict()
             )
-            await compose("config", "--quiet")
+            rendered = json.loads(await compose("config", "--format", "json"))
+            for service in rendered["services"].values():
+                if service.get("gpus") or (
+                    service.get("deploy", {})
+                    .get("resources", {})
+                    .get("reservations", {})
+                    .get("devices")
+                ):
+                    raise SandboxError("Harbor Compose currently supports CPU tasks")
+                if any(
+                    port.get("published") not in (None, "", 0, "0")
+                    for port in service.get("ports", [])
+                ):
+                    raise SandboxError(
+                        "Compose ports must use dynamically assigned host ports"
+                    )
             atexit.register(cleanup)
             stack.push_async_callback(asyncio.to_thread, cleanup)
             # The CLI is killed on cancellation; the rollout then removes the project.
