@@ -538,7 +538,7 @@ def resolve_image(
         import yaml
 
         main = yaml.safe_load(compose.read_text())["services"].get("main", {})
-        if main.get("image") or (main.get("build") and not require_image):
+        if main.get("image") or ("build" in main and not require_image):
             return None
     if (task_dir / "environment" / "Dockerfile").exists():
         if ignore_dockerfile:
