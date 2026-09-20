@@ -1,7 +1,7 @@
 # harbor — Terminal-Bench 2, each task run in its own declared container image (needs docker).
 # The `bash` harness gives the agent the bash (+ edit) tools it drives the terminal with.
 #
-#   uv run eval @ configs/harbor.toml
+#   uv run vf-eval @ configs/harbor.toml
 num_tasks = 10
 
 [env.taskset]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -7,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -49,8 +50,8 @@ class Harness(ABC, Generic[ConfigT]):
     where model-directed execution changes the rules: the subprocess-on-host
     warning, the judge env's sandbox requirement."""
     SUPPORTS_SKILLS: ClassVar[bool] = False
-    """Whether the program discovers SKILL.md skills — its `setup` calls
-    `install_skills` with the program's fixed discovery location; configuring
+    """Whether the program discovers SKILL.md skills — it calls
+    `install_skills` with a run-scoped discovery location; configuring
     `skills` on a harness without support is rejected up front."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
@@ -105,23 +106,65 @@ class Harness(ABC, Generic[ConfigT]):
         """Provision this harness in `runtime` before its execution timeout starts."""
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
-        """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
-        the program's fixed skill discovery location, which a supporting harness's
-        `setup` passes."""
+        """Install `config.skills` in the program's discovery directory.
+        Runtime roots are copied in place; host skill folders are uploaded."""
         for skill in self.config.skills:
+            target_dir = skill_destination(skill, dest)
+            if isinstance(skill, dict):
+                result = await runtime.run(
+                    [
+                        "sh",
+                        "-e",
+                        "-c",
+                        r"""
+[ -d "$1" ]
+source=$(CDPATH= cd -- "$1/." && pwd -P)
+mkdir -p -- "$2"
+target=$(CDPATH= cd -- "$2/." && pwd -P)
+[ "$source" != "$target" ] || exit 0
+# A source such as "." must not copy the destination back into itself.
+exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
+# POSIX sh returns only the extractor's status; fd 3 also reports producer failure.
+copy_failed=$(
+    exec 3>&1
+    { tar -C "$source" --exclude="$exclude" -cf - . || printf failed >&3; } |
+        tar -xpf - -C "$target"
+)
+[ -z "$copy_failed" ]
+""",
+                        "vf-skills",
+                        skill["runtime"],
+                        target_dir,
+                    ],
+                    {},
+                )
+                if result.exit_code:
+                    raise RuntimeError(
+                        f"installing runtime skills from {skill['runtime']!r} failed: {result.stderr}"
+                    )
+                continue
             # Resolve so `.`/`..` entries get their real folder name (and can't
             # place files outside `dest`).
             skill = skill.resolve()
             if not skill.is_dir():
                 raise ValueError(f"skill {str(skill)!r} is not a folder")
+            uploads = []
             executables = []
-            for file in sorted(skill.rglob("*")):
+            for file in skill.rglob("*"):
                 if not file.is_file():
                     continue
-                target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
-                await runtime.write(target, file.read_bytes())
+                target = f"{target_dir}/{file.relative_to(skill).as_posix()}"
+                uploads.append((target, file.read_bytes()))
                 if os.access(file, os.X_OK):
                     executables.append(target)
+            # Finish this source before the next one overwrites matching files.
+            results = await asyncio.gather(
+                *(runtime.write(target, data) for target, data in uploads),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
             if executables:
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})

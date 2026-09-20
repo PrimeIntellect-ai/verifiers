@@ -325,6 +325,7 @@ class ACPHarnessSession(HarnessSession):
             "command": self.config.command,
             "user_content": messages[0].model_dump(mode="json")["content"],
             "mcp_urls": self.mcp_urls,
+            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "toolInterception": (

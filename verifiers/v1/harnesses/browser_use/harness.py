@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
+import httpx
 from pydantic import model_validator
 
 from verifiers.v1.clients import ModelContext
@@ -102,7 +104,18 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             args, runtime, tool_interception, "Browser"
         )
         if self.config.cdp_url:
-            args.append(f"--cdp-url={self.config.cdp_url}")
+            cdp_url = runtime.host_url(self.config.cdp_url)
+            if cdp_url != self.config.cdp_url and urlsplit(
+                self.config.cdp_url
+            ).scheme in ("http", "https"):
+                # CDP discovery returns a host-side WebSocket URL; translate that too.
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.config.cdp_url.rstrip('/')}/json/version"
+                    )
+                    response.raise_for_status()
+                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
+            args.append(f"--cdp-url={cdp_url}")
         return await launch_chat_program(
             PROGRAM_SOURCE,
             self.config,

@@ -25,7 +25,6 @@ ACP_INDEX = (
     f"{PACKAGES_DIR}/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
 )
 CLAUDE_CONFIG_ROOT = ".vf-claude"
-SKILLS_DIR = ".claude/skills"
 WRAPPER_SOURCE = (
     Path(__file__)
     .with_name("wrapper.mjs")
@@ -58,7 +57,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     TOOL_INTERCEPTION_VERSION = CLAUDE_VERSION
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         directory = CLAUDE_ACP_DIR.format(**versions)
@@ -93,6 +91,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
+        await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
             "claudeCode": {
@@ -141,7 +140,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         options = claude_code["options"]
         assert isinstance(options, dict)
         options["settingSources"] = ["user"]
-        await self.install_skills(runtime, f"{config.env['CLAUDE_CONFIG_DIR']}/skills")
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, self.config_dir(trace), "Claude config")

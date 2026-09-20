@@ -1,8 +1,8 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["hermes-agent[acp,mcp]=={version}"]
+# dependencies = []
 # ///
-"""Start Hermes Agent's native ACP server."""
+"""Start Hermes Agent's native ACP server in its installed project environment."""
 
 import os
 

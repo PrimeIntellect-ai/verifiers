@@ -5,7 +5,7 @@ A taskset defines the work to be done, which will be solved by the agent in a _h
 You can scaffold a new taskset with the following:
 
 ```bash
-uv run init addition-v1
+uv run vf-init addition-v1
 ```
 
 The generated package has two important files:
@@ -142,7 +142,7 @@ Two rules follow from infinity: a run over an infinite taskset must be bounded w
 
 Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
+You can create them like this (remember the bootstrapping with `uv run vf-init MY_ENV -T`):
 
 ```python
 DATABASE = None

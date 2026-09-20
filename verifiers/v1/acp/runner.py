@@ -30,6 +30,7 @@ from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
     DeniedOutcome,
+    HttpHeader,
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
@@ -213,7 +214,15 @@ def user_content_blocks(content: str | list, supports_images: bool) -> list:
 
 def mcp_servers(config: dict) -> list[HttpMcpServer]:
     return [
-        HttpMcpServer(type="http", name=name, url=url, headers=[])
+        HttpMcpServer(
+            type="http",
+            name=name,
+            url=url,
+            headers=[
+                HttpHeader(name=key, value=value)
+                for key, value in config.get("mcp_headers", {}).get(name, {}).items()
+            ],
+        )
         for name, url in config["mcp_urls"].items()
     ]
 

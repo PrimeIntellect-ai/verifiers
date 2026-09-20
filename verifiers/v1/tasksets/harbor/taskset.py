@@ -75,10 +75,10 @@ class HarborConfig(TasksetConfig):
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     ignore_timeouts: bool = True
-    """Drop each task's declared agent and verifier timeouts so rollouts run
-    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
-    authored against Harbor's runtime and confound model capability with inference
-    speed; set False to apply them anyway."""
+    """Drop each task's declared agent and verifier timeouts so rollouts use the
+    run-level `--timeout.*` limits or their defaults (4 h for the agent; `--timeout.rollout 0`
+    runs unbounded). Task timeouts are authored against Harbor's runtime and confound
+    model capability with inference speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
     """Scale each task's agent and verifier timeouts. Only applies with
     `ignore_timeouts=False`."""
@@ -393,6 +393,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment if fresh else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
+            "skills": [],
             "mcp_servers": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
@@ -612,6 +613,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),
@@ -729,9 +731,7 @@ def parse_verifier_environment(
             "the task never declared",
             task_dir.name,
         )
-    unsupported = [
-        field for field in ("skills_dir", "tpu") if getattr(environment, field, None)
-    ]
+    unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
             f"{task_dir.name}: verifier environment declares "

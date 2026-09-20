@@ -250,8 +250,8 @@ class RolloutSession:
         """Apply request policy to the uncommitted model-request tail."""
         if not self.request_interceptors and not self.request_stops:
             return request, [], None, None
-        turn = graph.prepare_turn(self.trace, request.messages)
-        tail_start = turn.tail_start
+        turn = graph.prepare_turn(self.trace, request.messages, request.tools)
+        tail_start = graph.message_prefix_len(self.trace, request.messages)
         assistant_node = (
             turn.prefix_node_ids[-1]
             if turn.prefix_node_ids
@@ -587,6 +587,7 @@ class RolloutSession:
         node: int | None = assistant_node
         while node is not None:
             branch.append(self.trace.nodes[node].message)
+            branch_tools = self.trace.nodes[node].tools
             node = self.trace.nodes[node].parent
         branch.reverse()
         # Keep earlier results in the hook's trace, with the active result last so request
@@ -610,7 +611,7 @@ class RolloutSession:
             nested = [AssistantMessage(tool_calls=[tool_call])]
         policy_request = Request(
             messages=[*branch, *previous, *nested, message],
-            tools=self.trace.tools or None,
+            tools=branch_tools or None,
         )
         request, records, stopped = await self.apply_request_policy(
             policy_request, {len(policy_request.messages) - 1}
@@ -652,7 +653,7 @@ class RolloutSession:
                     if call.id in results
                 ),
             ]
-            turn = graph.prepare_turn(self.trace, committed)
+            turn = graph.prepare_turn(self.trace, committed, request.tools)
             turn.commit_prompt()
             self.consume_prepared(turn, assistant_node)
             self.trace.stop(stopped)
