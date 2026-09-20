@@ -30,7 +30,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
-from verifiers.v1.utils.artifacts import validate_runtime_mounts
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +341,8 @@ class DockerRuntime(ContainerRuntime):
                 f"{self.engine} workdir setup failed: {made.stderr.strip()}"
             )
         await validate_runtime_mounts(self, [])
+        if self.config.mounts:
+            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import posixpath
 import re
@@ -10,7 +11,7 @@ import shlex
 import tarfile
 import uuid
 from collections.abc import Iterable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,8 @@ ARTIFACTS_DIR = "/logs/artifacts"
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
+
+MOUNT_ARCHIVE_SCRIPT = Path(__file__).with_name("mount_archive.py").read_bytes()
 
 
 class Artifact(BaseModel):
@@ -56,11 +59,11 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
                 )
 
 
-async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> None:
+async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> set[int]:
     """Reject relocated mounts and aliases that bypass lexical overlap checks."""
     mounts = getattr(runtime.config, "mounts", {})
     if not mounts:
-        return
+        return set()
     sources = list(sources)
     validate_artifact_mounts(runtime.config, sources)
     workdir = PurePosixPath(getattr(runtime.config, "workdir", None) or "/")
@@ -81,7 +84,9 @@ async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> N
     mountinfo = (await runtime.read("/proc/self/mountinfo")).decode(
         errors="surrogateescape"
     )
-    mounted = {line.split(" ")[4] for line in mountinfo.split("\n") if line}
+    records = [line.split() for line in mountinfo.splitlines()]
+    mounted = {record[4]: int(record[0]) for record in records}
+    blocked = set()
     for target in mounts:
         escaped = re.sub(r"[ \t\n\\]", lambda m: f"\\{ord(m[0]):03o}", target)
         if escaped not in mounted:
@@ -89,6 +94,15 @@ async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> N
                 f"mount target {target!r} is no longer mounted; "
                 "do not move mount targets or their parent directories"
             )
+        blocked.add(mounted[escaped])
+    parents = {int(record[0]): int(record[1]) for record in records}
+    for mount in parents:
+        ancestor = mount
+        while ancestor in parents and ancestor not in blocked:
+            ancestor = parents[ancestor]
+        if ancestor in blocked:
+            blocked.add(mount)
+    return blocked
 
 
 async def collect(
@@ -261,6 +275,20 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
+        if blocked := await validate_runtime_mounts(runtime, [artifact.source]):
+            result = await runtime.run_uv_script(
+                MOUNT_ARCHIVE_SCRIPT,
+                [
+                    json.dumps(
+                        [artifact.source, path, sorted(blocked), artifact.exclude]
+                    )
+                ],
+            )
+            if result.exit_code:
+                raise RuntimeError(
+                    f"collect artifact {artifact.source!r}: {result.stderr.strip()[-1000:]}"
+                )
+            return await runtime.read(path, max_bytes=budget)
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
             runtime,
