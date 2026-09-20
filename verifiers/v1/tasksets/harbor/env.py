@@ -39,6 +39,10 @@ from verifiers.v1.utils.compile import resolve_runtime_config
 class HarborEnvConfig(IsolatedVerifierEnvConfig):
     """The Harbor solver plus its optional independent verifier runtime."""
 
+    trust_compose: bool = False
+    """Allow local Compose tasks to use host files and Docker privileges. Only enable
+    for trusted task packages; Compose definitions are executable infrastructure."""
+
 
 class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
@@ -55,7 +59,12 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
                 raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
             timeouts = resolve_rollout_timeouts(agents.agent.timeout, task)
-            context = compose_services(config, task, setup_timeout=timeouts.setup)
+            context = compose_services(
+                config,
+                task,
+                trust_compose=self.config.trust_compose,
+                setup_timeout=timeouts.setup,
+            )
         async with context or nullcontext(({}, None)) as (runtimes, stop_main):
             trace = await agents.agent.run(
                 task.defer_scoring() if separate else task,
@@ -102,6 +111,15 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         solution = episode.traces[0]
         if not solution.ok:
             return
+        runtime = solution.agent.runtime
+        if task.data.verifier.fresh_copy and runtime is not None and runtime.borrowed:
+            # Compose resolves images and workdirs at startup, including local builds.
+            task = HarborTask(
+                task.data.model_copy(
+                    update=runtime.model_dump(include={"image", "workdir"})
+                ),
+                task.config,
+            )
         grader = HarborTask(verifier_box_data(task.data))
         scores, solution = await self.grade(
             self.verifier_config(task),

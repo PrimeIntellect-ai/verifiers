@@ -44,10 +44,10 @@ class ContainerConfig(BaseConfig):
 async def _communicate(
     *argv: str, input: bytes | None = None, env: dict[str, str] | None = None
 ) -> tuple[int, bytes, bytes]:
-    """Run a host command to completion; a cancelled await kills it first."""
+    """Run a host command; explicit env replaces inheritance, cancellation kills it."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
-        env=None if env is None else {**os.environ, **env},
+        env=env,
         stdin=asyncio.subprocess.PIPE
         if input is not None
         else asyncio.subprocess.DEVNULL,
