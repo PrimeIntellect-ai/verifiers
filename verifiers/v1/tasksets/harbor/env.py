@@ -20,7 +20,7 @@ from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnvConfig,
 )
 from verifiers.v1.runtimes import DockerConfig, Runtime, RuntimeConfig
-from verifiers.v1.tasksets.harbor.compose import ComposeProject
+from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
     verifier_box_data,
@@ -41,17 +41,17 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         separate = task.data.verifier is not None
         if separate:
             self.verifier_config(task)
-        project: ComposeProject | nullcontext[None] = nullcontext(None)
+        context = None
         if (Path(task.data.task_dir) / "environment/docker-compose.yaml").is_file():
             config = resolve_runtime_config(agents.agent.runtime_config, task)
             if not isinstance(config, DockerConfig):
                 raise TypeError("Harbor Compose currently requires local Docker")
             timeouts = resolve_rollout_timeouts(agents.agent.timeout, task)
-            project = ComposeProject(config, task, setup_timeout=timeouts.setup)
-        async with project as runtime:
+            context = compose_services(config, task, setup_timeout=timeouts.setup)
+        async with context or nullcontext(({}, None)) as (runtimes, _stop_main):
             await agents.agent.run(
                 task.defer_scoring() if separate else task,
-                runtime=runtime,
+                runtime=runtimes.get("main"),
                 collect_artifacts=separate,
             )
 
