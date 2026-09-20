@@ -539,6 +539,8 @@ class Rollout:
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
+            if runtime is not None:
+                trace.upload_secrets.extend(runtime.secrets)
             if self._borrowed_runtime is None and runtime is not None:
                 try:
                     await runtime.stop()

@@ -166,6 +166,11 @@ class Runtime(ABC):
         borrowing program, caught up front instead of failing opaquely mid-harness."""
 
     @property
+    def secrets(self) -> list[str]:
+        """Runtime credentials that must be removed from platform uploads."""
+        return []
+
+    @property
     def type(self) -> str:
         return self.config.type
 

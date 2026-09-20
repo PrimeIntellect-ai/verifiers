@@ -57,6 +57,7 @@ from pydantic import BaseModel
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients.base import build_async_openai
+from verifiers.v1.configs.client import resolve_api_key
 from verifiers.v1.configs.judge import (
     JudgeConfig,
     judge_key,
@@ -180,6 +181,10 @@ class Judge(Generic[ParsedT, ConfigT]):
         kwargs.update(sampling)
 
         response: JudgeResponse[Any] | None = None
+        if trace is not None:
+            trace.upload_secrets.extend(
+                [resolve_api_key(self.config), *self.config.headers.values()]
+            )
         try:
             async with build_async_openai(self.config) as client:
                 if schema is not None:

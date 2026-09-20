@@ -234,7 +234,8 @@ def abort_run(run: pr.Run, error: BaseException, state: PushState) -> None:
     if isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
         status, message = pr.RunStatus.CANCELLED, "interrupted"
     else:
-        status, message = pr.RunStatus.FAILED, f"{type(error).__name__}: {error}"
+        # Exception text can contain runtime credentials; full details stay in local logs.
+        status, message = pr.RunStatus.FAILED, type(error).__name__
     _close(run, state, status=status, error=message)
 
 

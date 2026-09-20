@@ -15,6 +15,8 @@ import uuid
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
+from prime_evals import secret_values
+
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, parse_gpu
@@ -405,6 +407,13 @@ class DockerRuntime(ContainerRuntime):
                 f"{self.engine} network cut failed: {cut.stderr.strip()}"
             )
         self._cut = True
+
+    @property
+    def secrets(self) -> list[str]:
+        return [
+            *secret_values(secret_sources=[self._image_env]),
+            *([self._proxy.token, *self._proxy._callbacks] if self._proxy else []),
+        ]
 
     def _proxy_env(self) -> dict[str, str]:
         assert self._proxy is not None

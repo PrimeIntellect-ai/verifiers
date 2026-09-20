@@ -144,7 +144,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
-        await append_episode(out, episode, write_lock)
+        await run_shielded(append_episode(out, episode, write_lock))
         await asyncio.to_thread(log_episodes, run, [episode], config, out)
 
     # The run is closed out whatever breaks, env setup and teardown included.
