@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,8 +71,14 @@ class ComposeProject:
         )
         from harbor.environments.docker.compose_env import ComposeInfraEnvVars
 
-        environment = Path(self.task.data.task_dir).resolve() / "environment"
         directory = Path(self._temporary.name)
+        environment = await run_shielded(
+            asyncio.to_thread(
+                shutil.copytree,
+                Path(self.task.data.task_dir).resolve() / "environment",
+                directory / "environment",
+            )
+        )
         services = yaml.safe_load((environment / "docker-compose.yaml").read_text())[
             "services"
         ]
@@ -113,6 +120,7 @@ class ComposeProject:
         if "image" in services["main"] or "build" in services["main"]:
             # A template default must not replace an authored image or skip its build.
             base["services"]["main"].pop("image", None)
+            base["services"]["main"].pop("command", None)
         base_file = directory / "base.json"
         base_file.write_text(json.dumps(base))
         env_file = write_env_compose_file(
