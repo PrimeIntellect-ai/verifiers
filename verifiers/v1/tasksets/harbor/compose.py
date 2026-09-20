@@ -186,19 +186,6 @@ async def compose_services(
                     for value in authored.get(kind, {}).values()
                 ):
                     raise SandboxError(f"Compose {kind} must use project-scoped names")
-            for service in services.values():
-                for port in service.get("ports", []):
-                    published = (
-                        port.get("published")
-                        if isinstance(port, dict)
-                        else str(port).split(":")[-2]
-                        if ":" in str(port)
-                        else None
-                    )
-                    if published not in (None, "", 0, "0"):
-                        raise SandboxError(
-                            "Compose ports must use dynamically assigned host ports"
-                        )
             if any(service.get("container_name") for service in services.values()):
                 raise SandboxError(
                     "Remove container_name so Compose can name each rollout's services"
@@ -229,13 +216,6 @@ async def compose_services(
                 if config.memory is not None:
                     main["mem_limit"] = f"{config.memory}g"
             overlay = {"services": {"main": main}}
-            # Port publication belongs to the service that owns main's network namespace.
-            if host is None or isinstance(config, ModalConfig):
-                overlay["services"].setdefault(owner, {})["ports"] = [
-                    f"127.0.0.1::{SERVICE_PORT}"
-                    if host is None
-                    else f"{SERVICE_PORT}:{SERVICE_PORT}"
-                ]
             if host is None and sys.platform != "linux":
                 overlay["services"].setdefault(owner, {})["extra_hosts"] = {
                     "host.docker.internal": "host-gateway"
@@ -278,7 +258,26 @@ async def compose_services(
                     prebuilt_image_name=config.image,
                 ).to_env_dict()
             )
-            await compose("config", "--quiet")
+            # Validate authored ports after interpolation, before adding our callback port.
+            rendered = json.loads(await compose("config", "--format", "json"))
+            if any(
+                port.get("published") not in (None, "", 0, "0")
+                for service in rendered["services"].values()
+                for port in service.get("ports", [])
+            ):
+                raise SandboxError(
+                    "Compose ports must use dynamically assigned host ports"
+                )
+            # Port publication belongs to the service that owns main's network namespace.
+            if host is None or isinstance(config, ModalConfig):
+                overlay["services"].setdefault(owner, {})["ports"] = [
+                    f"127.0.0.1::{SERVICE_PORT}"
+                    if host is None
+                    else f"{SERVICE_PORT}:{SERVICE_PORT}"
+                ]
+                override.write_text(json.dumps(overlay))
+                if host is not None:
+                    await host.write(f"/harbor/{override.name}", override.read_bytes())
             if host is None:
                 atexit.register(cleanup)
                 stack.push_async_callback(asyncio.to_thread, cleanup)
