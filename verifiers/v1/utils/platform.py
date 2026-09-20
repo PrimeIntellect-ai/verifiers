@@ -88,7 +88,7 @@ def known_secrets(
     ]
     secrets = {
         *values,
-        load_prime_config().get("api_key", ""),
+        load_prime_config().get("api_key") or "",
         *(secret for episode in episodes for secret in episode.upload_secrets),
         *(secret for trace in traces for secret in trace.upload_secrets),
         *(resolve_api_key(client) for client in clients),
