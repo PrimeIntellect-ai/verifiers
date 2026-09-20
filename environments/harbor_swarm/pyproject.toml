@@ -1,0 +1,13 @@
+[project]
+name = "harbor-swarm"
+version = "0.1.0"
+description = "Shared-repository Harbor tasks with coordinated submission and isolated verification."
+requires-python = ">=3.11"
+dependencies = ["verifiers[harbor]"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["harbor_swarm", "harbor_swarm_baseline"]
