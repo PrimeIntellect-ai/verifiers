@@ -534,11 +534,11 @@ def resolve_image(
     if image:
         return image
     compose = task_dir / "environment" / "docker-compose.yaml"
-    if compose.is_file() and not require_image:
+    if compose.is_file():
         import yaml
 
         main = yaml.safe_load(compose.read_text())["services"].get("main", {})
-        if main.get("build") or main.get("image"):
+        if main.get("image") or (main.get("build") and not require_image):
             return None
     if (task_dir / "environment" / "Dockerfile").exists():
         if ignore_dockerfile:
