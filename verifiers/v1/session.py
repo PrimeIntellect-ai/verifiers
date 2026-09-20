@@ -269,9 +269,10 @@ class RolloutSession:
                             f"expected {type(before).__name__}, got {type(after).__name__}"
                         )
                     if isinstance(after, ToolMessage):
-                        after.content = bound_tool_message(after.model_dump())[
-                            "content"
-                        ]
+                        after = ToolMessage.model_validate(
+                            bound_tool_message(after.model_dump())
+                        )
+                        result.messages[position] = after
                     if isinstance(before, ToolMessage) and (
                         after.tool_call_id != before.tool_call_id
                         or after.name != before.name

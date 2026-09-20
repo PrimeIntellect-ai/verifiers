@@ -4,7 +4,10 @@ import hashlib
 import json
 import logging
 import re
+import tomllib
 from collections import Counter
+
+import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -167,6 +170,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str
     ) -> None:
+        if runtime.type == "subprocess":
+            raise ValueError("Codex tool interception requires an isolated runtime")
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
         await runtime.write(
@@ -176,11 +181,20 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             .encode(),
         )
         home = config.env["CODEX_HOME"]
+        exists = await runtime.run(["test", "-f", "/etc/codex/config.toml"], {})
+        settings = (
+            tomllib.loads((await runtime.read("/etc/codex/config.toml")).decode())
+            if exists.exit_code == 0
+            else {}
+        )
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).extend(
+            tomllib.loads(GATE_CONFIG)["hooks"]["PreToolUse"]
+        )
         result = await runtime.run(
             [
                 "sh",
                 "-c",
-                'if test -f /etc/codex/config.toml; then cp /etc/codex/config.toml "$1/system-config.toml"; else touch "$1/no-system-config"; fi',
+                'if test -e /etc/codex/config.toml || test -L /etc/codex/config.toml; then mv /etc/codex/config.toml "$1/system-config.toml"; else touch "$1/no-system-config"; fi',
                 "vf-gate",
                 home,
             ],
@@ -190,14 +204,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(
                 f"could not preserve Codex system config: {result.stderr}"
             )
-        await runtime.write("/etc/codex/config.toml", GATE_CONFIG.encode())
+        await runtime.write("/etc/codex/config.toml", tomli_w.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(
             [
                 "sh",
                 "-c",
-                'if test -f "$1/system-config.toml"; then mv "$1/system-config.toml" /etc/codex/config.toml; elif test -f "$1/no-system-config"; then rm -f /etc/codex/config.toml; fi',
+                'if test -e "$1/system-config.toml" || test -L "$1/system-config.toml"; then mv -f "$1/system-config.toml" /etc/codex/config.toml; elif test -f "$1/no-system-config"; then rm -f /etc/codex/config.toml; fi',
                 "vf-gate",
                 self.trace_home(trace),
             ],
