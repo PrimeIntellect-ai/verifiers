@@ -114,13 +114,14 @@ class ComposeProject:
         )
 
         directory = Path(self._temporary.name)
-        environment = await run_shielded(
+        task_dir = await run_shielded(
             asyncio.to_thread(
                 shutil.copytree,
-                Path(self.task.data.task_dir).resolve() / "environment",
-                directory / "environment",
+                Path(self.task.data.task_dir).resolve(),
+                directory / "task",
             )
         )
+        environment = task_dir / "environment"
         project_dir = str(environment)
         if self._host is not None:
             await self._host.start()
@@ -149,23 +150,41 @@ class ComposeProject:
             async with asyncio.timeout(60):
                 while (await self._run_host("docker", "info")).exit_code:
                     await asyncio.sleep(1)
-            project_dir = "/harbor/environment"
+            project_dir = "/harbor/task/environment"
             await self._host.write(
-                "/harbor/environment.tar.gz",
-                pack_dir_to_bytes(environment, compress=True).getvalue(),
+                "/harbor/task.tar.gz",
+                pack_dir_to_bytes(task_dir, compress=True).getvalue(),
             )
             staged = await self._run_host(
                 "sh",
                 "-c",
-                remote_unpack_command("/harbor/environment.tar.gz", project_dir),
+                remote_unpack_command("/harbor/task.tar.gz", "/harbor/task"),
             )
             if staged.exit_code:
                 raise SandboxError(
                     f"Compose environment staging failed: {staged.stderr}"
                 )
-        services = yaml.safe_load((environment / "docker-compose.yaml").read_text())[
-            "services"
-        ]
+        authored = yaml.safe_load((environment / "docker-compose.yaml").read_text())
+        services = authored["services"]
+        for kind in ("volumes", "networks"):
+            if any(
+                value and (value.get("name") or value.get("external"))
+                for value in authored.get(kind, {}).values()
+            ):
+                raise SandboxError(f"Compose {kind} must use project-scoped names")
+        for service in services.values():
+            for port in service.get("ports", []):
+                published = (
+                    port.get("published")
+                    if isinstance(port, dict)
+                    else str(port).split(":")[-2]
+                    if ":" in str(port)
+                    else None
+                )
+                if published not in (None, "", 0, "0"):
+                    raise SandboxError(
+                        "Compose ports must use dynamically assigned host ports"
+                    )
         if any(service.get("container_name") for service in services.values()):
             raise SandboxError(
                 "Remove container_name so Compose can name each rollout's services"
@@ -209,7 +228,6 @@ class ComposeProject:
         if "image" in services["main"] or "build" in services["main"]:
             # A template default must not replace an authored image or skip its build.
             base["services"]["main"].pop("image", None)
-            base["services"]["main"].pop("command", None)
         base_file = directory / "base.json"
         base_file.write_text(json.dumps(base))
         paths = [
