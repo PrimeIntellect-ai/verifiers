@@ -60,7 +60,8 @@ class ACPResumeEnv(vf.SingleAgentEnv):
             if not first.terminated:
                 segments.append(
                     await interaction.turn(
-                        "Call the `recall` tool from the `resume` MCP server with the "
+                        "Use your tools or pre-imported Python skills to call `resume`'s "
+                        "`recall` with the "
                         "codeword from my previous message, then reply with exactly the "
                         "tool result."
                     )
