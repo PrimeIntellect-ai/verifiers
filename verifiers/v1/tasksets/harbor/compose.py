@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -112,7 +113,14 @@ class ComposeProject:
             remote_unpack_command,
         )
 
-        environment = Path(self.task.data.task_dir).resolve() / "environment"
+        directory = Path(self._temporary.name)
+        environment = await run_shielded(
+            asyncio.to_thread(
+                shutil.copytree,
+                Path(self.task.data.task_dir).resolve() / "environment",
+                directory / "environment",
+            )
+        )
         project_dir = str(environment)
         if self._host is not None:
             await self._host.start()
@@ -155,7 +163,6 @@ class ComposeProject:
                 raise SandboxError(
                     f"Compose environment staging failed: {staged.stderr}"
                 )
-        directory = Path(self._temporary.name)
         services = yaml.safe_load((environment / "docker-compose.yaml").read_text())[
             "services"
         ]
@@ -202,6 +209,7 @@ class ComposeProject:
         if "image" in services["main"] or "build" in services["main"]:
             # A template default must not replace an authored image or skip its build.
             base["services"]["main"].pop("image", None)
+            base["services"]["main"].pop("command", None)
         base_file = directory / "base.json"
         base_file.write_text(json.dumps(base))
         paths = [
@@ -233,12 +241,17 @@ class ComposeProject:
         # Cancellation kills the local CLI; the rollout removes its project or VM.
         await self._compose("up", "--detach", "--wait")
         containers = (await self._compose("ps", "--all", "--quiet")).split()
-        inspected = await self._run_host("docker", "inspect", *containers)
+        inspected = await self._run_host(
+            "docker",
+            "inspect",
+            "--format",
+            '{{.Id}} {{index .Config.Labels "com.docker.compose.service"}}',
+            *containers,
+        )
         if inspected.exit_code:
             raise SandboxError(
                 f"Compose container inspection failed: {inspected.stderr}"
             )
-        containers = json.loads(inspected.stdout)
         service_url = None
         if self._host is None:
             published = await self._compose("port", owner, str(SERVICE_PORT))
@@ -248,8 +261,8 @@ class ComposeProject:
                 if address.startswith("127.0.0.1:")
             )
             service_url = f"http://{endpoint}"
-        for container in containers:
-            name = container["Config"]["Labels"]["com.docker.compose.service"]
+        for container in inspected.stdout.splitlines():
+            container_id, name = container.split()
             if name in self.services:
                 raise SandboxError(
                     f"Harbor Compose requires one container per service: {name}"
@@ -257,7 +270,7 @@ class ComposeProject:
             self.services[name] = await self._stack.enter_async_context(
                 DockerRuntime.attach(
                     self.config,
-                    container["Id"],
+                    container_id,
                     host=self._host,
                     service_url=service_url if name == "main" else None,
                 )

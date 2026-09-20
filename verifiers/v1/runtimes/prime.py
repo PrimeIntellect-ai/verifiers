@@ -402,20 +402,21 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import APIError, AsyncSandboxClient
 
         self.stopped = True
-        if self.info.id is None:
-            return
-        async with asyncio.timeout(60), AsyncSandboxClient() as client:
+        async with asyncio.timeout(60):
             await self.teardown()
-            while True:
-                try:
-                    sandbox = await client.get(self.info.id)
-                except APIError as error:
-                    if str(error).startswith("HTTP 404:"):
+            if self.info.id is None:
+                return
+            async with AsyncSandboxClient() as client:
+                while True:
+                    try:
+                        sandbox = await client.get(self.info.id)
+                    except APIError as error:
+                        if str(error).startswith("HTTP 404:"):
+                            return
+                        raise
+                    if str(sandbox.status) == "TERMINATED":
                         return
-                    raise
-                if str(sandbox.status) == "TERMINATED":
-                    return
-                await asyncio.sleep(1)
+                    await asyncio.sleep(1)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via

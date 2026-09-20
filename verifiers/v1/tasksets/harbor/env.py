@@ -65,18 +65,21 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
                 if project is not None
                 else None,
             )
-            services = {
-                *(artifact.service for artifact in task.data.artifacts),
-                *(hook.service for hook in task.data.collect),
-            } - {"main"}
-            if project is not None and separate and trace.ok and services:
-                # Harness cleanup has finished; freeze main before collecting sidecars.
-                async with (
-                    boundary(TaskError, "collecting Compose sidecars"),
-                    asyncio.timeout(timeouts.finalize),
-                ):
-                    await project.stop_service("main")
-                    await task.finalize(trace, runtime, services=services)
+            try:
+                services = {
+                    *(artifact.service for artifact in task.data.artifacts),
+                    *(hook.service for hook in task.data.collect),
+                } - {"main"}
+                if project is not None and separate and trace.ok and services:
+                    # Harness cleanup has finished; freeze main before collecting sidecars.
+                    async with (
+                        boundary(TaskError, "collecting Compose sidecars"),
+                        asyncio.timeout(timeouts.finalize),
+                    ):
+                        await project.stop_service("main")
+                        await task.finalize(trace, runtime, services=services)
+            finally:
+                trace.state.services.clear()
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
