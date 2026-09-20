@@ -67,7 +67,9 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 "model-backed task judges are not supported"
             )
         self.verifier_config(task)  # Refuse an impossible verifier before solving.
-        await agents.agent.run(task.defer_scoring(), collect_artifacts=True)
+        await agents.agent.run(
+            task.defer_scoring(), grading_collect=vf.GradingCollect.STRICT
+        )
 
     def verifier_config(self, task: vf.Task) -> RuntimeConfig:
         base = self.config.verifier.runtime or self.config.agent.runtime
@@ -107,16 +109,21 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         if solution.ok:
             graded = await self.grade(self.verifier_config(task), task, solution)
             episode.traces[0] = graded[1]
+            solution.state.artifacts.clear()
 
     async def stage_verifier(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
     ) -> None:
         artifacts = dict(solution.state.artifacts)
-        async with boundary(TaskError, "verifier task setup"):
-            await invoke(task.setup, {"trace": solution, "runtime": runtime})
-        await vf.restore(runtime, artifacts)
-        async with boundary(TaskError, "verifier staging"):
-            await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
+        try:
+            async with boundary(TaskError, "verifier task setup"):
+                await invoke(task.setup, {"trace": solution, "runtime": runtime})
+            await vf.restore(runtime, artifacts)
+            async with boundary(TaskError, "verifier staging"):
+                await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
+        finally:
+            artifacts.clear()
+            solution.state.artifacts.clear()
 
     async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
         await task.score(solution, runtime)

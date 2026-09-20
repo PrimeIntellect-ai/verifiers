@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Self
 
 from verifiers.v1.clients import (
@@ -19,8 +20,10 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
+from verifiers.v1.episode import Episode
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -47,6 +50,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.grading import GradingCollect
 from verifiers.v1.utils.retries import backoff, trace_should_retry
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
@@ -317,6 +321,8 @@ class Agent:
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
+        self.archive_dir: Path | None = None
+        self.archive_config: ArchiveConfig = ArchiveConfig()
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -391,16 +397,18 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
+        grading_collect: GradingCollect = GradingCollect.OFF,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. `collect_artifacts` captures the task's
+        moment it's minted, before any I/O. `grading_collect` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
+        alive (`STRICT` fails if a declared path is missing; Harbor uses
+        `BEST_EFFORT`).
+        Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
         if self._closed:
@@ -409,7 +417,7 @@ class Agent:
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, grading_collect
             )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
@@ -441,10 +449,12 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
-        collect_artifacts: bool,
+        grading_collect: GradingCollect,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+        if grading_collect is not GradingCollect.OFF and isinstance(
+            params["runtime_config"], SubprocessConfig
+        ):
             raise TypeError(
                 "artifact collection requires a container runtime; subprocess "
                 "artifacts live in a host-only temporary working directory"
@@ -452,7 +462,7 @@ class Agent:
         run = Rollout(
             task=task,
             on_trace=on_trace,
-            collect_artifacts=collect_artifacts,
+            grading_collect=grading_collect,
             **params,
         )
         try:
@@ -576,6 +586,8 @@ class Agent:
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),
             "runtime": runtime,
+            "archive_dir": self.archive_dir,
+            "archive_config": self.archive_config,
         }
 
     @asynccontextmanager
@@ -597,10 +609,10 @@ class _EpisodeAgent(Agent):
     """One role's `Agent` for one episode, built fresh each time (a cheap
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
-    they're created, finished ones land in `completed` (the episode's traces),
-    each run takes one of the episode's agent permits. The taskset's shared tool
-    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
-    in play (`tools=` overrides)."""
+    they're created, finished ones land on the episode, each run takes one of the
+    episode's agent permits. The taskset's shared tool servers ride only its own
+    tasks — on an env-minted task they'd wrongly put MCP in play (`tools=`
+    overrides)."""
 
     def __init__(
         self,
@@ -611,19 +623,23 @@ class _EpisodeAgent(Agent):
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
-        completed: list[Trace],
+        episode: Episode,
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        archive_dir: Path | None = None,
+        archive_config: ArchiveConfig | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
+        self.archive_dir = archive_dir
+        self.archive_config = archive_config or ArchiveConfig()
         self._name = name
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
-        self._completed = completed
+        self._episode = episode
         self._on_trace = on_trace
         self._on_discard = on_discard
 
@@ -659,7 +675,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
+        grading_collect: GradingCollect = GradingCollect.OFF,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -667,9 +683,9 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
-                collect_artifacts=collect_artifacts,
+                grading_collect=grading_collect,
             )
-        self._completed.append(trace)
+        self._episode.traces.append(trace)
         return trace
 
     @asynccontextmanager
@@ -707,7 +723,7 @@ class _EpisodeAgent(Agent):
             # `Agent.interaction()` may fail before yielding (e.g. task/harness setup).
             # Its trace is minted first, so retain that failed rollout in the episode.
             if trace is not None and trace.is_completed:
-                self._completed.append(trace)
+                self._episode.traces.append(trace)
 
 
 def make_agent(

@@ -7,6 +7,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import (
     Generic,
     TypeVar,
@@ -15,6 +16,7 @@ from typing import (
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.env import (
     EnvConfig,
     _declared_agent_configs,
@@ -32,6 +34,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.archive import drop_archive
 from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -143,6 +146,8 @@ class Env(ABC, Generic[ConfigT]):
         self._interception: Interception | None = None
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
+        self.archive_dir: Path | None = None
+        self.archive_config: ArchiveConfig = ArchiveConfig()
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -192,7 +197,7 @@ class Env(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
-        completed: list[Trace],
+        episode: Episode,
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
@@ -202,6 +207,7 @@ class Env(ABC, Generic[ConfigT]):
         `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
         gate = asyncio.Semaphore(limit) if limit else None
+        archive_dir = self.archive_dir / episode.id if self.archive_dir else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -230,10 +236,12 @@ class Env(ABC, Generic[ConfigT]):
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
-                completed=completed,
+                episode=episode,
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                archive_dir=archive_dir,
+                archive_config=self.archive_config,
             )
 
         agents = Agents(self.config, make)
@@ -264,45 +272,51 @@ class Env(ABC, Generic[ConfigT]):
                 hash=task.hash,
             ),
         )
-        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
+        agents = self._episode_agents(ctx, episode, on_trace, on_discard)
         try:
-            async with asyncio.timeout(self.config.timeout.episode):
-                async with boundary(EnvError, f"{type(self).__name__}.setup()"):
-                    await self.setup(agents)
-                async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    await self.run(task, agents)
-                    if not episode.traces:
-                        raise ValueError(
-                            f"{type(self).__name__}.run() ran no agent — every "
-                            "episode must carry at least one run"
-                        )
-        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
-            # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
-            if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.run() exceeded its "
-                    f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
-                )
-            episode.errors.append(_as_error(e))
-            # The completed subset is the crash-safe episode; ok stays False.
+            try:
+                async with asyncio.timeout(self.config.timeout.episode):
+                    async with boundary(EnvError, f"{type(self).__name__}.setup()"):
+                        await self.setup(agents)
+                    async with boundary(EnvError, f"{type(self).__name__}.run()"):
+                        await self.run(task, agents)
+                        if not episode.traces:
+                            raise ValueError(
+                                f"{type(self).__name__}.run() ran no agent — every "
+                                "episode must carry at least one run"
+                            )
+            except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
+                # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
+                if isinstance(e, TimeoutError):
+                    e = TimeoutError(
+                        f"{type(self).__name__}.run() exceeded its "
+                        f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
+                    )
+                episode.errors.append(_as_error(e))
+                # The completed subset is the crash-safe episode; ok stays False.
+                return episode
+            try:
+                async with asyncio.timeout(self.config.timeout.finalize):
+                    async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
+                        await self.finalize(task, episode)
+            except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
+                # As above: a TimeoutError here is the deadline's own expiry.
+                if isinstance(e, TimeoutError):
+                    e = TimeoutError(
+                        f"{type(self).__name__}.finalize() exceeded its "
+                        f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
+                    )
+                episode.errors.append(_as_error(e))
+                return episode
+            # Both hooks and every trace concluded — stamp the attempt's verdict
+            # (retry history merges into `errors` later without touching it).
+            episode.ok = all(t.ok for t in episode.traces)
             return episode
-        try:
-            async with asyncio.timeout(self.config.timeout.finalize):
-                async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
-                    await self.finalize(task, episode)
-        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
-            # As above: a TimeoutError here is the deadline's own expiry.
-            if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.finalize() exceeded its "
-                    f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
-                )
-            episode.errors.append(_as_error(e))
-            return episode
-        # Both hooks and every trace concluded — stamp the attempt's verdict
-        # (retry history merges into `errors` later without touching it).
-        episode.ok = all(t.ok for t in episode.traces)
-        return episode
+        finally:
+            # Grading tars are only for restore during run/finalize. Drop them so
+            # the durable episode does not hold sandbox dumps in RAM.
+            for trace in episode.traces:
+                trace.state.artifacts.clear()
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent episodes of `task` (`-r n`): nothing couples them."""
@@ -335,9 +349,11 @@ class Env(ABC, Generic[ConfigT]):
                     on_trace(trace)
 
             def discard(trace: Trace) -> None:
-                # A retried agent attempt abandons its trace; drop it from the view.
+                # A retried agent attempt abandons its trace; drop it from the view
+                # and its host dump (only the final attempt joins the episode).
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
+                drop_archive(self.archive_dir, trace.id)
 
             async with semaphore or contextlib.nullcontext():
                 return await self.run_episode(

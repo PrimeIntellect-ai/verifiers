@@ -40,7 +40,9 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         # (e.g. an invalid network policy) costs nothing
         # rather than a full agent run.
         self.verifier_config(task)
-        await agents.agent.run(task.defer_scoring(), collect_artifacts=True)
+        await agents.agent.run(
+            task.defer_scoring(), grading_collect=vf.GradingCollect.BEST_EFFORT
+        )
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
@@ -64,7 +66,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         if not solution.ok:
             return
         grader = HarborTask(verifier_box_data(task.data))
-        scores, solution = await self.grade(
+        scores, graded = await self.grade(
             self.verifier_config(task),
             grader,
             solution,
@@ -72,8 +74,9 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         )
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
-            solution.record_reward(name, value)
-        episode.traces[0] = solution
+            graded.record_reward(name, value)
+        episode.traces[0] = graded
+        solution.state.artifacts.clear()
 
     async def verify(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime

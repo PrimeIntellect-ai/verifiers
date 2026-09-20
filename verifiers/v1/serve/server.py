@@ -1,11 +1,13 @@
 import asyncio
 import logging
+from pathlib import Path
 
 import msgpack
 import zmq
 import zmq.asyncio
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump
@@ -31,10 +33,16 @@ class EnvServer:
         config: EnvConfig,
         address: str = "tcp://127.0.0.1:5000",
         max_concurrent: int | None = None,
+        archive_dir: str | None = None,
+        archive: dict | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
+        if archive_dir:
+            self.env.archive_dir = Path(archive_dir)
+        if archive is not None:
+            self.env.archive_config = ArchiveConfig.model_validate(archive)
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from

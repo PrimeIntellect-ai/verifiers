@@ -27,6 +27,11 @@ from verifiers.v1.utils.aio import run_shielded
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
 
+ARCHIVE_DIR = "artifacts"
+"""Directory inside a run dir holding per-episode durable sandbox dumps
+(`artifacts/<episode.id>/<trace.id>/`). Independent of grading-transport
+`collect`/`restore`."""
+
 CONFIG_DIR = "configs"
 """Directory inside a run dir holding its configs: the launch TOML copied verbatim to
 `configs/<cli>.toml`, and the resolved config at `configs/resolved/<cli>.json`

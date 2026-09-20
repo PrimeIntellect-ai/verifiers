@@ -8,9 +8,11 @@ import shlex
 import tarfile
 import uuid
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+from verifiers.v1.errors import SandboxError
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -20,33 +22,68 @@ logger = logging.getLogger(__name__)
 ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
-MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-"""Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
-agent's image, so the repo is already there and only its output has to travel."""
-
 
 class Artifact(BaseModel):
-    """One path to restore at the same location in another runtime."""
+    """One path to collect from a runtime and restore at the same location."""
 
     source: str
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
-    required: bool = True
+
+
+def on_missing(
+    source: str,
+    convention: PurePosixPath,
+    *,
+    missing: Literal["raise", "omit"],
+) -> None:
+    """Raise when a declared (non-convention) root is absent under a strict policy."""
+    if missing == "raise" and PurePosixPath(source) != convention:
+        raise RuntimeError(
+            f"declared artifact {source!r} does not exist in the runtime"
+        )
+
+
+def on_over_budget(
+    source: str,
+    budget: int,
+    *,
+    on_limit: Literal["raise", "omit"],
+) -> bool:
+    """Handle a tar over the remaining shared budget.
+
+    Returns ``True`` when later roots should be omitted without tarring.
+    """
+    if on_limit == "raise":
+        raise SandboxError(
+            f"collect: {source!r} over remaining {budget} byte budget"
+        )
+    logger.warning(
+        "collect: %s over remaining %s byte budget; omitting later roots",
+        source,
+        budget,
+    )
+    return True
 
 
 async def collect(
-    runtime: Runtime, artifacts: list[Artifact] | None = None
+    runtime: Runtime,
+    artifacts: list[Artifact] | None = None,
+    *,
+    max_bytes: int,
+    missing: Literal["raise", "omit"],
+    on_limit: Literal["raise", "omit"],
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
     they were declared, and a path cannot be collected twice.
 
-    A declared source that is missing raises: it was declared because grading needs it,
-    and grading a partial state scores the rollout wrong rather than failing it. The
-    implicit convention sweep is exempt — most tasks never write there.
-
-    Each source is archived separately so its exclude patterns stay local.
+    Each source is archived separately so its `Artifact.exclude` patterns stay local.
+    `max_bytes` is the shared ceiling for this collection pass. `missing="omit"`
+    records an absent source as `None`; `"raise"` fails unless the source is the
+    convention dir. `on_limit="raise"` fails the pass when a tar would exceed the
+    remaining budget; `"omit"` records that root and every later one as `None`.
     """
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
@@ -70,7 +107,6 @@ async def collect(
             Artifact(
                 source=ARTIFACTS_DIR,
                 exclude=sweep_excludes,
-                required=False,
             )
         ]
         for artifact, path in zip(declared, declared_paths, strict=True):
@@ -114,19 +150,24 @@ async def collect(
         )
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
-    budget = MAX_ARTIFACT_BYTES
+    budget = max_bytes
+    exceeded_budget = False
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":
-            if not artifact.required:
-                collected[source] = None
-                continue
-            raise RuntimeError(
-                f"declared artifact {source!r} does not exist in the runtime"
-            )
-        archive = await _tar_out(runtime, artifact, budget)
-        budget -= len(archive)
-        collected[source] = archive
+            on_missing(source, convention, missing=missing)
+            collected[source] = None
+            continue
+        if exceeded_budget:
+            collected[source] = None
+            continue
+        blob = await _tar_out(runtime, artifact, budget)
+        if blob is None:
+            exceeded_budget = on_over_budget(source, budget, on_limit=on_limit)
+            collected[source] = None
+            continue
+        budget -= len(blob)
+        collected[source] = blob
 
     logger.debug("collected artifact roots: %s", list(collected))
     return collected
@@ -137,7 +178,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
-    before the grading runtime is changed. Only regular files and directories travel.
+    before the target runtime is changed. Only regular files and directories travel.
     """
     if not collected:
         return
@@ -167,7 +208,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
 
 
-async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
+async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes | None:
+    """Tar one existing root. `None` means the tar exceeded `budget`."""
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
@@ -180,7 +222,12 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
-        return await runtime.read(path, max_bytes=budget)
+        try:
+            return await runtime.read(path, max_bytes=budget)
+        except SandboxError as exc:
+            if "byte limit" not in str(exc):
+                raise
+            return None
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:

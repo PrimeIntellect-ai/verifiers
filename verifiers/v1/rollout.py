@@ -7,9 +7,11 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.archive import ArchiveConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -25,6 +27,7 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
     RuntimeConfig,
+    SubprocessConfig,
     make_runtime,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
@@ -32,8 +35,9 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
-from verifiers.v1.utils.artifacts import collect
+from verifiers.v1.utils.archive import archive
 from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.grading import GradingCollect, grading_collect
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +74,9 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
+        grading_collect: GradingCollect = GradingCollect.OFF,
+        archive_dir: Path | None = None,
+        archive_config: ArchiveConfig | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -83,7 +89,9 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
-        self._collect_artifacts = collect_artifacts
+        self._grading_collect = grading_collect
+        self._archive_dir = archive_dir
+        self._archive_config = archive_config or ArchiveConfig()
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -483,10 +491,14 @@ class Rollout:
                         await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         )
-                        if self._collect_artifacts and not trace.state.artifacts:
-                            trace.state.artifacts = await collect(
-                                runtime, self.task.data.artifacts
+                        if not trace.state.artifacts:
+                            collected = await grading_collect(
+                                runtime,
+                                self.task.data.artifacts,
+                                self._grading_collect,
                             )
+                            if collected is not None:
+                                trace.state.artifacts = collected
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
@@ -505,6 +517,24 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
+            if (
+                runtime is not None
+                and self._opened
+                and self._archive_dir is not None
+                and not isinstance(runtime.config, SubprocessConfig)
+            ):
+                try:
+                    await archive(
+                        runtime,
+                        self._archive_dir / self.trace.id,
+                        self.task.data.artifacts,
+                        self._archive_config,
+                        destinations=self.task.archive_destinations(),
+                    )
+                except Exception:
+                    logger.warning(
+                        "archive failed (rollout %s)", trace.id, exc_info=True
+                    )
             if self._harness_session is not None:
                 with contextlib.suppress(Exception):
                     await self._harness_session.close()
