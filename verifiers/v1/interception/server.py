@@ -392,7 +392,8 @@ class InterceptionServer(Interception):
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
-                "interception removed provider capabilities: id=%s paths=%s",
+                "interception removed provider content/capabilities blocked by the network "
+                "policy or unable to enforce it: id=%s paths=%s",
                 session.trace.id,
                 ",".join(capabilities),
             )
