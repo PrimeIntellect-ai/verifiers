@@ -1,12 +1,12 @@
 """Execution facts shared by the writer and read-only consumers."""
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from verifiers.v1.trace import Error
+from verifiers.v1.utils.time import now
 
 Status = Literal["ready", "held", "waiting", "terminal"]
 RunReason = Literal["quiescent", "draining"]
@@ -15,15 +15,11 @@ CallStatus = Literal[
 ]
 
 
-def now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
-
-
-class Event(BaseModel):
+class BaseEvent(BaseModel):
     at: str = Field(default_factory=now)
 
 
-class RunEvent(Event):
+class RunEvent(BaseEvent):
     type: Literal["run_started", "run_finished", "drain"]
     label: str | None = None
     reason: RunReason | None = None
@@ -37,7 +33,7 @@ class Link(BaseModel):
     label: str
 
 
-class LinkEvent(Event):
+class LinkEvent(BaseEvent):
     """The target execution selected work originating from the source execution."""
 
     type: Literal["link"] = "link"
@@ -46,7 +42,7 @@ class LinkEvent(Event):
     label: str
 
 
-class StageEvent(Event):
+class StageEvent(BaseEvent):
     type: Literal["started", "stopped", "cancelled", "transition"]
     unit: str
     stage: str
@@ -62,7 +58,7 @@ class StageEvent(Event):
     links: list[Link] = Field(default_factory=list)
 
 
-class Invocation(BaseModel):
+class CallIdentity(BaseModel):
     model_config = ConfigDict(frozen=True)
     unit: str
     stage: str
@@ -73,9 +69,9 @@ class Invocation(BaseModel):
     cache: str | None
 
 
-class CallEvent(Event):
+class CallEvent(BaseEvent):
     type: Literal["call", "rollout"] = "call"
-    invocation: Invocation
+    invocation: CallIdentity
     status: CallStatus
     trace_id: str | None = None
     error: Error | None = None
@@ -92,18 +88,18 @@ class Steering(BaseModel):
     data: dict[str, JsonValue] | None = None
 
 
-class SteerEvent(Event):
+class SteerEvent(BaseEvent):
     type: Literal["steer"] = "steer"
     unit: str
     sha: str
     action: Steering
 
 
-EventRecord = RunEvent | StageEvent | CallEvent | SteerEvent | LinkEvent
-event_adapter = TypeAdapter(Annotated[EventRecord, Field(discriminator="type")])
+Event = RunEvent | StageEvent | CallEvent | SteerEvent | LinkEvent
+event_adapter = TypeAdapter(Annotated[Event, Field(discriminator="type")])
 
 
-def append_event(path: Path, event: EventRecord) -> str:
+def append_event(path: Path, event: Event) -> str:
     line = event.model_dump_json()
     with path.open("a") as file:
         file.write(line + "\n")

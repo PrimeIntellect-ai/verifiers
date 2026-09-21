@@ -13,6 +13,9 @@ PoolLimits = dict[str, PositiveInt]
 
 
 class FlowConfig(BaseConfig):
+    id: str = ""
+    """Installed package exporting this Flow subclass."""
+
     model: str | None = None
     """Model for seats that pin none."""
     client: ClientConfig | None = None

@@ -8,15 +8,12 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.flow import (
-    AgentWork,
-    Ctx,
     Flow,
     FlowConfig,
     GitArtifacts,
-    Pipeline,
     Transition,
     UnitData,
-    fn,
+    stage,
 )
 from verifiers.v1.flow.unit import Unit, git
 
@@ -38,10 +35,10 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     recorded, finish = asyncio.Event(), asyncio.Event()
     traces = []
 
-    async def rollout(work, agent, on_trace):
+    async def rollout(agent, task, *, on_trace, **kwargs):
         for ok in (False, True):
             trace = vf.Trace(
-                task=TraceTask(type="Task", data=work.task.data),
+                task=TraceTask(type="Task", data=task.data),
                 agent=AgentInfo(config=agent.config),
                 ok=ok,
                 is_completed=True,
@@ -50,39 +47,43 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
             on_trace(trace)
         return trace
 
-    monkeypatch.setattr(AgentWork, "rollout", rollout)
+    monkeypatch.setattr(vf.Agent, "run", rollout)
 
-    async def stage(ctx: Ctx[Data]):
-        trace = await ctx.call(
-            AgentWork("worker", vf.Task(vf.TaskData(prompt="solve")), inputs={}),
-            key="solve",
-        )
-        assert trace.id == traces[-1].id
-        ctx.data.value = 1
-        recorded.set()
-        await finish.wait()
-        return Transition("done", status="terminal", data=ctx.data)
+    class Example(Flow[AgentFlowConfig]):
+        async def setup(self):
+            assert os.environ["VF_RUN_LABEL"] == self.label
+            self.create_unit("t", stage="work", data=Data())
 
-    pipeline = Pipeline({"work": stage})
+        @stage
+        async def work(self, unit: Unit[Data]):
+            trace = await self.agents.worker.run(
+                vf.Task(vf.TaskData(prompt="solve")),
+                key="solve",
+                inputs={},
+            )
+            assert trace.id == traces[-1].id
+            unit.data.value = 1
+            recorded.set()
+            await finish.wait()
+            return Transition("done", status="terminal", data=unit.data)
+
     cfg = AgentFlowConfig(
         model="offline", client={"type": "eval", "base_url": "http://localhost:1"}
     )
-    async with Flow(tmp_path, cfg, pipeline) as flow:
-        assert os.environ["VF_RUN_LABEL"] == flow.label
-        unit = flow.create_unit("t", stage="work", data=Data())
-        running = asyncio.create_task(flow.run())
-        await asyncio.wait_for(recorded.wait(), 10)
-        running.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await running
-        assert unit.state().data.value == 0 and not flow.active
+    flow = Example(cfg, root=tmp_path)
+    running = asyncio.create_task(flow.run())
+    await asyncio.wait_for(recorded.wait(), 10)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert flow.unit("t").state().data.value == 0 and not flow.active
     assert os.environ["VF_RUN_LABEL"] == "outer"
 
     finish.set()
-    async with Flow(tmp_path, cfg, pipeline) as flow:
-        assert (await flow.run()).counts == {"terminal": 1}
-        assert flow.unit("t").state().data.value == 1 and len(traces) == 2
-        assert all(flow.traces.get(t.id) is not None for t in traces)
+    flow = Example(cfg, root=tmp_path)
+    assert (await flow.run()).counts == {"terminal": 1}
+    assert flow.unit("t").state().data.value == 1 and len(traces) == 2
+    assert all(flow.traces.get(t.id) is not None for t in traces)
     with (tmp_path / "transitions.jsonl").open() as file:
         events = [json.loads(line) for line in file]
     assert {e["label"] for e in events if e["type"] == "run_started"} == {flow.label}
@@ -106,7 +107,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     ]
 
 
-async def test_partial_spread_reuses_successes_until_inputs_change(tmp_path):
+async def test_parallel_calls_reuses_successes_until_inputs_change(tmp_path):
     calls, unavailable = [], True
 
     async def work(value, index):
@@ -115,69 +116,86 @@ async def test_partial_spread_reuses_successes_until_inputs_change(tmp_path):
             raise RuntimeError("unavailable")
         return value
 
-    async def stage(ctx: Ctx[Data]):
-        results = await ctx.spread(
-            [
-                fn(work, ctx.data.value, i, output=int, inputs=ctx.data)
-                for i in range(2)
-            ],
-            key=str,
-        )
-        return Transition(
-            "evaluated", status="terminal" if all(r.ok for r in results) else "held"
-        )
+    class Example(Flow):
+        async def setup(self):
+            self.create_unit("t", stage="work", data=Data())
 
-    async with Flow(tmp_path, FlowConfig(), Pipeline({"work": stage})) as flow:
-        unit = flow.create_unit("t", stage="work", data=Data())
-        assert (await flow.run()).counts == {"held": 1}
-        unit.steer(status="ready")
-        unavailable = False
-        assert (await flow.run()).counts == {"terminal": 1}
-        assert calls.count((0, 0)) == 1 and calls.count((0, 1)) == 2
-        unit.steer(data={"value": 1}, expected=unit.head(), status="ready")
-        assert (await flow.run()).counts == {"terminal": 1}
-        assert {i for value, i in calls if value == 1} == {0, 1}
+        @stage
+        async def work(self, unit: Unit[Data]):
+            results = await self.gather(
+                *(
+                    self.attempt(
+                        work,
+                        unit.data.value,
+                        i,
+                        output=int,
+                        key=str(i),
+                        inputs=unit.data,
+                    )
+                    for i in range(2)
+                )
+            )
+            return Transition(
+                "evaluated", status="terminal" if all(r.ok for r in results) else "held"
+            )
+
+    flow = Example(FlowConfig(), root=tmp_path)
+    assert (await flow.run()).counts == {"held": 1}
+    unit = flow.unit("t")
+    unit.steer(status="ready")
+    unavailable = False
+    assert (await flow.run()).counts == {"terminal": 1}
+    assert calls.count((0, 0)) == 1 and calls.count((0, 1)) == 2
+    unit.steer(data={"value": 1}, expected=unit.head(), status="ready")
+    assert (await flow.run()).counts == {"terminal": 1}
+    assert {i for value, i in calls if value == 1} == {0, 1}
 
 
 @pytest.mark.parametrize("route", [None, "work"])
 async def test_live_controls_survive_stage_publication(tmp_path, route):
     entered, finish = asyncio.Event(), asyncio.Event()
 
-    async def stage(ctx: Ctx[Data]):
-        assert ctx.notes() == "first"
-        entered.set()
-        await finish.wait()
-        ctx.data.value = 1
-        return Transition("built", stage="review", data=ctx.data)
+    class Example(Flow):
+        async def setup(self):
+            unit = self.create_unit("t", stage="work", data=Data())
+            unit.steer(note="first")
 
-    pipeline = Pipeline(dict.fromkeys(("work", "review", "repair"), stage))
-    async with Flow(tmp_path, FlowConfig(), pipeline) as flow:
-        unit = flow.create_unit("t", stage="work", data=Data())
-        unit.steer(note="first")
-        running = asyncio.create_task(flow.run())
-        await asyncio.wait_for(entered.wait(), 10)
-        try:
-            if route is not None:
-                unit.steer(stage="repair")
-            unit.steer(status="held", stage=route, note="late")
-            assert unit.inspect().active.stage == flow.active["t"].stage == "work"
-            with pytest.raises(RuntimeError, match="still active"):
-                unit.steer(data={"value": 2}, expected=unit.head())
-        finally:
-            finish.set()
-            await running
-        state = unit.state()
-        assert (state.stage, state.status, state.data.value) == (
-            route or "review",
-            "held",
-            1,
-        )
-        assert state.notes == ["late"]
-        assert unit.inspect().active is None
-        old = unit.head()
-        unit.steer(data={"value": 2}, expected=old)
-        with pytest.raises(ValueError, match="stale"):
-            unit.steer(data={"value": 3}, expected=old)
+        @stage
+        async def work(self, unit: Unit[Data]):
+            assert unit.notes == "first"
+            entered.set()
+            await finish.wait()
+            unit.data.value = 1
+            return Transition("built", stage="review", data=unit.data)
+
+        review = repair = work
+
+    flow = Example(FlowConfig(), root=tmp_path)
+    running = asyncio.create_task(flow.run())
+    await asyncio.wait_for(entered.wait(), 10)
+    unit = flow.unit("t")
+    try:
+        if route is not None:
+            unit.steer(stage="repair")
+        unit.steer(status="held", stage=route, note="late")
+        assert unit.inspect().active.stage == flow.active["t"].stage == "work"
+        with pytest.raises(RuntimeError, match="still active"):
+            unit.steer(data={"value": 2}, expected=unit.head())
+    finally:
+        finish.set()
+        await running
+    state = unit.state()
+    assert (state.stage, state.status, state.data.value) == (
+        route or "review",
+        "held",
+        1,
+    )
+    assert state.notes == ["late"]
+    assert unit.inspect().active is None
+    old = unit.head()
+    unit.steer(data={"value": 2}, expected=old)
+    with pytest.raises(ValueError, match="stale"):
+        unit.steer(data={"value": 3}, expected=old)
 
 
 def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
@@ -204,28 +222,33 @@ def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
 async def test_admission_reserves_units_and_run_reports_quiescence_or_drain(tmp_path):
     seen = []
 
-    async def stage(ctx):
-        await asyncio.sleep(0)
-        seen.append((ctx.unit.id, list(ctx.flow.active)))
-        return Transition("waiting", status="waiting")
+    class Example(Flow):
+        async def setup(self):
+            unit = self.create_unit("campaign", stage="work", data=Data(value=2))
+            head = unit.head()
+            assert (
+                self.create_unit("campaign", stage="work", data=Data()).head() == head
+            )
+            assert unit.state().data.value == 2
+            self.create_unit("other", stage="work", data=UnitData())
 
-    pipeline = Pipeline({"work": stage}, admit=lambda unit, flow: not flow.active)
-    async with Flow(tmp_path, FlowConfig(), pipeline) as flow:
-        assert flow.units() == []
-        unit = flow.create_unit("campaign", stage="work", data=Data(value=2))
-        head = unit.head()
-        assert flow.create_unit("campaign", stage="work", data=Data()).head() == head
-        assert unit.state().data.value == 2
-        flow.create_unit("other", stage="work", data=UnitData())
-        result = await flow.run()
-        assert result.reason == "quiescent" and result.counts == {"waiting": 2}
-        assert seen == [("campaign", ["campaign"]), ("other", ["other"])]
-        assert isinstance(result.units["campaign"].data, Data)
-        assert type(result.units["other"].data) is UnitData
-        unit.steer(status="ready")
-        flow.drain()
-        result = await flow.run()
-        assert (
-            result.reason == "draining" and result.units["campaign"].status == "ready"
-        )
-        assert len(seen) == 2 and not flow.active
+        def admit(self, unit):
+            return not self.active
+
+        @stage
+        async def work(self, unit):
+            await asyncio.sleep(0)
+            seen.append((unit.id, list(self.active)))
+            return Transition("waiting", status="waiting")
+
+    flow = Example(FlowConfig(), root=tmp_path)
+    result = await flow.run()
+    assert result.reason == "quiescent" and result.counts == {"waiting": 2}
+    assert seen == [("campaign", ["campaign"]), ("other", ["other"])]
+    assert isinstance(result.units["campaign"].data, Data)
+    assert type(result.units["other"].data) is UnitData
+    flow.unit("campaign").steer(status="ready")
+    flow.drain()
+    result = await flow.run()
+    assert result.reason == "draining" and result.units["campaign"].status == "ready"
+    assert len(seen) == 2 and not flow.active

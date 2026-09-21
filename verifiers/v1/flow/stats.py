@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, computed_field
 
-from verifiers.v1.flow.events import CallEvent, EventRecord, RunEvent, StageEvent
+from verifiers.v1.flow.events import CallEvent, Event, RunEvent, StageEvent
 
 
 class Stats(BaseModel):
@@ -31,11 +31,11 @@ class FlowStats(BaseModel):
     executions: dict[str, Stats] = Field(default_factory=dict)
 
 
-def summarize(events: Iterable[EventRecord], tokens: Mapping[str, int]) -> FlowStats:
+def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
     """Sum each saved trace's num_total_tokens once, never attachments or extra usage.
 
     Unit elapsed time spans its first execution start through its latest finish.
-    After Traces.index(), pass Traces.tokens as the trace-ID mapping.
+    After TraceStore.index(), pass TraceStore.tokens as the trace-ID mapping.
     """
     result = FlowStats()
     seen: set[str] = set()

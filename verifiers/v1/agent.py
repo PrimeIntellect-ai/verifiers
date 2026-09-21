@@ -12,7 +12,9 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Generic, Self, cast
+
+from typing_extensions import TypeVar
 
 from verifiers.v1.clients import (
     EvalClientConfig,
@@ -722,21 +724,22 @@ def make_agent(
     return Agent(config, interception=interception)
 
 
-MakeAgent = Callable[[str, AgentConfig], Agent]
+AgentT = TypeVar("AgentT", bound=Agent, default=Agent)
+MakeAgent = Callable[[str, AgentConfig], AgentT]
 """An agent factory keyed by name — what `Agents` calls per scraped config field."""
 
 
-class Agents:
+class Agents(Generic[AgentT]):
     """A config's agents, addressed by attribute: every top-level `AgentConfig`
     field becomes an `Agent` under the field's name (`agents.solver`)."""
 
-    def __init__(self, config, make: MakeAgent | None = None) -> None:
-        self._agents: dict[str, Agent] = {
-            name: make_agent(value) if make is None else make(name, value)
+    def __init__(self, config, make: MakeAgent[AgentT] | None = None) -> None:
+        self._agents: dict[str, AgentT] = {
+            name: cast(AgentT, make_agent(value)) if make is None else make(name, value)
             for name, value in agent_config_fields(config).items()
         }
 
-    def __getattr__(self, name: str) -> Agent:
+    def __getattr__(self, name: str) -> AgentT:
         # self.__dict__ directly: attribute lookup re-entering __getattr__ before
         # __init__ ran (copy/unpickle) must raise, not recurse.
         agents = self.__dict__.get("_agents")

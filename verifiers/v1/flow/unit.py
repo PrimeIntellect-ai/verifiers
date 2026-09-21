@@ -11,12 +11,17 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from typing_extensions import TypeVar
 
-from verifiers.v1.flow.events import Status, SteerEvent, Steering, append_event, now
+from verifiers.v1.flow.events import Status, SteerEvent, Steering, append_event
+from verifiers.v1.utils.time import now
+
+if TYPE_CHECKING:
+    from verifiers.v1.flow.flow import Flow
 
 STATE = "state.json"
 DEFINITION = "unit.json"
@@ -30,6 +35,7 @@ class UnitData(BaseModel):
 
 
 D = TypeVar("D", bound=UnitData)
+F = TypeVar("F", bound="Flow[Any]", default="Flow[Any]")
 
 
 class UnitState(BaseModel, Generic[D]):
@@ -85,8 +91,15 @@ def git(path: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-class Unit(Generic[D]):
+class Unit(Generic[D, F]):
     """A Git checkpoint. A separate execution lock distinguishes held from settled."""
+
+    # Bound by Flow; snapshot/data/execution are available while a stage runs.
+    flow: F
+    before: UnitState[D]
+    data: D
+    execution: Execution
+    notes: str
 
     def __init__(self, path: Path, data_type: type[D] | None = None) -> None:
         self.path = Path(path)
@@ -120,7 +133,7 @@ class Unit(Generic[D]):
         stages: Iterable[str],
         events: Path,
         files: Mapping[str, str | bytes] | None = None,
-    ) -> Unit[D]:
+    ) -> Self:
         path = Path(path)
         if (path / ".git").exists():
             unit = cls(path, type(data))
@@ -214,7 +227,7 @@ class Unit(Generic[D]):
             )
 
     @contextmanager
-    def executing(self) -> Iterator[tuple[UnitState[D], Execution]]:
+    def executing(self) -> Iterator[None]:
         with ExitStack() as stack:
             with self._write_lock():
                 stack.enter_context(self._execution_lock())
@@ -229,7 +242,10 @@ class Unit(Generic[D]):
                 (self.path / ".git" / "active.json").write_text(
                     execution.model_dump_json()
                 )
-            yield state, execution
+            self.before, self.execution = state, execution
+            self.data = state.data.model_copy(deep=True)
+            self.notes = "\n\n".join(state.notes)
+            yield
 
     def check_clean(self) -> None:
         with self._write_lock():

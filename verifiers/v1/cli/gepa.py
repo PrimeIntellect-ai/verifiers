@@ -14,7 +14,7 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -25,6 +25,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.gepa import GEPAConfig, run_gepa
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import TRACES_FILE
 
 logger = logging.getLogger(__name__)
 

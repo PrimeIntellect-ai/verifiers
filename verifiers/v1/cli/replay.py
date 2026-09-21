@@ -20,13 +20,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
-from verifiers.v1.cli.output import (
-    append_trace,
-    read_episodes,
-    save_config,
-    saved_config_path,
-    write_config,
-)
+from verifiers.v1.cli.output import save_config, saved_config_path, write_config
 from verifiers.v1.cli.resolve import narrow_taskset_config
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
@@ -35,6 +29,7 @@ from verifiers.v1.task import Task, WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import append_trace, read_episodes
 
 logger = logging.getLogger(__name__)
 

@@ -16,11 +16,7 @@ from typing import TypeVar, cast
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
-from verifiers.v1.cli.output import (
-    append_episode,
-    output_path,
-    save_config,
-)
+from verifiers.v1.cli.output import output_path, save_config
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
@@ -34,6 +30,7 @@ from verifiers.v1.utils.platform import (
     log_episodes,
     open_run,
 )
+from verifiers.v1.utils.trace_store import append_episode
 
 logger = logging.getLogger(__name__)
 

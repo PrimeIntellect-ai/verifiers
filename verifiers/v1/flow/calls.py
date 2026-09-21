@@ -3,26 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
-from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
-from verifiers.v1.agent import Agent, make_agent
-from verifiers.v1.flow.events import CallEvent, Invocation
+from verifiers.v1.agent import Agent, Interaction
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.flow.events import CallEvent, CallIdentity
+from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
-    from verifiers.v1.flow.flow import Ctx
+    from verifiers.v1.flow.flow import Flow
 
 T = TypeVar("T")
 LIVE_EVERY_S = 3.0
@@ -55,7 +55,7 @@ class Failure:
 Result = Success[T] | Failure
 
 
-INVOCATION: ContextVar[Invocation] = ContextVar("flow_invocation")
+INVOCATION: ContextVar[CallIdentity] = ContextVar("flow_invocation")
 
 
 class Record(BaseModel):
@@ -68,156 +68,145 @@ class Record(BaseModel):
     trace_id: str | None = None
 
 
-class StoredValue(TypedDict, total=False):
-    payload: JsonValue
-    trace_id: str
+class _FlowAgent(Agent):
+    """Native execution with the owning Flow's call records, traces and runtime pool."""
 
+    def __init__(self, flow: Flow[Any], config: AgentConfig) -> None:
+        super().__init__(config, interception=flow.interception)
+        self.flow = flow
 
-class Work(ABC, Generic[T]):
-    kind: ClassVar[str]
-    inputs: JsonValue | BaseModel | None = None
-    """The complete reuse identity besides the call key. Required for keyed work;
-    use {} for no dependencies. Core adds no task, configuration, or code identity."""
+    async def run(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        key: str | None = None,
+        inputs: JsonValue | BaseModel | None = None,
+        interact: Callable[[Interaction], Awaitable[None]] | None = None,
+    ) -> Trace:
+        """Run or attach a trace; borrowed runtimes remain owned by their caller."""
+        result = await self.attempt(
+            task,
+            runtime=runtime,
+            tools=tools,
+            on_trace=on_trace,
+            collect_artifacts=collect_artifacts,
+            key=key,
+            inputs=inputs,
+            interact=interact,
+        )
+        if not result.ok:
+            raise CallFailed(result.error, result.trace_id)
+        return result.value
 
-    @abstractmethod
-    async def execute(self, ctx: Ctx[Any, Any]) -> T: ...
+    async def attempt(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        key: str | None = None,
+        inputs: JsonValue | BaseModel | None = None,
+        interact: Callable[[Interaction], Awaitable[None]] | None = None,
+    ) -> Result[Trace]:
+        """The same recorded run, returning failure so parallel siblings can finish."""
+        if interact is not None and collect_artifacts:
+            raise ValueError("interaction does not support collect_artifacts")
 
-    @abstractmethod
-    def dump(self, value: T) -> StoredValue:
-        """The record fields that carry the value: a `payload`, or a `trace_id`."""
+        async def execute() -> Trace:
+            flow = self.flow
+            invocation = INVOCATION.get()
+            watch = flow.live.watch(invocation.unit, invocation.call)
+            traces: list[Trace] = []
 
-    @abstractmethod
-    def load(self, ctx: Ctx[Any, Any], record: Record) -> T:
-        """The value a record carries; `LookupError` when it cannot be rebuilt."""
-
-
-@dataclass(frozen=True)
-class AgentWork(Work[Trace[Any, Any, Any]]):
-    """A native rollout; cached traces restore durable info, never live state."""
-
-    kind: ClassVar[str] = "agent"
-    seat: str
-    task: Task
-    runtime: Runtime | None = None
-    inputs: JsonValue | BaseModel | None = None
-
-    async def execute(self, ctx: Ctx[Any, Any]) -> Trace:
-        flow = ctx.flow
-        agent = make_agent(flow.seat(self.seat), interception=flow.interception)
-        held = () if self.runtime is not None else ("runtimes",)
-        invocation = INVOCATION.get()
-        call = invocation.call
-        watch = flow.live.watch(ctx.unit.id, call)
-        traces: list[Trace] = []
-
-        def finished(trace: Trace, attempt: int) -> None:
-            status = (
-                "succeeded"
-                if trace.ok
-                else "failed"
-                if trace.is_completed
-                else "cancelled"
-            )
-            flow.event(
-                CallEvent(
-                    type="rollout",
-                    invocation=invocation,
-                    status=status,
-                    rollout=attempt,
-                    trace_id=trace.id,
-                    error=trace.last_error,
+            def finished(trace: Trace, attempt: int) -> None:
+                flow.event(
+                    CallEvent(
+                        type="rollout",
+                        invocation=invocation,
+                        status="succeeded"
+                        if trace.ok
+                        else "failed"
+                        if trace.is_completed
+                        else "cancelled",
+                        rollout=attempt,
+                        trace_id=trace.id,
+                        error=trace.last_error,
+                    )
                 )
-            )
 
-        def on_trace(trace: Trace) -> None:
-            if traces:
-                finished(traces[-1], len(traces))
-            traces.append(trace)
-            flow.event(
-                CallEvent(
-                    type="rollout",
-                    invocation=invocation,
-                    status="started",
-                    rollout=len(traces),
-                    trace_id=trace.id,
+            def remember(trace: Trace) -> None:
+                if traces:
+                    finished(traces[-1], len(traces))
+                traces.append(trace)
+                flow.event(
+                    CallEvent(
+                        type="rollout",
+                        invocation=invocation,
+                        status="started",
+                        rollout=len(traces),
+                        trace_id=trace.id,
+                    )
                 )
-            )
-            watch(trace)
+                watch(trace)
+                if on_trace is not None:
+                    on_trace(trace)
 
-        try:
-            async with flow.pools.hold(held):
-                ctx.check_running()
-                async with agent:
-                    trace = await self.rollout(agent, on_trace=on_trace)
-        except Exception as exc:
-            if traces and traces[-1].last_error is not None:
-                raise CallFailed(traces[-1].last_error, traces[-1].id) from exc
-            raise
-        finally:
-            flow.live.drop(ctx.unit.id, call)
-            if traces:
-                finished(traces[-1], len(traces))
-                for recorded in traces:
-                    await flow.traces.append(recorded)
-        if not trace.ok:
-            raise CallFailed(
-                trace.last_error
-                or Error(type="RolloutError", message="rollout failed"),
-                trace.id,
-            )
-        return trace
+            try:
+                async with flow.pools.hold(
+                    () if runtime is not None else ("runtimes",)
+                ):
+                    flow.check_running()
+                    if interact is None:
+                        trace = await super(_FlowAgent, self).run(
+                            task,
+                            runtime=runtime,
+                            tools=tools,
+                            on_trace=remember,
+                            collect_artifacts=collect_artifacts,
+                        )
+                    else:
+                        async with super(_FlowAgent, self).interaction(
+                            task,
+                            runtime=runtime,
+                            tools=tools,
+                            on_trace=remember,
+                        ) as interaction:
+                            await interact(interaction)
+                        trace = interaction.trace
+            except Exception as exc:
+                if traces and traces[-1].last_error is not None:
+                    raise CallFailed(traces[-1].last_error, traces[-1].id) from exc
+                raise
+            finally:
+                flow.live.drop(invocation.unit, invocation.call)
+                if traces:
+                    finished(traces[-1], len(traces))
+                    for recorded in traces:
+                        await flow.traces.append(recorded)
+            if not trace.ok:
+                raise CallFailed(
+                    trace.last_error
+                    or Error(type="RolloutError", message="rollout failed"),
+                    trace.id,
+                )
+            return trace
 
-    async def rollout(self, agent: Agent, on_trace: Callable[[Trace], None]) -> Trace:
-        """Use native retries. Override for caller-driven `agent.interaction` work."""
-        return await agent.run(self.task, runtime=self.runtime, on_trace=on_trace)
+        return await self.flow._record(
+            execute, TypeAdapter(Trace), key=key, inputs=inputs, kind="agent"
+        )
 
-    def dump(self, value: Trace) -> StoredValue:
-        return {"trace_id": value.id}
-
-    def load(self, ctx: Ctx[Any, Any], record: Record) -> Trace[Any, Any, Any]:
-        trace = ctx.flow.traces.get(record.trace_id or "")
-        if trace is None:
-            raise LookupError(f"trace {record.trace_id} is not in the flow's traces")
-        return trace
-
-
-@dataclass(frozen=True)
-class FnWork(Work[T]):
-    kind: ClassVar[str] = "fn"
-    func: Callable[..., T | Awaitable[T]]
-    output: TypeAdapter[T]
-    args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=dict)
-    inputs: JsonValue | BaseModel | None = None
-
-    async def execute(self, ctx: Ctx[Any, Any]) -> T:
-        if inspect.iscoroutinefunction(self.func):
-            value = self.func(*self.args, **self.kwargs)
-        else:
-            value = await run_shielded(
-                asyncio.to_thread(self.func, *self.args, **self.kwargs)
-            )
-        if inspect.isawaitable(value):
-            value = await value
-        return self.output.validate_python(value)
-
-    def dump(self, value: T) -> StoredValue:
-        return {"payload": self.output.dump_python(value, mode="json")}
-
-    def load(self, ctx: Ctx[Any, Any], record: Record) -> T:
-        return self.output.validate_python(record.payload)
-
-
-def fn(
-    func: Callable[..., T | Awaitable[T]],
-    *args: Any,
-    output: type[T] | TypeAdapter[T],
-    inputs: JsonValue | BaseModel | None = None,
-    **kwargs: Any,
-) -> FnWork[T]:
-    """Host work with an explicit output type for both fresh and cached results."""
-    adapter = output if isinstance(output, TypeAdapter) else TypeAdapter(output)
-    return FnWork[T](func=func, output=adapter, args=args, kwargs=kwargs, inputs=inputs)
+    @asynccontextmanager
+    async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
+        async with self.flow.pools.hold(("runtimes",)):
+            self.flow.check_running()
+            async with super().provision(task) as runtime:
+                yield runtime
 
 
 class Live:
