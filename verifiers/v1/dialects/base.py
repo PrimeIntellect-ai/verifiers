@@ -31,13 +31,14 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
 CAPABILITY_NOTICE = (
-    "Network protocol blocked fetching a resource. Continue without those capabilities; "
-    "use local tools or inline data already present in the conversation, and do not retry "
-    "the blocked provider-side operation."
+    "Some request content or provider-side capabilities were omitted because they are "
+    "blocked by the network policy or cannot enforce it."
 )
 
 
-def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
+def blocked_url(
+    value: str, policy: NetworkPolicyConfig, blocked_urls: list[str] | None = None
+) -> bool:
     """Whether a provider-resolved resource is neither inline nor policy-permitted."""
     if value.lower().startswith("data:"):
         return False
@@ -46,17 +47,26 @@ def blocked_url(value: str, policy: NetworkPolicyConfig) -> bool:
     except ValidationError:
         return True
     host = url.host.lower().rstrip(".").strip("[]")
-    return not policy.permits(url.scheme, host, url.port)
+    blocked = not policy.permits(url.scheme, host, url.port)
+    if blocked and blocked_urls is not None:
+        blocked_urls.append(value)
+    return blocked
 
 
-def provider_allowed_domains(
+def provider_domains(
     policy: NetworkPolicyConfig, requested: object = None
 ) -> list[str]:
-    """Translate a network policy to provider domain-filter semantics without widening it."""
-    if policy.block or not policy.allow or "*" in policy.allow:
+    """Translate allow/block rules to provider filters without changing their scope.
+
+    Provider filters include subdomains, so exact hosts need a covering wildcard rule.
+    Empty results mean the policy cannot be represented; never send an empty filter.
+    """
+    rules = policy.block or policy.allow
+    if not rules or "*" in rules:
         return []
     domains = []
-    for rule in policy.allow:
+    hosts = []
+    for rule in rules:
         try:
             url = urlsplit(rule if "://" in rule else f"//{rule}")
             port = url.port
@@ -67,13 +77,23 @@ def provider_allowed_domains(
         if (
             url.scheme
             or port is not None
-            or not host.startswith("*.")
             or not domain
-            or "*" in domain
+            or any(char in domain for char in "*?[]")
             or not domain.isascii()
         ):
             return []
+        hosts.append(host)
         domains.append(domain)
+    for host in hosts:
+        if not host.startswith("*.") and not (
+            policy.block
+            and any(
+                wildcard.startswith("*.")
+                and (host == wildcard[2:] or host.endswith(wildcard[1:]))
+                for wildcard in hosts
+            )
+        ):
+            return []
     domains = list(dict.fromkeys(domains))
     if requested is None:
         return domains
@@ -97,11 +117,13 @@ def provider_allowed_domains(
             or url.query
             or url.fragment
             or not host
-            or "*" in host
+            or any(char in host for char in "*?[]")
             or not host.isascii()
         ):
             return []
         requested_domains.append(host)
+    if policy.block:
+        return list(dict.fromkeys([*domains, *requested_domains]))
     intersection = []
     for allowed in domains:
         for requested_domain in requested_domains:
@@ -115,11 +137,18 @@ def provider_allowed_domains(
 def append_user_notice(
     messages: list,
     *,
+    blocked_urls: list[str],
     text_type: str = "text",
     message_type: str | None = None,
 ) -> None:
-    """Add stable restricted-network context to the earliest user input."""
-    part = {"type": text_type, "text": CAPABILITY_NOTICE}
+    """Explain an actual policy-driven omission in the earliest user input."""
+    notice = CAPABILITY_NOTICE
+    if blocked_urls:
+        notice += "\nBlocked URLs: " + ", ".join(
+            json.dumps(url) for url in dict.fromkeys(blocked_urls)
+        )
+        notice += "\nCircumventing this block is forbidden."
+    part = {"type": text_type, "text": notice}
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
@@ -127,9 +156,7 @@ def append_user_notice(
         if isinstance(content, list):
             message["content"] = [*content, part]
         elif isinstance(content, str):
-            message["content"] = (
-                f"{content}\n\n{CAPABILITY_NOTICE}" if content else CAPABILITY_NOTICE
-            )
+            message["content"] = f"{content}\n\n{notice}" if content else notice
         else:
             message["content"] = [part]
         return
@@ -242,9 +269,12 @@ class Dialect(ABC, Generic[RespT]):
     def mediate_external_capabilities(
         self, body: RawRequest, policy: NetworkPolicyConfig
     ) -> tuple[RawRequest, list[str]]:
-        """Remove provider-side capabilities during restricted execution. Implementations add
-        the same policy context on every call because the agent does not retain injected request
-        content. Returned paths never contain request values."""
+        """Filter blocked content and constrain provider tools to the network policy.
+
+        Provider tools execute outside runtime egress controls; remove them when their
+        filters cannot express the policy. Add context only when something is removed.
+        Returned paths never contain request values.
+        """
 
     @abstractmethod
     def parse_request(self, body: RawRequest) -> Request:
