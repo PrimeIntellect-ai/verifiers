@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -208,10 +209,30 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
         # Drain remote writes and installs before cancellation releases the lock.
         for source in pending:
+            pyproject = (Path(source) / "pyproject.toml").read_bytes()
+            project = tomllib.loads(pyproject.decode())
+            uv_sources = project.get("tool", {}).get("uv", {}).get("sources", {})
+            if any(
+                "git" in entry
+                for entries in uv_sources.values()
+                for entry in (entries if isinstance(entries, list) else [entries])
+            ):
+                # Minimal Python images need Git to resolve declared Git sources.
+                setup += (
+                    "command -v git >/dev/null 2>&1 "
+                    "|| { apt-get update -qq && apt-get install -y -qq git; } "
+                    "|| apk add --no-cache git; "
+                )
             name, data = await _cached_sdist(Path(source))
             remote = f"{root}/{name}"
             await run_shielded(runtime.write(remote, data))
-            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+            requirements = f"{remote}.src/pyproject.toml"
+            await run_shielded(runtime.write(requirements, pyproject))
+            # The requirements input retains uv sources absent from archive metadata.
+            setup += (
+                f"uv pip install --python {venv_q} "
+                f"-r {shlex.quote(requirements)} {shlex.quote(remote)}; "
+            )
         result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
         if result.exit_code != 0:
             raise ToolsetError(
