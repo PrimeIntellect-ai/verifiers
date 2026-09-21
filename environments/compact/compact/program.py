@@ -6,10 +6,10 @@
 
 Each turn sends a fresh `[system, user]` — the task on the first turn, then only the
 notes the model saved via the `summarize` tool. Per turn: at most one task tool call,
-its result shown in-context, then a forced `summarize`; a plain-text reply finishes the
-run and is printed as the answer; a disallowed call ends the rollout with no answer
-(training signal). Model calls go to the interception server (OPENAI_BASE_URL/API_KEY);
-MCP servers are reached over streamable HTTP.
+its result shown in-context, then a `summarize` call to save notes; a plain-text reply
+finishes the run and is printed as the answer; a disallowed call ends the rollout with
+no answer (training signal). Model calls go to the interception server
+(OPENAI_BASE_URL/API_KEY); MCP servers are reached over streamable HTTP.
 """
 
 import asyncio
@@ -57,14 +57,12 @@ SUMMARIZE = {
 client = AsyncOpenAI()
 
 
-async def chat(
-    messages: list[dict], tools: list[dict], tool_choice: dict | None = None
-):
+async def chat(messages: list[dict], tools: list[dict]):
     completion = await client.chat.completions.create(
         model=os.environ["OPENAI_MODEL"],
         messages=messages,
         tools=tools or None,
-        tool_choice=tool_choice or "auto" if tools else None,
+        tool_choice="auto" if tools else None,
     )
     return completion.choices[0].message
 
@@ -148,13 +146,9 @@ async def main() -> None:
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result}
             )
-            # After a tool result, `summarize` is forced via tool_choice — saving
-            # notes is the only action left in the turn.
-            message = await chat(
-                messages,
-                [SUMMARIZE],
-                {"type": "function", "function": {"name": "summarize"}},
-            )
+            # After a tool result, only `summarize` is advertised; the model must
+            # choose it itself — any other call ends the rollout.
+            message = await chat(messages, [SUMMARIZE])
             if not message.tool_calls:
                 print(message.content or "")  # finishing right after a result is fine
                 return
