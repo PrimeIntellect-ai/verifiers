@@ -58,6 +58,16 @@ class ToolGate:
 
     async def decision(self, tool_call_id: str, arguments: Any) -> str:
         try:
+            # pi-acp wraps extension confirmations in a separate UI permission call.
+            if (
+                tool_call_id.startswith("pi-ui-")
+                and isinstance(arguments, dict)
+                and arguments.get("method") == "confirm"
+            ):
+                tool_call_id, arguments = (
+                    arguments["title"],
+                    json.loads(arguments["message"]),
+                )
             response = await self.client.post(
                 self.url, json={"tool_call_id": tool_call_id, "arguments": arguments}
             )

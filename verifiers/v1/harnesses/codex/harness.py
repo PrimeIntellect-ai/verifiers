@@ -6,6 +6,7 @@ import logging
 import re
 import tomllib
 from collections import Counter
+from pathlib import Path
 
 import tomli_w
 
@@ -37,44 +38,7 @@ touch {ready}
 """
 
 
-# The gate hook: Codex runs it before every shell, patch, MCP and local tool call with
-# the call on stdin — including the calls a Code Mode script makes, which the model never
-# issued itself and the gate therefore judges on the spot. A deny decision carries the
-# policy's result as the reason the model sees. Written per rollout so the shared hook
-# definition below carries no credentials.
-GATE_HOOK = """import { readFileSync } from "node:fs";
-
-const deny = (reason) =>
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: reason,
-      },
-    }),
-  );
-const hook = JSON.parse(readFileSync(0, "utf8"));
-try {
-  const response = await fetch(__URL__, {
-    method: "POST",
-    headers: { Authorization: "Bearer " + __SECRET__, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tool_call_id: hook.tool_use_id,
-      name: hook.tool_name,
-      arguments: hook.tool_input,
-    }),
-  });
-  if (!response.ok) throw new Error(`tool gate returned ${response.status}`);
-  const decision = await response.json();
-  if (decision.action !== "allow") {
-    const content = decision.action === "stop" ? decision.reason : decision.message?.content;
-    deny(typeof content === "string" ? content : JSON.stringify(content ?? ""));
-  }
-} catch (error) {
-  deny(`tool gate unavailable: ${error}`);
-}
-"""
+GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 # Hooks in the system config layer count as managed: trusted and enabled without the
 # per-definition trust hash a user-layer hooks.json would need.
 GATE_CONFIG = f"""[[hooks.PreToolUse]]

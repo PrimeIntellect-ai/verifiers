@@ -514,6 +514,13 @@ class RolloutSession:
             for leaf, call in calls
             if (name is None or call.name == name) and same_arguments(call, arguments)
         ]
+        if len(matches) > 1:
+            matches = [
+                (leaf, call)
+                for leaf, call in matches
+                if (name is None or call.name == name)
+                and same_arguments(call, arguments)
+            ] or matches
         if len(matches) == 1:
             leaf, call = matches[0]
             branch = graph.path(self.trace, leaf)

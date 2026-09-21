@@ -3,6 +3,7 @@
 import json
 import logging
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -27,19 +28,7 @@ MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 
-# Pi leaves tool permissions to extensions. This one asks before every call; pi-acp relays
-# a confirm dialog to the ACP client as a permission request whose raw input carries the
-# title, so the title names the model's call for the runner's gate.
-GATE_EXTENSION = """export default function (pi) {
-  pi.on("tool_call", async (event, ctx) => {
-    const allowed = await ctx.ui.confirm(
-      event.toolCallId.split("|", 1)[0],
-      JSON.stringify(event.input),
-    );
-    if (!allowed) return { block: true, reason: "Blocked by the rollout's tool policy." };
-  });
-}
-"""
+GATE_EXTENSION = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 
 INSTALL = r"""
 set -e
@@ -221,12 +210,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str
     ) -> None:
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
-        await runtime.write(f"{agent_dir}/gate.js", GATE_EXTENSION.encode())
+        await runtime.write(f"{agent_dir}/gate.mjs", GATE_EXTENSION.encode())
         gated = f"{agent_dir}/pi-gated"
         await runtime.write(
             gated,
             f"#!/bin/sh\nexec {config.env['PI_ACP_PI_COMMAND']} "
-            f'--extension {agent_dir}/gate.js "$@"\n'.encode(),
+            f'--extension {agent_dir}/gate.mjs "$@"\n'.encode(),
         )
         await runtime.run(["chmod", "+x", gated], {})
         config.env["PI_ACP_PI_COMMAND"] = gated
