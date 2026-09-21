@@ -144,7 +144,7 @@ class Env(ABC, Generic[ConfigT]):
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
         # Process/worker cap on live Agent.runs (`--max-agent-runs`); the host binds it
-        # once. Distinct from the per-episode gate minted in `_episode_agents`.
+        # once. Distinct from the per-episode cap minted in `_episode_agents`.
         self._agent_runs: asyncio.Semaphore | None = None
 
     # --- the multi-agent surface (override these) ------------------------------
@@ -205,7 +205,7 @@ class Env(ABC, Generic[ConfigT]):
         so the episode plays `--env.max-concurrent-agents` of them at a time;
         `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
-        gate = asyncio.Semaphore(limit) if limit else None
+        episode_runs = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -233,8 +233,8 @@ class Env(ABC, Generic[ConfigT]):
                 name=name,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
-                gate=gate,
-                runs=self._agent_runs,
+                episode_runs=episode_runs,
+                agent_runs=self._agent_runs,
                 completed=completed,
                 on_trace=on_trace,
                 on_discard=on_discard,
