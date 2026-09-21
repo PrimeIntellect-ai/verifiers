@@ -40,7 +40,8 @@ class ValidateConfig(BaseConfig):
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128,
+        validation_alias=AliasChoices("max_episodes", "max_concurrent", "c"),
     )
     """Max tasks validated in flight at once (and, for a container runtime, live sandboxes)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))

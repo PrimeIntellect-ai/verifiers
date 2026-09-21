@@ -182,9 +182,15 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
+    def __init__(
+        self,
+        run: "Rollout",
+        gate: asyncio.Semaphore | None = None,
+        runs: asyncio.Semaphore | None = None,
+    ) -> None:
         self._run = run
         self._gate = gate
+        self._runs = runs
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
@@ -199,7 +205,7 @@ class Interaction:
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
         before answering. A `terminated` segment means the run ended instead of
         answering (the message went unconsumed)."""
-        async with self._lock, self._gate or nullcontext():
+        async with self._lock, self._runs or nullcontext[None](), self._gate or nullcontext():
             return await self._turn(message)
 
     async def _turn(self, message: str | Messages | None) -> Segment:
@@ -253,7 +259,7 @@ class Interaction:
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
-        async with self._lock, self._gate or nullcontext():
+        async with self._lock, self._runs or nullcontext(), self._gate or nullcontext():
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
             return await self._run.close()
@@ -307,9 +313,11 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env episode agents replace this with the episode's agent semaphore
-        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
-        # lifecycle work, never while awaiting the caller between segments.
+        # Env episode agents replace these with the process/worker live-run cap
+        # (`--max-agent-runs`) and the episode's agent semaphore
+        # (`--env.max-concurrent-agents`). Interactions acquire them only around
+        # active lifecycle work, never while awaiting the caller between segments.
+        self._runs: asyncio.Semaphore | None = None
         self._gate: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
@@ -514,8 +522,8 @@ class Agent:
             on_trace=on_trace,
             **params,
         )
-        interaction = Interaction(run, gate=self._gate)
-        async with self._gate or nullcontext():
+        interaction = Interaction(run, gate=self._gate, runs=self._runs)
+        async with self._runs or nullcontext(), self._gate or nullcontext():
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
                 trace = await run.close()
@@ -611,6 +619,7 @@ class _EpisodeAgent(Agent):
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
+        runs: asyncio.Semaphore | None,
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
@@ -623,6 +632,7 @@ class _EpisodeAgent(Agent):
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
+        self._runs = runs
         self._completed = completed
         self._on_trace = on_trace
         self._on_discard = on_discard
@@ -661,7 +671,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
-        async with self._gate or nullcontext():
+        async with self._runs or nullcontext(), self._gate or nullcontext():
             trace = await super().run(
                 task,
                 runtime=runtime,

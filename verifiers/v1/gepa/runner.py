@@ -64,6 +64,9 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
+    env._agent_runs = (
+        asyncio.Semaphore(config.max_agent_runs) if config.max_agent_runs else None
+    )
     # Stream every rollout's episode to traces.jsonl as it finalizes — the same persist hook
     # run_eval passes to `env.run_slot` (each trace records its candidate prompt).
     write_lock = asyncio.Lock()

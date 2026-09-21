@@ -105,7 +105,10 @@ def _limits(config: EvalConfig) -> list[str]:
     return [
         f"≤{config.max_concurrent} episodes"
         if config.max_concurrent
-        else "no concurrency cap",
+        else "no episode cap",
+        f"≤{config.max_agent_runs} agent runs"
+        if config.max_agent_runs
+        else "no agent-run cap",
         "per-seat turn caps"
         if turns == "per-seat"
         else (f"{turns} turns" if turns else "no turn cap"),

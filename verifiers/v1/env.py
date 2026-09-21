@@ -143,6 +143,9 @@ class Env(ABC, Generic[ConfigT]):
         self._interception: Interception | None = None
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
+        # Process/worker cap on live Agent.runs (`--max-agent-runs`); the host binds it
+        # once. Distinct from the per-episode gate minted in `_episode_agents`.
+        self._agent_runs: asyncio.Semaphore | None = None
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -158,7 +161,8 @@ class Env(ABC, Generic[ConfigT]):
         it means); an exception raised here is the episode itself failing.
         Independent agents are written as such (`asyncio.gather`); how many of them
         actually run at once is the run's bound, not this hook's
-        (`--env.max-concurrent-agents`, one at a time by default)."""
+        (`--env.max-concurrent-agents` per episode; `--max-agent-runs` across
+        episodes)."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
@@ -230,6 +234,7 @@ class Env(ABC, Generic[ConfigT]):
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
+                runs=self._agent_runs,
                 completed=completed,
                 on_trace=on_trace,
                 on_discard=on_discard,

@@ -27,7 +27,8 @@ class ReplayConfig(BaseConfig):
     Named distinctly from eval's `num_rollouts` so the source run's value is
     ignored, not inherited."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128,
+        validation_alias=AliasChoices("max_episodes", "max_concurrent", "c"),
     )
     """Max traces re-scored (judge calls) in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))

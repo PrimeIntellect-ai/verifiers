@@ -32,6 +32,7 @@ Validate the config by using `uv run vf-gepa @ config.toml --dry-run`. To run GE
 - `num_train` / `num_val` — train tasks for reflection minibatches and held-out val tasks for the pareto frontier (defaults: 100 / 50)
 - `max_total_rollouts` — total rollouts the run may spend (default: 500)
 - `max_concurrent` / `-c` — caps how many episodes are in flight at once (default: 128)
+- `max_agent_runs` — live `Agent.run`s across the process (`None` = no extra cap)
 
 ## Output
 

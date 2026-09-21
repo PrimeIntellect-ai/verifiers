@@ -84,6 +84,9 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     from verifiers.v1.utils.loaders import load_environment
 
     env = load_environment(config.env)
+    env._agent_runs = (
+        asyncio.Semaphore(config.max_agent_runs) if config.max_agent_runs else None
+    )
     taskset = env.taskset
     if config.num_tasks is None and taskset.INFINITE:
         raise ValueError(

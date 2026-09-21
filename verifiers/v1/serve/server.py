@@ -31,10 +31,14 @@ class EnvServer:
         config: EnvConfig,
         address: str = "tcp://127.0.0.1:5000",
         max_concurrent: int | None = None,
+        max_agent_runs: int | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
+        self.env._agent_runs = (
+            asyncio.Semaphore(max_agent_runs) if max_agent_runs else None
+        )
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from

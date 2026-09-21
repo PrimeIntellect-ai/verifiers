@@ -62,6 +62,8 @@ uv run vf-eval my-task-v1 --env.id agentic-judge \
   --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
 ```
 
+`--max-concurrent` / `-c` caps episodes. `--env.max-concurrent-agents` caps agent runs inside one episode (default 1). `--max-agent-runs` caps live `Agent.run`s across the process when an episode fans out.
+
 ## Disabling tools
 
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
