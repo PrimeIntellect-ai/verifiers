@@ -8,6 +8,7 @@ from collections.abc import Collection
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
+    E2BConfig,
     PrimeConfig,
     RuntimeConfig,
     SubprocessConfig,
@@ -116,19 +117,26 @@ def cap_remote_agent_timeout(
     agent_timeout: float | None, runtime_config: RuntimeConfig, task: Task
 ) -> float | None:
     """Remote sandboxes other than Prime's (which have no lifetime limit) live at
-    most 24 hours: cap the agent timeout there (with a warning) so a long run times
-    out cleanly instead of the provider killing the box mid-run."""
+    most 24 hours (E2B: the configured `timeout`): cap the agent timeout there (with a
+    warning) so a long run times out cleanly instead of the provider killing the box
+    mid-run."""
     if agent_timeout is None or runtime_is_local(runtime_config):
         return agent_timeout
     if isinstance(runtime_config, PrimeConfig):
         return agent_timeout
-    if agent_timeout > 24 * 60 * 60:
+    lifetime = (
+        runtime_config.timeout
+        if isinstance(runtime_config, E2BConfig)
+        else 24 * 60 * 60
+    )
+    if agent_timeout > lifetime:
         logger.warning(
             "task %r resolves to a %.1f-hour agent timeout, but %s sandboxes have a "
-            "maximum lifetime of 24 hours; capping it at 24 hours",
+            "maximum lifetime of %.1f hours; capping it at that",
             task.data.idx,
             agent_timeout / (60 * 60),
             runtime_config.type,
+            lifetime / (60 * 60),
         )
-        return 24 * 60 * 60
+        return lifetime
     return agent_timeout

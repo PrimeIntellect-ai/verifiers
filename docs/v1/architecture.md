@@ -12,7 +12,7 @@ The **rollout** is the executable combination of one loaded task, the harness, a
 - The `docker` runtime runs the rollouts in docker containers on your local machine.
 - The `podman` runtime is the same implementation driving the Podman CLI, for hosts without Docker.
 - The `apptainer` runtime runs the rollouts in unprivileged Apptainer instances on the host network, as on HPC clusters. It has no egress policy.
-- Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
+- Sandbox runtimes, such as `prime`, `modal` or `e2b`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
 
 For offline Docker/Podman use on Linux, cache the task image and, if it lacks Python 3, `docker.io/library/python:3.11-alpine` for host callbacks. Restricted execution also needs the cached `localhost/verifiers-network:1` image, built during the first online startup.
 
