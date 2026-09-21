@@ -494,8 +494,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence lengths (last prompt + completion) summed across branches."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        """New input plus generated tokens, counted once per call across branches.
+        Input is a lower bound when the engine drops tokens between calls."""
+        usage = self.usage
+        return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
     @property
     def usage(self) -> Usage | None:

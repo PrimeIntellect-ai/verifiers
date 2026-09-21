@@ -215,12 +215,16 @@ class TurnTokens(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     prompt_ids: list[int] = Field(default_factory=list)
-    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
-    bridged: bool = Field(default=False, exclude=True)
-    """Whether the renderer constructed this prompt by extending a stored prefix."""
+    """Effective prompt IDs evaluated by the model, after multimodal expansion."""
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
+    # Transient graph-construction metadata, consumed by the turn's commit and excluded
+    # from serialized responses.
+    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    """Logical renderer IDs before multimodal expansion, retained for bridge extension."""
+    bridged: bool = Field(default=False, exclude=True)
+    """Whether the renderer constructed this prompt by extending a stored prefix."""
     # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
     # consumed by the turn's `commit` to attribute tokens per message, then dropped.
     message_spans: list[tuple[int, int] | None] | None = Field(

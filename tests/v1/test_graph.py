@@ -92,6 +92,82 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     )
 
 
+def test_bridged_turn_recovers_the_prior_turn_unforwarded_row():
+    """A turn never forwards its own final sampled token, so the engine returns one routing row
+    fewer than the turn has prompt plus completion positions, and that final position is filled
+    with a copy of its predecessor: a placeholder, effectively. The next turn's prefill does
+    forward it and reports it as row 0, so the placeholder must be replaced by that real row
+    rather than discarded."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="u1")
+
+    # Start first turn
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[10, 11, 12],
+                completion_ids=[20, 21],
+                message_spans=[(0, 2)],
+                routed_experts=_routed_payload(4, 0, 0),
+            ),
+        )
+    )
+    sampled_node = trace.nodes[-1]
+    assert sampled_node.routed_experts is not None
+    # First turn has the placeholder routing assignments:
+    assert bool(
+        (sampled_node.routed_experts[-1] == sampled_node.routed_experts[-2]).all()
+    )
+    forwarded_rows = sampled_node.routed_experts[:-1].copy()
+
+    # Start second turn
+    bridged = _routed_payload(4, 4, 100)
+    true_row = np.frombuffer(base64.b64decode(bridged["data"]), dtype=np.uint8).reshape(
+        bridged["shape"]
+    )[0]
+    graph.prepare_turn(
+        trace,
+        [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
+    ).commit(
+        vf.Response(
+            id="b",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a2"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[10, 11, 12, 20, 21, 30, 31],
+                completion_ids=[40, 41],
+                message_spans=[(0, 2), None, (5, 7)],
+                routed_experts=bridged,
+            ),
+        )
+    )
+
+    recovered = sampled_node.routed_experts
+    assert recovered is not None
+    # Did the first turn's final placeholder get corrected?
+    assert bool((recovered[-1] == true_row).all()), (
+        f"expected turn 1's final position to hold {true_row.tolist()}, "
+        f"got {recovered[-1].tolist()}"
+    )
+    assert bool((recovered[:-1] == forwarded_rows).all()), (
+        "only the fabricated final row may change"
+    )
+    assert recovered.flags.owndata
+    branch = trace.branches[-1]
+    assert branch.routed_experts is not None
+    assert branch.routed_experts.shape[0] == len(branch.token_ids)
+
+
 def test_routed_experts_none_when_absent():
     """No routing captured (engine ran without `enable_return_routed_experts`) -> the branch
     reports None and the trainer simply skips replay."""

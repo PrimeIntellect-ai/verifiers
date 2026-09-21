@@ -1,9 +1,7 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
-import asyncio
 import json
 import logging
-import secrets
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -25,7 +23,7 @@ if [ ! -x "$VF_OPENCLAW_BIN" ]; then
     curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
         | bash -s -- --prefix "$VF_OPENCLAW_DIR" --version "$VF_OPENCLAW_VERSION" --no-onboard
 fi
-set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.js')
+set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/transcript-redact-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
 "$VF_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
 const fs = require("node:fs");
@@ -118,7 +116,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2026.8.1"
+    version: PinnedVersion = "2026.9.5"
     """OpenClaw release to install, pinned for reproducibility."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
@@ -130,22 +128,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        if not hasattr(self, "_staged_skills_dir"):
-            self._staged_skills_dir = (
-                f".vf-openclaw/staged-skills-{secrets.token_hex(8)}"
-            )
-            self._skills_setup_lock = asyncio.Lock()
-        if self.config.skills:
-            async with self._skills_setup_lock:
-                # A complete tree is immutable, so concurrent setups can safely reuse it.
-                ready_path = f"{self._staged_skills_dir}/.ready"
-                ready = await runtime.run(["test", "-f", ready_path], {})
-                if ready.exit_code != 0:
-                    await remove_dir(
-                        runtime, self._staged_skills_dir, "OpenClaw skills"
-                    )
-                    await self.install_skills(runtime, self._staged_skills_dir)
-                    await runtime.write(ready_path, b"")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
@@ -198,6 +180,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
+                    "utilityModel": "",  # Disable background recap model calls.
                 }
             },
             "tools": {
@@ -233,14 +216,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         await runtime.write(config_path, json.dumps(config).encode())
-        if self.config.skills:
-            copied = await runtime.run(
-                ["cp", "-R", self._staged_skills_dir, skills_dir], {}
-            )
-            if copied.exit_code != 0:
-                raise RuntimeError(
-                    f"failed to isolate OpenClaw skills: {copied.stderr.strip()[-500:]}"
-                )
+        await self.install_skills(runtime, skills_dir)
 
         env = {
             **self.config.resolved_env,
