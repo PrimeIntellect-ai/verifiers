@@ -118,10 +118,6 @@ async def compose_services(
                     raise SandboxError("Cyclic Compose network_mode service chain")
                 seen.add(owner)
                 owner = services[owner]["network_mode"].split(":", 1)[1]
-            if services.get(owner, {}).get("network_mode") == "host":
-                raise SandboxError(
-                    "Harbor Compose requires an isolated service network"
-                )
             main = config.model_dump(
                 include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
             )
@@ -178,9 +174,13 @@ async def compose_services(
                     prebuilt_image_name=config.image,
                 ).to_env_dict()
             )
-            # Validate authored ports after interpolation, before adding our callback port.
+            # Validate authored services after interpolation, before adding our callback port.
             rendered = json.loads(await compose("config", "--format", "json"))
             for service in rendered["services"].values():
+                if service.get("network_mode") == "host":
+                    raise SandboxError(
+                        "Harbor Compose requires an isolated service network"
+                    )
                 if service.get("gpus") or (
                     service.get("deploy", {})
                     .get("resources", {})
