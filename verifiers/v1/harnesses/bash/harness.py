@@ -6,6 +6,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.core import SERPER_URL
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
@@ -43,9 +44,12 @@ class BashHarnessConfig(HarnessConfig):
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
 
     search: bool = False
-    """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
-    eval environment; the key is handed to the program over argv (like the interception secret) so
-    the agent's `bash` subprocesses don't inherit it."""
+    """Offer a `search` tool (Google web results via a Serper-compatible endpoint).
+    Requires the provider's key in `SERPER_API_KEY` in the eval environment; the key is handed
+    to the program over argv so the agent's `bash` subprocesses don't inherit it."""
+
+    search_url: str = SERPER_URL
+    """Full Serper-compatible search endpoint URL. Defaults to Serper.dev."""
 
     compaction: CompactionConfig | None = None
     """Context compaction policy. Set an empty config to use automatic thresholds."""
@@ -109,7 +113,11 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "bash search=true requires SERPER_API_KEY in the eval environment "
                     "(the host env or the harness config's env)"
                 )
-            args += ["--search", f"--serper-key={serper_key}"]
+            args += [
+                "--search",
+                f"--serper-key={serper_key}",
+                f"--search-url={self.config.search_url}",
+            ]
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,
