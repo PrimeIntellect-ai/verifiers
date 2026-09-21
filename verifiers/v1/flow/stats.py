@@ -32,7 +32,7 @@ class FlowStats(BaseModel):
 
 
 def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
-    """Sum each saved trace's num_total_tokens once, never attachments or extra usage.
+    """Sum final call traces once, never attachments, earlier retries or extra usage.
 
     Unit elapsed time spans its first execution start through its latest finish.
     After TraceStore.index(), pass TraceStore.tokens as the trace-ID mapping.
@@ -57,8 +57,7 @@ def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
                 result.executions[event.execution].finished_at = event.at
         elif (
             isinstance(event, CallEvent)
-            and event.type == "rollout"
-            and event.status == "started"
+            and event.status != "attached"
             and event.trace_id is not None
             and event.trace_id not in seen
         ):

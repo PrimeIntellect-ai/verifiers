@@ -70,12 +70,11 @@ class CallIdentity(BaseModel):
 
 
 class CallEvent(BaseEvent):
-    type: Literal["call", "rollout"] = "call"
+    type: Literal["call"] = "call"
     invocation: CallIdentity
     status: CallStatus
     trace_id: str | None = None
     error: Error | None = None
-    rollout: int | None = None
     source_call: str | None = None
     source_execution: str | None = None
 

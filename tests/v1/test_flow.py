@@ -83,7 +83,9 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     flow = Example(cfg, root=tmp_path)
     assert (await flow.run()).counts == {"terminal": 1}
     assert flow.unit("t").state().data.value == 1 and len(traces) == 2
-    assert all(flow.traces.get(t.id) is not None for t in traces)
+    assert flow.traces.get(traces[0].id) is None
+    assert flow.traces.get(traces[-1].id) is not None
+    assert not list((tmp_path / "live").iterdir())
     with (tmp_path / "transitions.jsonl").open() as file:
         events = [json.loads(line) for line in file]
     assert {e["label"] for e in events if e["type"] == "run_started"} == {flow.label}
@@ -97,14 +99,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     assert (
         attached["source_execution"] == producer["execution"] != consumer["execution"]
     )
-    rollouts = [e for e in events if e["type"] == "rollout"]
-    assert all(e["invocation"] == producer for e in rollouts)
-    assert [(e["rollout"], e["status"]) for e in rollouts] == [
-        (1, "started"),
-        (1, "failed"),
-        (2, "started"),
-        (2, "succeeded"),
-    ]
+    assert produced["trace_id"] == attached["trace_id"] == traces[-1].id
 
 
 async def test_parallel_calls_reuses_successes_until_inputs_change(tmp_path):

@@ -558,6 +558,7 @@ class Flow(Generic[ConfigT]):
             cache=cache,
         )
         token = INVOCATION.set(invocation)
+        trace: Trace | None = None
         try:
             if file is not None and file.exists():
                 record = Record.model_validate_json(file.read_text())
@@ -581,16 +582,22 @@ class Flow(Generic[ConfigT]):
             self.check_running()
             self.event(CallEvent(invocation=invocation, status="started"))
             try:
-                value = await execute()
+                try:
+                    value = await execute()
+                finally:
+                    trace = self.live.current.get(call)
+                    if trace is not None:
+                        await self.traces.append(trace)
             except (Stopped, asyncio.CancelledError):
                 raise
             except Exception as exc:  # noqa: BLE001 - work failures become typed results
-                result = Failure(
-                    exc.error
-                    if isinstance(exc, CallFailed)
-                    else Error(type=type(exc).__name__, message=str(exc)),
-                    exc.trace_id if isinstance(exc, CallFailed) else None,
-                )
+                if isinstance(exc, CallFailed):
+                    result = Failure(exc.error, exc.trace_id)
+                else:
+                    result = Failure(
+                        Error(type=type(exc).__name__, message=str(exc)),
+                        trace.id if trace is not None else None,
+                    )
                 self.event(
                     CallEvent(
                         invocation=invocation,
@@ -624,11 +631,16 @@ class Flow(Generic[ConfigT]):
                 )
             )
             return Success(value)
-        except Stopped:
-            self.event(CallEvent(invocation=invocation, status="stopped"))
-            raise
-        except asyncio.CancelledError:
-            self.event(CallEvent(invocation=invocation, status="cancelled"))
+        except (Stopped, asyncio.CancelledError) as exc:
+            self.event(
+                CallEvent(
+                    invocation=invocation,
+                    status="cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else "stopped",
+                    trace_id=trace.id if trace is not None else None,
+                )
+            )
             raise
         except Exception as exc:
             self.event(
@@ -636,11 +648,14 @@ class Flow(Generic[ConfigT]):
                     invocation=invocation,
                     status="failed",
                     error=Error(type=type(exc).__name__, message=str(exc)),
+                    trace_id=trace.id if trace is not None else None,
                 )
             )
             raise
         finally:
             INVOCATION.reset(token)
+            if kind == "agent":
+                self.live.drop(unit.id, call)
 
     def check_running(self) -> None:
         """Refuse new work after drain, including work that waited for a pool."""

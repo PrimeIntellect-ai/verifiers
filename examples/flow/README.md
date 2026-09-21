@@ -35,6 +35,10 @@ from disk; failures remain retryable. `solver.attempt(...)` returns success or f
 `self.gather(...)` waits for all its calls and settles them on cancellation. Host functions
 use `self.call(func, ..., output=ResultType)` or `self.attempt(...)` with the same contract.
 
+Native Agent owns retries. Flow saves only the final trace (or the current partial trace on
+cancellation), and token totals count only that trace. The live snapshot uses one path per
+call, switching to each new trace and disappearing when the call ends.
+
 For custom turn loops, pass an async `interact(interaction)` function to the agent's `run`
 or `attempt`. It drives native `Interaction.turn`; the complete interaction is one recorded
 call. To share a sandbox, use `async with solver.provision(task) as box`, then pass

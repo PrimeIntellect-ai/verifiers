@@ -15,7 +15,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from verifiers.v1.agent import Agent, Interaction
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.flow.events import CallEvent, CallIdentity
+from verifiers.v1.flow.events import CallIdentity
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
@@ -121,41 +121,7 @@ class _FlowAgent(Agent):
         async def execute() -> Trace:
             flow = self.flow
             invocation = INVOCATION.get()
-            watch = flow.live.watch(invocation.unit, invocation.call)
-            traces: list[Trace] = []
-
-            def finished(trace: Trace, attempt: int) -> None:
-                flow.event(
-                    CallEvent(
-                        type="rollout",
-                        invocation=invocation,
-                        status="succeeded"
-                        if trace.ok
-                        else "failed"
-                        if trace.is_completed
-                        else "cancelled",
-                        rollout=attempt,
-                        trace_id=trace.id,
-                        error=trace.last_error,
-                    )
-                )
-
-            def remember(trace: Trace) -> None:
-                if traces:
-                    finished(traces[-1], len(traces))
-                traces.append(trace)
-                flow.event(
-                    CallEvent(
-                        type="rollout",
-                        invocation=invocation,
-                        status="started",
-                        rollout=len(traces),
-                        trace_id=trace.id,
-                    )
-                )
-                watch(trace)
-                if on_trace is not None:
-                    on_trace(trace)
+            watch = flow.live.watch(invocation.unit, invocation.call, on_trace)
 
             try:
                 async with flow.pools.hold(
@@ -167,7 +133,7 @@ class _FlowAgent(Agent):
                             task,
                             runtime=runtime,
                             tools=tools,
-                            on_trace=remember,
+                            on_trace=watch,
                             collect_artifacts=collect_artifacts,
                         )
                     else:
@@ -175,20 +141,15 @@ class _FlowAgent(Agent):
                             task,
                             runtime=runtime,
                             tools=tools,
-                            on_trace=remember,
+                            on_trace=watch,
                         ) as interaction:
                             await interact(interaction)
                         trace = interaction.trace
             except Exception as exc:
-                if traces and traces[-1].last_error is not None:
-                    raise CallFailed(traces[-1].last_error, traces[-1].id) from exc
+                current = flow.live.current.get(invocation.call)
+                if current is not None and current.last_error is not None:
+                    raise CallFailed(current.last_error, current.id) from exc
                 raise
-            finally:
-                flow.live.drop(invocation.unit, invocation.call)
-                if traces:
-                    finished(traces[-1], len(traces))
-                    for recorded in traces:
-                        await flow.traces.append(recorded)
             if not trace.ok:
                 raise CallFailed(
                     trace.last_error
@@ -218,17 +179,23 @@ class Live:
         self.dir.mkdir(exist_ok=True)
         for stale in self.dir.glob("*.json"):
             stale.unlink()
+        self.current: dict[str, Trace] = {}
         self._active: dict[Path, asyncio.TimerHandle | None] = {}
 
     def _file(self, unit: str, call: str) -> Path:
         return self.dir / f"{unit}--{call}.json"
 
-    def watch(self, unit: str, call: str) -> Callable[[Trace], None]:
+    def watch(
+        self,
+        unit: str,
+        call: str,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> Callable[[Trace], None]:
         file = self._file(unit, call)
         self._active[file] = None
 
         def write(trace: Trace) -> None:
-            if file not in self._active:
+            if self.current.get(call) is not trace:
                 return
             self._active[file] = None
             tmp = file.with_suffix(".tmp")
@@ -236,21 +203,24 @@ class Live:
             os.replace(tmp, file)
 
         def changed(trace: Trace) -> None:
-            if file in self._active and self._active[file] is None:
+            if self.current.get(call) is trace and self._active[file] is None:
                 loop = asyncio.get_running_loop()
                 self._active[file] = loop.call_later(LIVE_EVERY_S, write, trace)
 
-        def on_trace(trace: Trace) -> None:
+        def started(trace: Trace) -> None:
             if (due := self._active.get(file)) is not None:
                 due.cancel()
-                self._active[file] = None
+            self.current[call] = trace
             trace.watch(changed)
-            changed(trace)
+            write(trace)
+            if on_trace is not None:
+                on_trace(trace)
 
-        return on_trace
+        return started
 
     def drop(self, unit: str, call: str) -> None:
         file = self._file(unit, call)
         if (due := self._active.pop(file, None)) is not None:
             due.cancel()
+        self.current.pop(call, None)
         file.unlink(missing_ok=True)
