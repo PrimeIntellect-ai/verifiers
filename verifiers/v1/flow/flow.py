@@ -11,7 +11,7 @@ import signal
 import socket
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import IO, Any, Generic, Self, cast
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from pydantic_core import to_jsonable_python
 from typing_extensions import TypeVar
 
@@ -39,7 +39,7 @@ from verifiers.v1.flow.calls import (
     Success,
     Work,
 )
-from verifiers.v1.flow.config import FlowConfig
+from verifiers.v1.flow.config import FlowConfig, PoolLimits
 from verifiers.v1.flow.events import (
     CallEvent,
     EventRecord,
@@ -66,6 +66,7 @@ from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
 
 logger = logging.getLogger("verifiers.flow")
+_pool_limits = TypeAdapter(PoolLimits)
 
 T = TypeVar("T")
 ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)
@@ -104,16 +105,32 @@ class Stopped(Exception):
 
 class Pools:
     def __init__(self, sizes: dict[str, int]) -> None:
-        self._pools = {name: asyncio.Semaphore(size) for name, size in sizes.items()}
+        self.limits = sizes.copy()
+        self._used: Counter[str] = Counter()
+        self._changed = asyncio.Condition()
+
+    async def resize(self, sizes: PoolLimits) -> None:
+        if sizes.keys() != self.limits.keys():
+            raise ValueError("pool names must match the configured pools")
+        async with self._changed:
+            self.limits = sizes
+            self._changed.notify_all()
 
     @asynccontextmanager
     async def hold(self, names: Iterable[str]) -> AsyncIterator[None]:
         """Hold every named pool for the duration; unknown names are unbounded."""
-        async with AsyncExitStack() as stack:
-            for name in sorted(set(names)):
-                if pool := self._pools.get(name):
-                    await stack.enter_async_context(pool)
+        names = set(names) & self.limits.keys()
+        async with self._changed:
+            await self._changed.wait_for(
+                lambda: all(self._used[n] < self.limits[n] for n in names)
+            )
+            self._used.update(names)
+        try:
             yield
+        finally:
+            async with self._changed:
+                self._used.subtract(names)
+                self._changed.notify_all()
 
 
 def digest(*parts: Any) -> str:
@@ -143,6 +160,7 @@ class Flow(Generic[ConfigT]):
         label_root = root.resolve()
         self.label = f"flow-{label_root.name[:32]}-{digest(socket.gethostname(), str(label_root))[:12]}"
         self.pools = Pools(config.pools)
+        self._pool_text: str | None = None
         self.interception: Interception | None = None
         self._draining = False
         self._lock: IO[str] | None = None
@@ -166,6 +184,8 @@ class Flow(Generic[ConfigT]):
         try:
             os.environ[RUN_LABEL_VAR] = self.label
             (self.root / "flow.json").write_text(self.config.model_dump_json(indent=1))
+            if not (self.root / "pools.json").exists():
+                (self.root / "pools.json").write_text(json.dumps(self.config.pools))
             (self.root / "calls").mkdir(exist_ok=True)
             (self.root / UNITS).mkdir(exist_ok=True)
             trim_torn_tail(self.root / TRANSITIONS)
@@ -231,8 +251,20 @@ class Flow(Generic[ConfigT]):
 
     # -- the loop ---------------------------------------------------------------------------
 
+    async def _refresh_pools(self) -> None:
+        try:
+            text = (self.root / "pools.json").read_text()
+            if text == self._pool_text:
+                return
+            self._pool_text = text
+            await self.pools.resize(_pool_limits.validate_json(text, strict=True))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Rejected pools.json; keeping limits %s: %s", self.pools.limits, exc
+            )
+
     async def run(self) -> RunResult:
-        """Run until nothing is runnable, or drain. Call inside `async with Flow(...)`."""
+        """Run until idle (unless stay_alive) or drain. Call inside `async with Flow(...)`."""
         running: dict[str, tuple[asyncio.Task[None], ExitStack]] = {}
 
         def release(name: str) -> asyncio.Task[None]:
@@ -245,13 +277,18 @@ class Flow(Generic[ConfigT]):
             self.event(RunEvent(type="run_started", label=self.label))
             try:
                 while True:
+                    await self._refresh_pools()
                     if not self.draining:
                         self._launch(running)
                     if not running:
-                        break
+                        if self.draining or not self.config.stay_alive:
+                            break
+                        await asyncio.sleep(2)
+                        continue
                     done, _ = await asyncio.wait(
                         [task for task, _ in running.values()],
                         return_when=asyncio.FIRST_COMPLETED,
+                        timeout=2,
                     )
                     for name, (task, _) in list(running.items()):
                         if task in done:
@@ -276,7 +313,7 @@ class Flow(Generic[ConfigT]):
 
     def _launch(self, running: dict[str, tuple[asyncio.Task[None], ExitStack]]) -> None:
         for unit in self.units():
-            if len(running) >= self.config.pools.get("units", 4) or self.draining:
+            if len(running) >= self.pools.limits.get("units", 4) or self.draining:
                 break
             if unit.id in running or unit.state().status != "ready":
                 continue
@@ -295,8 +332,15 @@ class Flow(Generic[ConfigT]):
     async def _stage(self, unit: Unit, before: UnitState, execution: Execution) -> None:
         name = execution.stage
         self.event(
-            StageEvent(type="started", unit=unit.id, stage=name, execution=execution.id)
+            StageEvent(
+                type="started",
+                unit=unit.id,
+                stage=name,
+                execution=execution.id,
+                error=None,
+            )
         )
+        error = None
         links: list[Link] = []
         token = _LINKS.set(links)
         try:
@@ -311,6 +355,7 @@ class Flow(Generic[ConfigT]):
                     unit=unit.id,
                     stage=name,
                     execution=execution.id,
+                    error=None,
                 )
             )
             if cancelled:
@@ -318,6 +363,7 @@ class Flow(Generic[ConfigT]):
             return
         except Exception as exc:
             logger.exception("%s/%s failed", unit.id, name)
+            error = Error(type=type(exc).__name__, message=str(exc))
             transition = Transition(
                 "held", f"{type(exc).__name__}: {exc}", status="held"
             )
@@ -331,6 +377,7 @@ class Flow(Generic[ConfigT]):
                 unit=unit.id,
                 stage=name,
                 execution=execution.id,
+                error=error,
                 outcome=transition.outcome,
                 to=committed.stage,
                 status=committed.status,

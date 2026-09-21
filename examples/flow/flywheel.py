@@ -8,6 +8,18 @@
 The first run records six answers and holds on two failures. After the operator releases
 it, the second run executes only those two. Changing the declared task inputs reruns all
 slots. Provider availability is operational and deliberately absent from reuse inputs.
+
+For a monitored process, use FlowConfig(stay_alive=True): idle units can be steered
+without relaunching; the drain command ends the run. Data and status can be changed
+together with `steer --data patch.json --expected <revision> --status ready`.
+
+Flow seeds pools.json from config once, then checks for edits about every two seconds.
+Replace the complete mapping atomically (same pool names, positive integer limits):
+    printf '%s\\n' '{"units": 2, "runtimes": 4}' > ./out/pools.json.tmp
+    mv ./out/pools.json.tmp ./out/pools.json
+Limits persist across launches. Lowering them lets admitted work finish; malformed
+updates log a warning and leave the last valid limits in effect.
+Admission rules can read the effective limits from flow.pools.limits.
 """
 
 import argparse

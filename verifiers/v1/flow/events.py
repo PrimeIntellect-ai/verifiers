@@ -51,6 +51,7 @@ class StageEvent(Event):
     unit: str
     stage: str
     execution: str
+    error: Error | None
     outcome: str | None = None
     to: str | None = None
     status: Status | None = None

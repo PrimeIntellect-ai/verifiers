@@ -9,6 +9,8 @@ from verifiers.v1.clients import ClientConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import SamplingConfig
 
+PoolLimits = dict[str, PositiveInt]
+
 
 class FlowConfig(BaseConfig):
     model: str | None = None
@@ -19,8 +21,8 @@ class FlowConfig(BaseConfig):
     """Sampling for seats that pin none; a seat's own values merge on top."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape, as in `EnvConfig`; tunneled when any seat's runtime is remote."""
-    pools: dict[str, PositiveInt] = Field(
-        default_factory=lambda: {"units": 4, "runtimes": 8}
-    )
+    pools: PoolLimits = Field(default_factory=lambda: {"units": 4, "runtimes": 8})
     """How many task stages run at once (`units`) and how many boxes live at once
     (`runtimes`); a pipeline may hold any name it adds."""
+    stay_alive: bool = False
+    """Wait for new runnable work when idle; exit only on drain."""
