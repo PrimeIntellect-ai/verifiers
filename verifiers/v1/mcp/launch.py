@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
@@ -115,7 +116,11 @@ def _build_package(src: Path) -> tuple[str, bytes]:
             for file in files:
                 # Installers regenerate entry-point scripts for the target Python.
                 if ".." in file.parts or file.is_absolute():
-                    if file.name in scripts:
+                    if (
+                        file.name in scripts
+                        and Path(file.locate()).parent.resolve()
+                        == Path(sysconfig.get_path("scripts")).resolve()
+                    ):
                         continue
                     raise ToolsetError(
                         f"cannot package {src}: installed file outside site-packages: {file}"
