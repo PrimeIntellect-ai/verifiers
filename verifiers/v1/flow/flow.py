@@ -150,6 +150,14 @@ class Pipeline(Generic[ConfigT]):
     """Whether a ready, inactive unit may start. Earlier admissions are already active."""
 
 
+@dataclass(frozen=True)
+class FlowEntrypoint(Generic[ConfigT]):
+    """An installed pipeline's config and launch function; the pipeline chooses its exit code."""
+
+    config_type: type[ConfigT]
+    run: Callable[[Path, ConfigT], Awaitable[int]]
+
+
 class Flow(Generic[ConfigT]):
     """Owns a run root: units, call results, traces, events, configuration and launch lock."""
 

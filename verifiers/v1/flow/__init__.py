@@ -15,7 +15,8 @@ GitArtifacts revisions preserve files independently of the unit's workflow HEAD.
 
 Live routes and holds survive stage completion. Only notes present at stage start are
 acknowledged; holds retain them. Data updates require a settled unit and its inspected HEAD.
-The CLI exposes `inspect`, `steer`, and `drain`; pipeline entrypoints own launch and recovery.
+Prime-RL's `flow` CLI launches exported FlowEntrypoint objects and exposes
+`inspect`, `steer`, and `drain`. Pipelines own preparation and success policy.
 """
 
 from verifiers.v1.flow.artifacts import ArtifactRevision, GitArtifacts
@@ -33,6 +34,7 @@ from verifiers.v1.flow.config import FlowConfig
 from verifiers.v1.flow.flow import (
     Ctx,
     Flow,
+    FlowEntrypoint,
     Pipeline,
     RunResult,
     Stopped,
@@ -57,6 +59,7 @@ __all__ = [
     "Failure",
     "Flow",
     "FlowConfig",
+    "FlowEntrypoint",
     "FlowStats",
     "GitArtifacts",
     "Pipeline",
