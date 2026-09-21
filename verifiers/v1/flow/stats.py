@@ -1,4 +1,4 @@
-"""Read-only elapsed time and recorded provider usage, attributed to producing executions."""
+"""Read-only elapsed time and trace token totals, attributed to producing executions."""
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -6,13 +6,12 @@ from datetime import datetime
 from pydantic import BaseModel, Field, computed_field
 
 from verifiers.v1.flow.events import CallEvent, EventRecord, RunEvent, StageEvent
-from verifiers.v1.types import Usage
 
 
 class Stats(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
-    usage: Usage | None = None
+    tokens: int | None = None
 
     @computed_field
     @property
@@ -25,11 +24,6 @@ class Stats(BaseModel):
             - datetime.fromisoformat(self.started_at)
         ).total_seconds()
 
-    @computed_field
-    @property
-    def tokens(self) -> int | None:
-        return self.usage.total_tokens if self.usage is not None else None
-
 
 class FlowStats(BaseModel):
     run: Stats = Field(default_factory=Stats)
@@ -37,13 +31,11 @@ class FlowStats(BaseModel):
     executions: dict[str, Stats] = Field(default_factory=dict)
 
 
-def summarize(
-    events: Iterable[EventRecord], usage: Mapping[str, Usage | None]
-) -> FlowStats:
-    """Count each saved rollout once, including retries and extra usage, never attachments.
+def summarize(events: Iterable[EventRecord], tokens: Mapping[str, int]) -> FlowStats:
+    """Sum each saved trace's num_total_tokens once, never attachments or extra usage.
 
     Unit elapsed time spans its first execution start through its latest finish.
-    After Traces.index(), pass Traces.usage as the trace-ID mapping.
+    After Traces.index(), pass Traces.tokens as the trace-ID mapping.
     """
     result = FlowStats()
     seen: set[str] = set()
@@ -71,14 +63,12 @@ def summarize(
             and event.trace_id not in seen
         ):
             seen.add(event.trace_id)
-            recorded = usage.get(event.trace_id)
+            recorded = tokens.get(event.trace_id)
             if recorded is not None:
                 for target in (
                     result.run,
                     result.units[event.invocation.unit],
                     result.executions[event.invocation.execution],
                 ):
-                    target.usage = Usage.aggregate(
-                        u for u in (target.usage, recorded) if u is not None
-                    )
+                    target.tokens = (target.tokens or 0) + recorded
     return result

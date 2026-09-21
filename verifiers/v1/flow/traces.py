@@ -9,7 +9,6 @@ from pathlib import Path
 
 from verifiers.v1.cli.output import TRACES_FILE, append_trace, type_adapter
 from verifiers.v1.trace import Trace, WireTrace
-from verifiers.v1.types import Usage
 
 
 def trim_torn_tail(file: Path) -> None:
@@ -28,13 +27,13 @@ class Traces:
         self.lock = asyncio.Lock()
         self._index: dict[str, tuple[int, int]] = {}  # id -> (offset, length)
         self._offset = 0
-        self.usage: dict[str, Usage | None] = {}
+        self.tokens: dict[str, int] = {}
 
     async def append(self, trace: Trace) -> None:
         await append_trace(self.root, trace, self.lock, env="flow")
 
     def index(self) -> dict[str, tuple[int, int]]:
-        """Index new complete records, retaining native usage alongside their offsets."""
+        """Index new complete records, retaining native token totals alongside their offsets."""
         if self.file.exists():
             with self.file.open("rb") as file:
                 offset = self._offset
@@ -44,16 +43,8 @@ class Traces:
                         break
                     for t in json.loads(line)["traces"]:
                         self._index[t["id"]] = (offset, len(line))
-                        self.usage[t["id"]] = Usage.aggregate(
-                            Usage.model_validate(u)
-                            for u in [
-                                *(
-                                    c["usage"]
-                                    for c in t["calls"]
-                                    if c.get("usage") is not None
-                                ),
-                                *t.get("extra_usage", []),
-                            ]
+                        self.tokens[t["id"]] = (
+                            type_adapter(WireTrace).validate_python(t).num_total_tokens
                         )
                     offset += len(line)
                 self._offset = offset
