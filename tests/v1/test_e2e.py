@@ -5,9 +5,12 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import os
 import shutil
 import subprocess
 import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +20,126 @@ mark = pytest.mark
 def pair(a: str, b: str, id: str, *extra_marks):
     marks = [getattr(mark, a.replace("-", "_")), getattr(mark, b.replace("-", "_"))]
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
+
+
+def test_sandbox_mcp_from_wheels(tmp_path):
+    """Launch real MCP servers from wheel installs without a source checkout."""
+    repo = Path(__file__).resolve().parents[2]
+    wheels = tmp_path / "wheels"
+    for source in (repo, repo / "tests/v1/fixtures"):
+        subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(wheels), str(source)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    host = tmp_path / "host"
+    # -I below excludes pytest's fixture/source paths from the wheel install.
+    subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(host)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    python = str(host / "bin/python")
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            python,
+            *map(str, wheels.glob("*.whl")),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # A venv nested in a project must not make that unrelated project the server's source.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "unrelated"\nversion = "0.0.0"\n'
+    )
+    script = textwrap.dedent("""
+        import asyncio
+        import json
+        import sys
+        from importlib.metadata import distribution
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        import verifiers
+        from echo_tool_v1 import EchoToolset
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client
+        from verifiers.v1.mcp.launch import _install_in_sandbox, _package_dir, serve_in_runtime
+        from verifiers.v1.mcp.toolset import ToolsetConfig
+        from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
+        from verifiers.v1.tasksets.harbor.toolset import HarborMCPConfig, HarborMCPToolset
+
+        async def main():
+            assert Path(verifiers.__file__).is_relative_to(sys.prefix)
+            for cls in (EchoToolset, HarborMCPToolset):
+                assert Path(_package_dir(cls)).suffix == ".dist-info"
+            for name in ("verifiers", "vf-test-fixtures"):
+                assert not json.loads(distribution(name).read_text("direct_url.json")).get("dir_info")
+
+            # Exercise the sandbox installer with real local file/process I/O;
+            # no provider account or model is needed for this packaging contract.
+            runtime = SubprocessRuntime(SubprocessConfig())
+            runtime.workdir = Path.cwd() / "sandbox"
+            runtime.workdir.mkdir()
+            runtime.config = SimpleNamespace(type="wheel-test", workdir=str(runtime.workdir))
+            echo = EchoToolset(ToolsetConfig())
+            try:
+                first, second = await asyncio.gather(
+                    _install_in_sandbox(echo, runtime),
+                    _install_in_sandbox(echo, runtime.with_env({})),
+                )
+                assert first == second
+                assert len(runtime._mcp_sources) == 2
+                artifacts = list((runtime.workdir / ".vf-src").iterdir())
+                assert len(artifacts) == 2 and all(p.suffix == ".whl" for p in artifacts)
+                check = await runtime.run([first, "-I", "-c", (
+                    "import verifiers, echo_tool_v1, pathlib, sys; "
+                    "assert pathlib.Path(verifiers.__file__).is_relative_to(sys.prefix); "
+                    "assert pathlib.Path(echo_tool_v1.__file__).is_relative_to(sys.prefix); "
+                    "from importlib.metadata import distribution; "
+                    "assert distribution('vf-test-fixtures').requires == ['verifiers']; "
+                    "assert distribution('vf-test-fixtures').locate_file('pyproject.toml').is_file()"
+                )], {})
+                assert check.exit_code == 0, check.stderr
+                assert (runtime.workdir / ".vf-venv/bin/vf-eval").exists()
+                port = await serve_in_runtime(echo, runtime, exposed=False)
+                # Harbor's built-in adapter lives in the Verifiers wheel and must
+                # reuse that installation while forwarding a real upstream tool.
+                adapter = HarborMCPToolset(HarborMCPConfig(server={
+                    "name": "world", "transport": "streamable-http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }))
+                proxy_port = await serve_in_runtime(adapter, runtime, exposed=False)
+                for bound_port in (port, proxy_port):
+                    async with Client(streamable_http_client(f"http://127.0.0.1:{bound_port}/mcp")) as client:
+                        tools = (await client.list_tools()).tools
+                        assert len(tools) == 1
+                        result = await client.call_tool(tools[0].name, {"message": "packaged"})
+                        assert not result.is_error
+                        assert "packaged [ok-7f3]" in str(result.content)
+                assert len(runtime._mcp_sources) == 2
+            finally:
+                await runtime.stop()
+
+        asyncio.run(main())
+    """)
+    result = subprocess.run(
+        ["uv", "run", "--no-project", "--python", python, "python", "-I", "-c", script],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": "", "UV_PYTHON": python},
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.asyncio
