@@ -40,7 +40,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import Artifact, collect
+from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,8 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
+    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
+    """Total byte limit for artifact archives transferred out of each solver runtime."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
@@ -272,7 +274,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         if not self.scoring_deferred:
-            trace.state.artifacts = await collect(runtime, self.data.artifacts)
+            trace.state.artifacts = await collect(
+                runtime, self.data.artifacts, max_bytes=self.data.artifact_max_bytes
+            )
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
@@ -582,6 +586,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         )
     return HarborData(
         idx=idx,
+        artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,
         description=task.description if task else None,
         prompt=harbor_task.instruction.strip(),
