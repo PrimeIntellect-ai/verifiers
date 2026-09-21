@@ -89,8 +89,8 @@ async def run(root: Path, config: Config) -> int:
 
     async with Flow(root, config, Pipeline({"evaluate": evaluate})) as flow:
         flow.create_unit("task", stage="evaluate", data=TaskData())
-        drain_on_interrupt(flow)
-        result = await flow.run()
+        with drain_on_interrupt(flow):
+            result = await flow.run()
         print(result.model_dump_json(indent=2))
         return 0 if result.counts == {"terminal": 1} else 1
 

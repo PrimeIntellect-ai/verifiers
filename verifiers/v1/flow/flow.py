@@ -10,8 +10,15 @@ import os
 import signal
 import socket
 from collections import Counter
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from contextlib import ExitStack, asynccontextmanager
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+)
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
@@ -611,9 +618,9 @@ class Ctx(Generic[D, ConfigT]):
             raise Stopped(self.stage)
 
 
-def drain_on_interrupt(flow: Flow[Any]) -> None:
-    """SIGINT and SIGTERM: the first drains (calls in flight finish, units stay ready), the
-    second cancels."""
+@contextmanager
+def drain_on_interrupt(flow: Flow[Any]) -> Iterator[None]:
+    """First SIGINT/SIGTERM drains, second cancels; restore default handlers on exit."""
     loop, task = asyncio.get_running_loop(), asyncio.current_task()
     assert task is not None
 
@@ -624,5 +631,11 @@ def drain_on_interrupt(flow: Flow[Any]) -> None:
             logger.warning("draining: calls in flight finish; Ctrl-C again cancels")
             flow.drain()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, interrupt)
+    signals = (signal.SIGINT, signal.SIGTERM)
+    try:
+        for sig in signals:
+            loop.add_signal_handler(sig, interrupt)
+        yield
+    finally:
+        for sig in signals:
+            loop.remove_signal_handler(sig)

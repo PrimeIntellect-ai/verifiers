@@ -142,6 +142,7 @@ class Unit(Generic[D]):
             UnitState(stage=stage, data=data).model_dump_json(indent=2) + "\n"
         )
         git(path, "add", "-A")
+        git(path, "add", "-f", "--", STATE, DEFINITION, *(files or {}))
         git(path, "commit", "-q", "-m", "init")
         return cls(path, type(data))
 
@@ -250,6 +251,7 @@ class Unit(Generic[D]):
         self._write_files(self.path, files)
         (self.path / STATE).write_text(state.model_dump_json(indent=2) + "\n")
         git(self.path, "add", "-A")
+        git(self.path, "add", "-f", "--", STATE, *files)
         git(self.path, "commit", "-q", "--allow-empty", "-m", message)
         return self.head()
 

@@ -192,11 +192,13 @@ class FnWork(Work[T]):
 
     async def execute(self, ctx: Ctx[Any, Any]) -> T:
         if inspect.iscoroutinefunction(self.func):
-            value = await self.func(*self.args, **self.kwargs)
+            value = self.func(*self.args, **self.kwargs)
         else:
             value = await run_shielded(
                 asyncio.to_thread(self.func, *self.args, **self.kwargs)
             )
+        if inspect.isawaitable(value):
+            value = await value
         return self.output.validate_python(value)
 
     def dump(self, value: T) -> StoredValue:
