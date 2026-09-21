@@ -36,7 +36,7 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run debug [<taskset-id>] (--command <cmd> | --script-path <path>) "
+    "usage: uv run vf-debug [<taskset-id>] (--command <cmd> | --script-path <path>) "
     "[--runtime.type subprocess] [options] [@ file.toml]\n"
     "       runs setup, then one command or uploaded host script, and saves traces"
 )

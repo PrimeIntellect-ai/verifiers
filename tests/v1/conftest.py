@@ -5,7 +5,8 @@ settings that still exercise the path, then assert on the resulting `Trace`(s) �
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
 without one the `e2e`-marked tests skip (config parsing still runs).
 
-`run_v1` mirrors the eval CLI's in-process path (`run_eval` with `--no-serve`). Placement coverage (harness x harness runtime x tool
+`run_v1` mirrors the eval CLI (`run_eval`, in-process); `run_v1_server` drives the same env
+through an env-server worker pool, the path prime-rl trains through. Placement coverage (harness x harness runtime x tool
 server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
 combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
 distinct networking. The full cross bought flake exposure and CI minutes, not coverage — add
@@ -24,7 +25,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
     uv run pytest tests/v1 -n auto -m e2b                         # only e2b (real sandboxes; local)
 
-Marks: runtimes `subprocess` / `docker` / `prime` / `modal` / `e2b`, placement `colocated`,
+Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal` / `e2b`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
@@ -33,6 +34,7 @@ prime/modal/e2b provision real remote sandboxes (slow, infra-flaky, need setup),
 CI runs deterministic tests across the Python matrix and the remaining live E2Es once.
 """
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -131,9 +133,7 @@ def _eval_config(
     taskset_overrides: dict | None = None,
     runtime: dict | None = None,
     env: dict | None = None,
-    pool: dict | None = None,
     reasoning_effort: str | None = None,
-    server: bool = False,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
@@ -185,7 +185,6 @@ def _eval_config(
             "reasoning_effort": reasoning_effort,
         },
         rich=None,
-        serve=({"pool": pool} if pool else {}) if server else None,
         output_dir=output_dir.parent,
         run={"dir": output_dir.name},
         model=CI_MODEL,
@@ -195,8 +194,7 @@ def _eval_config(
 
 @pytest.fixture
 def run_v1():
-    """Run a v1 taskset end-to-end in-process (`run_eval` with `--no-serve`) and return
-    its traces."""
+    """Run a v1 taskset end-to-end in-process (`run_eval`) and return its traces."""
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
@@ -209,17 +207,56 @@ def run_v1():
 
 @pytest.fixture
 def run_v1_server():
-    """Run a v1 taskset through the env-server worker pool (`run_eval`'s default path) —
-    the path a CLI run and prime-rl training both take. Spawns the broker + a worker, so
-    it's the only fixture that exercises serving resources (shared tool servers,
-    interception pool) being stood up by the *server* rather than the in-process runner.
-    Pinned to a single static worker for determinism."""
+    """Run a v1 taskset through an env-server worker pool — the path prime-rl trains
+    through. Spawns the broker + a worker, so it's the only fixture that exercises
+    serving resources (shared tool servers, interception pool) being stood up by the
+    *server* rather than the in-process runner. Pinned to a single static worker for
+    determinism."""
+    import multiprocessing as mp
+
+    from verifiers.v1.serve import EnvClient, env_config_data, serve_env
+    from verifiers.v1.utils.loaders import load_taskset
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
-        kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
-        config = _eval_config(taskset, server=True, **kwargs)
-        records = await run_eval(config)
-        return [t for r in records for t in r.traces]
+        config = _eval_config(taskset, **kwargs)
+        tasks = list(load_taskset(config.env.taskset).head(config.num_tasks))
+        mpctx = mp.get_context("spawn")
+        address_queue: mp.Queue = mpctx.Queue()
+        proc = mpctx.Process(
+            target=serve_env,
+            kwargs={
+                "max_workers": 1,
+                "elastic": False,
+                "address": "tcp://127.0.0.1:0",
+                "address_queue": address_queue,
+                "config_data": env_config_data(config.env),
+                "max_concurrent": config.max_concurrent,
+            },
+        )
+        proc.start()
+        try:
+            address = await asyncio.to_thread(address_queue.get, timeout=600)
+            client = EnvClient(address=address)
+            try:
+                await client.wait_for_server_startup(timeout=600)
+                episodes = await asyncio.gather(
+                    *(
+                        client.run(
+                            client=config.client,
+                            model=config.model,
+                            sampling=config.sampling,
+                            task_data=task.data.model_dump(mode="json"),
+                        )
+                        for task in tasks
+                        for _ in range(config.num_rollouts)
+                    )
+                )
+            finally:
+                await client.close()
+        finally:
+            proc.terminate()
+            await asyncio.to_thread(proc.join, 10)
+        return [t for e in episodes for t in e.traces]
 
     return _run
 

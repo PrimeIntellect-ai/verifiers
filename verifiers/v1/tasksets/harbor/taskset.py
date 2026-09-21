@@ -40,7 +40,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import Artifact, collect
+from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,8 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
+    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
+    """Total byte limit for artifact archives transferred out of each solver runtime."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
@@ -75,10 +77,10 @@ class HarborConfig(TasksetConfig):
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     ignore_timeouts: bool = True
-    """Drop each task's declared agent and verifier timeouts so rollouts run
-    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
-    authored against Harbor's runtime and confound model capability with inference
-    speed; set False to apply them anyway."""
+    """Drop each task's declared agent and verifier timeouts so rollouts use the
+    run-level `--timeout.*` limits or their defaults (4 h for the agent; `--timeout.rollout 0`
+    runs unbounded). Task timeouts are authored against Harbor's runtime and confound
+    model capability with inference speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
     """Scale each task's agent and verifier timeouts. Only applies with
     `ignore_timeouts=False`."""
@@ -272,7 +274,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         if not self.scoring_deferred:
-            trace.state.artifacts = await collect(runtime, self.data.artifacts)
+            trace.state.artifacts = await collect(
+                runtime, self.data.artifacts, max_bytes=self.data.artifact_max_bytes
+            )
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
@@ -393,6 +397,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment if fresh else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
+            "skills": [],
             "mcp_servers": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
@@ -581,6 +586,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         )
     return HarborData(
         idx=idx,
+        artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,
         description=task.description if task else None,
         prompt=harbor_task.instruction.strip(),
@@ -612,6 +618,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),
@@ -729,9 +736,7 @@ def parse_verifier_environment(
             "the task never declared",
             task_dir.name,
         )
-    unsupported = [
-        field for field in ("skills_dir", "tpu") if getattr(environment, field, None)
-    ]
+    unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
             f"{task_dir.name}: verifier environment declares "

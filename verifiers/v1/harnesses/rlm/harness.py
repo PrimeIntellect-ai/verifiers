@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import secrets
 import shlex
 from typing import Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -68,16 +69,16 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="ad081dbcf5e8c1d4e5b431b4b7d4dd5f30b7367c", min_length=1
+        default="fc5734d20c5fe74f6ab527ecb7ab10299f3bb965", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
     max_depth: NonNegativeInt | None = None
     """Recursion depth RLM may spawn sub-agents to; `None` = nano-rlm's default (1).
     Set 0 to disable recursion."""
-    builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
-    """Built-in rlm skills to enable (the contract's `skills`), e.g. `["edit"]`;
-    empty enables none. The base `skills` field takes SKILL.md paths."""
+    builtin_skills: list[BuiltinSkill] = Field(default_factory=lambda: ["edit"])
+    """Built-in rlm skills to enable (the contract's `skills`); `["edit"]` by default,
+    `[]` enables none. The base `skills` field takes SKILL.md paths."""
     builtin_tools: list[BuiltinTool] | None = None
     """Native tool selection; None uses nano-rlm's default and is omitted from the
     runtime contract. Explicit selection requires a nano-rlm ref supporting it."""
@@ -90,7 +91,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Sub-agents running at once per session tree; `None` = nano-rlm's default (4),
     raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_subagent_calls: PositiveInt | None = None
-    """Tree-total recursive call cap; `None` uses nano-rlm's default (64)."""
+    """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
@@ -101,10 +102,11 @@ class RLMHarnessConfig(HarnessConfig):
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
-    max_total_tokens: PositiveInt | None = None
+    max_total_tokens: NonNegativeInt | None = 10_000_000
     """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
-    tree; once spent every engine stops and no further sub-agents spawn. `None` uses
-    nano-rlm's default (1,000,000); it does not disable the budget."""
+    tree; once spent every engine stops and no further sub-agents spawn. 10M by default;
+    `0` removes the budget (the rollout timeout is then the only terminator); `None`
+    defers to nano-rlm's own default (1,000,000)."""
     max_tool_output_bytes: PositiveInt | None = None
     """Byte budget for a single tool result entering the conversation (middle truncation);
     overrides rlm's built-in 20KB default in either direction."""
@@ -139,11 +141,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
-        # Before the installer: install.sh packages the skills it finds.
-        await self.install_skills(runtime, SKILLS_DIR)
+        if self.config.skills:
+            # Editable skill packages and uv's tool environment must belong to this run.
+            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
         directory = self._install_dir()
+        skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
+        await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
@@ -154,7 +160,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
             f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
@@ -192,7 +200,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
-            "max_total_tokens": self.config.max_total_tokens,
+            "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
         }
         if isinstance(compaction, bool):
@@ -217,7 +225,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
             "policy": {
-                key: value for key, value in policy_knobs.items() if value is not None
+                **{k: v for k, v in policy_knobs.items() if v is not None},
+                # explicit null: nano-rlm reads it as unbounded (its own default is 1M)
+                **(
+                    {"max_total_tokens": None}
+                    if self.config.max_total_tokens == 0
+                    else {}
+                ),
             },
             "system_prompt_path": None,
             "append_to_system_prompt": "\n\n".join(appends) or None,
@@ -272,6 +286,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        if self._skills_install_dir is not None:
+            await remove_dir(
+                runtime, self._skills_install_dir, "RLM skill installation"
+            )
 
     @staticmethod
     def _home(trace: Trace) -> str:
@@ -279,4 +297,4 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
-        return f"{RLM_CACHE_DIR}-{cache_key}"
+        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{cache_key}"

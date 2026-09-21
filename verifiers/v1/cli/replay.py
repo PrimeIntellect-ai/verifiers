@@ -39,7 +39,7 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run replay <output-dir> [options] [@ file.toml]\n"
+    "usage: uv run vf-replay <output-dir> [options] [@ file.toml]\n"
     "       re-score a finished run's saved traces (judges + trace-only signals; no runtime)"
 )
 

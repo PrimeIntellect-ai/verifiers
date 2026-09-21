@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
-from verifiers.v1.utils.artifacts import Artifact
+from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -59,7 +60,7 @@ class TaskResources(BaseModel):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
-    """Disk in GB (enforced by prime; advisory on docker/modal)."""
+    """Disk in GB (enforced by prime; advisory on local containers and modal)."""
 
 
 class TaskTimeout(BaseModel):
@@ -97,11 +98,13 @@ class TaskData(BaseModel):
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
 
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Skill sources installed before the harness's configured skills for this task."""
+
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
     allowlist unchanged; a concrete list replaces a wildcard or retains entries also
-    present in an existing allowlist. Prime runtimes accept host-level entries and
-    require `vm=true`."""
+    present in an existing allowlist. Prime runtimes accept host-level entries."""
     network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
@@ -112,6 +115,8 @@ class TaskData(BaseModel):
     on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
     runtime outputs that must cross that boundary. A declared path that is missing at
     collection time fails the rollout."""
+    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
+    """Total byte limit for collected artifact archives, including the convention dir."""
 
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
