@@ -39,11 +39,12 @@ touch {ready}
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
-# Hooks in the system config layer count as managed: trusted and enabled without the
-# per-definition trust hash a user-layer hooks.json would need.
-GATE_CONFIG = f"""[[hooks.PreToolUse]]
-hooks = [{{ type = "command", command = '{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"', timeout = 120 }}]
-"""
+GATE_HANDLER = {
+    "type": "command",
+    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+    "timeout": 120,
+    "async": False,
+}
 
 
 class CodexHarnessConfig(HarnessConfig):
@@ -134,8 +135,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str
     ) -> None:
-        if runtime.type == "subprocess":
-            raise ValueError("Codex tool interception requires an isolated runtime")
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
         await runtime.write(
@@ -144,47 +143,28 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             .replace("__SECRET__", json.dumps(secret))
             .encode(),
         )
-        home = config.env["CODEX_HOME"]
-        exists = await runtime.run(["test", "-f", "/etc/codex/config.toml"], {})
-        settings = (
-            tomllib.loads((await runtime.read("/etc/codex/config.toml")).decode())
-            if exists.exit_code == 0
-            else {}
-        )
-        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).extend(
-            tomllib.loads(GATE_CONFIG)["hooks"]["PreToolUse"]
-        )
-        result = await runtime.run(
-            [
-                "sh",
-                "-c",
-                'if test -e /etc/codex/config.toml || test -L /etc/codex/config.toml; then mv /etc/codex/config.toml "$1/system-config.toml"; else touch "$1/no-system-config"; fi',
-                "vf-gate",
-                home,
-            ],
+        # Codex keys hook trust by the config's canonical path, resolving symlinks.
+        home = await runtime.run(
+            ["sh", "-c", 'cd "$1" && pwd -P', "vf-gate", config.env["CODEX_HOME"]],
             {},
         )
-        if result.exit_code:
-            raise RuntimeError(
-                f"could not preserve Codex system config: {result.stderr}"
-            )
-        await runtime.write("/etc/codex/config.toml", tomli_w.dumps(settings).encode())
+        if home.exit_code:
+            raise RuntimeError(f"could not resolve Codex home: {home.stderr}")
+        path = f"{home.stdout.strip()}/config.toml"
+        settings = tomllib.loads((await runtime.read(path)).decode())
+        # User hooks require a hash of Codex's normalized definition. Keeping the
+        # definition and its trust entry in this rollout's home avoids shared state.
+        identity = {"event_name": "pre_tool_use", "hooks": [GATE_HANDLER]}
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        settings["hooks"] = {
+            "PreToolUse": [{"hooks": [GATE_HANDLER]}],
+            "state": {f"{path}:pre_tool_use:0:0": {"trusted_hash": f"sha256:{digest}"}},
+        }
+        await runtime.write(path, tomli_w.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(
-            [
-                "sh",
-                "-c",
-                'if test -e "$1/system-config.toml" || test -L "$1/system-config.toml"; then mv -f "$1/system-config.toml" /etc/codex/config.toml; elif test -f "$1/no-system-config"; then rm -f /etc/codex/config.toml; fi',
-                "vf-gate",
-                self.trace_home(trace),
-            ],
-            {},
-        )
-        if result.exit_code:
-            raise RuntimeError(
-                f"could not restore Codex system config: {result.stderr}"
-            )
         await remove_dir(runtime, self.trace_home(trace), "Codex home")
 
     @staticmethod
