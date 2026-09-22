@@ -158,49 +158,45 @@ async def connect_mcp(
     config: dict[str, Any], stack: AsyncExitStack, reserved: set[str] | None = None
 ) -> tuple[
     list[dict[str, Any]],
-    dict[str, tuple[str, str]],
-    dict[str, MCPConnection],
+    dict[str, tuple[MCPConnection, str]],
 ]:
-    """Enumerate MCP tools and return their schemas, dispatch map, and servers."""
+    """Enumerate MCP tools and map each schema to its connection and tool name."""
     tool_schemas: list[dict[str, Any]] = []
-    dispatch: dict[str, tuple[str, str]] = {}
-    servers: dict[str, MCPConnection] = {}
+    dispatch: dict[str, tuple[MCPConnection, str]] = {}
     reserved = reserved or set()
     for name, spec in config.get("mcpServers", {}).items():
-        server = servers[name] = MCPConnection(spec)
+        server = MCPConnection(spec)
         stack.push_async_callback(server.aclose)
-        tools = []
         cursor = None
         seen: set[str] = set()
         while True:
             result = await server.run(
                 lambda client, cursor=cursor: client.list_tools(cursor=cursor)
             )
-            tools.extend(result.tools)
+            for tool in result.tools:
+                full = f"{name}_{tool.name}" if name else tool.name
+                if full in reserved or full in dispatch:
+                    raise ValueError(
+                        f"duplicate tool name {full!r}; keep MCP tool names qualified"
+                    )
+                tool_schemas.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": full,
+                            "description": tool.description or "",
+                            "parameters": tool.input_schema,
+                        },
+                    }
+                )
+                dispatch[full] = (server, tool.name)
             cursor = result.next_cursor
             if cursor is None:
                 break
             if cursor in seen:
                 raise ValueError("MCP tools pagination returned a repeated cursor")
             seen.add(cursor)
-        for tool in tools:
-            full = f"{name}_{tool.name}" if name else tool.name
-            if full in reserved or full in dispatch:
-                raise ValueError(
-                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
-                )
-            tool_schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": full,
-                        "description": tool.description or "",
-                        "parameters": tool.input_schema,
-                    },
-                }
-            )
-            dispatch[full] = (name, tool.name)
-    return tool_schemas, dispatch, servers
+    return tool_schemas, dispatch
 
 
 def mcp_content_to_chat_content(
@@ -224,15 +220,12 @@ def mcp_content_to_chat_content(
 
 
 async def call_mcp(
-    servers: dict[str, MCPConnection],
-    dispatch: dict[str, tuple[str, str]],
+    dispatch: dict[str, tuple[MCPConnection, str]],
     name: str,
     arguments: dict[str, Any],
 ) -> str | list[dict[str, Any]]:
     """Reuse the rollout's client, reconnecting before retrying a failed call."""
-    server_name, raw = dispatch[name]
+    server, raw = dispatch[name]
 
-    result = await servers[server_name].run(
-        lambda client: client.call_tool(raw, arguments)
-    )
+    result = await server.run(lambda client: client.call_tool(raw, arguments))
     return mcp_content_to_chat_content(result.content)

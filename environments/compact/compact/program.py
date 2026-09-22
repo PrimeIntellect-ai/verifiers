@@ -78,7 +78,7 @@ async def main() -> None:
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
     async with AsyncExitStack() as stack:
-        tools, dispatch, servers = await connect_mcp(config, stack, {"summarize"})
+        tools, dispatch = await connect_mcp(config, stack, {"summarize"})
         toolset = [*tools, SUMMARIZE]
         while True:  # each turn is a fresh prompt — a new branch
             # The rewrite: the task on the first turn, then only the carried-over notes.
@@ -99,7 +99,7 @@ async def main() -> None:
                 notes = args.get("notes") or notes
                 continue
             result = (
-                await call_mcp(servers, dispatch, call.function.name, args)
+                await call_mcp(dispatch, call.function.name, args)
                 if call.function.name in dispatch
                 else f"error: unknown tool {call.function.name!r}"
             )

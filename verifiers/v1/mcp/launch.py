@@ -145,9 +145,9 @@ async def serve_in_runtime(
     runtime: Runtime,
     *,
     exposed: bool,
+    python: str,
     state_url: str | None = None,
     state_secret: str = "",
-    python: str | None = None,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -175,7 +175,6 @@ async def serve_in_runtime(
     else:
         port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
         env["MCP_PORT_FILE"] = port_file
-    python = python or (sys.executable if runtime.type == "subprocess" else "python3")
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
@@ -234,7 +233,7 @@ class _ServedServer:
 
 
 @contextlib.asynccontextmanager
-async def _serve(
+async def serve(
     server: ServerBase,
     harness_runtime: Runtime | None = None,
     harness_is_local: bool = True,
@@ -242,8 +241,8 @@ async def _serve(
     state_secret: str = "",
     state_base: str | None = None,
     packages: Sequence[str] = (),
-    python: str | None = None,
 ):
+    """Serve one MCP server and yield its consumer-visible URL and runtime."""
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
     async with contextlib.AsyncExitStack() as stack:
@@ -274,15 +273,13 @@ async def _serve(
         state_url = (
             runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
-        if python is None:
-            python = await prepare_packages(packages, runtime)
         port = await serve_in_runtime(
             server,
             runtime,
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
-            python=python,
+            python=await prepare_packages(packages, runtime),
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read
@@ -304,30 +301,6 @@ async def _serve(
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
         yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
-
-
-@contextlib.asynccontextmanager
-async def serve(
-    server: ServerBase,
-    harness_runtime: Runtime | None = None,
-    harness_is_local: bool = True,
-    *,
-    state_secret: str = "",
-    state_base: str | None = None,
-    packages: Sequence[str] = (),
-    python: str | None = None,
-):
-    """Serve one MCP server and yield the URL visible to its consumer."""
-    async with _serve(
-        server,
-        harness_runtime,
-        harness_is_local,
-        state_secret=state_secret,
-        state_base=state_base,
-        packages=packages,
-        python=python,
-    ) as served:
-        yield served.url
 
 
 @dataclass(frozen=True)
@@ -391,7 +364,7 @@ async def serve_shared(
                     secrets.token_urlsafe(24) if toolset._state_cls is not State else ""
                 )
                 served = await stack.enter_async_context(
-                    _serve(
+                    serve(
                         toolset,
                         harness_is_local=harness_is_local,
                         state_secret=state_secret,
@@ -451,11 +424,6 @@ async def serve_tools(
     `state_base` is universally reachable from either placement."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
-        python = None
-        if any(
-            toolset.config.colocated and not toolset.config.url for toolset in toolsets
-        ):
-            python = await prepare_packages(packages, harness_runtime)
         for name, server in (shared or {}).items():
             if server.external:
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
@@ -479,15 +447,15 @@ async def serve_tools(
                 urls[name] = harness_runtime.host_url(cfg.url)
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             else:
-                urls[name] = await stack.enter_async_context(
+                served = await stack.enter_async_context(
                     serve(
                         toolset,
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
                         packages=packages,
-                        python=python if cfg.colocated else None,
                     )
                 )
+                urls[name] = served.url
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
