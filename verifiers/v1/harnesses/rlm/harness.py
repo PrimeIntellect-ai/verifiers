@@ -69,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="fc5734d20c5fe74f6ab527ecb7ab10299f3bb965", min_length=1
+        default="a42cc61ae3356bef82b301c01c6de1cdf302613e", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -95,7 +95,7 @@ class RLMHarnessConfig(HarnessConfig):
     delegation_prompt: bool | None = None
     """Append nano-rlm's delegation guidance (when to spawn children, how to brief,
     watch, collect and reconcile them) for every agent that can still delegate; `None`
-    uses nano-rlm's default (off). Needs a nano-rlm version with `policy.delegation_prompt`."""
+    uses nano-rlm's default (off)."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
