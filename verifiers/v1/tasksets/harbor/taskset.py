@@ -55,15 +55,9 @@ REWARD_JSON_ADAPTER = TypeAdapter(
 )
 
 
-class HarborTaskConfig(TaskConfig):
-    mcp_servers: list[dict] = Field(default_factory=list)
-    """Task-declared connections, bound from HarborData during construction."""
-
-
 class HarborConfig(TasksetConfig):
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
-    task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
     tag, integer revision, or sha256 digest. Legacy registries selected with `repo`,
@@ -160,8 +154,6 @@ class HarborData(TaskData):
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
-    mcp_servers: list[dict] = Field(default_factory=list)
-    """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_host_image: str | None = None
     """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
     when the image lacks it, and `docker save` archives it ships in
@@ -183,24 +175,10 @@ class HarborData(TaskData):
     grades in the agent's box."""
 
 
-class HarborTask(Task[HarborData, State, HarborTaskConfig]):
+class HarborTask(Task[HarborData, State, TaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
-
-    def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
-        super().__init__(data, config)
-        # Each reconstructed row gets its own connections without mutating worker config.
-        self.config = self.config.model_copy(update={"mcp_servers": data.mcp_servers})
-
-    @classmethod
-    def toolsets(cls, config: HarborTaskConfig):
-        from .toolset import HarborMCPConfig, HarborMCPToolset
-
-        return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
-            for server in config.mcp_servers
-        ]
 
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
@@ -444,7 +422,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
             "skills": [],
-            "mcp_servers": [],
+            "mcp_servers": {},
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -643,6 +621,10 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         if verifier is not None and parsed.verifier.environment is not None
         else None
     )
+    if len({server.name for server in environment.mcp_servers}) != len(
+        environment.mcp_servers
+    ):
+        raise ValueError("duplicate Harbor MCP server names")
     environment_dir = task_dir / "environment"
     upload_environment = should_upload_environment_dir(
         environment_dir,
@@ -698,10 +680,17 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         task_dir=str(task_dir),
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
-        **environment.model_dump(
-            include={"env", "healthcheck", "mcp_servers"}, mode="json"
-        ),
         verifier_image=verifier_image,
+        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        mcp_servers={
+            server.name: server.model_dump(
+                include={"transport", "command", "args"}
+                if server.transport == "stdio"
+                else {"transport", "url"},
+                mode="json",
+            )
+            for server in environment.mcp_servers
+        },
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,

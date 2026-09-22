@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -25,6 +26,8 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
     # Bundled chat programs also run without tools; load MCP only when it is used.
     import httpx2
     from mcp import Client
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
@@ -32,16 +35,37 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
 
     stack = AsyncExitStack()
     try:
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(
-                headers=spec.get("headers") or None,
-                timeout=httpx2.Timeout(
-                    spec.get("timeout", MCP_TIMEOUT),
-                    connect=spec.get("connect_timeout", 5.0),
-                ),
-            )
+        kind = spec.get(
+            "transport", "stdio" if "command" in spec else "streamable-http"
         )
-        transport = streamable_http_client(spec["url"], http_client=http_client)
+        if kind == "stdio":
+            transport = stdio_client(
+                StdioServerParameters(
+                    command=spec["command"],
+                    args=spec.get("args", []),
+                    env={**os.environ, **spec.get("env", {})},
+                )
+            )
+        elif kind == "sse":
+            transport = sse_client(
+                spec["url"],
+                headers=spec.get("headers"),
+                timeout=spec.get("connect_timeout", 5.0),
+                sse_read_timeout=spec.get("timeout", MCP_TIMEOUT),
+            )
+        elif kind == "streamable-http":
+            http_client = await stack.enter_async_context(
+                create_mcp_http_client(
+                    headers=spec.get("headers") or None,
+                    timeout=httpx2.Timeout(
+                        spec.get("timeout", MCP_TIMEOUT),
+                        connect=spec.get("connect_timeout", 5.0),
+                    ),
+                )
+            )
+            transport = streamable_http_client(spec["url"], http_client=http_client)
+        else:
+            raise ValueError(f"unsupported MCP transport: {kind!r}")
         yield await stack.enter_async_context(Client(transport))
     finally:
         with suppress(Exception):
@@ -145,8 +169,21 @@ async def connect_mcp(
     for name, spec in config.get("mcpServers", {}).items():
         server = servers[name] = MCPConnection(spec)
         stack.push_async_callback(server.aclose)
-        result = await server.run(lambda client: client.list_tools())
-        for tool in result.tools:
+        tools = []
+        cursor = None
+        seen: set[str] = set()
+        while True:
+            result = await server.run(
+                lambda client, cursor=cursor: client.list_tools(cursor=cursor)
+            )
+            tools.extend(result.tools)
+            cursor = result.next_cursor
+            if cursor is None:
+                break
+            if cursor in seen:
+                raise ValueError("MCP tools pagination returned a repeated cursor")
+            seen.add(cursor)
+        for tool in tools:
             full = f"{name}_{tool.name}" if name else tool.name
             if full in reserved or full in dispatch:
                 raise ValueError(

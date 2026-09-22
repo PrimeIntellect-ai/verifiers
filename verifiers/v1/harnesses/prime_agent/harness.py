@@ -178,7 +178,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         if self.config.disabled_tools:

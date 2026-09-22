@@ -34,7 +34,9 @@ class HarnessConfig(BaseConfig):
     mcp_header_env: dict[str, dict[str, str]] = Field(default_factory=dict)
     """ACP MCP headers by server name: header values are read from host env vars."""
 
-    def resolve_mcp_headers(self, servers: dict[str, str]) -> dict[str, dict[str, str]]:
+    def resolve_mcp_headers(
+        self, servers: dict[str, dict]
+    ) -> dict[str, dict[str, str]]:
         resolved = {}
         for name, headers in self.mcp_header_env.items():
             if name not in servers:

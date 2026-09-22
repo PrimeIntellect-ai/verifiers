@@ -40,7 +40,7 @@ async def launch_chat_program(
     runtime: Runtime,
     endpoint: str,
     secret: str,
-    mcp_urls: dict[str, str],
+    mcp_servers: dict[str, dict],
     system_prompt: str | None,
     prompt: str | Messages | None,
     *,
@@ -57,14 +57,14 @@ async def launch_chat_program(
     ]
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
-    if mcp_urls:
+    if mcp_servers:
         args.append(
             "--mcp-config="
             + json.dumps(
                 {
                     "mcpServers": {
-                        name: {"url": url, "timeout": config.tool_timeout}
-                        for name, url in mcp_urls.items()
+                        name: {**server, "timeout": config.tool_timeout}
+                        for name, server in mcp_servers.items()
                     }
                 }
             )

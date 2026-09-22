@@ -37,12 +37,12 @@ class MyHarness(Harness[MyHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         # Run the harness in its respective runtime to completion
         # The model (interception) endpoint is in endpoint
-        # mcp_urls are the URLs of the tools from the toolset (if registered)
+        # mcp_servers contains MCP connection definitions (command/args or URL)
 
         # Resolve the task's prompt (and system prompt) for this harness
         _, prompt = self.resolve_prompt(data)

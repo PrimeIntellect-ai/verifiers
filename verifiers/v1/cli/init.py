@@ -153,7 +153,7 @@ class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
         runtime: vf.Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: vf.TaskData,
     ) -> vf.ProgramResult:
         raise NotImplementedError(

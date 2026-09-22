@@ -9,7 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Generic, Self, cast
@@ -268,6 +268,7 @@ class Agent:
         config: AgentConfig,
         *,
         interception: Interception | None = None,
+        mcp_packages: Sequence[str] = (),
     ) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
@@ -294,6 +295,7 @@ class Agent:
         self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
+        self._mcp_packages = tuple(mcp_packages)
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
@@ -557,7 +559,11 @@ class Agent:
             harness,
             type(task),
             runtime_config,
-            tools=[*task.toolsets(task.config), *shared_tools.values()],
+            tools=[
+                *task.toolsets(task.config),
+                *shared_tools.values(),
+                *task.data.mcp_servers.values(),
+            ],
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -571,6 +577,7 @@ class Agent:
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
+            "mcp_packages": self._mcp_packages,
             "interception": self._interception_for(run_is_local, task, shared_tools),
             "runtime": runtime,
         }
@@ -606,6 +613,7 @@ class _EpisodeAgent(Agent):
         interception: Interception | None,
         name: str,
         shared_tools: Mapping[str, SharedToolServer],
+        mcp_packages: Sequence[str],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
         completed: list[Trace],
@@ -613,7 +621,7 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
-        super().__init__(config, interception=interception)
+        super().__init__(config, interception=interception, mcp_packages=mcp_packages)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
