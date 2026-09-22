@@ -205,7 +205,11 @@ class Interaction:
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
         before answering. A `terminated` segment means the run ended instead of
         answering (the message went unconsumed)."""
-        async with self._lock, self._agent_runs or nullcontext[None](), self._episode_runs or nullcontext():
+        async with (
+            self._lock,
+            self._agent_runs or nullcontext[None](),
+            self._episode_runs or nullcontext(),
+        ):
             return await self._turn(message)
 
     async def _turn(self, message: str | Messages | None) -> Segment:
@@ -259,7 +263,11 @@ class Interaction:
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
-        async with self._lock, self._agent_runs or nullcontext(), self._episode_runs or nullcontext():
+        async with (
+            self._lock,
+            self._agent_runs or nullcontext(),
+            self._episode_runs or nullcontext(),
+        ):
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
             return await self._run.close()
@@ -525,7 +533,10 @@ class Agent:
         interaction = Interaction(
             run, episode_runs=self._episode_runs, agent_runs=self._agent_runs
         )
-        async with self._agent_runs or nullcontext(), self._episode_runs or nullcontext():
+        async with (
+            self._agent_runs or nullcontext(),
+            self._episode_runs or nullcontext(),
+        ):
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
                 trace = await run.close()
@@ -673,7 +684,10 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> Trace:
-        async with self._agent_runs or nullcontext(), self._episode_runs or nullcontext():
+        async with (
+            self._agent_runs or nullcontext(),
+            self._episode_runs or nullcontext(),
+        ):
             trace = await super().run(
                 task,
                 runtime=runtime,
