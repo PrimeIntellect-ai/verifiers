@@ -22,7 +22,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     blocked_url,
     parse_sse_event,
-    provider_allowed_domains,
+    provider_domains,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -128,10 +128,14 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
+def blocked_content_path(
+    value, path: str, policy: NetworkPolicyConfig, blocked_urls: list[str]
+) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
+            if blocked := blocked_content_path(
+                item, f"{path}[{index}]", policy, blocked_urls
+            ):
                 return blocked
         return None
     if not isinstance(value, dict):
@@ -151,11 +155,11 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
         source_kind = source.get("type")
         if source_kind == "content":
             return blocked_content_path(
-                source.get("content"), f"{source_path}.content", policy
+                source.get("content"), f"{source_path}.content", policy, blocked_urls
             )
         if source_kind == "url":
             url = source.get("url")
-            if not isinstance(url, str) or blocked_url(url, policy):
+            if not isinstance(url, str) or blocked_url(url, policy, blocked_urls):
                 return f"{source_path}.url"
         if source_kind == "file":
             return (
@@ -173,13 +177,17 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
     ) and value.get("file_id"):
         return f"{path}.file_id"
     if kind in _CONTENT_WRAPPERS:
-        return blocked_content_path(value.get("content"), f"{path}.content", policy)
+        return blocked_content_path(
+            value.get("content"), f"{path}.content", policy, blocked_urls
+        )
     return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str, policy: NetworkPolicyConfig):
+def mediate_content(
+    value, path: str, policy: NetworkPolicyConfig, blocked_urls: list[str]
+):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path, policy)
+        blocked = blocked_content_path(value, path, policy, blocked_urls)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
@@ -188,17 +196,17 @@ def mediate_content(value, path: str, policy: NetworkPolicyConfig):
         item_path = f"{path}[{index}]"
         if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
             if blocked := blocked_content_path(
-                {**block, "content": []}, item_path, policy
+                {**block, "content": []}, item_path, policy, blocked_urls
             ):
                 capabilities.append(blocked)
                 continue
             content, removed = mediate_content(
-                block.get("content"), f"{item_path}.content", policy
+                block.get("content"), f"{item_path}.content", policy, blocked_urls
             )
             if removed:
                 block["content"] = content or ""
                 capabilities.extend(removed)
-        elif blocked := blocked_content_path(block, item_path, policy):
+        elif blocked := blocked_content_path(block, item_path, policy, blocked_urls):
             capabilities.append(blocked)
             continue
         mediated.append(block)
@@ -451,12 +459,15 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
+        blocked_urls: list[str] = []
 
         for key in ("container", "mcp_servers"):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system, removed = mediate_content(mediated.get("system"), "system", policy)
+        system, removed = mediate_content(
+            mediated.get("system"), "system", policy, blocked_urls
+        )
         capabilities.extend(removed)
         if removed:
             if system:
@@ -471,6 +482,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
                 message.get("content"),
                 f"messages[{message_index}].content",
                 policy,
+                blocked_urls,
             )
             capabilities.extend(removed)
             if removed:
@@ -489,9 +501,12 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
                 and _WEB_TOOL_TYPE(kind)
             ):
                 callers = tool.get("allowed_callers")
+                filter_key = "blocked_domains" if policy.block else "allowed_domains"
+                other_key = "allowed_domains" if policy.block else "blocked_domains"
                 domains = (
-                    provider_allowed_domains(policy, tool.get("allowed_domains"))
-                    if tool.get("blocked_domains") in (None, [])
+                    provider_domains(policy, tool.get(filter_key))
+                    # Anthropic does not support combining allow and block filters.
+                    if tool.get(other_key) in (None, [])
                     and (
                         callers is None
                         or isinstance(callers, list)
@@ -502,10 +517,10 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
                 if domains:
                     web_tool = {
                         **tool,
-                        "allowed_domains": domains,
+                        filter_key: domains,
                         "allowed_callers": ["direct"],
                     }
-                    web_tool.pop("blocked_domains", None)
+                    web_tool.pop(other_key, None)
                     tools.append(web_tool)
                     continue
                 capabilities.append(f"tools[{index}].type")
@@ -539,7 +554,10 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             )
             mediated.pop("tool_choice", None)
 
-        append_user_notice(mediated.setdefault("messages", []))
+        if capabilities:
+            append_user_notice(
+                mediated.setdefault("messages", []), blocked_urls=blocked_urls
+            )
         return mediated, capabilities
 
     def is_terminal_event(self, chunk: bytes) -> bool:
