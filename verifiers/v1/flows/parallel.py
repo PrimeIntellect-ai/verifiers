@@ -1,5 +1,7 @@
 """Keep finished solvers when a parallel sibling fails; release the unit to retry."""
 
+from pydantic import PositiveInt
+
 from verifiers.v1 import AgentConfig, SubprocessConfig, Task, TaskData
 from verifiers.v1.flow import Flow, FlowConfig, Transition, Unit, UnitData, stage
 
@@ -7,7 +9,7 @@ from verifiers.v1.flow import Flow, FlowConfig, Transition, Unit, UnitData, stag
 class Config(FlowConfig):
     solver: AgentConfig = AgentConfig(runtime=SubprocessConfig())
     prompt: str = "What is 2 + 2?"
-    samples: int = 4
+    samples: PositiveInt = 4
 
 
 class Data(UnitData):
