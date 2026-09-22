@@ -95,6 +95,10 @@ class SwarmTask(vf.Task):
         """Run public checks on the proposed commit; return passed and evidence."""
         raise NotImplementedError("A review task must implement public revision checks")
 
+    def repository_policies(self) -> dict[str, dict]:
+        """Controller-owned merge policies applied before participants start."""
+        return {}
+
     async def prepare_world(self, world: WorldConnection) -> None:
         """Seed this episode's shared resources before any participant runs."""
 

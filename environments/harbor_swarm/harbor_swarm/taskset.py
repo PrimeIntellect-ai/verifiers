@@ -41,6 +41,14 @@ class HarborSwarmTask(SwarmTask, vf.Task[HarborSwarmData]):
     def runtime_env(self) -> dict[str, str]:
         return {**self.harbor().runtime_env(), **super().runtime_env()}
 
+    def repository_policies(self) -> dict[str, dict]:
+        return {
+            "solution": {
+                "required_checks": ["public-check"],
+                "require_approval": True,
+            }
+        }
+
     async def prepare_world(self, world: WorldConnection) -> None:
         async with (
             asyncio.timeout(600),
@@ -117,6 +125,10 @@ class HarborSwarmTask(SwarmTask, vf.Task[HarborSwarmData]):
 
 You share repository solution with your team. Your local workspace is {self.data.workspace}.
 Only files matching {self.data.editable} may change. Use public checks: {self.data.public_check}
+Every merge requires a successful public-check attestation on its exact merge candidate.
+Use prepare_merge, restore that candidate locally, run the public check above in your sandbox,
+then attest_check with name public-check, the actual command, exit code, and output.
+Re-run after the candidate changes. A passing build or a check on a different revision is insufficient.
 Coordinate implementation through general and the issue/PR tools. Solvers implement and test;
 the coordinator prioritizes integration, reviews, and final unanimous submission.
 Publish small working increments and merge reviewed, buildable changes throughout the budget.

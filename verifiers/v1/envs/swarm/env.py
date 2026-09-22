@@ -166,6 +166,12 @@ class SwarmEnv(vf.Env[SwarmEnvConfig]):
                         )
                     )
                 await task.prepare_world(world)
+                for repository, policy in task.repository_policies().items():
+                    await request(
+                        "PUT",
+                        f"/worlds/{world_id}/repositories/{repository}/policy",
+                        policy,
+                    )
                 accounts = [account for _, account in seats]
                 review = None
                 team_stop = asyncio.Event()
