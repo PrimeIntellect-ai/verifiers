@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Generic, Self, cast
+from typing import Any, Generic, Self, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
@@ -173,7 +173,6 @@ class Flow(Generic[ConfigT]):
         self._pool_text: str | None = None
         self.interception: Interception | None = None
         self._draining = False
-        self._lock: IO[str] | None = None
         self._active: dict[str, Execution] = {}
 
     async def setup(self) -> None:
@@ -192,38 +191,35 @@ class Flow(Generic[ConfigT]):
         """Reserved executions, including their original stage after a live route."""
         return MappingProxyType(self._active)
 
-    async def _open(self) -> None:
+    @contextmanager
+    def _open(self) -> Iterator[None]:
         self.root.mkdir(parents=True, exist_ok=True)
-        lock = (self.root / "flow.lock").open("w")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock.close()
-            raise RuntimeError(f"{self.root} is in use by another launch") from None
-        self._lock = lock
-        self._previous_label = os.environ.get(RUN_LABEL_VAR)
-        try:
-            os.environ[RUN_LABEL_VAR] = self.label
-            (self.root / "flow.json").write_text(self.config.model_dump_json(indent=1))
-            if not (self.root / "pools.json").exists():
-                (self.root / "pools.json").write_text(json.dumps(self.config.pools))
-            (self.root / "calls").mkdir(exist_ok=True)
-            (self.root / UNITS).mkdir(exist_ok=True)
-            trim_torn_tail(self.root / TRANSITIONS)
-            trim_torn_tail(self.root / "traces.jsonl")
-            self.traces, self.live = TraceStore(self.root, env="flow"), Live(self.root)
-        except BaseException:
-            self._close()
-            raise
-
-    def _close(self) -> None:
-        if self._previous_label is None:
-            os.environ.pop(RUN_LABEL_VAR, None)
-        else:
-            os.environ[RUN_LABEL_VAR] = self._previous_label
-        assert self._lock is not None
-        self._lock.close()
-        self._lock = None
+        with (self.root / "flow.lock").open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError(f"{self.root} is in use by another launch") from None
+            previous_label = os.environ.get(RUN_LABEL_VAR)
+            try:
+                os.environ[RUN_LABEL_VAR] = self.label
+                (self.root / "flow.json").write_text(
+                    self.config.model_dump_json(indent=1)
+                )
+                if not (self.root / "pools.json").exists():
+                    (self.root / "pools.json").write_text(json.dumps(self.config.pools))
+                (self.root / UNITS).mkdir(exist_ok=True)
+                trim_torn_tail(self.root / TRANSITIONS)
+                trim_torn_tail(self.root / "traces.jsonl")
+                self.traces, self.live = (
+                    TraceStore(self.root, env="flow"),
+                    Live(self.root),
+                )
+                yield
+            finally:
+                if previous_label is None:
+                    os.environ.pop(RUN_LABEL_VAR, None)
+                else:
+                    os.environ[RUN_LABEL_VAR] = previous_label
 
     # -- units -----------------------------------------------------------------------------
 
@@ -273,12 +269,9 @@ class Flow(Generic[ConfigT]):
 
     async def run(self) -> RunResult:
         """Prepare and run until idle (unless stay_alive) or drain; close owned resources."""
-        await self._open()
-        try:
+        with self._open():
             await self.setup()
             return await self._schedule()
-        finally:
-            self._close()
 
     async def _schedule(self) -> RunResult:
         running: dict[str, tuple[asyncio.Task[None], ExitStack]] = {}
