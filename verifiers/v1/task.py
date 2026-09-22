@@ -103,7 +103,8 @@ class TaskData(BaseModel):
 
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
     """MCP connections by name, consumed inside the task runtime: command/args for
-    stdio, or url with transport='sse' or 'streamable-http'. The task owns deployment."""
+    stdio, or url with transport='sse' or 'streamable-http'. The task owns deployment.
+    The harness's execution view also includes framework-launched tool servers."""
 
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime

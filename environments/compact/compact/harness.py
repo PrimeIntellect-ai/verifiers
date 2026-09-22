@@ -42,7 +42,6 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         _, prompt = self.resolve_text_prompt(data)
@@ -53,7 +52,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
         }
-        if mcp_servers:
-            env["MCP_CONFIG"] = json.dumps({"mcpServers": mcp_servers})
+        if data.mcp_servers:
+            env["MCP_CONFIG"] = json.dumps({"mcpServers": data.mcp_servers})
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         return await runtime.run_program([*program, prompt], env)

@@ -93,14 +93,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_servers)
+        env = await self.build_env(
+            ctx, trace, runtime, endpoint, secret, data.mcp_servers
+        )
         return ACPConfig(
             env=env,
             command=[

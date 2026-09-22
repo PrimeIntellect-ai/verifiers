@@ -71,7 +71,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"

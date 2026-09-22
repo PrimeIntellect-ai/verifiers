@@ -301,7 +301,9 @@ class Rollout:
                 boundary(HarnessError, "opening harness session"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                harness_data = self.trace.task.data
+                harness_data = self.trace.task.data.model_copy(
+                    update={"mcp_servers": mcp_servers}
+                )
                 if (
                     self._session.request_interceptors
                     and harness_data.prompt is not None
@@ -361,7 +363,6 @@ class Rollout:
                         runtime,
                         self._endpoint,
                         self._secret,
-                        mcp_servers,
                         harness_data,
                         **session_kwargs,
                     )

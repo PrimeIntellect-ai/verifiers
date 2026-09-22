@@ -88,7 +88,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
@@ -142,10 +141,10 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
         mcp_args: list[str] = []
-        if mcp_servers:
+        if data.mcp_servers:
             extension_path = f"{agent_dir}/mcp.js"
             servers = {}
-            for name, server in mcp_servers.items():
+            for name, server in data.mcp_servers.items():
                 spec = dict(server)
                 kind = spec.pop(
                     "transport", "stdio" if "command" in spec else "streamable-http"
