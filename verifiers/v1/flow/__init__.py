@@ -1,5 +1,3 @@
-"""Durable, steerable pipelines built from Flow subclasses and typed stage methods."""
-
 from verifiers.v1.configs.flow import FlowConfig
 from verifiers.v1.flow.artifacts import ArtifactRevision, GitArtifacts
 from verifiers.v1.flow.calls import CallFailed, Failure, Result, Success
