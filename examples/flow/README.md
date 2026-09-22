@@ -42,8 +42,9 @@ on cancellation. Use `attempt()` to inspect individual outcomes, or `call()`/age
 when failure should raise. Successful keyed calls remain reusable either way.
 
 Native Agent owns retries. Flow saves only the final trace (or the current partial trace on
-cancellation), and token totals count only that trace. The live snapshot uses one path per
-call, switching to each new trace and disappearing when the call ends.
+cancellation), and token totals count only that trace. Live traces use the shared delta
+format in `live/<trace_id>.jsonl`. A retry discards the previous live file; completion saves
+the trace before removing its live file. Prime-RL's live viewer follows these updates.
 
 For custom turn loops, pass an async `interact(interaction)` function to the agent's `run`
 or `attempt`. It drives native `Interaction.turn`; the complete interaction is one recorded
@@ -58,7 +59,7 @@ transition are not rolled back by a hold.
 ## Agent control
 
 A monitoring coding agent reads published unit state, `transitions.jsonl`, call records and
-traces (including `live/` snapshots). `inspect` exposes current state and executing stages.
+traces (including `live/` deltas). `inspect` exposes current state and executing stages.
 `steer` changes the next stage/status or appends a note; it does not interrupt a model's
 conversation. Live controls survive stage publication. `unit.before` and `unit.notes` are
 stage-start snapshots; `unit.state()` reads current published state. Publish edits to the

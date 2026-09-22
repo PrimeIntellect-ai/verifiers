@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -18,6 +17,7 @@ from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.flow.events import CallIdentity
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.serve.delta import DeltaStreamer
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
 
@@ -25,8 +25,6 @@ if TYPE_CHECKING:
     from verifiers.v1.flow.flow import Flow
 
 T = TypeVar("T")
-LIVE_EVERY_S = 3.0
-"""How often at most a live trace snapshot is rewritten while a call runs."""
 
 
 class CallFailed(Exception):
@@ -121,7 +119,7 @@ class _FlowAgent(Agent):
         async def execute() -> Trace:
             flow = self.flow
             invocation = INVOCATION.get()
-            watch = flow.live.watch(invocation.unit, invocation.call, on_trace)
+            watch = flow.live.watch(invocation, on_trace)
 
             try:
                 if interact is None:
@@ -166,56 +164,50 @@ class _FlowAgent(Agent):
 
 
 class Live:
-    """Throttled trace snapshots at `live/<unit>--<call>.json`, removed when calls end.
-    These let monitors inspect running calls; completed traces are stored separately."""
+    """Current attempts streamed to `live/<trace>.jsonl`; completed traces live separately."""
 
     def __init__(self, root: Path) -> None:
         self.dir = root / "live"
         self.dir.mkdir(exist_ok=True)
-        for stale in self.dir.glob("*.json"):
+        for stale in self.dir.glob("*.jsonl"):
             stale.unlink()
         self.current: dict[str, Trace] = {}
-        self._active: dict[Path, asyncio.TimerHandle | None] = {}
+        self._dispatch: dict[str, dict] = {}
+        self.streamer = DeltaStreamer(self.current.values, self._send)
 
-    def _file(self, unit: str, call: str) -> Path:
-        return self.dir / f"{unit}--{call}.json"
+    async def _send(self, delta: dict) -> None:
+        file = self.dir / f"{delta['trace']}.jsonl"
+        if delta.get("discard"):
+            file.unlink(missing_ok=True)
+        else:
+            if "open" in delta:
+                delta = {**delta, "dispatch": self._dispatch[delta["trace"]]}
+            with file.open("a") as out:
+                out.write(json.dumps(delta, default=str) + "\n")
 
     def watch(
         self,
-        unit: str,
-        call: str,
+        invocation: CallIdentity,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Callable[[Trace], None]:
-        file = self._file(unit, call)
-        self._active[file] = None
-
-        def write(trace: Trace) -> None:
-            if self.current.get(call) is not trace:
-                return
-            self._active[file] = None
-            tmp = file.with_suffix(".tmp")
-            tmp.write_text(trace.model_dump_json())
-            os.replace(tmp, file)
-
-        def changed(trace: Trace) -> None:
-            if self.current.get(call) is trace and self._active[file] is None:
-                loop = asyncio.get_running_loop()
-                self._active[file] = loop.call_later(LIVE_EVERY_S, write, trace)
-
         def started(trace: Trace) -> None:
-            if (due := self._active.get(file)) is not None:
-                due.cancel()
-            self.current[call] = trace
-            trace.watch(changed)
-            write(trace)
+            if previous := self.current.get(invocation.call):
+                self._dispatch.pop(previous.id)
+            self.current[invocation.call] = trace
+            self._dispatch[trace.id] = {
+                "id": invocation.call,
+                "kind": "flow",
+                "task": invocation.unit,
+                "started": trace.timing.start,
+                "invocation": invocation.model_dump(mode="json"),
+            }
+            self.streamer.watch(trace)
             if on_trace is not None:
                 on_trace(trace)
 
         return started
 
-    def drop(self, unit: str, call: str) -> None:
-        file = self._file(unit, call)
-        if (due := self._active.pop(file, None)) is not None:
-            due.cancel()
-        self.current.pop(call, None)
-        file.unlink(missing_ok=True)
+    async def drop(self, call: str) -> None:
+        if trace := self.current.pop(call, None):
+            self._dispatch.pop(trace.id)
+            await self.streamer.flush()

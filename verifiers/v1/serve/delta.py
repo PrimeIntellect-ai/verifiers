@@ -1,4 +1,4 @@
-"""Turn-by-turn episode deltas over the env-serve wire.
+"""Incremental trace deltas shared by served episodes and Flow.
 
 The worker streams a served episode as it grows. Each trace announces its own changes
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
 
 import msgpack
@@ -36,7 +36,6 @@ from verifiers.v1.graph import _decode_ndarray, _encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
 
 if TYPE_CHECKING:
-    from verifiers.v1.env import RunSlot
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -99,16 +98,19 @@ class TraceCursor:
 
 
 class DeltaStreamer:
-    """Sends a `RunSlot`'s trace changes as deltas, one flush per burst of changes.
+    """Sends the current traces' changes as deltas, one flush per burst of changes.
 
-    `watch` subscribes a minted trace (pass it as `run_slot`'s `on_trace`); each
+    `watch` subscribes a minted trace (pass it as the runner's `on_trace`); each
     `Trace.notify` schedules a flush, and changes landing in the same loop iteration
     ride one flush. Use as an async context manager around the rollout: a clean exit
-    flushes the final state (the slot then holds the finished episode's traces), a
-    cancelled rollout flushes nothing — its client has already gone."""
+    flushes the final state; a cancelled rollout settles pending sends without a final flush."""
 
-    def __init__(self, slot: RunSlot, send: Callable[[bytes], Awaitable[None]]) -> None:
-        self.slot = slot
+    def __init__(
+        self,
+        traces: Callable[[], Iterable[Trace]],
+        send: Callable[[dict], Awaitable[None]],
+    ) -> None:
+        self.traces = traces
         self.send = send
         self.cursors: dict[str, TraceCursor] = {}
         self._scheduled: asyncio.Handle | None = None
@@ -129,6 +131,7 @@ class DeltaStreamer:
         else:
             for task in self._flushes:
                 task.cancel()
+            await asyncio.gather(*self._flushes, return_exceptions=True)
 
     def watch(self, trace: Trace) -> None:
         trace.watch(self._changed)
@@ -150,7 +153,7 @@ class DeltaStreamer:
         async with self._lock:
             for trace_id, delta, cursor in self.diff():
                 try:
-                    await self.send(pack(delta))
+                    await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
                     logger.warning(
                         "failed to send delta for %s", trace_id, exc_info=True
@@ -190,7 +193,7 @@ class DeltaStreamer:
         """Each trace's delta against its sent cursor, with the cursor as it stands once
         that delta is sent (None for a discard). Nothing here is committed: `flush`
         stores a cursor only after its delta left."""
-        traces = list(self.slot.traces)
+        traces = list(self.traces())
         live = {trace.id for trace in traces}
         deltas: list[tuple[str, dict, TraceCursor | None]] = []
         for trace_id in [trace_id for trace_id in self.cursors if trace_id not in live]:

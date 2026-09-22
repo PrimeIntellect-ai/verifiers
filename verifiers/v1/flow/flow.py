@@ -291,7 +291,7 @@ class Flow(Generic[ConfigT]):
             del self._active[name]
             return task
 
-        async with self._serving():
+        async with self._serving(), self.live.streamer:
             self.event(RunEvent(type="run_started", label=self.label))
             try:
                 while True:
@@ -652,7 +652,7 @@ class Flow(Generic[ConfigT]):
         finally:
             INVOCATION.reset(token)
             if kind == "agent":
-                self.live.drop(unit.id, call)
+                await self.live.drop(call)
 
     def check_running(self) -> None:
         """Refuse new work after drain, including work that waited for a pool."""

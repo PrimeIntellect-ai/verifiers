@@ -8,7 +8,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump
+from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseResponse,
@@ -100,15 +100,15 @@ class EnvServer:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
-        async def send_delta(data: bytes) -> None:
+        async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart(
-                [client_id, request_id, b"delta", data], copy=False
+                [client_id, request_id, b"delta", pack(delta)], copy=False
             )
 
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
-        async with DeltaStreamer(slot, send_delta) as streamer:
+        async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch
             )
