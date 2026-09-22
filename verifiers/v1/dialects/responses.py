@@ -49,6 +49,15 @@ from verifiers.v1.types import (
     UserMessage,
 )
 
+# The placeholder response a committed stream's keepalives carry until its turn is ready.
+_KEEPALIVE_RESPONSE = {
+    "id": "resp_keepalive",
+    "object": "response",
+    "created_at": 0,
+    "status": "in_progress",
+    "output": [],
+}
+
 FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
 # Byte markers for the terminal event types above, in both compact and spaced JSON, so the
 # interception server can cheaply spot the turn-ending event without parsing each delta.
@@ -708,6 +717,22 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         raw.pop("required_action", None)
         if "output_text" in raw:
             raw["output_text"] = text
+
+    def stream_keepalive(self, first: bool) -> bytes:
+        # Codex's idle timer resets only on data events (it drops comments), and the OpenAI
+        # SDK's stream helper rejects any event before `response.created`: open with a
+        # placeholder `response.created`, then repeat `response.in_progress`. The turn's own
+        # `response.created` follows and supersedes it.
+        kind = "response.created" if first else "response.in_progress"
+        payload = {"type": kind, "response": _KEEPALIVE_RESPONSE}
+        return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
+
+    def stream_error(self, error: dict) -> bytes:
+        # `response.failed` is what Responses clients (codex) act on; the `error` key is what
+        # the OpenAI SDK raises on.
+        failed = {**_KEEPALIVE_RESPONSE, "status": "failed", "error": error["error"]}
+        payload = {"type": "response.failed", "response": failed, **error}
+        return f"event: response.failed\ndata: {json.dumps(payload)}\n\n".encode()
 
     def stream_events(self, raw: dict) -> list[bytes]:
         item = raw["output"][0]

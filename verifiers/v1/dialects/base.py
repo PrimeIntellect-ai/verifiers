@@ -265,10 +265,17 @@ class Dialect(ABC, Generic[RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
-    def stream_error(self, payload: bytes) -> bytes:
-        """An error payload (serialized `error_body`) as an SSE event, for a failure after
-        the stream is committed. OpenAI SDKs raise on any event carrying `error`."""
-        return b"data: " + payload + b"\n\n"
+    def stream_keepalive(self, first: bool) -> bytes:
+        """A keepalive for a committed SSE stream whose turn is still being produced (`first`
+        on the stream's first one). A comment line by default: these clients count any bytes
+        as activity. A dialect whose clients only count events sends a no-op event instead."""
+        # Don't terminate an empty event; some SSE clients try to JSON-decode it.
+        return b": keepalive\n"
+
+    def stream_error(self, error: dict) -> bytes:
+        """An `error_body` as an SSE event, for a failure after the stream is committed.
+        OpenAI SDKs raise on any event carrying `error`."""
+        return b"data: " + json.dumps(error).encode() + b"\n\n"
 
     @abstractmethod
     def mediate_external_capabilities(
