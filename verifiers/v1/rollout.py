@@ -133,7 +133,6 @@ class Rollout:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
-        self._mcp_servers: dict[str, dict] = {}
         self._harness_session: HarnessSession | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -273,7 +272,7 @@ class Rollout:
             )
             if duplicates := urls.keys() & self.task.data.mcp_servers.keys():
                 raise ToolsetError(f"duplicate MCP server names: {sorted(duplicates)}")
-            self._mcp_servers = {
+            mcp_servers = {
                 **{
                     name: {"transport": "streamable-http", "url": url}
                     for name, url in urls.items()
@@ -283,7 +282,7 @@ class Rollout:
                     for name, server in self.task.data.mcp_servers.items()
                 },
             }
-            for server in self._mcp_servers.values():
+            for server in mcp_servers.values():
                 if server.get("command"):
                     server["env"] = {**runtime.env, **server.get("env", {})}
             # Setup and service provisioning are complete. Apply the runtime's
@@ -293,7 +292,7 @@ class Rollout:
                     self._endpoint,
                     *(
                         server["url"]
-                        for server in self._mcp_servers.values()
+                        for server in mcp_servers.values()
                         if server.get("url")
                     ),
                 ]
@@ -362,7 +361,7 @@ class Rollout:
                         runtime,
                         self._endpoint,
                         self._secret,
-                        self._mcp_servers,
+                        mcp_servers,
                         harness_data,
                         **session_kwargs,
                     )

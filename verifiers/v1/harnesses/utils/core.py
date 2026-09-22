@@ -302,7 +302,6 @@ async def run_chat_loop(
     compactor: "Compactor",
     messages: list[dict],
     dispatch: dict,
-    servers: dict,
     tool_client: httpx.AsyncClient | None,
 ) -> None:
     """Run the tool-calling conversation until a text-only reply or context exhaustion."""
@@ -356,7 +355,7 @@ async def run_chat_loop(
                 if not isinstance(tool_args, dict):
                     content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
                 elif name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
+                    content = await call_mcp(dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
                         run_bash, tool_args.get("command", "")
@@ -443,13 +442,10 @@ async def main() -> None:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
     async with AsyncExitStack() as mcp_stack:
-        if config.get("mcpServers"):
-            mcp_tools, dispatch, servers = await asyncio.wait_for(
-                connect_mcp(config, mcp_stack, reserved),
-                timeout=None if args.bash else 60,
-            )
-        else:
-            mcp_tools, dispatch, servers = [], {}, {}
+        mcp_tools, dispatch = await asyncio.wait_for(
+            connect_mcp(config, mcp_stack, reserved),
+            timeout=None if args.bash else 60,
+        )
         tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
@@ -472,7 +468,7 @@ async def main() -> None:
         # The initial conversation is the floor for checkpoint fallbacks: a first-turn
         # checkpoint must never retry from an empty base.
         compactor.note_good(messages)
-        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
+        await run_chat_loop(args, compactor, messages, dispatch, tool_client)
     if tool_client is not None:
         await tool_client.aclose()
 
