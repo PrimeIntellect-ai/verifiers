@@ -24,7 +24,7 @@ class FlowConfig(BaseConfig):
     """Sampling for seats that pin none; a seat's own values merge on top."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape, as in `EnvConfig`; tunneled when any seat's runtime is remote."""
-    pools: PoolLimits = Field(default_factory=lambda: {"units": 4})
-    """Concurrent stages (`units`); pipelines explicitly acquire any other named pools."""
+    pools: PoolLimits = Field(default_factory=dict)
+    """Optional stage limit (`units`); absent means unbounded. Other pools are acquired explicitly."""
     stay_alive: bool = False
     """Wait for new runnable work when idle; exit only on drain."""

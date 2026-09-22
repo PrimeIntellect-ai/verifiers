@@ -15,6 +15,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter
 from verifiers.v1.agent import Agent, Interaction
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.flow.events import CallIdentity
+from verifiers.v1.interception import Interception
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.serve.delta import DeltaStreamer
@@ -69,8 +70,10 @@ class Record(BaseModel):
 class _FlowAgent(Agent):
     """Native execution with the owning Flow's call records and traces."""
 
-    def __init__(self, flow: Flow[Any], config: AgentConfig) -> None:
-        super().__init__(config, interception=flow.interception)
+    def __init__(
+        self, flow: Flow[Any], config: AgentConfig, *, interception: Interception
+    ) -> None:
+        super().__init__(config, interception=interception)
         self.flow = flow
 
     async def run(

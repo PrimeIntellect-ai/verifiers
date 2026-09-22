@@ -52,6 +52,12 @@ or `attempt`. It drives native `Interaction.turn`; the complete interaction is o
 call. To share a sandbox, use `async with solver.provision(task) as box`, then pass
 `runtime=box` to agents that borrow it. The caller owns that box's lifetime.
 
+Flow shares native interception, including elastic multiplexing. Tunnels are chosen at
+launch from configured agent runtimes. Borrowed runtimes and task tool servers must be
+reachable under that choice: an all-local configuration cannot introduce a remote consumer
+of Verifiers' state channel later. External tool URLs do not use that channel. Flow does not
+register state credentials for supplied shared tool servers; use task-scoped tools instead.
+
 Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(unit)`
 optionally preserves work products independently of workflow state; publish the
 chosen revision in `Transition(data=unit.data)`. External effects before returning a
@@ -70,14 +76,16 @@ and its inspected revision (`--data patch.json --expected REVISION`).
 `admit(unit)` sees accepted executions in `self.active`, including their original executing
 stage after a live route. Pipelines define barriers and success policy; `run()` returns unit
 states and an `idle` or `draining` reason. Use `flow.stay_alive = true` to wait for new work.
+Stage concurrency is unbounded unless `flow.pools.units` is configured.
 
 `flow drain --root outputs/demo` finishes running calls and stops new work. Remove the
 `drain` file to launch again. Ctrl-C drains once and cancels on a second signal.
-`pools.json` holds the current named limits; replace it atomically to resize them:
+`pools.json` holds the current named limits; replace it atomically to resize them.
+For a run configured with a `units` pool:
 
 ```sh
-printf '%s\n' '{"units": 2}' > outputs/demo/pools.json.tmp
-mv outputs/demo/pools.json.tmp outputs/demo/pools.json
+printf '%s\n' '{"units": 2}' > outputs/my-run/pools.json.tmp
+mv outputs/my-run/pools.json.tmp outputs/my-run/pools.json
 ```
 
 Flow checks it about every two seconds. Keep the same pool names and positive integer

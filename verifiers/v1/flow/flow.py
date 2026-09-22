@@ -61,12 +61,13 @@ from verifiers.v1.flow.events import (
     append_event,
 )
 from verifiers.v1.flow.unit import STATE, D, Execution, Transition, Unit, UnitState
-from verifiers.v1.interception import Interception, make_interception
+from verifiers.v1.interception import make_interception
 from verifiers.v1.runtimes import runtime_is_local
 from verifiers.v1.runtimes.base import RUN_LABEL_VAR
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.time import now
 from verifiers.v1.utils.trace_store import TraceStore, trim_torn_tail
 
 logger = logging.getLogger("verifiers.flow")
@@ -171,7 +172,6 @@ class Flow(Generic[ConfigT]):
         self.label = f"flow-{label_root.name[:32]}-{digest(socket.gethostname(), str(label_root))[:12]}"
         self.pools = Pools(config.pools)
         self._pool_text: str | None = None
-        self.interception: Interception | None = None
         self._draining = False
         self._active: dict[str, Execution] = {}
 
@@ -321,8 +321,9 @@ class Flow(Generic[ConfigT]):
         return result
 
     def _launch(self, running: dict[str, tuple[asyncio.Task[None], ExitStack]]) -> None:
+        limit = self.pools.limits.get("units")
         for unit in self.units():
-            if len(running) >= self.pools.limits.get("units", 4) or self.draining:
+            if self.draining or (limit is not None and len(running) >= limit):
                 break
             if unit.id in running or unit.state().status != "ready":
                 continue
@@ -423,7 +424,6 @@ class Flow(Generic[ConfigT]):
         async with make_interception(
             self.config.interception, requires_tunnel=remote
         ) as interception:
-            self.interception = interception
             self.agents = Agents(
                 self.config,
                 lambda _, config: _FlowAgent(
@@ -434,12 +434,10 @@ class Flow(Generic[ConfigT]):
                         client=self.config.client,
                         sampling=self.config.sampling,
                     ),
+                    interception=interception,
                 ),
             )
-            try:
-                yield
-            finally:
-                self.interception = None
+            yield
 
     @property
     def _unit(self) -> Unit[Any, Self]:
@@ -546,7 +544,7 @@ class Flow(Generic[ConfigT]):
             cache=cache,
         )
         token = INVOCATION.set(invocation)
-        trace: Trace | None = None
+        event = CallEvent(invocation=invocation, status="started")
         try:
             if file is not None and file.exists():
                 record = Record.model_validate_json(file.read_text())
@@ -557,44 +555,29 @@ class Flow(Generic[ConfigT]):
                     value = cast(T, value)
                 else:
                     value = output.validate_python(record.payload)
-                self.event(
-                    CallEvent(
-                        invocation=invocation,
-                        status="attached",
-                        source_call=record.call,
-                        source_execution=record.execution,
-                        trace_id=record.trace_id,
-                    )
-                )
+                event.status = "attached"
+                event.source_call = record.call
+                event.source_execution = record.execution
+                event.trace_id = record.trace_id
                 return Success(value, attached=True)
             self.check_running()
             self.event(CallEvent(invocation=invocation, status="started"))
             try:
-                try:
-                    value = await execute()
-                finally:
-                    trace = self.live.current.get(call)
-                    if trace is not None:
-                        await self.traces.append(trace)
+                value = await execute()
             except (Stopped, asyncio.CancelledError):
                 raise
             except Exception as exc:  # noqa: BLE001 - work failures become typed results
+                event.status = "failed"
                 if isinstance(exc, CallFailed):
-                    result = Failure(exc.error, exc.trace_id)
+                    event.error, event.trace_id = exc.error, exc.trace_id
                 else:
-                    result = Failure(
-                        Error(type=type(exc).__name__, message=str(exc)),
-                        trace.id if trace is not None else None,
-                    )
-                self.event(
-                    CallEvent(
-                        invocation=invocation,
-                        status="failed",
-                        error=result.error,
-                        trace_id=result.trace_id,
-                    )
-                )
-                return result
+                    event.error = Error(type=type(exc).__name__, message=str(exc))
+            finally:
+                if trace := self.live.current.get(call):
+                    event.trace_id = trace.id
+                    await self.traces.append(trace)
+            if event.error is not None:
+                return Failure(event.error, event.trace_id)
             # Publication failures stop the stage; repeating work is an operator decision.
             if file is not None:
                 file.parent.mkdir(parents=True, exist_ok=True)
@@ -610,40 +593,28 @@ class Flow(Generic[ConfigT]):
                 tmp = file.with_suffix(".tmp")
                 tmp.write_text(record.model_dump_json(indent=1))
                 os.replace(tmp, file)
-            trace_id = value.id if isinstance(value, Trace) else None
-            self.event(
-                CallEvent(
-                    invocation=invocation,
-                    status="succeeded",
-                    trace_id=trace_id,
-                )
-            )
+            event.status = "succeeded"
+            event.trace_id = value.id if isinstance(value, Trace) else None
             return Success(value)
         except (Stopped, asyncio.CancelledError) as exc:
-            self.event(
-                CallEvent(
-                    invocation=invocation,
-                    status="cancelled"
-                    if isinstance(exc, asyncio.CancelledError)
-                    else "stopped",
-                    trace_id=trace.id if trace is not None else None,
-                )
+            event.status = (
+                "cancelled" if isinstance(exc, asyncio.CancelledError) else "stopped"
             )
+            event.error = None
             raise
         except Exception as exc:
-            self.event(
-                CallEvent(
-                    invocation=invocation,
-                    status="failed",
-                    error=Error(type=type(exc).__name__, message=str(exc)),
-                    trace_id=trace.id if trace is not None else None,
-                )
-            )
+            event.status = "failed"
+            event.error = Error(type=type(exc).__name__, message=str(exc))
             raise
         finally:
             INVOCATION.reset(token)
-            if kind == "agent":
-                await self.live.drop(call)
+            try:
+                if event.status != "started":
+                    event.at = now()
+                    self.event(event)
+            finally:
+                if kind == "agent":
+                    await self.live.drop(call)
 
     def check_running(self) -> None:
         """Refuse new work after drain, including work that waited for a pool."""
