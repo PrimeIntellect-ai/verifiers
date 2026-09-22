@@ -74,10 +74,13 @@ REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
 
 def reasoning_text(data: Mapping[str, Any]) -> str | None:
     """The model's reasoning string, from whichever field the provider used."""
+    empty_text: str | None = None
     for field in REASONING_FIELDS:
         value = data.get(field)
-        if isinstance(value, str) and value:
-            return value
+        if isinstance(value, str):
+            if value:
+                return value
+            empty_text = ""
     details = data.get("reasoning_details")
     if isinstance(details, list):
         parts = []
@@ -87,8 +90,8 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
             value = detail.get("text") or detail.get("summary")
             if isinstance(value, str) and value:
                 parts.append(value)
-        return "\n".join(parts) or None
-    return None
+        return "\n".join(parts) or empty_text
+    return empty_text
 
 
 def parse_message(raw: dict) -> Message:
