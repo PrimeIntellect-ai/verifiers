@@ -34,7 +34,6 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         if self.config.disabled_tools:

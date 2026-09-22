@@ -199,7 +199,6 @@ copy_failed=$(
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
@@ -216,7 +215,6 @@ copy_failed=$(
             runtime,
             endpoint,
             secret,
-            mcp_servers,
             data,
             tool_interception_url,
         )
@@ -244,7 +242,6 @@ copy_failed=$(
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
         messages: Messages,
         tool_interception_url: str | None = None,
@@ -282,7 +279,6 @@ copy_failed=$(
             runtime,
             endpoint,
             secret,
-            mcp_servers,
             data.model_copy(update={"prompt": conversation}),
             **kwargs,
         )
@@ -299,7 +295,6 @@ copy_failed=$(
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         """Run the harness program in `runtime` to completion and return its result.
@@ -307,7 +302,7 @@ copy_failed=$(
         a resumed exchange its prompt is the accreted conversation, and it may
         differ from `trace.task.data`, the run's recorded view); model calls must
         reach the interception server at `endpoint` (bearer token `secret`);
-        `mcp_servers` are the task's tool servers to wire in. Each harness owns the
+        `data.mcp_servers` are the tool connections to wire in. Each harness owns the
         env its program needs (the bash/compact harnesses set OPENAI_*).
 
         The interception is the contract, not the process: a harness may run its
@@ -332,7 +327,6 @@ class HarnessSession:
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> None:
@@ -342,7 +336,6 @@ class HarnessSession:
         self.runtime = runtime
         self.endpoint = endpoint
         self.secret = secret
-        self.mcp_servers = mcp_servers
         self.data = data
         self.tool_interception_url = tool_interception_url
         self._closed = False
@@ -370,7 +363,6 @@ class HarnessSession:
                 self.runtime,
                 self.endpoint,
                 self.secret,
-                self.mcp_servers,
                 self.data,
                 **kwargs,
             )
@@ -380,7 +372,6 @@ class HarnessSession:
             self.runtime,
             self.endpoint,
             self.secret,
-            self.mcp_servers,
             self.data,
             messages,
             self.tool_interception_url,

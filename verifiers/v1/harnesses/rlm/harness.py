@@ -259,7 +259,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)

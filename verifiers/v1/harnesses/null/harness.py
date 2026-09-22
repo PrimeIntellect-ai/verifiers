@@ -32,7 +32,6 @@ class NullHarness(Harness[NullHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_servers: dict[str, dict],
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> ProgramResult:
@@ -45,7 +44,7 @@ class NullHarness(Harness[NullHarnessConfig]):
             runtime,
             endpoint,
             secret,
-            mcp_servers,
+            data.mcp_servers,
             system_prompt,
             prompt,
             extra_args=[f"--tool-interception-url={tool_interception_url}"]
