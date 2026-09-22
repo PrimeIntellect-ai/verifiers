@@ -3,7 +3,8 @@
 A `Flow` subclass owns shared services and scheduling policy. Each `Unit` is work that can
 be paused or resumed independently. A `@stage` method receives that unit and returns a
 `Transition`: its next stage, status, and optional typed data/files, committed together in Git.
-`setup()` seeds initial units; creating an existing unit preserves its checkpoint.
+`setup()` runs on every launch, including resume. Persistent changes must be safe to repeat;
+`create_unit()` preserves existing checkpoints.
 
 Start with these short, runnable plugins:
 
@@ -31,9 +32,13 @@ from reuse inputs. Real pipelines declare their own meaningful task/model/gradin
 
 `self.agents.solver.run(task, key=..., inputs=...)` uses native agent execution, retries and
 traces. Without a key it runs every time. A key and explicit inputs reuse successful results
-from disk; failures remain retryable. `solver.attempt(...)` returns success or failure;
-`self.gather(...)` waits for all its calls and settles them on cancellation. Host functions
-use `self.call(func, ..., output=ResultType)` or `self.attempt(...)` with the same contract.
+from disk; failures remain retryable. Agent `run()` returns a trace or raises; `attempt()`
+returns success or failure. Host functions use `self.call(func, ..., output=ResultType)`
+or `self.attempt(...)` with the same contract.
+
+`self.gather(...)` waits for every child before propagating failures and settles children
+on cancellation. Use `attempt()` to inspect individual outcomes, or `call()`/agent `run()`
+when failure should raise. Successful keyed calls remain reusable either way.
 
 Native Agent owns retries. Flow saves only the final trace (or the current partial trace on
 cancellation), and token totals count only that trace. The live snapshot uses one path per
