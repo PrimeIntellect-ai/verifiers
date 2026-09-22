@@ -1,13 +1,4 @@
-"""On-disk output: traces.jsonl (one rollout episode per line) + configs/<cli>.json.
-
-Each line is an `Episode` — the episode's standing (`id`/`env`/`errors`) inlined
-next to its flat, self-contained traces — so an episode persists whole or not at all: a torn line is the
-whole episode owed on resume, and a failure before any trace minted still leaves
-its errors on disk. The JSON file is the run's resolved config in the format the
-CLI reads (`@ configs/<cli>.json`), so a run is re-runnable from its own output. Lines
-append as episodes complete, so results are durable mid-run. Files written
-by this surface contain episodes only.
-"""
+"""CLI output directories, saved launch/config files, and per-attempt log paths."""
 
 import json
 import os

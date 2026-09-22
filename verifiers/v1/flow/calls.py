@@ -115,7 +115,7 @@ class _FlowAgent(Agent):
         inputs: JsonValue | BaseModel | None = None,
         interact: Callable[[Interaction], Awaitable[None]] | None = None,
     ) -> Result[Trace]:
-        """The same recorded run, returning failure so parallel siblings can finish."""
+        """Run or reuse agent work, returning success or failure for the stage to inspect."""
         if interact is not None and collect_artifacts:
             raise ValueError("interaction does not support collect_artifacts")
 
