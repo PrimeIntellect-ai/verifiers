@@ -111,8 +111,7 @@ class EvalConfig(BaseConfig):
     max_agent_runs: int | None = Field(None, ge=1)
     """Live `Agent.run`s (and interaction segments) in flight at once across the whole
     process, `None` for no extra cap. Independent of `-c` (episodes) and of
-    `--env.max-concurrent-agents` (one episode). Raise the per-episode bound to fan
-    out `best-of-n` attempts, then set this to keep sandboxes and completions bounded."""
+    `--env.max-concurrent-agents` (one episode)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)

@@ -60,9 +60,7 @@ class EnvConfig(BaseConfig):
     out to internally. Raise it where per-episode latency matters and the
     multiplication is wanted: `--env.max-concurrent-agents None` plays an episode's
     `best-of-n` attempts together, so `-c` episodes carry `-c * n` live runs unless
-    `--max-agent-runs` caps them across episodes. Not spelled `max_concurrent`: that
-    key used to bound a served worker's agent runs across episodes, and taking it as
-    this one silently multiplies it by the episodes in flight."""
+    `--max-agent-runs` caps them across episodes."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
 

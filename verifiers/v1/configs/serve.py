@@ -58,8 +58,8 @@ class ServeConfig(BaseConfig):
     (`--env.max-concurrent-agents`, one at a time by default)."""
     max_agent_runs: int | None = Field(None, ge=1)
     """Live `Agent.run`s per worker (None = take the run's `--max-agent-runs`, else no
-    extra cap). Pin it to hold a worker below the run; does not span the pool
-    (`workers * this`)."""
+    extra cap). Pin it to hold a worker below the EvalConfig.max_agent_runs;
+    does not span the pool (`workers * this`)."""
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:

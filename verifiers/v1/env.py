@@ -144,8 +144,7 @@ class Env(ABC, Generic[ConfigT]):
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
         # Process/worker cap on live Agent.runs (`--max-agent-runs`); the host binds it
-        # once. Distinct from `agent_runs_per_episode`, minted per episode in
-        # `_episode_agents`.
+        # once. Distinct from `agent_runs_per_episode`.
         self._agent_runs: asyncio.Semaphore | None = None
 
     # --- the multi-agent surface (override these) ------------------------------
