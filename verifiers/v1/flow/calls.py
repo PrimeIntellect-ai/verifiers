@@ -69,7 +69,7 @@ class Record(BaseModel):
 
 
 class _FlowAgent(Agent):
-    """Native execution with the owning Flow's call records, traces and runtime pool."""
+    """Native execution with the owning Flow's call records and traces."""
 
     def __init__(self, flow: Flow[Any], config: AgentConfig) -> None:
         super().__init__(config, interception=flow.interception)
@@ -124,27 +124,23 @@ class _FlowAgent(Agent):
             watch = flow.live.watch(invocation.unit, invocation.call, on_trace)
 
             try:
-                async with flow.pools.hold(
-                    () if runtime is not None else ("runtimes",)
-                ):
-                    flow.check_running()
-                    if interact is None:
-                        trace = await super(_FlowAgent, self).run(
-                            task,
-                            runtime=runtime,
-                            tools=tools,
-                            on_trace=watch,
-                            collect_artifacts=collect_artifacts,
-                        )
-                    else:
-                        async with super(_FlowAgent, self).interaction(
-                            task,
-                            runtime=runtime,
-                            tools=tools,
-                            on_trace=watch,
-                        ) as interaction:
-                            await interact(interaction)
-                        trace = interaction.trace
+                if interact is None:
+                    trace = await super(_FlowAgent, self).run(
+                        task,
+                        runtime=runtime,
+                        tools=tools,
+                        on_trace=watch,
+                        collect_artifacts=collect_artifacts,
+                    )
+                else:
+                    async with super(_FlowAgent, self).interaction(
+                        task,
+                        runtime=runtime,
+                        tools=tools,
+                        on_trace=watch,
+                    ) as interaction:
+                        await interact(interaction)
+                    trace = interaction.trace
             except Exception as exc:
                 current = flow.live.current.get(invocation.call)
                 if current is not None and current.last_error is not None:
@@ -164,10 +160,9 @@ class _FlowAgent(Agent):
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
-        async with self.flow.pools.hold(("runtimes",)):
-            self.flow.check_running()
-            async with super().provision(task) as runtime:
-                yield runtime
+        self.flow.check_running()
+        async with super().provision(task) as runtime:
+            yield runtime
 
 
 class Live:

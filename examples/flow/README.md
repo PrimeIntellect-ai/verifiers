@@ -74,7 +74,7 @@ states and a quiescent/draining reason. Use `flow.stay_alive = true` to wait for
 `pools.json` holds the current named limits; replace it atomically to resize them:
 
 ```sh
-printf '%s\n' '{"units": 2, "runtimes": 4}' > outputs/demo/pools.json.tmp
+printf '%s\n' '{"units": 2}' > outputs/demo/pools.json.tmp
 mv outputs/demo/pools.json.tmp outputs/demo/pools.json
 ```
 
