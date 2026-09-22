@@ -170,6 +170,25 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
 
 Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
+Native tool servers in a sandbox need Verifiers and the packages containing their tools,
+state, and task data classes. Supply installable package references or absolute wheel/sdist paths
+in `[env].mcp_packages`; dependencies come from each package's `pyproject.toml`. Build local
+projects once with `uv build --sdist` before starting the run, and include the desired
+Verifiers artifact when developing the framework locally. Private packages need their
+original artifact or a reference the runtime can access.
+
+```toml
+[env]
+mcp_packages = ["/absolute/artifacts/verifiers-1.0.0.tar.gz", "/absolute/artifacts/my_tools-0.1.0.tar.gz"]
+```
+
+The filenames above are illustrative. Packages are installed together before native servers
+start. Borrowed runtimes reuse matching environments; different packages or installation
+environment variables select a separate environment. Configure indexes and dependency
+cutoffs through the runtime's uv configuration or task runtime environment. An empty list
+uses the sandbox image's preinstalled Python environment. Subprocess servers use the host
+interpreter. Standalone `vf.Agent` callers can pass the same list as `mcp_packages=`.
+
 ## Using Judges
 
 If your reward is semantic, use an LLM judge.

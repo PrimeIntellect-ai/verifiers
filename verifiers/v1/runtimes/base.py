@@ -157,7 +157,7 @@ class Runtime(ABC):
         self.env: dict[str, str] = {}
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
-        self._mcp_sources: set[str] = set()
+        self._mcp_environments: dict[str, str] = {}
         self._mcp_install_lock = asyncio.Lock()
         self._setup_claimed = False
         self.stopped = False

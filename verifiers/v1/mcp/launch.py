@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import secrets
 import shlex
-import shutil
-import subprocess
 import sys
-import sysconfig
-import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from functools import cache
-from importlib.metadata import PathDistribution, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -42,22 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PACKAGE_BUILD_TIMEOUT_SECONDS = 300
-
-
-@dataclass
-class _PackageBuildState:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    build: asyncio.Task[tuple[str, bytes]] | None = None
-    users: int = 0
-
-
-# Coordination and caching are process-local. Spawned env-server workers each
-# build once; within an event loop, concurrent rollouts share the completed artifact.
-_PACKAGE_BUILD_STATES: dict[
-    tuple[Path, asyncio.AbstractEventLoop], _PackageBuildState
-] = {}
-
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
 import sys, time, urllib.error, urllib.request
@@ -72,208 +52,70 @@ sys.exit(1)
 """
 
 
-@cache
-def _package_dir(cls: type) -> str:
-    module = sys.modules.get(cls.__module__)
-    path = getattr(module, "__file__", None)
-    if path:
-        path = Path(path).resolve()
-        # An installed wheel owns its recorded files, even when its venv lives
-        # inside an unrelated source checkout with a pyproject.toml above it.
-        for name in packages_distributions().get(cls.__module__.split(".")[0], []):
-            files = distribution(name).files or []
-            if any(Path(file.locate()).resolve() == path for file in files):
-                for file in files:
-                    if file.name == "WHEEL" and file.parent.suffix == ".dist-info":
-                        return str(Path(file.locate()).parent)
-        for parent in path.parents:
-            if parent.name in {"site-packages", "dist-packages"}:
-                break
-            if (parent / "pyproject.toml").exists():
-                return str(parent)
-    raise ToolsetError(
-        f"cannot package {cls.__module__!r} for a sandbox: "
-        "no installed wheel or source project found"
+async def _install_packages(
+    runtime: Runtime,
+    key: str,
+    requirements: list[str],
+    uploads: dict[str, bytes],
+    root: str,
+) -> str:
+    """Install one complete environment under the runtime lock, then publish it."""
+    for path, data in uploads.items():
+        await runtime.write(path, data)
+    venv, temp, cache = (f"{root}/envs/{key}", f"{root}/tmp", f"{root}/cache")
+    venv_q, temp_q, cache_q = map(shlex.quote, (venv, temp, cache))
+    command = (
+        f"set -e; mkdir -p {temp_q} {cache_q}; "
+        f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+        f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+        f"uv pip install --python {venv_q} -- {shlex.join(requirements)}"
     )
-
-
-@cache
-def _build_package(src: Path) -> tuple[str, bytes]:
-    """Transfer installed wheel files or build a source project's PEP 517 sdist."""
-    with tempfile.TemporaryDirectory(prefix="vf-package-") as directory:
-        out = Path(directory)
-        if src.suffix == ".dist-info":
-            dist = PathDistribution(src)
-            files = dist.files
-            if not files:
-                raise ToolsetError(f"cannot package {src}: missing RECORD")
-            package = out / "package"
-            scripts = {
-                entry.name
-                for entry in dist.entry_points
-                if entry.group in {"console_scripts", "gui_scripts"}
-            }
-            for file in files:
-                # Installers regenerate entry-point scripts for the target Python.
-                if ".." in file.parts or file.is_absolute():
-                    if (
-                        file.name in scripts
-                        and Path(file.locate()).parent.resolve()
-                        == Path(sysconfig.get_path("scripts")).resolve()
-                    ):
-                        continue
-                    raise ToolsetError(
-                        f"cannot package {src}: installed file outside site-packages: {file}"
-                    )
-                if file.suffix == ".pyc" or (
-                    file.parent.name == src.name
-                    and file.name
-                    in {
-                        "RECORD",
-                        "RECORD.jws",
-                        "RECORD.p7s",
-                        "INSTALLER",
-                        "REQUESTED",
-                        "direct_url.json",
-                        "uv_cache.json",
-                    }
-                ):
-                    continue
-                target = package / file
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file.locate(), target)
-            command = [
-                "uv",
-                "tool",
-                "run",
-                "--from",
-                "wheel==0.48.0",
-                "wheel",
-                "pack",
-                "--dest-dir",
-                str(out),
-                str(package),
-            ]
-        else:
-            command = [
-                "uv",
-                "build",
-                "--sdist",
-                "--no-create-gitignore",
-                "--color",
-                "never",
-                "--out-dir",
-                str(out),
-                ".",
-            ]
-        try:
-            # Run from the source root so uv discovers this project's workspace,
-            # uv.toml, indexes, constraints, and Python configuration rather than
-            # inheriting configuration from the launcher's working directory.
-            result = subprocess.run(
-                command,
-                cwd=src,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=_PACKAGE_BUILD_TIMEOUT_SECONDS,
-            )
-        except FileNotFoundError as e:
-            raise ToolsetError(
-                f"cannot build package for {src}: uv is not installed"
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise ToolsetError(
-                "package build timed out after "
-                f"{_PACKAGE_BUILD_TIMEOUT_SECONDS}s for {src}"
-            ) from e
-        if result.returncode != 0:
-            detail = "\n".join(
-                part.strip() for part in (result.stdout, result.stderr) if part.strip()
-            )
-            raise ToolsetError(f"package build failed for {src}: {detail[-2000:]}")
-        artifacts = [path for path in out.iterdir() if path.is_file()]
-        if len(artifacts) != 1:
-            names = ", ".join(sorted(path.name for path in artifacts)) or "none"
-            raise ToolsetError(
-                f"package build for {src} produced {len(artifacts)} distributions: {names}"
-            )
-        artifact = artifacts[0]
-        return artifact.name, artifact.read_bytes()
-
-
-async def _cached_package(src: Path) -> tuple[str, bytes]:
-    """Build once per source without parking waiters in the thread pool."""
-    src = src.resolve()
-    key = (src, asyncio.get_running_loop())
-    state = _PACKAGE_BUILD_STATES.get(key)
-    if state is None:
-        state = _PackageBuildState()
-        _PACKAGE_BUILD_STATES[key] = state
-    state.users += 1
-    try:
-        async with state.lock:
-            # Coordinate before entering the default executor so concurrent
-            # same-source waiters do not occupy executor threads.
-            if state.build is None:
-                state.build = asyncio.create_task(
-                    asyncio.to_thread(_build_package, src)
-                )
-            build = state.build
-            try:
-                return await asyncio.shield(build)
-            except asyncio.CancelledError:
-                # Cancelling to_thread does not stop its worker. Keep the lock until
-                # that worker exits so a replacement caller cannot overlap the build.
-                with contextlib.suppress(Exception):
-                    await build
-                raise
-    finally:
-        state.users -= 1
-        if state.users == 0 and _PACKAGE_BUILD_STATES.get(key) is state:
-            del _PACKAGE_BUILD_STATES[key]
-
-
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
-    workdir = str(PurePosixPath(runtime.config.workdir))
-    root = str(PurePosixPath(workdir) / ".vf-src")
-    temp = str(PurePosixPath(workdir) / ".vf-tmp")
-    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
-    venv = str(PurePosixPath(workdir) / ".vf-venv")
-    root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
-    # Colocated servers and borrowed views install into one physical environment.
-    # Serialize its mutations and only remember sources after a successful install.
-    async with runtime._mcp_install_lock:
-        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
-        pending = [source for source in sources if source not in runtime._mcp_sources]
-        if not pending:
-            return f"{venv}/bin/python"
-        setup = (
-            f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-            f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
+    result = await runtime.run(["sh", "-c", command], {})
+    if result.exit_code:
+        raise ToolsetError(
+            f"MCP package installation failed: {(result.stderr or result.stdout)[-2000:]}"
         )
-        if not runtime._mcp_sources:
-            # Failed installs can leave the venv behind; retain it when retrying.
-            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
-        # Drain remote writes and installs before cancellation releases the lock.
-        for source in pending:
-            name, data = await _cached_package(Path(source))
-            remote = f"{root}/{name}"
-            await run_shielded(runtime.write(remote, data))
-            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-        result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
-        if result.exit_code != 0:
-            raise ToolsetError(
-                f"server {server.server_name!r} install failed in runtime: "
-                f"{(result.stderr or result.stdout).strip()[-2000:]}"
+    python = f"{venv}/bin/python"
+    runtime._mcp_environments[key] = python
+    return python
+
+
+async def prepare_packages(packages: Sequence[str], runtime: Runtime) -> str:
+    """Resolve all native servers' packages together before launching any of them."""
+    if runtime.type == "subprocess":
+        return sys.executable
+    if not packages:
+        return "python3"  # The image supplies the complete server environment.
+    # Build scratch space and uv's cache belong on disk, not a VM's small /tmp tmpfs.
+    root = str(PurePosixPath(runtime.config.workdir) / ".vf-mcp")
+    uploads: dict[str, bytes] = {}
+    requirements = []
+    for requirement in sorted(set(packages)):
+        path = Path(requirement)
+        if path.is_absolute():
+            if not path.name.endswith((".whl", ".tar.gz")):
+                raise ToolsetError(
+                    "build local MCP packages with uv build --sdist first"
+                )
+            data = await asyncio.to_thread(path.read_bytes)
+            digest = hashlib.sha256(data).hexdigest()
+            requirement = f"{root}/artifacts/{digest}/{path.name}"
+            uploads[requirement] = data
+        requirements.append(requirement)
+    requirements = sorted(set(requirements))
+    # Borrowers may change uv indexes or build settings through their process env.
+    # Include that input too; never mutate an environment already used by a server.
+    key = hashlib.sha256(
+        json.dumps([requirements, runtime.env], sort_keys=True).encode()
+    ).hexdigest()
+    async with runtime._mcp_install_lock:
+        if key not in runtime._mcp_environments:
+            # Drain uploads, installation, and publication before releasing the lock,
+            # including when the caller is cancelled more than once.
+            await run_shielded(
+                _install_packages(runtime, key, requirements, uploads, root)
             )
-        runtime._mcp_sources.update(pending)
-    return f"{venv}/bin/python"
+        return runtime._mcp_environments[key]
 
 
 async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
@@ -305,6 +147,7 @@ async def serve_in_runtime(
     exposed: bool,
     state_url: str | None = None,
     state_secret: str = "",
+    python: str | None = None,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -332,9 +175,7 @@ async def serve_in_runtime(
     else:
         port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
         env["MCP_PORT_FILE"] = port_file
-    python = sys.executable
-    if runtime.type != "subprocess":
-        python = await _install_in_sandbox(server, runtime)
+    python = python or (sys.executable if runtime.type == "subprocess" else "python3")
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
@@ -400,6 +241,8 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    packages: Sequence[str] = (),
+    python: str | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -431,12 +274,15 @@ async def _serve(
         state_url = (
             runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
+        if python is None:
+            python = await prepare_packages(packages, runtime)
         port = await serve_in_runtime(
             server,
             runtime,
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
+            python=python,
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read
@@ -468,6 +314,8 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    packages: Sequence[str] = (),
+    python: str | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -476,6 +324,8 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        packages=packages,
+        python=python,
     ) as served:
         yield served.url
 
@@ -499,7 +349,12 @@ class SharedToolServer:
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
+async def serve_shared(
+    toolsets: list[Toolset],
+    harness_is_local: bool = True,
+    *,
+    packages: Sequence[str] = (),
+):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
@@ -540,6 +395,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                         toolset,
                         harness_is_local=harness_is_local,
                         state_secret=state_secret,
+                        packages=packages,
                     )
                 )
                 servers[name] = SharedToolServer(
@@ -583,6 +439,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    packages: Sequence[str] = (),
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -594,6 +451,11 @@ async def serve_tools(
     `state_base` is universally reachable from either placement."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
+        python = None
+        if any(
+            toolset.config.colocated and not toolset.config.url for toolset in toolsets
+        ):
+            python = await prepare_packages(packages, harness_runtime)
         for name, server in (shared or {}).items():
             if server.external:
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
@@ -623,6 +485,8 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        packages=packages,
+                        python=python if cfg.colocated else None,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

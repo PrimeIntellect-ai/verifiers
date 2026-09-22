@@ -31,7 +31,7 @@ class NullHarness(Harness[NullHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
@@ -43,7 +43,7 @@ class NullHarness(Harness[NullHarnessConfig]):
             runtime,
             endpoint,
             secret,
-            mcp_urls,
+            mcp_servers,
             system_prompt,
             prompt,
         )

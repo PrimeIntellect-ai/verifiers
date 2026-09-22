@@ -11,11 +11,15 @@ from pathlib import Path
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils import mcp
+from verifiers.v1.harnesses.utils.launch import bundle_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+PROGRAM_SOURCE = bundle_program(
+    (Path(__file__).resolve().parent / "program.py").read_text(), mcp
+)
 
 
 class CompactingHarnessConfig(HarnessConfig):
@@ -38,7 +42,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ProgramResult:
         _, prompt = self.resolve_text_prompt(data)
@@ -49,11 +53,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
         }
-        if mcp_urls:
-            # The program connects to the tool servers over HTTP; hand it a standard
-            # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            env["MCP_CONFIG"] = json.dumps(
-                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
-            )
+        if mcp_servers:
+            env["MCP_CONFIG"] = json.dumps({"mcpServers": mcp_servers})
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         return await runtime.run_program([*program, prompt], env)

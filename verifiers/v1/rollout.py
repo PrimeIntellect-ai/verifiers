@@ -67,6 +67,7 @@ class Rollout:
         timeouts: RolloutTimeouts,
         limits: RolloutLimits,
         shared_tools: dict[str, SharedToolServer] | None = None,
+        mcp_packages: tuple[str, ...] = (),
         interception: Interception | None = None,
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
@@ -80,6 +81,7 @@ class Rollout:
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
+        self._mcp_packages = mcp_packages
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
@@ -131,7 +133,7 @@ class Rollout:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
-        self._urls: dict[str, str] = {}
+        self._mcp_servers: dict[str, dict] = {}
         self._harness_session: HarnessSession | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -258,19 +260,44 @@ class Rollout:
             )
             self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
             self._secret = model_secret
-            self._urls = await self._stack.enter_async_context(
+            urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
                     runtime,
                     shared=self._shared_tools,
+                    packages=self._mcp_packages,
                     state_secret=state_secret,
                     state_route=self.trace.id,
                     state_base=base_url,
                 )
             )
+            if duplicates := urls.keys() & self.task.data.mcp_servers.keys():
+                raise ToolsetError(f"duplicate MCP server names: {sorted(duplicates)}")
+            self._mcp_servers = {
+                **{
+                    name: {"transport": "streamable-http", "url": url}
+                    for name, url in urls.items()
+                },
+                **{
+                    name: dict(server)
+                    for name, server in self.task.data.mcp_servers.items()
+                },
+            }
+            for server in self._mcp_servers.values():
+                if server.get("command"):
+                    server["env"] = {**runtime.env, **server.get("env", {})}
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            await runtime.prepare_execution(
+                [
+                    self._endpoint,
+                    *(
+                        server["url"]
+                        for server in self._mcp_servers.values()
+                        if server.get("url")
+                    ),
+                ]
+            )
             async with (
                 boundary(HarnessError, "opening harness session"),
                 asyncio.timeout_at(setup_deadline),
@@ -335,7 +362,7 @@ class Rollout:
                         runtime,
                         self._endpoint,
                         self._secret,
-                        self._urls,
+                        self._mcp_servers,
                         harness_data,
                         **session_kwargs,
                     )

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp==2.0.0", "httpx2"]
+# dependencies = ["openai", "mcp==2.0.0", "httpx2", "tenacity"]
 # ///
 """The compacting harness's program: a context-rewrite loop (every turn branches).
 
@@ -9,7 +9,7 @@ notes the model saved via the `summarize` tool. Per turn: at most one task tool 
 its result shown in-context, then a forced `summarize`; a plain-text reply finishes the
 run and is printed as the answer; a disallowed call ends the rollout with no answer
 (training signal). Model calls go to the interception server (OPENAI_BASE_URL/API_KEY);
-MCP servers are reached over streamable HTTP.
+MCP clients use the task's declared transport.
 """
 
 import asyncio
@@ -17,8 +17,12 @@ import json
 import os
 import sys
 from contextlib import AsyncExitStack
+from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
+
+if TYPE_CHECKING:
+    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
 SYSTEM = (
     "You work in turns, and your context is wiped between turns: the next turn shows "
@@ -69,57 +73,12 @@ async def chat(
     return completion.choices[0].message
 
 
-async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
-    """Connect to each MCP server and negotiate the newest mutually supported protocol."""
-    import httpx2
-    from mcp import Client
-    from mcp.client.streamable_http import (
-        create_mcp_http_client,
-        streamable_http_client,
-    )
-
-    tool_schemas: list[dict] = []
-    dispatch: dict[str, tuple] = {}
-    for name, spec in config.get("mcpServers", {}).items():
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(
-                headers=spec.get("headers") or None,
-                timeout=httpx2.Timeout(30.0, read=300.0),
-            )
-        )
-        transport = streamable_http_client(spec["url"], http_client=http_client)
-        client = await stack.enter_async_context(Client(transport))
-        for tool in (await client.list_tools()).tools:
-            full = f"{name}_{tool.name}"
-            tool_schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": full,
-                        "description": tool.description or "",
-                        "parameters": tool.input_schema,
-                    },
-                }
-            )
-            dispatch[full] = (client, tool.name)
-    return tool_schemas, dispatch
-
-
-async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str:
-    client, raw = dispatch[name]
-    result = await client.call_tool(raw, arguments)
-    texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
-    return "\n".join(texts) if texts else str(result.content)
-
-
 async def main() -> None:
     task = sys.argv[1]
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
     async with AsyncExitStack() as stack:
-        tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
+        tools, dispatch, servers = await connect_mcp(config, stack, {"summarize"})
         toolset = [*tools, SUMMARIZE]
         while True:  # each turn is a fresh prompt — a new branch
             # The rewrite: the task on the first turn, then only the carried-over notes.
@@ -140,7 +99,7 @@ async def main() -> None:
                 notes = args.get("notes") or notes
                 continue
             result = (
-                await call_mcp(dispatch, call.function.name, args)
+                await call_mcp(servers, dispatch, call.function.name, args)
                 if call.function.name in dispatch
                 else f"error: unknown tool {call.function.name!r}"
             )

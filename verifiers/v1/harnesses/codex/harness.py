@@ -6,6 +6,8 @@ import logging
 import re
 from collections import Counter
 
+import tomli_w
+
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -91,14 +93,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
         data: TaskData,
     ) -> ACPConfig:
         if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_servers)
         return ACPConfig(
             env=env,
             command=[
@@ -107,7 +109,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             ],
             prompt=prompt,
             # Codex reads MCP servers from the config written by build_env().
-            mcp_urls={},
+            mcp_servers={},
             system_prompt=system_prompt,
             client_capabilities={
                 "_meta": {
@@ -132,27 +134,36 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
+        mcp_servers: dict[str, dict],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
-                for name, url in mcp_urls.items()
+        servers = {}
+        for name, server in mcp_servers.items():
+            spec = dict(server)
+            kind = spec.pop(
+                "transport", "stdio" if "command" in spec else "streamable-http"
             )
-            + "}"
-            if mcp_urls
-            else ""
+            if kind not in {"stdio", "streamable-http"}:
+                raise ValueError(
+                    f"Codex does not support MCP transport {kind!r} for {name!r}"
+                )
+            if "headers" in spec:
+                spec["http_headers"] = spec.pop("headers")
+            servers[name] = {
+                **spec,
+                "required": True,
+                "startup_timeout_sec": 60.0,
+                "tool_timeout_sec": self.config.tool_timeout,
+            }
+        mcp_config = tomli_w.dumps(
+            {"features": {"mcp_2026_07_28": True}, "mcp_servers": servers}
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
 
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
-            for name in mcp_urls
+            for name in mcp_servers
             for namespace in (re.sub(r"[^a-zA-Z0-9_]", "_", name) or "_",)
         }
         namespace_counts = Counter(namespace_bases.values())
