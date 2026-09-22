@@ -2,9 +2,10 @@
 
 A `Flow` subclass owns shared services and scheduling policy. Each `Unit` is work that can
 be paused or resumed independently. A `@stage` method receives that unit and returns a
-`Transition`: its next stage, status, and optional typed data/files, committed together in Git.
+`Transition`: its next stage, status, and optional typed data, published together in one atomic `state.json` update.
 `setup()` runs on every launch, including resume. Persistent changes must be safe to repeat;
-`create_unit()` preserves existing checkpoints.
+`create_unit()` preserves existing checkpoints. Updates take a short write lock and increment
+the workflow revision; the execution lock spans the stage. Only the current state is retained.
 
 Start with these short, runnable plugins:
 
@@ -50,19 +51,19 @@ call. To share a sandbox, use `async with solver.provision(task) as box`, then p
 `runtime=box` to agents that borrow it. The caller owns that box's lifetime.
 
 Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(unit)`
-optionally preserves work products independently of workflow Git checkpoints; publish the
+optionally preserves work products independently of workflow state; publish the
 chosen revision in `Transition(data=unit.data)`. External effects before returning a
 transition are not rolled back by a hold.
 
 ## Agent control
 
-A monitoring coding agent reads committed unit state, `transitions.jsonl`, call records and
+A monitoring coding agent reads published unit state, `transitions.jsonl`, call records and
 traces (including `live/` snapshots). `inspect` exposes current state and executing stages.
 `steer` changes the next stage/status or appends a note; it does not interrupt a model's
 conversation. Live controls survive stage publication. `unit.before` and `unit.notes` are
-stage-start snapshots; `unit.state()` reads current committed state. Publish edits to the
+stage-start snapshots; `unit.state()` reads current published state. Publish edits to the
 stage's `unit.data` explicitly with a transition. Operator data edits require a settled unit
-and its inspected revision (`--data patch.json --expected SHA`).
+and its inspected revision (`--data patch.json --expected REVISION`).
 
 `admit(unit)` sees accepted executions in `self.active`, including their original executing
 stage after a live route. Pipelines define barriers and success policy; `run()` returns unit

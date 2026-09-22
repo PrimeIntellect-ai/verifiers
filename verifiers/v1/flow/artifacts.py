@@ -1,4 +1,4 @@
-"""Optional immutable file revisions in a unit's Git database, independent of its HEAD."""
+"""Optional immutable file revisions, independent of workflow state."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.flow.unit import Unit, git
+from verifiers.v1.flow.unit import Unit
 
 ArtifactRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 """An immutable Git commit, addressed within its GitArtifacts repository."""
@@ -29,13 +29,23 @@ _IDENTITY = {
 }
 
 
+def git(path: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 class GitArtifacts:
     """Writes produce retained revisions; selecting one is a separate workflow transition."""
 
     def __init__(self, unit: Unit | Path | str) -> None:
         self.path = (unit.path if isinstance(unit, Unit) else Path(unit)).resolve()
         if not (self.path / ".git").is_dir():
-            raise ValueError(f"no Git repository at {self.path}")
+            self.path.mkdir(parents=True, exist_ok=True)
+            git(self.path, "init", "-q")
 
     def read_bytes(self, revision: ArtifactRevision, path: str) -> bytes | None:
         self._relative(path)

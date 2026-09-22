@@ -59,7 +59,7 @@ from verifiers.v1.flow.events import (
     Status,
     append_event,
 )
-from verifiers.v1.flow.unit import D, Execution, Transition, Unit, UnitState
+from verifiers.v1.flow.unit import STATE, D, Execution, Transition, Unit, UnitState
 from verifiers.v1.interception import Interception, make_interception
 from verifiers.v1.runtimes import runtime_is_local
 from verifiers.v1.runtimes.base import RUN_LABEL_VAR
@@ -232,7 +232,7 @@ class Flow(Generic[ConfigT]):
         return [
             self.unit(p.name)
             for p in sorted((self.root / UNITS).iterdir())
-            if (p / ".git").exists()
+            if (p / STATE).is_file()
         ]
 
     def unit(self, name: str) -> Unit[Any, Self]:
@@ -240,9 +240,7 @@ class Flow(Generic[ConfigT]):
         unit.flow = self
         return unit
 
-    def create_unit(
-        self, name: str, *, stage: str, data: D, files: dict[str, str] | None = None
-    ) -> Unit[D, Self]:
+    def create_unit(self, name: str, *, stage: str, data: D) -> Unit[D, Self]:
         """Seed a typed unit without resetting an existing checkpoint."""
         unit = Unit[D, Self].create(
             unit_path(self.root, name),
@@ -250,7 +248,6 @@ class Flow(Generic[ConfigT]):
             data=data,
             stages=self.stages,
             events=self.root / TRANSITIONS,
-            files=files,
         )
         unit.flow = self
         self.touch(name, "seeded")
@@ -391,7 +388,7 @@ class Flow(Generic[ConfigT]):
         finally:
             _LINKS.reset(token)
             _CURRENT.reset(current)
-        sha = unit.apply(transition, before=before)
+        revision = unit.apply(transition, before=before)
         committed = unit.state()
         self.event(
             StageEvent(
@@ -405,7 +402,7 @@ class Flow(Generic[ConfigT]):
                 status=committed.status,
                 reason=committed.reason,
                 report=transition.report,
-                sha=sha,
+                revision=revision,
                 links=links,
             )
         )

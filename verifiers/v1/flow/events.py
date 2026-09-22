@@ -54,7 +54,7 @@ class StageEvent(BaseEvent):
     reason: str | None = None
     report: str | None = None
     """Filename under the run's reports/; contents are owned by the pipeline."""
-    sha: str | None = None
+    revision: int | None = None
     links: list[Link] = Field(default_factory=list)
 
 
@@ -90,7 +90,7 @@ class Steering(BaseModel):
 class SteerEvent(BaseEvent):
     type: Literal["steer"] = "steer"
     unit: str
-    sha: str
+    revision: int
     action: Steering
 
 

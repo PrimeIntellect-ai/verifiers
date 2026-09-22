@@ -15,7 +15,8 @@ from verifiers.v1.flow import (
     UnitData,
     stage,
 )
-from verifiers.v1.flow.unit import Unit, git
+from verifiers.v1.flow.artifacts import git
+from verifiers.v1.flow.unit import Unit
 
 
 class Data(UnitData):
@@ -141,7 +142,7 @@ async def test_parallel_calls_reuses_successes_until_inputs_change(tmp_path):
     unavailable = False
     assert (await flow.run()).counts == {"terminal": 1}
     assert calls.count((0, 0)) == 1 and calls.count((0, 1)) == 2
-    unit.steer(data={"value": 1}, expected=unit.head(), status="ready")
+    unit.steer(data={"value": 1}, expected=unit.state().revision, status="ready")
     assert (await flow.run()).counts == {"terminal": 1}
     assert {i for value, i in calls if value == 1} == {0, 1}
 
@@ -175,7 +176,7 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
         unit.steer(status="held", stage=route, note="late")
         assert unit.inspect().active.stage == flow.active["t"].stage == "work"
         with pytest.raises(RuntimeError, match="still active"):
-            unit.steer(data={"value": 2}, expected=unit.head())
+            unit.steer(data={"value": 2}, expected=unit.state().revision)
     finally:
         finish.set()
         await running
@@ -187,7 +188,7 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
     )
     assert state.notes == ["late"]
     assert unit.inspect().active is None
-    old = unit.head()
+    old = unit.state().revision
     unit.steer(data={"value": 2}, expected=old)
     with pytest.raises(ValueError, match="stale"):
         unit.steer(data={"value": 3}, expected=old)
@@ -201,12 +202,12 @@ def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
         stages=["work"],
         events=tmp_path / "events.jsonl",
     )
-    store, head = GitArtifacts(unit), unit.head()
+    assert not (unit.path / ".git").exists()
+    store, revision = GitArtifacts(unit), unit.state().revision
     base = store.write(base=None, files={"rubric.md": "first"})
     newer = store.write(base=base, files={"rubric.md": "second"})
     assert store.write(base=base, files={"rubric.md": "second"}) == newer
-    assert unit.head() == head
-    unit.check_clean()
+    assert unit.state().revision == revision
     git(unit.path, "gc", "--prune=now")
     assert store.read(base, "rubric.md") == "first"
     assert store.read(newer, "rubric.md") == "second"
@@ -220,9 +221,10 @@ async def test_admission_reserves_units_and_run_reports_quiescence_or_drain(tmp_
     class Example(Flow):
         async def setup(self):
             unit = self.create_unit("campaign", stage="work", data=Data(value=2))
-            head = unit.head()
+            revision = unit.state().revision
             assert (
-                self.create_unit("campaign", stage="work", data=Data()).head() == head
+                self.create_unit("campaign", stage="work", data=Data()).state().revision
+                == revision
             )
             assert unit.state().data.value == 2
             self.create_unit("other", stage="work", data=UnitData())
