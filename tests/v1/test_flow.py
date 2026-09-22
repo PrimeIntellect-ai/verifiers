@@ -196,11 +196,10 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
 
 def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
     unit = Unit.create(
-        tmp_path / "unit",
+        tmp_path / "units" / "unit",
         stage="work",
         data=Data(),
         stages=["work"],
-        events=tmp_path / "events.jsonl",
     )
     assert not (unit.path / ".git").exists()
     store, revision = GitArtifacts(unit), unit.state().revision

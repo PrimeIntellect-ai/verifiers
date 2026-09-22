@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from verifiers.v1.trace import Error
 from verifiers.v1.utils.time import now
 
+TRANSITIONS = "transitions.jsonl"
+
 Status = Literal["ready", "held", "waiting", "terminal"]
 RunReason = Literal["idle", "draining"]
 CallStatus = Literal[

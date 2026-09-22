@@ -6,6 +6,7 @@ be paused or resumed independently. A `@stage` method receives that unit and ret
 `setup()` runs on every launch, including resume. Persistent changes must be safe to repeat;
 `create_unit()` preserves existing checkpoints. Updates take a short write lock and increment
 the workflow revision; the execution lock spans the stage. Only the current state is retained.
+Transition outcomes and steering history live in the run's `transitions.jsonl` ledger.
 
 Start with these short, runnable plugins:
 

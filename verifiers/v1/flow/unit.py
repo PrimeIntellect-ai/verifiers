@@ -16,7 +16,13 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, NonNegativeInt
 from typing_extensions import TypeVar
 
-from verifiers.v1.flow.events import Status, SteerEvent, Steering, append_event
+from verifiers.v1.flow.events import (
+    TRANSITIONS,
+    Status,
+    SteerEvent,
+    Steering,
+    append_event,
+)
 from verifiers.v1.utils.time import now
 
 if TYPE_CHECKING:
@@ -40,12 +46,10 @@ class UnitState(BaseModel, Generic[D]):
 
     data_type: str
     stages: list[str]
-    events: str
     revision: NonNegativeInt = 0
     stage: str
     status: Status = "ready"
     reason: str = ""
-    outcome: str = ""
     data: D
     notes: list[str] = Field(default_factory=list)
     controls: dict[str, int] = Field(default_factory=dict)
@@ -117,7 +121,6 @@ class Unit(Generic[D, F]):
             type[UnitState[D]], UnitState.__class_getitem__(data_type)
         )
         self.stages = frozenset(definition["stages"])
-        self.events = self.path / definition["events"]
 
     @classmethod
     def create(
@@ -127,7 +130,6 @@ class Unit(Generic[D, F]):
         stage: str,
         data: D,
         stages: Iterable[str],
-        events: Path,
     ) -> Self:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
@@ -142,7 +144,6 @@ class Unit(Generic[D, F]):
                     UnitState(
                         data_type=f"{type(data).__module__}:{type(data).__name__}",
                         stages=allowed,
-                        events=os.path.relpath(events, path),
                         stage=stage,
                         data=data,
                     ),
@@ -242,7 +243,7 @@ class Unit(Generic[D, F]):
                 state.notes.append(note)
             revision = self._publish(state)
             append_event(
-                self.events,
+                self.path.parent.parent / TRANSITIONS,
                 SteerEvent(
                     unit=self.id,
                     revision=revision,
@@ -270,7 +271,6 @@ class Unit(Generic[D, F]):
             ):
                 if state.controls.get(key, 0) == before.controls.get(key, 0):
                     setattr(state, key, value)
-            state.outcome = transition.outcome
             if transition.data is not None:
                 state.data = transition.data
             if transition.status != "held":

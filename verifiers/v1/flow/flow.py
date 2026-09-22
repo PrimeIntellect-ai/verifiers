@@ -48,6 +48,7 @@ from verifiers.v1.flow.calls import (
     _FlowAgent,
 )
 from verifiers.v1.flow.events import (
+    TRANSITIONS,
     CallEvent,
     CallIdentity,
     Event,
@@ -76,8 +77,6 @@ ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)
 UNITS = "units"
 DRAIN_FILE = "drain"
 """A file of this name in the root drains the flow, as Ctrl-C once does. Remove it to launch again."""
-TRANSITIONS = "transitions.jsonl"
-"""One line per stage start and per transition: what a dashboard follows."""
 _LINKS: ContextVar[list[Link] | None] = ContextVar("flow_links", default=None)
 """The other units the running stage touched, `{unit, label}`: the edges between lanes."""
 
@@ -247,7 +246,6 @@ class Flow(Generic[ConfigT]):
             stage=stage,
             data=data,
             stages=self.stages,
-            events=self.root / TRANSITIONS,
         )
         unit.flow = self
         self.touch(name, "seeded")
