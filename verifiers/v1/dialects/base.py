@@ -265,6 +265,11 @@ class Dialect(ABC, Generic[RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
+    def stream_error(self, payload: bytes) -> bytes:
+        """An error payload (serialized `error_body`) as an SSE event, for a failure after
+        the stream is committed. OpenAI SDKs raise on any event carrying `error`."""
+        return b"data: " + payload + b"\n\n"
+
     @abstractmethod
     def mediate_external_capabilities(
         self, body: RawRequest, policy: NetworkPolicyConfig

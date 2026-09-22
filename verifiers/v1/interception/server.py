@@ -27,7 +27,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
@@ -78,6 +78,10 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 KEEPALIVE_INTERVAL_SECONDS = 3
+# A buffered (training) SSE turn commits its stream only after this long: a result within it
+# keeps its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept
+# alive well inside the tunnel's response-header timeout.
+KEEPALIVE_GRACE_SECONDS = 60
 STREAM_QUEUE_MAXSIZE = 16
 STREAM_MEMORY_BUFFER = 4 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
@@ -155,6 +159,8 @@ class _IdempotentAttempt:
 
 
 _IDEMPOTENT_ATTEMPT = web.RequestKey("idempotent_attempt", _IdempotentAttempt)
+# The buffered response behind a kept-alive SSE stream: what the attempt replays to retries.
+_BUFFERED_RESPONSE = web.RequestKey("buffered_response", web.Response)
 
 
 def _finish_idempotent_attempt(
@@ -217,6 +223,53 @@ async def _queue_chunks(
     finally:
         await queue.put(None)
         ready.set()
+
+
+async def _buffered_stream(
+    request: web.Request, dialect: Dialect, pending: Awaitable[web.Response]
+) -> web.StreamResponse:
+    """Serve a buffered response to an SSE client, keeping the connection alive while it
+    is produced. A result within the grace period is served as is; after it the stream is
+    committed and sent keepalive comments, so a proxy's response-header or idle timeout
+    can't cut a long turn. Once committed, a failure is framed as the dialect's SSE error.
+    A reader that goes away leaves the result running for its retries to coalesce onto."""
+    task = asyncio.ensure_future(pending)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_GRACE_SECONDS)
+        if done:
+            return task.result()
+        stream = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        connected = True
+        try:
+            await stream.prepare(request)
+            while not task.done():
+                # Don't terminate an empty event; some SSE clients try to JSON-decode it.
+                await stream.write(b": keepalive\n")
+                await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+        except ConnectionResetError:
+            connected = False
+        response = await task
+        request[_BUFFERED_RESPONSE] = response
+        if connected:
+            body = _capture_response(response).body
+            with contextlib.suppress(ConnectionResetError):
+                await stream.write(
+                    body if response.status < 400 else dialect.stream_error(body)
+                )
+                await stream.write_eof()
+        return stream
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 class InterceptionServerConfig(BaseInterceptionConfig):
@@ -313,10 +366,9 @@ class InterceptionServer(Interception):
             except BaseException:
                 _finish_idempotent_attempt(request, None)
                 raise
+            served = request.get(_BUFFERED_RESPONSE, response)
             replay = (
-                _capture_response(response)
-                if isinstance(response, web.Response)
-                else None
+                _capture_response(served) if isinstance(served, web.Response) else None
             )
             _finish_idempotent_attempt(request, replay)
             return response
@@ -600,6 +652,10 @@ class InterceptionServer(Interception):
 
         if idempotent is not None:
             if idempotent.inflight is not None:
+                if streaming:
+                    return await _buffered_stream(
+                        request, dialect, coalesced(idempotent.inflight)
+                    )
                 return await coalesced(idempotent.inflight)
             assert replay_key is not None
             future: asyncio.Future[ReplayResponse | None] = (
@@ -807,6 +863,8 @@ class InterceptionServer(Interception):
                 )
             return serve(call_response)
 
+        if streaming:
+            return await _buffered_stream(request, dialect, sample())
         return await sample()
 
     async def _stream(

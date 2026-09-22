@@ -579,6 +579,10 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
+    def stream_error(self, payload: bytes) -> bytes:
+        # The Anthropic SDKs raise only on a named `error` event.
+        return b"event: error\ndata: " + payload + b"\n\n"
+
     def parse_request(self, body: RawRequest) -> Request:
         tools = [
             Tool(
