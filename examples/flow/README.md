@@ -14,6 +14,7 @@ Start with these short, runnable plugins:
 - [parallel.py](../../verifiers/v1/flows/parallel.py): concurrent agents; retain successes if a sibling fails.
 - [draft_review.py](../../verifiers/v1/flows/draft_review.py): two stages exchange a Git artifact revision.
 - [partial_calls.py](../../verifiers/v1/flows/partial_calls.py): try partial failure and resume entirely offline.
+- [cross_unit.py](../../verifiers/v1/flows/cross_unit.py): a repair stage steers a waiting task into review, entirely offline.
 
 Export exactly one Flow subclass in the installed package's `__all__`. Its `Flow[Config]`
 specialization selects its Pydantic config. Prime-RL handles launch paths and logging:

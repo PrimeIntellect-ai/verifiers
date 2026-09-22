@@ -59,6 +59,7 @@ from verifiers.v1.flow.events import (
     StageEvent,
     Status,
     append_event,
+    now,
 )
 from verifiers.v1.flow.unit import STATE, D, Execution, Transition, Unit, UnitState
 from verifiers.v1.interception import make_interception
@@ -67,7 +68,6 @@ from verifiers.v1.runtimes.base import RUN_LABEL_VAR
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.time import now
 from verifiers.v1.utils.trace_store import TraceStore, trim_torn_tail
 
 logger = logging.getLogger("verifiers.flow")

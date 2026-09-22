@@ -28,8 +28,8 @@ from verifiers.v1.flow.events import (
     SteerEvent,
     Steering,
     append_event,
+    now,
 )
-from verifiers.v1.utils.time import now
 
 if TYPE_CHECKING:
     from verifiers.v1.flow.flow import Flow

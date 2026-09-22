@@ -6,13 +6,16 @@ from typing import get_args
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.agent import AgentConfig, agent_config_fields
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    agent_config_fields,
+    merge_agent_defaults,
+)
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
-from verifiers.v1.utils.generic import deep_merge
 
 
 class TimeoutConfig(BaseConfig):
@@ -110,17 +113,7 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default — plain
-        validation would replace the instance wholesale, resetting its other pins."""
-        if isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if isinstance(field.default, AgentConfig) and isinstance(
-                    data.get(name), dict
-                ):
-                    data[name] = deep_merge(
-                        field.default.model_dump(exclude_none=True), data[name]
-                    )
-        return data
+        return merge_agent_defaults(cls, data)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):

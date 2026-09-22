@@ -30,18 +30,15 @@ class Parallel(Flow[Config]):
                 mode="json", include={"model", "sampling", "harness"}
             ),
         }
-        results = await self.gather(
+        await self.gather(
             *(
-                solver.attempt(
+                solver.run(
                     Task(TaskData(prompt=unit.data.prompt)), key=str(i), inputs=inputs
                 )
                 for i in range(self.config.samples)
             )
         )
-        failures = [r.error.message for r in results if not r.ok]
-        return Transition(
-            "evaluated", "\n".join(failures), status="held" if failures else "terminal"
-        )
+        return Transition("evaluated", status="terminal")
 
 
 __all__ = ["Parallel"]

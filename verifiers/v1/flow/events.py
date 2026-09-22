@@ -1,12 +1,12 @@
 """Execution facts shared by the writer and read-only consumers."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from verifiers.v1.trace import Error
-from verifiers.v1.utils.time import now
 
 TRANSITIONS = "transitions.jsonl"
 
@@ -15,6 +15,10 @@ RunReason = Literal["idle", "draining"]
 CallStatus = Literal[
     "started", "succeeded", "failed", "attached", "stopped", "cancelled"
 ]
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 class BaseEvent(BaseModel):

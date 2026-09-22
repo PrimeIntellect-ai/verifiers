@@ -331,7 +331,6 @@ def task_type(taskset_id: str) -> type[Task]:
     return taskset_class(taskset_id).task_type()
 
 
-@functools.cache
 def flow_class(flow_id: str) -> "type[Flow[Any]]":
     """An installed package's exported Flow subclass, like an environment plugin."""
     from verifiers.v1.flow import Flow

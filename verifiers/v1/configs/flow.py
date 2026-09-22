@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
+from verifiers.v1.configs.agent import merge_agent_defaults
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -28,3 +29,8 @@ class FlowConfig(BaseConfig):
     """Optional stage limit (`units`); absent means unbounded. Other pools are acquired explicitly."""
     stay_alive: bool = False
     """Wait for new runnable work when idle; exit only on drain."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_agent_defaults(cls, data):
+        return merge_agent_defaults(cls, data)

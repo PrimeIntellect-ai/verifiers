@@ -163,7 +163,6 @@ class DockerRuntime(ContainerRuntime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
-        mount_args = [arg for mount in self.config.mounts for arg in ("-v", mount)]
         self._label_args = (
             ["--label", f"verifiers.run={label}"]
             if (label := os.environ.get(RUN_LABEL_VAR))
@@ -176,7 +175,6 @@ class DockerRuntime(ContainerRuntime):
             "--detach",
             *options,
             *env_args,
-            *mount_args,
             "--entrypoint",
             "sleep",
             "--name",

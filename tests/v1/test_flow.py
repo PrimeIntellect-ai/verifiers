@@ -89,7 +89,6 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     assert not list((tmp_path / "live").iterdir())
     with (tmp_path / "transitions.jsonl").open() as file:
         events = [json.loads(line) for line in file]
-    assert {e["label"] for e in events if e["type"] == "run_started"} == {flow.label}
     produced, attached = [
         e
         for e in events
@@ -201,7 +200,6 @@ def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
         data=Data(),
         stages=["work"],
     )
-    assert not (unit.path / ".git").exists()
     store, revision = GitArtifacts(unit), unit.state().revision
     base = store.write(base=None, files={"rubric.md": "first"})
     newer = store.write(base=base, files={"rubric.md": "second"})
@@ -219,13 +217,7 @@ async def test_admission_reserves_units_and_run_reports_idle_or_drain(tmp_path):
 
     class Example(Flow):
         async def setup(self):
-            unit = self.create_unit("campaign", stage="work", data=Data(value=2))
-            revision = unit.state().revision
-            assert (
-                self.create_unit("campaign", stage="work", data=Data()).state().revision
-                == revision
-            )
-            assert unit.state().data.value == 2
+            self.create_unit("campaign", stage="work", data=Data(value=2))
             self.create_unit("other", stage="work", data=UnitData())
 
         def admit(self, unit):

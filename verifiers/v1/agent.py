@@ -465,9 +465,7 @@ class Agent:
                     run.trace.stop("agent_completed")
             trace = await run.close()
         except BaseException:
-            # close() never runs here; free the run's servers and owned runtime.
-            # Shielded: a pending cancellation would otherwise cut abort() at its
-            # first await, before the runtime stops, and leak the sandbox.
+            # Finish cleanup even if another cancellation arrives during abort().
             await run_shielded(run.abort())
             raise
         if trace.agent.runtime is not None:

@@ -1,5 +1,7 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
+from typing import Any
+
 from pydantic import BaseModel, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
@@ -84,6 +86,19 @@ class WireAgentConfig(AgentConfig):
 def agent_config_fields(config: BaseModel) -> dict[str, AgentConfig]:
     """Top-level agent configs, in declaration order, keyed by their field names."""
     return {name: value for name, value in config if isinstance(value, AgentConfig)}
+
+
+def merge_agent_defaults(config: type[BaseModel], data: Any) -> Any:
+    """Merge partial agent overrides onto their declared defaults."""
+    if isinstance(data, dict):
+        for name, field in config.model_fields.items():
+            if isinstance(field.default, AgentConfig) and isinstance(
+                data.get(name), dict
+            ):
+                data[name] = deep_merge(
+                    field.default.model_dump(exclude_none=True), data[name]
+                )
+    return data
 
 
 def resolve_agent(

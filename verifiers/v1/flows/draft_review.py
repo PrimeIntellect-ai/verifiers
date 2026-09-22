@@ -44,12 +44,7 @@ class DraftReview(Flow[Config]):
         trace = await self.agents.reviewer.run(
             Task(TaskData(prompt=f"Review this draft:\n{draft}"))
         )
-        return Transition(
-            "reviewed",
-            trace.last_reply,
-            status="terminal",
-            files={"review.md": trace.last_reply},
-        )
+        return Transition("reviewed", trace.last_reply, status="terminal")
 
 
 __all__ = ["DraftReview"]

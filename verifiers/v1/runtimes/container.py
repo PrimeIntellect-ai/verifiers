@@ -8,7 +8,6 @@ import signal
 import uuid
 from pathlib import PurePosixPath
 
-from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -21,9 +20,6 @@ class ContainerConfig(BaseConfig):
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
-    mounts: list[str] = Field(default_factory=list)
-    """Bind mounts in `-v` form (`/host/path:/container/path[:ro]`): host data the box reads
-    in place instead of having it copied in per rollout. Honored by docker and podman."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""
