@@ -92,6 +92,10 @@ class RLMHarnessConfig(HarnessConfig):
     raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_subagent_calls: PositiveInt | None = None
     """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
+    delegation_prompt: bool | None = None
+    """Append nano-rlm's delegation guidance (when to spawn children, how to brief,
+    watch, collect and reconcile them) for every agent that can still delegate; `None`
+    uses nano-rlm's default (off). Needs a nano-rlm version with `policy.delegation_prompt`."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
@@ -197,6 +201,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "max_depth": self.config.max_depth,
             "max_concurrent_subagents": max_concurrent_subagents,
             "max_subagent_calls": self.config.max_subagent_calls,
+            "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
