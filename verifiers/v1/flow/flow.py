@@ -380,8 +380,7 @@ class Flow(Generic[ConfigT]):
         finally:
             _LINKS.reset(token)
             _CURRENT.reset(current)
-        revision = unit.apply(transition, before=before)
-        committed = unit.state()
+        committed = unit.apply(transition, before=before)
         self.event(
             StageEvent(
                 type="transition",
@@ -394,7 +393,7 @@ class Flow(Generic[ConfigT]):
                 status=committed.status,
                 reason=committed.reason,
                 report=transition.report,
-                revision=revision,
+                revision=committed.revision,
                 links=links,
             )
         )

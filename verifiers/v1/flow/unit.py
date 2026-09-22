@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import importlib
 import json
-import os
 from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -13,7 +12,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, NonNegativeInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    NonNegativeInt,
+    model_validator,
+)
 from typing_extensions import TypeVar
 
 from verifiers.v1.flow.events import (
@@ -54,6 +60,14 @@ class UnitState(BaseModel, Generic[D]):
     notes: list[str] = Field(default_factory=list)
     controls: dict[str, int] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _validate_stage(self) -> Self:
+        if self.stage not in self.stages:
+            raise ValueError(
+                f"unknown stage: {self.stage!r}; expected {sorted(self.stages)}"
+            )
+        return self
+
 
 class Execution(BaseModel):
     """An immutable reservation; the published next stage may change independently."""
@@ -61,7 +75,6 @@ class Execution(BaseModel):
     model_config = ConfigDict(frozen=True)
     id: str
     stage: str
-    revision: int
     started_at: str
 
 
@@ -88,7 +101,7 @@ def _write_state(path: Path, state: UnitState[Any]) -> None:
     """The caller holds the write lock; readers see the old or new complete state."""
     tmp = path / f"{STATE}.tmp"
     tmp.write_text(state.model_dump_json(indent=2) + "\n")
-    os.replace(tmp, path / STATE)
+    tmp.replace(path / STATE)
 
 
 class Unit(Generic[D, F]):
@@ -120,7 +133,6 @@ class Unit(Generic[D, F]):
         self.state_type = cast(
             type[UnitState[D]], UnitState.__class_getitem__(data_type)
         )
-        self.stages = frozenset(definition["stages"])
 
     @classmethod
     def create(
@@ -136,30 +148,19 @@ class Unit(Generic[D, F]):
         with (path / "write.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if not (path / STATE).exists():
-                allowed = sorted(stages)
-                if stage not in allowed:
-                    raise ValueError(f"unknown stage: {stage!r}")
                 _write_state(
                     path,
-                    UnitState(
+                    UnitState.__class_getitem__(type(data))(
                         data_type=f"{type(data).__module__}:{type(data).__name__}",
-                        stages=allowed,
+                        stages=sorted(stages),
                         stage=stage,
-                        data=data,
+                        data=data.model_dump(mode="json"),
                     ),
                 )
         return cls(path, type(data))
 
     def state(self) -> UnitState[D]:
-        state = self.state_type.model_validate_json((self.path / STATE).read_text())
-        self._validate_stage(state.stage)
-        return state
-
-    def _validate_stage(self, stage: str) -> None:
-        if stage not in self.stages:
-            raise ValueError(
-                f"unknown stage: {stage!r}; expected {sorted(self.stages)}"
-            )
+        return self.state_type.model_validate_json((self.path / STATE).read_text())
 
     @contextmanager
     def _write_lock(self) -> Iterator[None]:
@@ -191,7 +192,6 @@ class Unit(Generic[D, F]):
                 execution = Execution(
                     id=uuid4().hex,
                     stage=state.stage,
-                    revision=state.revision,
                     started_at=now(),
                 )
                 (self.path / "active.json").write_text(execution.model_dump_json())
@@ -200,13 +200,12 @@ class Unit(Generic[D, F]):
             self.notes = "\n\n".join(state.notes)
             yield
 
-    def _publish(self, state: UnitState[D]) -> int:
-        self._validate_stage(state.stage)
+    def _publish(self, state: UnitState[D]) -> UnitState[D]:
         # Revalidate even model_copy/update or mutated nested collections before touching disk.
         state = self.state_type.model_validate(state.model_dump(mode="json"))
         state.revision += 1
         _write_state(self.path, state)
-        return state.revision
+        return state
 
     def steer(
         self,
@@ -241,12 +240,12 @@ class Unit(Generic[D, F]):
                     state.controls[key] = state.controls.get(key, 0) + 1
             if note is not None:
                 state.notes.append(note)
-            revision = self._publish(state)
+            state = self._publish(state)
             append_event(
                 self.path.parent.parent / TRANSITIONS,
                 SteerEvent(
                     unit=self.id,
-                    revision=revision,
+                    revision=state.revision,
                     action=Steering(
                         stage=stage,
                         status=status,
@@ -256,9 +255,9 @@ class Unit(Generic[D, F]):
                     ),
                 ),
             )
-            return revision
+            return state.revision
 
-    def apply(self, transition: Transition[D], *, before: UnitState[D]) -> int:
+    def apply(self, transition: Transition[D], *, before: UnitState[D]) -> UnitState[D]:
         with self._write_lock():
             state = self.state()
             for key, value in (

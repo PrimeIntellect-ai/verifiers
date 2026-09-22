@@ -1,9 +1,8 @@
 """Read-only elapsed time and trace token totals, attributed to producing executions."""
 
 from collections.abc import Iterable, Mapping
-from datetime import datetime
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 
 from verifiers.v1.flow.events import CallEvent, Event, RunEvent, StageEvent
 
@@ -12,17 +11,6 @@ class Stats(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     tokens: int | None = None
-
-    @computed_field
-    @property
-    def duration(self) -> float | None:
-        """Elapsed seconds including intervening waits; an open span has no final duration."""
-        if self.started_at is None or self.finished_at is None:
-            return None
-        return (
-            datetime.fromisoformat(self.finished_at)
-            - datetime.fromisoformat(self.started_at)
-        ).total_seconds()
 
 
 class FlowStats(BaseModel):
