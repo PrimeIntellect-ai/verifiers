@@ -33,8 +33,8 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.39",
-    "prime-runs>=0.1.2",
+    "prime-sandboxes>=0.3.0",
+    "prime-runs>=0.1.3",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -152,12 +152,12 @@ prime-pydantic-config = false
 renderers = false
 
 [project.scripts]
-eval = "verifiers.v1.cli.eval.main:main"
-validate = "verifiers.v1.cli.validate:main"
-debug = "verifiers.v1.cli.debug:main"
-replay = "verifiers.v1.cli.replay:main"
-init = "verifiers.v1.cli.init:main"
-gepa = "verifiers.v1.cli.gepa:main"
+vf-eval = "verifiers.v1.cli.eval.main:main"
+vf-validate = "verifiers.v1.cli.validate:main"
+vf-debug = "verifiers.v1.cli.debug:main"
+vf-replay = "verifiers.v1.cli.replay:main"
+vf-init = "verifiers.v1.cli.init:main"
+vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -227,6 +227,8 @@ markers = [
     # per axis, so it matches every case touching that value on any axis.
     "subprocess: v1 e2e cases touching the subprocess (host) runtime",
     "docker: v1 e2e cases touching the docker runtime",
+    "podman: v1 e2e cases touching the podman runtime",
+    "apptainer: v1 e2e cases touching the apptainer runtime",
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",

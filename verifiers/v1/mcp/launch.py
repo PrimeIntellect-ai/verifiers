@@ -5,13 +5,16 @@ import contextlib
 import logging
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from functools import cache
+from importlib.metadata import PathDistribution, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -28,7 +31,7 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
-    make_runtime,
+    provision_runtime,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
@@ -39,11 +42,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SDIST_BUILD_TIMEOUT_SECONDS = 300
+_PACKAGE_BUILD_TIMEOUT_SECONDS = 300
 
 
 @dataclass
-class _SdistBuildState:
+class _PackageBuildState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     build: asyncio.Task[tuple[str, bytes]] | None = None
     users: int = 0
@@ -51,7 +54,9 @@ class _SdistBuildState:
 
 # Coordination and caching are process-local. Spawned env-server workers each
 # build once; within an event loop, concurrent rollouts share the completed artifact.
-_SDIST_BUILD_STATES: dict[tuple[Path, asyncio.AbstractEventLoop], _SdistBuildState] = {}
+_PACKAGE_BUILD_STATES: dict[
+    tuple[Path, asyncio.AbstractEventLoop], _PackageBuildState
+] = {}
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -67,33 +72,100 @@ sys.exit(1)
 """
 
 
-def _source_dir(cls: type) -> str | None:
+@cache
+def _package_dir(cls: type) -> str:
     module = sys.modules.get(cls.__module__)
     path = getattr(module, "__file__", None)
-    if not path:
-        return None
-    for parent in Path(path).resolve().parents:
-        if (parent / "pyproject.toml").exists():
-            return str(parent)
-    return None
+    if path:
+        path = Path(path).resolve()
+        # An installed wheel owns its recorded files, even when its venv lives
+        # inside an unrelated source checkout with a pyproject.toml above it.
+        for name in packages_distributions().get(cls.__module__.split(".")[0], []):
+            files = distribution(name).files or []
+            if any(Path(file.locate()).resolve() == path for file in files):
+                for file in files:
+                    if file.name == "WHEEL" and file.parent.suffix == ".dist-info":
+                        return str(Path(file.locate()).parent)
+        for parent in path.parents:
+            if parent.name in {"site-packages", "dist-packages"}:
+                break
+            if (parent / "pyproject.toml").exists():
+                return str(parent)
+    raise ToolsetError(
+        f"cannot package {cls.__module__!r} for a sandbox: "
+        "no installed wheel or source project found"
+    )
 
 
 @cache
-def _build_sdist(src: Path) -> tuple[str, bytes]:
-    """Build a project's source distribution through its declared PEP 517 backend."""
-    with tempfile.TemporaryDirectory(prefix="vf-sdist-") as directory:
+def _build_package(src: Path) -> tuple[str, bytes]:
+    """Transfer installed wheel files or build a source project's PEP 517 sdist."""
+    with tempfile.TemporaryDirectory(prefix="vf-package-") as directory:
         out = Path(directory)
-        command = [
-            "uv",
-            "build",
-            "--sdist",
-            "--no-create-gitignore",
-            "--color",
-            "never",
-            "--out-dir",
-            str(out),
-            ".",
-        ]
+        if src.suffix == ".dist-info":
+            dist = PathDistribution(src)
+            files = dist.files
+            if not files:
+                raise ToolsetError(f"cannot package {src}: missing RECORD")
+            package = out / "package"
+            scripts = {
+                entry.name
+                for entry in dist.entry_points
+                if entry.group in {"console_scripts", "gui_scripts"}
+            }
+            for file in files:
+                # Installers regenerate entry-point scripts for the target Python.
+                if ".." in file.parts or file.is_absolute():
+                    if (
+                        file.name in scripts
+                        and Path(file.locate()).parent.resolve()
+                        == Path(sysconfig.get_path("scripts")).resolve()
+                    ):
+                        continue
+                    raise ToolsetError(
+                        f"cannot package {src}: installed file outside site-packages: {file}"
+                    )
+                if file.suffix == ".pyc" or (
+                    file.parent.name == src.name
+                    and file.name
+                    in {
+                        "RECORD",
+                        "RECORD.jws",
+                        "RECORD.p7s",
+                        "INSTALLER",
+                        "REQUESTED",
+                        "direct_url.json",
+                        "uv_cache.json",
+                    }
+                ):
+                    continue
+                target = package / file
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(file.locate(), target)
+            command = [
+                "uv",
+                "tool",
+                "run",
+                "--from",
+                "wheel==0.48.0",
+                "wheel",
+                "pack",
+                "--dest-dir",
+                str(out),
+                str(package),
+            ]
+        else:
+            command = [
+                "uv",
+                "build",
+                "--sdist",
+                "--no-create-gitignore",
+                "--color",
+                "never",
+                "--out-dir",
+                str(out),
+                ".",
+            ]
         try:
             # Run from the source root so uv discovers this project's workspace,
             # uv.toml, indexes, constraints, and Python configuration rather than
@@ -104,49 +176,49 @@ def _build_sdist(src: Path) -> tuple[str, bytes]:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=_SDIST_BUILD_TIMEOUT_SECONDS,
+                timeout=_PACKAGE_BUILD_TIMEOUT_SECONDS,
             )
         except FileNotFoundError as e:
             raise ToolsetError(
-                f"cannot build source distribution for {src}: uv is not installed"
+                f"cannot build package for {src}: uv is not installed"
             ) from e
         except subprocess.TimeoutExpired as e:
             raise ToolsetError(
-                "source distribution build timed out after "
-                f"{_SDIST_BUILD_TIMEOUT_SECONDS}s for {src}"
+                "package build timed out after "
+                f"{_PACKAGE_BUILD_TIMEOUT_SECONDS}s for {src}"
             ) from e
         if result.returncode != 0:
             detail = "\n".join(
                 part.strip() for part in (result.stdout, result.stderr) if part.strip()
             )
-            raise ToolsetError(
-                f"source distribution build failed for {src}: {detail[-2000:]}"
-            )
+            raise ToolsetError(f"package build failed for {src}: {detail[-2000:]}")
         artifacts = [path for path in out.iterdir() if path.is_file()]
         if len(artifacts) != 1:
             names = ", ".join(sorted(path.name for path in artifacts)) or "none"
             raise ToolsetError(
-                f"build backend for {src} produced {len(artifacts)} source distributions: {names}"
+                f"package build for {src} produced {len(artifacts)} distributions: {names}"
             )
         artifact = artifacts[0]
         return artifact.name, artifact.read_bytes()
 
 
-async def _cached_sdist(src: Path) -> tuple[str, bytes]:
+async def _cached_package(src: Path) -> tuple[str, bytes]:
     """Build once per source without parking waiters in the thread pool."""
     src = src.resolve()
     key = (src, asyncio.get_running_loop())
-    state = _SDIST_BUILD_STATES.get(key)
+    state = _PACKAGE_BUILD_STATES.get(key)
     if state is None:
-        state = _SdistBuildState()
-        _SDIST_BUILD_STATES[key] = state
+        state = _PackageBuildState()
+        _PACKAGE_BUILD_STATES[key] = state
     state.users += 1
     try:
         async with state.lock:
             # Coordinate before entering the default executor so concurrent
             # same-source waiters do not occupy executor threads.
             if state.build is None:
-                state.build = asyncio.create_task(asyncio.to_thread(_build_sdist, src))
+                state.build = asyncio.create_task(
+                    asyncio.to_thread(_build_package, src)
+                )
             build = state.build
             try:
                 return await asyncio.shield(build)
@@ -158,29 +230,11 @@ async def _cached_sdist(src: Path) -> tuple[str, bytes]:
                 raise
     finally:
         state.users -= 1
-        if state.users == 0 and _SDIST_BUILD_STATES.get(key) is state:
-            del _SDIST_BUILD_STATES[key]
-
-
-def _verifiers_root() -> Path:
-    import verifiers
-
-    root = Path(verifiers.__file__).resolve().parent.parent
-    if not (root / "pyproject.toml").exists():
-        raise ToolsetError(
-            "verifiers is not a source checkout (no pyproject above the package), so it can't be "
-            "uploaded to a sandbox; run sandboxed servers from a verifiers source install"
-        )
-    return root
+        if state.users == 0 and _PACKAGE_BUILD_STATES.get(key) is state:
+            del _PACKAGE_BUILD_STATES[key]
 
 
 async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
-    source_dir = _source_dir(type(server))
-    if source_dir is None:
-        raise ToolsetError(
-            f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
-            "a local package (no pyproject) — sandbox launch needs a local env package to upload"
-        )
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -194,7 +248,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime._mcp_install_lock:
-        sources = dict.fromkeys((str(_verifiers_root()), source_dir))
+        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [source for source in sources if source not in runtime._mcp_sources]
         if not pending:
             return f"{venv}/bin/python"
@@ -208,7 +262,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
         # Drain remote writes and installs before cancellation releases the lock.
         for source in pending:
-            name, data = await _cached_sdist(Path(source))
+            name, data = await _cached_package(Path(source))
             remote = f"{root}/{name}"
             await run_shielded(runtime.write(remote, data))
             setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
@@ -269,7 +323,7 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if runtime.published_port is not None:
+    if exposed and runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
     port_file = None
@@ -318,17 +372,18 @@ async def reachable_url(
     runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
+    - else the runtime publishes the port (`expose`): a remote sandbox's URL is reachable
+      anywhere, a host-local URL directly by a local consumer and through a host tunnel
+      by a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
-    elif not service.is_local:  # in a remote sandbox → it publishes its own port
-        yield await service.expose(port)
-    elif consumer_is_local:  # local consumer → localhost, no public tunnel
-        yield f"http://127.0.0.1:{port}"
-    else:  # remote consumer → a host tunnel publishes the port outward
-        async with PrimeTunnel().expose(port) as url:
-            yield url
+        return
+    url = await service.expose(port)
+    if service.is_local and not consumer_is_local:
+        async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
+            yield public
+    else:
+        yield url
 
 
 @dataclass(frozen=True)
@@ -365,9 +420,7 @@ async def _serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = make_runtime(cfg.runtime)
-            await runtime.start()
-            stack.push_async_callback(runtime.stop)
+            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
@@ -376,7 +429,7 @@ async def _serve(
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
         state_url = (
-            f"{runtime.host_url(state_base.rstrip('/'))}/state" if state_base else None
+            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
         port = await serve_in_runtime(
             server,

@@ -3,7 +3,7 @@
 To evaluate any taskset, use the `eval` entrypoint:
 
 ```bash
-uv run eval primeintellect/terminal-bench-2
+uv run vf-eval primeintellect/terminal-bench-2
 ```
 
 You can also use `.toml` files for configuration:
@@ -25,7 +25,7 @@ version = "0.116.0"
 type = "docker"
 ```
 
-Validate the config by using `uv run eval @ config.toml --dry-run`. To run the evaluation, use `uv run eval @ config.toml`.
+Validate the config by using `uv run vf-eval @ config.toml --dry-run`. To run the evaluation, use `uv run vf-eval @ config.toml`.
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
@@ -42,8 +42,6 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
-- `serve` — on by default: rollouts run through an elastic env-server worker pool
-  (`[serve]` sizes it, e.g. `serve.pool.type`); `--no-serve` runs them in-process
 - `rich` — the live dashboard (default); `--no-rich` streams logs to the console and
   prints each trace as JSON at the end
 - `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the
@@ -70,11 +68,13 @@ The names of these tools are set by the respective harness. Consult the relevant
 
 ## Skills
 
-Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Codex) take a `skills` list of local skill folders, each uploaded into the program's skill discovery directory in the agent's runtime as `<skills dir>/<folder name>`:
+Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Codex) take a `skills` list. A local skill folder is uploaded to `<skills dir>/<folder name>`. A `{runtime = "..."}` entry copies the contents of a directory already inside the runtime into the program's skill discovery directory:
 
 ```toml
 [env.agent.harness]
-skills = ["path/to/my-skill"]
+skills = [{runtime = "/opt/skills"}, "path/to/my-skill"]
 ```
 
-Setting `skills` on a harness without native skill support fails up front.
+Tasks can supply the same sources through `TaskData.skills`, for example `skills=[{"runtime": "/opt/skills"}]`. Task sources are installed first, followed by harness sources; later files override matching earlier files. Each run gets its own installed skills. Sources are resolved after task setup, and missing source directories fail the run.
+
+Setting `skills` on a task or harness without native harness skill support fails up front.

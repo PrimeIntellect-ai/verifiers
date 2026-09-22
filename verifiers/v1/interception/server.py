@@ -392,7 +392,8 @@ class InterceptionServer(Interception):
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
-                "interception removed provider capabilities: id=%s paths=%s",
+                "interception removed provider content/capabilities blocked by the network "
+                "policy or unable to enforce it: id=%s paths=%s",
                 session.trace.id,
                 ",".join(capabilities),
             )
@@ -483,6 +484,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        session.trace.notify()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -660,6 +662,9 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # The tail is what the harness added since the last turn (tool results, user
+        # turns): live watchers see it now rather than with the model's reply.
+        session.trace.preview(turn, turn.tail)
 
         inspect_response = bool(session.response_interceptors or session.response_stops)
         if relay_streaming:
@@ -782,6 +787,8 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if node is None:
+                    turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and
                 # the error that ended it (if any).
                 self.record_call(
@@ -1047,6 +1054,8 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
+            if node is None:
+                turn.abandon()
             # The turn's one per-exchange record: settings, timing, outcome, and the
             # error that ended it (if any).
             self.record_call(

@@ -53,13 +53,15 @@ class ACPResumeEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
             first = await interaction.turn(
-                f"Remember the codeword {CODEWORD}. Reply with exactly READY."
+                f"Remember the codeword {CODEWORD} for this conversation only. "
+                "Do not call tools or store it in persistent memory. Reply with exactly READY."
             )
             segments = [first]
             if not first.terminated:
                 segments.append(
                     await interaction.turn(
-                        "Call the `recall` tool from the `resume` MCP server with the "
+                        "Use your tools or pre-imported Python skills to call `resume`'s "
+                        "`recall` with the "
                         "codeword from my previous message, then reply with exactly the "
                         "tool result."
                     )

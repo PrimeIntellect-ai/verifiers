@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import secrets
 import shlex
 from typing import Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -68,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="00d8aa713c820023033bce6aa2eacea6c37e675d", min_length=1
+        default="a42cc61ae3356bef82b301c01c6de1cdf302613e", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -91,6 +92,10 @@ class RLMHarnessConfig(HarnessConfig):
     raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_subagent_calls: PositiveInt | None = None
     """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
+    delegation_prompt: bool | None = None
+    """Append nano-rlm's delegation guidance (when to spawn children, how to brief,
+    watch, collect and reconcile them) for every agent that can still delegate; `None`
+    uses nano-rlm's default (off)."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
@@ -140,11 +145,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
-        # Before the installer: install.sh packages the skills it finds.
-        await self.install_skills(runtime, SKILLS_DIR)
+        if self.config.skills:
+            # Editable skill packages and uv's tool environment must belong to this run.
+            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
         directory = self._install_dir()
+        skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
+        await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
@@ -155,7 +164,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
             f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
@@ -190,6 +201,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "max_depth": self.config.max_depth,
             "max_concurrent_subagents": max_concurrent_subagents,
             "max_subagent_calls": self.config.max_subagent_calls,
+            "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
@@ -279,6 +291,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        if self._skills_install_dir is not None:
+            await remove_dir(
+                runtime, self._skills_install_dir, "RLM skill installation"
+            )
 
     @staticmethod
     def _home(trace: Trace) -> str:
@@ -286,4 +302,4 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
-        return f"{RLM_CACHE_DIR}-{cache_key}"
+        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{cache_key}"

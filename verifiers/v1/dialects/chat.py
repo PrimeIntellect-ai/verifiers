@@ -383,6 +383,7 @@ class ChatDialect(Dialect[ChatCompletion]):
     ) -> tuple[RawRequest, list[str]]:
         mediated = body
         capabilities: list[str] = []
+        blocked_urls: list[str] = []
 
         if mediated.pop("web_search_options", None) is not None:
             capabilities.append("web_search_options")
@@ -469,7 +470,9 @@ class ChatDialect(Dialect[ChatCompletion]):
                 elif kind == "image_url":
                     image = part.get("image_url") or {}
                     url = image.get("url") if isinstance(image, dict) else image
-                    if not isinstance(url, str) or blocked_url(url, policy):
+                    if not isinstance(url, str) or blocked_url(
+                        url, policy, blocked_urls
+                    ):
                         capability = f"{path}.image_url.url"
                 elif kind == "file":
                     file = part.get("file")
@@ -488,7 +491,7 @@ class ChatDialect(Dialect[ChatCompletion]):
                                 capability = f"{path}.file.file_data"
                             else:
                                 if (parsed.scheme or parsed.netloc) and blocked_url(
-                                    file_data, policy
+                                    file_data, policy, blocked_urls
                                 ):
                                     capability = f"{path}.file.file_data"
                 if capability is None:
@@ -497,7 +500,10 @@ class ChatDialect(Dialect[ChatCompletion]):
                     capabilities.append(capability)
             message["content"] = safe_content or ""
 
-        append_user_notice(mediated.setdefault("messages", []))
+        if capabilities:
+            append_user_notice(
+                mediated.setdefault("messages", []), blocked_urls=blocked_urls
+            )
         return mediated, capabilities
 
     def parse_request(self, body: RawRequest) -> Request:

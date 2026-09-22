@@ -21,7 +21,7 @@ ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-"""Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
+"""Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
 
 
@@ -35,7 +35,10 @@ class Artifact(BaseModel):
 
 
 async def collect(
-    runtime: Runtime, artifacts: list[Artifact] | None = None
+    runtime: Runtime,
+    artifacts: list[Artifact] | None = None,
+    *,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
 ) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
@@ -114,7 +117,7 @@ async def collect(
         )
         existence.extend(output.splitlines())
     collected: dict[str, bytes | None] = {}
-    budget = MAX_ARTIFACT_BYTES
+    budget = max_bytes
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
         if exists != "1":

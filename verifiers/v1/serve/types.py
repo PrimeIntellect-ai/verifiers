@@ -1,9 +1,9 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, SerializeAsAny
+from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1.serve.delta import TraceSummary
 from verifiers.v1.types import SamplingConfig
 
 
@@ -51,7 +51,13 @@ class RunRequest(BaseRequest):
 
 
 class RunResponse(BaseResponse):
-    episode: SerializeAsAny[WireEpisode] | None = None
-    """The rollout's episode — its standing (`id`/`env`/`errors`, carrying
-    episode-level errors even when no trace minted) inlined next to its flat,
-    self-contained traces; task-specific data preserved in `model_extra`."""
+    """The end of a run whose traces already streamed as deltas (`serve.delta`)."""
+
+    head: dict | None = None
+    """The rollout's episode without its traces — its standing (`id`/`env`/`errors`,
+    carrying episode-level errors even when no trace minted); task-specific data
+    preserved in `model_extra`."""
+
+    traces: list[TraceSummary] = Field(default_factory=list)
+    """The finished traces in episode order, with the sizes the client's assembly
+    must match."""

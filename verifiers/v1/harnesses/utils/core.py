@@ -347,8 +347,12 @@ async def run_chat_loop(
         try:
             completion, messages = await compactor.complete(messages)
         except APIStatusError as error:
-            # Null cannot compact, so context exhaustion ends it with the transcript so far.
-            if args.bash or not is_context_overflow(error):
+            # Without compaction (off, or on with no discoverable window to compact
+            # against), context exhaustion is a budget limit, not a crash: end the run
+            # with the transcript so far. When the compactor could act, it already
+            # tried, so an overflow reaching here is a real failure.
+            compacting = compactor.enabled and compactor.threshold is not None
+            if compacting or not is_context_overflow(error):
                 raise
             return
         message = completion.choices[0].message
