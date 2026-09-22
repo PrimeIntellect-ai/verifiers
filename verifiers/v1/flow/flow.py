@@ -1,4 +1,4 @@
-"""Run admitted, ready units until quiescence or drain. Pipelines own scheduling policy."""
+"""Run admitted, ready units until idle or drained. Pipelines own scheduling policy."""
 
 from __future__ import annotations
 
@@ -321,7 +321,7 @@ class Flow(Generic[ConfigT]):
                 for name in list(running):
                     release(name)
         result = RunResult(
-            reason="draining" if self.draining else "quiescent",
+            reason="draining" if self.draining else "idle",
             units={unit.id: unit.state() for unit in self.units()},
         )
         self.event(

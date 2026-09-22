@@ -68,7 +68,7 @@ and its inspected revision (`--data patch.json --expected REVISION`).
 
 `admit(unit)` sees accepted executions in `self.active`, including their original executing
 stage after a live route. Pipelines define barriers and success policy; `run()` returns unit
-states and a quiescent/draining reason. Use `flow.stay_alive = true` to wait for new work.
+states and an `idle` or `draining` reason. Use `flow.stay_alive = true` to wait for new work.
 
 `flow drain --root outputs/demo` finishes running calls and stops new work. Remove the
 `drain` file to launch again. Ctrl-C drains once and cancels on a second signal.

@@ -215,7 +215,7 @@ def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
         store.write(base=base, files={"../escape": "bad"})
 
 
-async def test_admission_reserves_units_and_run_reports_quiescence_or_drain(tmp_path):
+async def test_admission_reserves_units_and_run_reports_idle_or_drain(tmp_path):
     seen = []
 
     class Example(Flow):
@@ -240,7 +240,7 @@ async def test_admission_reserves_units_and_run_reports_quiescence_or_drain(tmp_
 
     flow = Example(FlowConfig(), root=tmp_path)
     result = await flow.run()
-    assert result.reason == "quiescent" and result.counts == {"waiting": 2}
+    assert result.reason == "idle" and result.counts == {"waiting": 2}
     assert seen == [("campaign", ["campaign"]), ("other", ["other"])]
     assert isinstance(result.units["campaign"].data, Data)
     assert type(result.units["other"].data) is UnitData

@@ -9,7 +9,7 @@ from verifiers.v1.trace import Error
 from verifiers.v1.utils.time import now
 
 Status = Literal["ready", "held", "waiting", "terminal"]
-RunReason = Literal["quiescent", "draining"]
+RunReason = Literal["idle", "draining"]
 CallStatus = Literal[
     "started", "succeeded", "failed", "attached", "stopped", "cancelled"
 ]
