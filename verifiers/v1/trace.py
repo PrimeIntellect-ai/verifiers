@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, field_serializer
+from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
@@ -376,16 +376,19 @@ class Branch(BaseModel):
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
@@ -491,6 +494,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def has_error(self) -> bool:
         return not self.ok
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once across all branches —
@@ -506,11 +510,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     total += increment
         return total
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         """Model-generated tokens across all turns, summed across branches."""
         return sum(branch.num_output_tokens for branch in self.branches)
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         """Final sequence lengths (last prompt + completion) summed across branches."""
