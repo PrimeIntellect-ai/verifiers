@@ -83,10 +83,11 @@ async def append_trace(
 def trim_torn_tail(file: Path) -> None:
     """Drop the partial last line a kill mid-append left, so the next append does not fuse
     with it into a line no reader can skip. Creates the file."""
-    file.touch()
-    data = file.read_bytes()
-    if data and not data.endswith(b"\n"):
-        file.write_bytes(data[: data.rfind(b"\n") + 1])
+    with file.open("a+b") as stream:
+        stream.seek(0)
+        data = stream.read()
+        if data and not data.endswith(b"\n"):
+            stream.truncate(data.rfind(b"\n") + 1)
 
 
 class TraceStore:
