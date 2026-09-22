@@ -49,13 +49,18 @@ from verifiers.v1.types import (
     UserMessage,
 )
 
-# The placeholder response a committed stream's keepalives carry until its turn is ready.
+# The placeholder response a committed stream's keepalives carry until its turn is ready:
+# schema-valid, so strictly validating clients accept the events that carry it.
 _KEEPALIVE_RESPONSE = {
     "id": "resp_keepalive",
     "object": "response",
     "created_at": 0,
+    "model": "",
     "status": "in_progress",
     "output": [],
+    "parallel_tool_calls": True,
+    "tool_choice": "auto",
+    "tools": [],
 }
 
 FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
@@ -722,16 +727,27 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         # Codex's idle timer resets only on data events (it drops comments), and the OpenAI
         # SDK's stream helper rejects any event before `response.created`: open with a
         # placeholder `response.created`, then repeat `response.in_progress`. The turn's own
-        # `response.created` follows and supersedes it.
+        # `response.created` follows and supersedes it; clients take the turn's id and final
+        # state from its own events, and its sequence numbers restart at 0.
         kind = "response.created" if first else "response.in_progress"
-        payload = {"type": kind, "response": _KEEPALIVE_RESPONSE}
+        payload = {"type": kind, "sequence_number": 0, "response": _KEEPALIVE_RESPONSE}
         return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
 
     def stream_error(self, error: dict) -> bytes:
         # `response.failed` is what Responses clients (codex) act on; the `error` key is what
         # the OpenAI SDK raises on.
-        failed = {**_KEEPALIVE_RESPONSE, "status": "failed", "error": error["error"]}
-        payload = {"type": "response.failed", "response": failed, **error}
+        message = error["error"]["message"]
+        failed = {
+            **_KEEPALIVE_RESPONSE,
+            "status": "failed",
+            "error": {"code": "server_error", "message": message},
+        }
+        payload = {
+            "type": "response.failed",
+            "sequence_number": 0,
+            "response": failed,
+            **error,
+        }
         return f"event: response.failed\ndata: {json.dumps(payload)}\n\n".encode()
 
     def stream_events(self, raw: dict) -> list[bytes]:
