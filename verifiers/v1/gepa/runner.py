@@ -61,7 +61,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     # (GEPAAdapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
     # main thread means a Ctrl-C raises straight through it into this teardown.
     loop = asyncio.new_event_loop()
-    semaphore = (
+    episodes = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     env._agent_runs = (
@@ -92,7 +92,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
                 ctx=ctx,
                 tasks=tasks_by_idx,
                 loop=loop,
-                semaphore=semaphore,
+                episodes=episodes,
                 on_complete=on_complete,
                 reflection_columns=config.reflection_columns,
             )

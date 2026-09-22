@@ -37,7 +37,7 @@ class GEPAAdapter:
     ctx: ModelContext
     tasks: dict[int, Task]
     loop: asyncio.AbstractEventLoop
-    semaphore: asyncio.Semaphore | None = None
+    episodes: asyncio.Semaphore | None = None
     on_complete: Callable[[Episode], Awaitable[None]] | None = None
     """Called with each rollout's episode as it finalizes — the runner's persist hook that
     streams episodes to `traces.jsonl`, exactly as `run_eval` does."""
@@ -75,7 +75,7 @@ class GEPAAdapter:
         slots = [slot for task in tasks for slot in self.env.slots(task)]
         results = await asyncio.gather(
             *(
-                self.env.run_slot(slot, self.ctx, self.semaphore, self.on_complete)
+                self.env.run_slot(slot, self.ctx, self.episodes, self.on_complete)
                 for slot in slots
             )
         )

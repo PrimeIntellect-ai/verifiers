@@ -144,7 +144,8 @@ class Env(ABC, Generic[ConfigT]):
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
         # Process/worker cap on live Agent.runs (`--max-agent-runs`); the host binds it
-        # once. Distinct from the per-episode cap minted in `_episode_agents`.
+        # once. Distinct from `agent_runs_per_episode`, minted per episode in
+        # `_episode_agents`.
         self._agent_runs: asyncio.Semaphore | None = None
 
     # --- the multi-agent surface (override these) ------------------------------
@@ -201,11 +202,11 @@ class Env(ABC, Generic[ConfigT]):
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
-        resources (nothing shared across concurrent episodes), sharing one semaphore
-        so the episode plays `--env.max-concurrent-agents` of them at a time;
-        `setup()` sees them first."""
+        resources (nothing shared across concurrent episodes), sharing one
+        `agent_runs_per_episode` semaphore so the episode plays
+        `--env.max-concurrent-agents` of them at a time; `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
-        episode_runs = asyncio.Semaphore(limit) if limit else None
+        agent_runs_per_episode = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -233,7 +234,7 @@ class Env(ABC, Generic[ConfigT]):
                 name=name,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
-                episode_runs=episode_runs,
+                agent_runs_per_episode=agent_runs_per_episode,
                 agent_runs=self._agent_runs,
                 completed=completed,
                 on_trace=on_trace,
@@ -319,12 +320,12 @@ class Env(ABC, Generic[ConfigT]):
         self,
         slot: RunSlot,
         ctx: ModelContext,
-        semaphore: asyncio.Semaphore | None = None,
+        episodes: asyncio.Semaphore | None = None,
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
-        retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
+        retries per `--env.retries`; `episodes` bounds concurrent episodes — one
         permit for the attempt in flight, held across the whole of it (its agents,
         their boxes, `finalize()`) and released before a retry's backoff and before
         `on_complete` (the runners' persistence hook, which fires when final).
@@ -344,7 +345,7 @@ class Env(ABC, Generic[ConfigT]):
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
 
-            async with semaphore or contextlib.nullcontext():
+            async with episodes or contextlib.nullcontext():
                 return await self.run_episode(
                     slot.task,
                     ctx,

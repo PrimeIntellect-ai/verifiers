@@ -185,11 +185,11 @@ class Interaction:
     def __init__(
         self,
         run: "Rollout",
-        episode_runs: asyncio.Semaphore | None = None,
+        agent_runs_per_episode: asyncio.Semaphore | None = None,
         agent_runs: asyncio.Semaphore | None = None,
     ) -> None:
         self._run = run
-        self._episode_runs = episode_runs
+        self._agent_runs_per_episode = agent_runs_per_episode
         self._agent_runs = agent_runs
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
@@ -208,7 +208,7 @@ class Interaction:
         async with (
             self._lock,
             self._agent_runs or nullcontext[None](),
-            self._episode_runs or nullcontext(),
+            self._agent_runs_per_episode or nullcontext(),
         ):
             return await self._turn(message)
 
@@ -266,7 +266,7 @@ class Interaction:
         async with (
             self._lock,
             self._agent_runs or nullcontext(),
-            self._episode_runs or nullcontext(),
+            self._agent_runs_per_episode or nullcontext(),
         ):
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
@@ -326,7 +326,7 @@ class Agent:
         # (`--env.max-agent-runs-per-episode`). Interactions acquire them only around
         # active lifecycle work, never while awaiting the caller between segments.
         self._agent_runs: asyncio.Semaphore | None = None
-        self._episode_runs: asyncio.Semaphore | None = None
+        self._agent_runs_per_episode: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
         self.trainable: bool = True
@@ -531,11 +531,11 @@ class Agent:
             **params,
         )
         interaction = Interaction(
-            run, episode_runs=self._episode_runs, agent_runs=self._agent_runs
+            run, agent_runs_per_episode=self._agent_runs_per_episode, agent_runs=self._agent_runs
         )
         async with (
             self._agent_runs or nullcontext(),
-            self._episode_runs or nullcontext(),
+            self._agent_runs_per_episode or nullcontext(),
         ):
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
@@ -631,7 +631,7 @@ class _EpisodeAgent(Agent):
         name: str,
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
-        episode_runs: asyncio.Semaphore | None,
+        agent_runs_per_episode: asyncio.Semaphore | None,
         agent_runs: asyncio.Semaphore | None,
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
@@ -644,7 +644,7 @@ class _EpisodeAgent(Agent):
         self._name = name
         self._shared_tools = shared_tools
         self._task_cls = task_cls
-        self._episode_runs = episode_runs
+        self._agent_runs_per_episode = agent_runs_per_episode
         self._agent_runs = agent_runs
         self._completed = completed
         self._on_trace = on_trace
@@ -686,7 +686,7 @@ class _EpisodeAgent(Agent):
     ) -> Trace:
         async with (
             self._agent_runs or nullcontext(),
-            self._episode_runs or nullcontext(),
+            self._agent_runs_per_episode or nullcontext(),
         ):
             trace = await super().run(
                 task,
