@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated, Any, Generic, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
@@ -119,16 +119,19 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         judge/off-graph usage stays on the traces (`Trace.extra_usage`)."""
         return Usage.aggregate(u for t in self.traces if (u := t.usage) is not None)
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), summed across traces."""
         return sum(t.num_input_tokens for t in self.traces)
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         """Model-generated tokens across all turns, summed across traces."""
         return sum(t.num_output_tokens for t in self.traces)
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         """Final sequence lengths per branch, summed across traces."""
