@@ -27,7 +27,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
@@ -160,7 +160,7 @@ _IDEMPOTENT_ATTEMPT = web.RequestKey("idempotent_attempt", _IdempotentAttempt)
 def _finish_idempotent_attempt(
     request: web.Request, response: ReplayResponse | None
 ) -> None:
-    attempt = request.get(_IDEMPOTENT_ATTEMPT)
+    attempt = request.pop(_IDEMPOTENT_ATTEMPT, None)
     if attempt is None:
         return
     record = attempt.request
@@ -217,6 +217,61 @@ async def _queue_chunks(
     finally:
         await queue.put(None)
         ready.set()
+
+
+async def _buffered_stream(
+    request: web.Request, pending: Awaitable[web.Response]
+) -> web.StreamResponse:
+    """Keep a buffered training response alive without streaming uncommitted tokens."""
+    task = asyncio.ensure_future(pending)
+    stream: web.StreamResponse | None = None
+    disconnected = False
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+            if task.done():
+                break
+            try:
+                if stream is None:
+                    stream = web.StreamResponse(
+                        headers={
+                            "Content-Type": "text/event-stream",
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        }
+                    )
+                    await stream.prepare(request)
+                await stream.write(b": keepalive\n")
+            except ConnectionResetError:
+                # Retain the in-flight result for retries until the session releases it.
+                disconnected = True
+                break
+
+        response = await task
+        if stream is None:
+            # Fast failures can still use their original HTTP status.
+            return response
+        replay = _capture_response(response)
+        _finish_idempotent_attempt(request, replay)
+        if not disconnected:
+            try:
+                if response.status >= 400:
+                    # Headers are committed; OpenAI clients surface an SSE error as APIError.
+                    await stream.write(
+                        b"data: " + to_json(json.loads(replay.body)) + b"\n\n"
+                    )
+                else:
+                    await stream.write(replay.body)
+                await stream.write_eof()
+            except ConnectionResetError:
+                pass
+        return stream
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 class InterceptionServerConfig(BaseInterceptionConfig):
@@ -600,7 +655,10 @@ class InterceptionServer(Interception):
 
         if idempotent is not None:
             if idempotent.inflight is not None:
-                return await coalesced(idempotent.inflight)
+                pending = coalesced(idempotent.inflight)
+                if streaming:
+                    return await _buffered_stream(request, pending)
+                return await pending
             assert replay_key is not None
             future: asyncio.Future[ReplayResponse | None] = (
                 asyncio.get_running_loop().create_future()
@@ -807,6 +865,8 @@ class InterceptionServer(Interception):
                 )
             return serve(call_response)
 
+        if streaming:
+            return await _buffered_stream(request, sample())
         return await sample()
 
     async def _stream(
