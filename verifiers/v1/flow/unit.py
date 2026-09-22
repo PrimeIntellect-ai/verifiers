@@ -94,7 +94,7 @@ class Transition(Generic[D]):
 class UnitInspection(BaseModel, Generic[D]):
     unit: str
     state: UnitState[D]
-    active: Execution | None
+    active: bool
 
 
 def _write_state(path: Path, state: UnitState[Any]) -> None:
@@ -174,14 +174,12 @@ class Unit(Generic[D, F]):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             yield
 
-    def _active(self) -> Execution | None:
+    def _active(self) -> bool:
         try:
             with self._execution_lock():
-                return None
+                return False
         except BlockingIOError:
-            return Execution.model_validate_json(
-                (self.path / "active.json").read_text()
-            )
+            return True
 
     @contextmanager
     def executing(self) -> Iterator[None]:
@@ -194,7 +192,6 @@ class Unit(Generic[D, F]):
                     stage=state.stage,
                     started_at=now(),
                 )
-                (self.path / "active.json").write_text(execution.model_dump_json())
             self.before, self.execution = state, execution
             self.data = state.data.model_copy(deep=True)
             self.notes = "\n\n".join(state.notes)
@@ -225,7 +222,7 @@ class Unit(Generic[D, F]):
             if data is not None:
                 if expected is None:
                     raise ValueError("data updates require expected workflow revision")
-                if self._active() is not None:
+                if self._active():
                     raise RuntimeError(f"{self.id}: stage is still active")
                 state.data = self.data_type.model_validate(
                     {**state.data.model_dump(mode="json"), **data}

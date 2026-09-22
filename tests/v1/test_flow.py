@@ -173,7 +173,7 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
         if route is not None:
             unit.steer(stage="repair")
         unit.steer(status="held", stage=route, note="late")
-        assert unit.inspect().active.stage == flow.active["t"].stage == "work"
+        assert unit.inspect().active and flow.active["t"].stage == "work"
         with pytest.raises(RuntimeError, match="still active"):
             unit.steer(data={"value": 2}, expected=unit.state().revision)
     finally:
@@ -186,7 +186,7 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
         1,
     )
     assert state.notes == ["late"]
-    assert unit.inspect().active is None
+    assert not unit.inspect().active
     old = unit.state().revision
     unit.steer(data={"value": 2}, expected=old)
     with pytest.raises(ValueError, match="stale"):
