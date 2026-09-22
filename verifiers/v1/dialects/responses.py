@@ -713,6 +713,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         item = raw["output"][0]
         part = item["content"][0]
         common = {"output_index": 0, "item_id": item["id"], "content_index": 0}
+        logprobs = part.get("logprobs") or []
         head = {
             **raw,
             "status": "in_progress",
@@ -729,8 +730,15 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                 "response.content_part.added",
                 {**common, "part": {**part, "text": ""}},
             ),
-            ("response.output_text.delta", {**common, "delta": part["text"]}),
-            ("response.output_text.done", {**common, "text": part["text"]}),
+            # `logprobs` is required on both text events; carry the part's own.
+            (
+                "response.output_text.delta",
+                {**common, "delta": part["text"], "logprobs": logprobs},
+            ),
+            (
+                "response.output_text.done",
+                {**common, "text": part["text"], "logprobs": logprobs},
+            ),
             ("response.content_part.done", {**common, "part": part}),
             ("response.output_item.done", {"output_index": 0, "item": item}),
             ("response.completed", {"response": raw}),
