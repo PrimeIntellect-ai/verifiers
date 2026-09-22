@@ -62,6 +62,16 @@ class OpenThoughtsTBLiteTaskset(
 
 To create and reuse images for your tasksets, build the Dockerfile with Docker and push it to a registry, then set the resulting image reference as the task's `image` field.
 
+To override the images for every task in a run, set either field in the eval config:
+
+```toml
+[env.taskset]
+image = "registry.example.com/solver:latest"
+verifier_image = "registry.example.com/verifier:latest"
+```
+
+The same overrides are available as `--env.taskset.image` and `--env.taskset.verifier-image`. They take precedence over the images declared in Harbor's `task.toml`, without modifying the downloaded files. Both use the same image resolver, so a supplied image needs no `ignore_dockerfile` flag. `verifier_image` applies only to separate verifiers and must contain the complete `/tests` suite, including `/tests/test.sh`. A separate verifier that uses a fresh solver environment inherits the overridden solver image unless `verifier_image` is set.
+
 On the `prime` runtime any pullable image reference just works: the first sandbox to use an image makes the platform build and cache what it needs from it (for VM sandboxes this build can take ~10 minutes — the eval dashboard marks affected rollouts as `build` and a warning is logged); every later sandbox on the same reference starts in seconds.
 
 ## Additional features
