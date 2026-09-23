@@ -253,6 +253,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Branch",
     "TurnTokens",
     "SamplingMask",
+    "TopLogprobs",
     "Timing",
     "TimeSpan",
     "TimeSplit",
