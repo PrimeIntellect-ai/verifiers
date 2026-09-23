@@ -14,7 +14,7 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
-# tunnel service, shared by every process for the user that opens one. One user-global
+# tunnel service, shared by every process of a run that opens one. One run-scoped
 # limiter, not a per-runtime config knob.
 _TUNNELS_PER_MIN = 512
 TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60, "prime-tunnel")
@@ -35,7 +35,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     @contextlib.asynccontextmanager
     async def expose(self, port: int) -> AsyncIterator[str]:
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
-        is network-bound and globally rate-capped (512/min, user-wide via the shared
+        is network-bound and rate-capped (512/min, run-wide via the shared
         `TUNNEL_LIMITER`), so transient failures are retried; a terminal one raises
         `TunnelError`. The tunnel is torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient

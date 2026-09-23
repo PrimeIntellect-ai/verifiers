@@ -1,11 +1,12 @@
-"""User-global creation-rate limiters for the remote runtimes.
+"""Run-scoped creation-rate limiters for the remote runtimes.
 
 A leaky bucket backed by a lock file under the user cache (``~/.cache/verifiers``, falling
-back to the temp dir when no home is resolvable), so a provider's per-account creation rate
-(Modal sandboxes, Prime tunnels) is enforced across EVERY process for the user —
-the single-process eval and all the elastically-spawned env-server worker processes alike — not
-just within one process. Keyed by name: one bucket file per name, shared by every process (and
-run) for the user.
+back to the temp dir when no home is resolvable), so a provider's creation rate (Modal
+sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process of a run — the
+eval process and all the elastically-spawned env-server worker processes alike — not just
+within one process. One bucket file per name and run: the run is ``$VF_RUN_ID`` when the
+launcher sets it, else the process group, so a run's backlog (or the reservations a killed
+run left behind) never delays another run.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ import fcntl
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Self
 
 from verifiers.v1.utils.paths import CACHE_DIR
@@ -26,6 +28,15 @@ BACKLOG_WARN_SECONDS = 10 * 60
 usually means admission far outpaces the configured rate, or a killed run left its
 reservations behind in the bucket file."""
 
+STALE_BUCKET_SECONDS = 24 * 60 * 60
+"""Bucket files untouched this long belong to finished runs and are swept."""
+
+
+def run_scope() -> str:
+    """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, else the
+    process group, which spawned env servers and pool workers inherit."""
+    return os.environ.get("VF_RUN_ID") or f"pg{os.getpgid(0)}"
+
 
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
@@ -37,12 +48,27 @@ class CreationLimiter:
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
-        self._path = LIMITER_DIR / f"{name}.bucket"
+        self._name = name
+        self._path: Path | None = None
         self._last_warned = 0.0
 
-    def _reserve(self) -> float:
+    def _open(self) -> Path:
+        """Resolve the bucket on first use, after the launcher has set the run identity,
+        and sweep buckets of long-finished runs while at it."""
         os.makedirs(LIMITER_DIR, exist_ok=True)
-        # Shared buckets require a clock comparable across hosts and boots.
+        now = time.time()
+        for stale in LIMITER_DIR.glob("*.bucket"):
+            try:
+                if now - stale.stat().st_mtime > STALE_BUCKET_SECONDS:
+                    stale.unlink()
+            except FileNotFoundError:
+                pass
+        return LIMITER_DIR / f"{self._name}-{run_scope()}.bucket"
+
+    def _reserve(self) -> float:
+        if self._path is None:
+            self._path = self._open()
+        # Shared buckets require a clock comparable across the run's hosts.
         with open(self._path, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
@@ -63,7 +89,7 @@ class CreationLimiter:
             logger.warning(
                 "%s creation limiter backlog is %.0fs (%d queued at %.2f/s); "
                 "delete %s to discard reservations left by a killed run",
-                self._path.stem,
+                self._name,
                 wait,
                 wait / self._interval,
                 1 / self._interval,
@@ -85,9 +111,10 @@ _creation_limiters: dict[str, CreationLimiter] = {}
 
 
 def creation_limiter(per_sec: float | None, name: str) -> CreationLimiter | None:
-    """A user-global limiter pacing `name`'s creation to `per_sec`/s (None/<= 0 disables).
+    """A run-scoped limiter pacing `name`'s creation to `per_sec`/s (None/<= 0 disables).
 
-    All callers (and processes) sharing a `name` share one bucket, so use one rate per name."""
+    All callers (and processes) of a run sharing a `name` share one bucket, so use one rate
+    per name."""
     if not per_sec or per_sec <= 0:
         return None
     limiter = _creation_limiters.get(name)
