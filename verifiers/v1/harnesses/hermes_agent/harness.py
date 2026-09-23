@@ -92,6 +92,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         config = {
             "model": model,
             "mcp_servers": servers,
+            # Allow the tool timeout for discovery before Hermes snapshots tools.
+            "mcp_discovery_timeout": self.config.tool_timeout,
             # The ACP client already approves tool requests. Avoid routing Hermes'
             # redundant smart-approval model calls through interception as turns.
             "approvals": {"mode": "off"},
