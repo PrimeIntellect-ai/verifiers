@@ -1,19 +1,18 @@
-"""Run-scoped creation-rate limiters for the remote runtimes.
+"""Creation-rate limiters for the remote runtimes.
 
 A leaky bucket backed by a lock file under the user cache (``~/.cache/verifiers``, falling
 back to the temp dir when no home is resolvable), so a provider's creation rate (Modal
-sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process of a run — the
-eval process and all the elastically-spawned env-server worker processes alike — not just
-within one process. One bucket file per name and run, keyed by the launcher's
-``$VF_RUN_ID``, so a run's backlog (or the reservations a killed run left behind) never
-delays another run.
+sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process that shares the
+bucket — the eval process and all the elastically-spawned env-server worker processes alike —
+not just within one process. A bucket is named by the limiter's name and a scope the caller
+picks; the runtimes pass the run id, so one run's backlog (or the reservations a killed run
+left behind) never delays another run.
 """
 
 import asyncio
 import fcntl
 import os
 import time
-from pathlib import Path
 from typing import Self
 
 from verifiers.v1.utils.paths import CACHE_DIR
@@ -21,36 +20,20 @@ from verifiers.v1.utils.paths import CACHE_DIR
 LIMITER_DIR = CACHE_DIR / "limiter"
 
 
-def run_scope() -> str:
-    """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, which
-    spawned env servers and pool workers inherit. Every entrypoint sets it."""
-    run_id = os.environ.get("VF_RUN_ID")
-    if not run_id:
-        raise RuntimeError(
-            "VF_RUN_ID is unset: the creation limiter scopes its bucket to a run; "
-            "set it to the run id before creating sandboxes or tunnels"
-        )
-    return run_id.replace("/", "--")
-
-
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
-    flock) and sleeps until it, so the aggregate creation rate across all of the run's
-    processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
+    flock) and sleeps until it, so the aggregate creation rate across every process sharing
+    the bucket stays at `per_sec`. The reservation runs off the event loop; the wait does not
     hold the lock. Reservations are never released, so a cancelled waiter still holds its
     slot; the backlog drains at `per_sec` regardless."""
 
-    def __init__(self, name: str, per_sec: float) -> None:
+    def __init__(self, name: str, scope: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
-        self._name = name
-        self._path: Path | None = None
+        self._path = LIMITER_DIR / f"{name}-{scope.replace('/', '--')}.bucket"
 
     def _reserve(self) -> float:
-        # Resolved on first use, after the launcher has set the run identity.
-        if self._path is None:
-            os.makedirs(LIMITER_DIR, exist_ok=True)
-            self._path = LIMITER_DIR / f"{self._name}-{run_scope()}.bucket"
+        os.makedirs(LIMITER_DIR, exist_ok=True)
         # Shared buckets require a clock comparable across the run's hosts.
         with open(self._path, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -59,14 +42,13 @@ class CreationLimiter:
                 data = f.read().strip()
                 now = time.time()
                 slot = max(now, float(data) if data else 0.0)
-                wait = slot - now
                 f.seek(0)
                 f.truncate()
                 f.write(repr(slot + self._interval))
                 f.flush()
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        return wait
+        return slot - now
 
     async def __aenter__(self) -> Self:
         wait = await asyncio.to_thread(self._reserve)
@@ -78,17 +60,12 @@ class CreationLimiter:
         return False
 
 
-_creation_limiters: dict[str, CreationLimiter] = {}
-
-
-def creation_limiter(per_sec: float | None, name: str) -> CreationLimiter | None:
-    """A run-scoped limiter pacing `name`'s creation to `per_sec`/s (None/<= 0 disables).
-
-    All callers (and processes) of a run sharing a `name` share one bucket, so use one rate
-    per name."""
+def creation_limiter(
+    per_sec: float | None, name: str, scope: str
+) -> CreationLimiter | None:
+    """A limiter pacing `name`'s creation to `per_sec`/s within `scope` (None/<= 0
+    disables). All callers (and processes) sharing a name and scope share one bucket, so
+    use one rate per name."""
     if not per_sec or per_sec <= 0:
         return None
-    limiter = _creation_limiters.get(name)
-    if limiter is None:
-        limiter = _creation_limiters[name] = CreationLimiter(name, per_sec)
-    return limiter
+    return CreationLimiter(name, scope, per_sec)

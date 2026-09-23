@@ -28,6 +28,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
+from verifiers.v1.utils.run import run_id
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class PrimeConfig(NetworkPolicyConfig):
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+    — see interception.tunnel.prime.tunnel_limiter.)"""
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":
@@ -175,7 +176,7 @@ class PrimeRuntime(Runtime):
         try:
             async with (
                 creation_limiter(
-                    (self.config.creates_per_min or 0) / 60, "prime-sandbox"
+                    (self.config.creates_per_min or 0) / 60, "prime-sandbox", run_id()
                 )
                 or contextlib.nullcontext()
             ):

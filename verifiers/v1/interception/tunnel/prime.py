@@ -9,15 +9,19 @@ from collections.abc import AsyncIterator
 from typing import Literal
 
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
-from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
+from verifiers.v1.utils.run import run_id
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
 # limiter, not a per-runtime config knob.
 _TUNNELS_PER_MIN = 512
-TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60, "prime-tunnel")
+
+
+def tunnel_limiter() -> CreationLimiter:
+    return CreationLimiter("prime-tunnel", run_id(), _TUNNELS_PER_MIN / 60)
 
 
 class PrimeTunnelConfig(BaseTunnelConfig):
@@ -36,7 +40,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     async def expose(self, port: int) -> AsyncIterator[str]:
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
         is network-bound and rate-capped (512/min, run-wide via the shared
-        `TUNNEL_LIMITER`), so transient failures are retried; a terminal one raises
+        `tunnel_limiter`), so transient failures are retried; a terminal one raises
         `TunnelError`. The tunnel is torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient
 
@@ -48,7 +52,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
             async for attempt in retrying(retries=3, label=label):
                 with attempt:
                     client = TunnelClient(local_port=port)
-                    async with TUNNEL_LIMITER:
+                    async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
