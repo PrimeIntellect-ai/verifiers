@@ -9,13 +9,13 @@ cross-trace `score()` can't run offline.
 """
 
 import asyncio
-import uuid
-import os
 import contextlib
 import json
 import logging
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from pydantic_config import cli

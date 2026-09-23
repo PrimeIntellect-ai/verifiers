@@ -9,9 +9,9 @@ and the actual parse is `pydantic_config.cli`.
 """
 
 import logging
-import uuid
 import os
 import sys
+import uuid
 
 from pydantic_config import cli
 

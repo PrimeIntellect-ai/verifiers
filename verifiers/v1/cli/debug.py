@@ -1,14 +1,14 @@
 """The debug entrypoint: setup tasks, run one shell action, and persist traces."""
 
 import asyncio
-import uuid
-import os
 import contextlib
 import logging
+import os
 import shlex
 import sys
 import time
 import traceback
+import uuid
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any

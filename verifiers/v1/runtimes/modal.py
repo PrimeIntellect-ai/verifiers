@@ -31,8 +31,8 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
-from verifiers.v1.utils.run import run_id
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.run import run_id
 
 logger = logging.getLogger(__name__)
 
