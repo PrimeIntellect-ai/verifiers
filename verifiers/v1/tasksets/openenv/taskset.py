@@ -14,10 +14,10 @@ import subprocess
 import threading
 from collections.abc import Callable, Iterator
 from functools import partial
-from typing import Any, Self, cast
+from typing import Any, cast
 
 import httpx
-from pydantic import Field, model_validator
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -60,14 +60,6 @@ class OpenEnvConfig(vf.TasksetConfig):
     """Seconds to wait for a started server to become ready, and for each OpenEnv
     reset or step reply."""
 
-    @model_validator(mode="after")
-    def validate_config(self) -> Self:
-        if not self.env and not self.base_url:
-            raise ValueError("pass `env` or `base_url`")
-        if self.split and not self.base_url:
-            raise ValueError("`split` reads the Task API of a running `base_url`")
-        return self
-
 
 class OpenEnvTask(vf.Task[OpenEnvData]):
     pass
@@ -75,7 +67,8 @@ class OpenEnvTask(vf.Task[OpenEnvData]):
 
 def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
     """The model's reply as an OpenEnv action dict (JSON, fenced JSON, or — for a
-    single-field schema such as Wordle's — the reply as that field's value)."""
+    single-field schema such as Wordle's — the reply as that field's value, kept as
+    raw text when the field takes a string)."""
     message = message.strip()
     if message.startswith("```") and message.endswith("```"):
         message = "\n".join(message.splitlines()[1:-1]).strip()
@@ -85,10 +78,17 @@ def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
         action = None
     if isinstance(action, dict):
         return action
-    fields = [name for name in action_schema["properties"] if name != "metadata"]
+    properties = action_schema["properties"]
+    fields = action_schema.get("required") or [
+        name for name in properties if name != "metadata"
+    ]
     if len(fields) != 1:
         raise ValueError("non-object actions require a single-field action schema")
-    return {fields[0]: message}
+    schema = properties[fields[0]]
+    options = [schema, *schema.get("anyOf", []), *schema.get("oneOf", [])]
+    if action is None or any("string" in option.get("type", "") for option in options):
+        action = message
+    return {fields[0]: action}
 
 
 def media_part(data: bytes) -> vf.ContentPart | None:
@@ -125,29 +125,50 @@ def numeric_fields(
         yield "/".join(path), float(value)
 
 
+def split_media(value: Any, media: list[bytes | str]) -> Any:
+    """`value` with every media payload moved to `media` and replaced by a
+    placeholder: decoded `*base64` fields and MCP image blocks, and the server path
+    of each `asset_path` file. Empty fields are dropped."""
+    if isinstance(value, list):
+        return [split_media(item, media) for item in value]
+    if not isinstance(value, dict):
+        return value
+    fields: dict[str, Any] = {}
+    for key, item in value.items():
+        if item in (None, "", [], {}):
+            continue
+        if key == "asset_path":
+            media.append(item)
+        elif key.endswith("base64") or (key == "data" and value.get("type") == "image"):
+            media.append(base64.b64decode(item))
+        else:
+            fields[key] = split_media(item, media)
+            continue
+        fields[key] = "<attached>"
+    return fields
+
+
 async def observation_content(
     observation: dict[str, Any], http: httpx.AsyncClient
 ) -> list[vf.ContentPart]:
-    """The observation as user-turn content: its media (base64 `*base64` fields and
-    `asset_path` files served by the env) as content parts, the rest as JSON text."""
-    fields: dict[str, Any] = {}
-    media: list[vf.ContentPart] = []
-    for key, value in observation.items():
-        if key == "asset_path" and value:
-            response = await http.get(value)
+    """The observation as user-turn content: its media as content parts, followed by
+    the rest as JSON text."""
+    media: list[bytes | str] = []
+    fields = split_media(
+        {key: value for key, value in observation.items() if key not in HIDDEN_FIELDS},
+        media,
+    )
+    parts: list[vf.ContentPart] = []
+    for item in media:
+        if isinstance(item, str):
+            response = await http.get(item)
             response.raise_for_status()
-            data = response.content
-        elif key.endswith("base64") and value:
-            data = base64.b64decode(value)
-        else:
-            if key not in HIDDEN_FIELDS and value not in (None, "", [], {}):
-                fields[key] = value
-            continue
-        part = media_part(data)
+            item = response.content
+        part = media_part(item)
         if part is None:
-            raise ValueError(f"observation field {key!r} is not a known media type")
-        media.append(part)
-    return [*media, vf.TextContentPart(text=json.dumps(fields, ensure_ascii=False))]
+            raise ValueError("observation carries media of an unknown type")
+        parts.append(part)
+    return [*parts, vf.TextContentPart(text=json.dumps(fields, ensure_ascii=False))]
 
 
 def start_server(config: OpenEnvConfig) -> tuple[Callable[[], None], str]:
@@ -228,7 +249,6 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
         from openenv.core import CallToolAction
 
         config = cast(OpenEnvConfig, self.taskset.config)
-        total = 0.0
         client = GenericEnvClient(base_url=base_url, message_timeout_s=config.timeout)
         http = httpx.AsyncClient(base_url=base_url, timeout=config.timeout)
         async with client, http:
@@ -246,6 +266,8 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                     "available_tools": result.observation["tools"]
                 }
             result = await client.reset(**{"seed": task.data.idx} | task.data.reset)
+            # OpenEnv reports a reward per reset and step, None when it gave none.
+            rewards = [result.reward]
             schema = "Reply with an action matching this JSON schema:\n" + json.dumps(
                 action_schema, ensure_ascii=False
             )
@@ -257,8 +279,10 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                 messages.insert(0, vf.SystemMessage(content=system_prompt))
 
             async with agents.player.interaction(task) as interaction:
-                segment = await interaction.turn(messages)
-                while not segment.terminated and not result.done:
+                while not result.done:
+                    segment = await interaction.turn(messages)
+                    if segment.terminated:
+                        break
                     action = segment.last_reply.strip()
                     if not action:
                         # No action can advance OpenEnv. End this run explicitly
@@ -277,21 +301,21 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                         # score the episode as it stands instead of erroring it.
                         interaction.trace.stop("invalid_action")
                         break
-                    # OpenEnv reports per-step rewards; v1 scores their total.
-                    total += result.reward or 0.0
+                    rewards.append(result.reward)
                     if result.done:
                         break
                     content = await observation_content(result.observation, http)
-                    segment = await interaction.turn([vf.UserMessage(content=content)])
+                    messages = [vf.UserMessage(content=content)]
         trace = interaction.trace
-        trace.record_reward("openenv_reward", total)
+        scores = [reward for reward in rewards if reward is not None]
+        if result.done and not scores:
+            # The env ended the episode without scoring it (e.g. its grader failed).
+            trace.rewards["openenv_reward"] = None
+        else:
+            trace.record_reward("openenv_reward", sum(scores))
         # The last observation carries the env's grading details (often revealed
         # only once the episode ends).
-        final = {
-            key: value
-            for key, value in result.observation.items()
-            if key != "asset_path" and not key.endswith("base64")
-        }
+        final = split_media(result.observation, [])
         trace.info["openenv"] = final
         for name, value in numeric_fields(final):
             trace.record_metric(name, value)
@@ -301,8 +325,12 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
     def load(self) -> Iterator[OpenEnvTask]:
         config = self.config
         resets = config.resets
+        source = config.base_url or config.env
+        if not source:
+            raise ValueError("pass `env` or `base_url`")
         if config.split:
-            assert config.base_url is not None
+            if not config.base_url:
+                raise ValueError("`split` reads the Task API of a running `base_url`")
             base_url = config.base_url.rstrip("/")
             (name,) = httpx.get(f"{base_url}/list_environments").json()
             response = httpx.post(
@@ -315,7 +343,6 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
                 {"split": config.split, "index": index}
                 for index in range(response.json()["num_tasks"])
             )
-        source = config.base_url or config.env
         for idx, reset in enumerate(resets):
             yield OpenEnvTask(
                 OpenEnvData(idx=idx, name=f"{source}#{idx}", prompt=None, reset=reset),
