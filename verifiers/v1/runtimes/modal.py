@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class ModalConfig(NetworkPolicyConfig):
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 40.0
-    """Pace sandbox creation to this many per second, enforced user-wide across every
+    """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it)."""
 
     @model_validator(mode="after")
@@ -188,7 +189,9 @@ class ModalRuntime(Runtime):
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
-                creation_limiter(self.config.creates_per_sec, "modal-sandbox")
+                creation_limiter(
+                    self.config.creates_per_sec, "modal-sandbox", run_scope()
+                )
                 or contextlib.nullcontext()
             ):
                 await run_shielded(self._create_sandbox(app))
