@@ -20,9 +20,6 @@ from verifiers.v1.utils.paths import CACHE_DIR
 
 LIMITER_DIR = CACHE_DIR / "limiter"
 
-STALE_BUCKET_SECONDS = 24 * 60 * 60
-"""Bucket files untouched this long belong to finished runs and are swept."""
-
 
 def run_scope() -> str:
     """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, else the
@@ -43,22 +40,11 @@ class CreationLimiter:
         self._name = name
         self._path: Path | None = None
 
-    def _open(self) -> Path:
-        """Resolve the bucket on first use, after the launcher has set the run identity,
-        and sweep buckets of long-finished runs while at it."""
-        os.makedirs(LIMITER_DIR, exist_ok=True)
-        now = time.time()
-        for stale in LIMITER_DIR.glob("*.bucket"):
-            try:
-                if now - stale.stat().st_mtime > STALE_BUCKET_SECONDS:
-                    stale.unlink()
-            except FileNotFoundError:
-                pass
-        return LIMITER_DIR / f"{self._name}-{run_scope()}.bucket"
-
     def _reserve(self) -> float:
+        # Resolved on first use, after the launcher has set the run identity.
         if self._path is None:
-            self._path = self._open()
+            os.makedirs(LIMITER_DIR, exist_ok=True)
+            self._path = LIMITER_DIR / f"{self._name}-{run_scope()}.bucket"
         # Shared buckets require a clock comparable across the run's hosts.
         with open(self._path, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
