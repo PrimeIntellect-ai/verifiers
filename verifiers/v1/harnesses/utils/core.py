@@ -8,8 +8,9 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import certifi
 import httpx
-from openai import APIStatusError, AsyncOpenAI, omit
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
@@ -232,7 +233,43 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+# Widely spaced retries for transient failures the SDK's own short retries do not ride
+# out: dropped connections, tunnel resets mid-stream, 429/5xx bursts. Same schedule as
+# nano-rlm's client, so the two harnesses fail an episode under the same conditions.
+_RETRY_DELAYS = (15.0, 30.0, 60.0, 90.0, 120.0)
+# 404 included: the interception tunnel/proxy returns intermittent 404s under load.
+_RETRYABLE_STATUS = {404, 408, 409, 429, 500, 502, 503, 504}
+
+
+def _retryable(error: BaseException) -> bool:
+    if isinstance(error, APIConnectionError | httpx.TransportError):
+        return True
+    if isinstance(error, APIStatusError):
+        return error.status_code in _RETRYABLE_STATUS
+    return isinstance(error, RuntimeError) and "stream ended" in str(error)
+
+
 async def chat(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None = None,
+):
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        if attempt:
+            await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
+        try:
+            return await _chat_once(
+                client, model, messages, tools, tool_choice=tool_choice
+            )
+        except Exception as error:
+            if attempt == len(_RETRY_DELAYS) or not _retryable(error):
+                raise
+
+
+async def _chat_once(
     client: AsyncOpenAI,
     model: str,
     messages: list[dict],
@@ -423,10 +460,15 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
+    timeout = httpx.Timeout(600.0 if args.bash else None, connect=5.0)
+    # Verify TLS against certifi's bundle, not the image's trust store: minimal images
+    # (e.g. plain ubuntu) ship no ca-certificates, and the client then reports the
+    # failed handshake with the interception tunnel as a bare "Connection error".
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
-        timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        timeout=timeout,
+        http_client=httpx.AsyncClient(timeout=timeout, verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
