@@ -140,7 +140,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
-    # Scopes the runtimes' creation limiters to this run; env servers inherit it.
+    # The run identity: every process this run spawns inherits it.
     os.environ.setdefault("VF_RUN_ID", config.run.id)
     # Resumed rollouts are part of this run too.
     log_episodes(run, finished)

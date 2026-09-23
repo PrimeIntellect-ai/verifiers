@@ -8,7 +8,5 @@ def run_id() -> str:
     and inherited by spawned env servers and pool workers."""
     run_id = os.environ.get("VF_RUN_ID")
     if not run_id:
-        raise RuntimeError(
-            "VF_RUN_ID is unset: set it to the run id before creating sandboxes or tunnels"
-        )
+        raise RuntimeError("VF_RUN_ID is unset")
     return run_id
