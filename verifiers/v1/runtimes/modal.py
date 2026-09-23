@@ -17,11 +17,10 @@ from collections.abc import AsyncIterator
 from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
-from urllib.parse import urlsplit
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -42,8 +41,7 @@ _APP_NAME = "verifiers-v1"
 
 def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     """Translate only domains Modal can filter without broadening the rule."""
-    parsed = urlsplit(rule if "://" in rule else f"//{rule}")
-    host = (parsed.hostname or "").lower().rstrip(".")
+    parsed, host, port = parse_network_rule(rule)
     try:
         address = ip_address(host)
     except ValueError:
@@ -57,9 +55,8 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
         return None
     if (
         parsed.scheme not in (("https",) if framework else ("", "https"))
-        or parsed.port not in (None, 443)
+        or port not in (None, 443)
         or parsed.username is not None
-        or parsed.password is not None
         or address is not None
         or not re.fullmatch(
             r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"

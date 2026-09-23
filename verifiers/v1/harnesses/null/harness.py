@@ -18,6 +18,7 @@ class NullHarness(Harness[NullHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 
@@ -33,6 +34,7 @@ class NullHarness(Harness[NullHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         return await launch_chat_program(
@@ -46,4 +48,7 @@ class NullHarness(Harness[NullHarnessConfig]):
             mcp_urls,
             system_prompt,
             prompt,
+            extra_args=[f"--tool-interception-url={tool_interception_url}"]
+            if tool_interception_url
+            else (),
         )
