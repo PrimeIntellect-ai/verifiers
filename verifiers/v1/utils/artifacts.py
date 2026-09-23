@@ -41,7 +41,8 @@ class Artifact(BaseModel):
 
 
 def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
-    """Keep external datasets out of artifact copies and destructive restoration."""
+    """Keep read-only datasets out of artifact copies and host data out of destructive
+    restoration. Artifacts inside a writable mount are shared through it instead."""
     mounts = getattr(config, "mounts", {})
     if not mounts:
         return
@@ -49,11 +50,13 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
     for source in [ARTIFACTS_DIR, *sources]:
         path = posixpath.join(workdir, source)
         path = posixpath.normpath("/" + path.lstrip("/"))
-        for target in mounts:
-            if posixpath.commonpath((path, target)) in (path, target):
+        for target, mount in mounts.items():
+            common = posixpath.commonpath((path, target))
+            inside = common == target
+            if (inside and mount.read_only) or (common == path and not inside):
                 raise ValueError(
-                    f"artifact root {path!r} overlaps mount {target!r}; "
-                    "keep mounted data separate from output artifacts"
+                    f"artifact root {path!r} overlaps mount {target!r}; place artifacts "
+                    "entirely inside a writable mount or outside all mounts"
                 )
 
 
@@ -194,13 +197,20 @@ async def collect(
     budget = max_bytes
     for artifact, exists in zip(entries, existence, strict=True):
         source = artifact.source
-        if exists != "1":
-            if not artifact.required:
-                collected[source] = None
-                continue
+        if exists != "1" and artifact.required:
             raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
+        # The grader reads artifacts inside writable mounts through the same mount.
+        mounts = getattr(runtime.config, "mounts", {})
+        if any(
+            not mount.read_only and PurePosixPath(source).is_relative_to(target)
+            for target, mount in mounts.items()
+        ):
+            continue
+        if exists != "1":
+            collected[source] = None
+            continue
         archive = await _tar_out(runtime, artifact, budget)
         budget -= len(archive)
         collected[source] = archive

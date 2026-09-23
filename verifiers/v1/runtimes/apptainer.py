@@ -2,7 +2,9 @@
 
 import asyncio
 import contextlib
+import csv
 import hashlib
+import io
 import logging
 import shutil
 import subprocess
@@ -146,6 +148,18 @@ class ApptainerRuntime(ContainerRuntime):
             limits += ["--memory", f"{self.config.memory}g"]
         if parse_gpu(self.config.gpu)[1]:
             limits += ["--nv"]
+        mounts: list[str] = []
+        for target, mount in self.config.mounts.items():
+            value = io.StringIO()
+            csv.writer(value).writerow(
+                [
+                    "type=bind",
+                    f"source={mount.source}",
+                    f"destination={target}",
+                    *(["ro"] if mount.read_only else []),
+                ]
+            )
+            mounts += ["--mount", value.getvalue().removesuffix("\r\n")]
         started = await cli(
             "apptainer",
             "instance",
@@ -157,6 +171,7 @@ class ApptainerRuntime(ContainerRuntime):
             "--writable-tmpfs",
             "--bind",
             f"{self._dir / 'workspace'}:{self.config.workdir}",
+            *mounts,
             *limits,
             image,
             self._instance,
