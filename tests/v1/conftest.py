@@ -35,6 +35,7 @@ CI runs deterministic tests across the Python matrix and the remaining live E2Es
 
 import asyncio
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -191,11 +192,32 @@ def _eval_config(
     )
 
 
+@pytest.fixture(scope="session")
+def mcp_packages(tmp_path_factory) -> list[str]:
+    """Build the server packages once, before the evaluation workers start."""
+    root = Path(__file__).resolve().parents[2]
+    out = tmp_path_factory.mktemp("mcp-packages")
+    for source in (
+        root,
+        root / "tests/v1/fixtures",
+        root / "environments/glossary",
+        root / "environments/scratchpad",
+    ):
+        subprocess.run(
+            ["uv", "build", "--sdist", "--no-create-gitignore", "--out-dir", str(out)],
+            cwd=source,
+            check=True,
+            capture_output=True,
+        )
+    return [str(path) for path in sorted(out.glob("*.tar.gz"))]
+
+
 @pytest.fixture
-def run_v1():
+def run_v1(mcp_packages):
     """Run a v1 taskset end-to-end in-process (`run_eval`) and return its traces."""
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
+        kwargs["env"] = {"mcp_packages": mcp_packages, **kwargs.get("env", {})}
         config = _eval_config(taskset, **kwargs)
         records = await run_eval(config)
         # The runner answers durability envelopes; the tests assert on traces.
@@ -205,7 +227,7 @@ def run_v1():
 
 
 @pytest.fixture
-def run_v1_server():
+def run_v1_server(mcp_packages):
     """Run a v1 taskset through an env-server worker pool — the path prime-rl trains
     through. Spawns the broker + a worker, so it's the only fixture that exercises
     serving resources (shared tool servers, interception pool) being stood up by the
@@ -217,6 +239,7 @@ def run_v1_server():
     from verifiers.v1.utils.loaders import load_taskset
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
+        kwargs["env"] = {"mcp_packages": mcp_packages, **kwargs.get("env", {})}
         config = _eval_config(taskset, **kwargs)
         tasks = list(load_taskset(config.env.taskset).head(config.num_tasks))
         mpctx = mp.get_context("spawn")

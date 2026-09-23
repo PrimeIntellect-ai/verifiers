@@ -68,7 +68,6 @@ class BashHarness(Harness[BashHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> ProgramResult:
@@ -118,10 +117,9 @@ class BashHarness(Harness[BashHarnessConfig]):
             runtime,
             endpoint,
             secret,
-            mcp_urls,
+            data.mcp_servers,
             system_prompt,
             prompt,
             extra_args=args,
             env=env,
-            activate=False,
         )

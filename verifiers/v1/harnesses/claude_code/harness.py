@@ -67,7 +67,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)

@@ -40,13 +40,12 @@ async def launch_chat_program(
     runtime: Runtime,
     endpoint: str,
     secret: str,
-    mcp_urls: dict[str, str],
+    mcp_servers: dict[str, dict],
     system_prompt: str | None,
     prompt: str | Messages | None,
     *,
     extra_args: Sequence[str] = (),
     env: dict[str, str] | None = None,
-    activate: bool = True,
 ) -> ProgramResult:
     """Prepare and run a standalone chat program with the shared wire arguments."""
     args = [
@@ -57,14 +56,14 @@ async def launch_chat_program(
     ]
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
-    if mcp_urls:
+    if mcp_servers:
         args.append(
             "--mcp-config="
             + json.dumps(
                 {
                     "mcpServers": {
-                        name: {"url": url, "timeout": config.tool_timeout}
-                        for name, url in mcp_urls.items()
+                        name: {**server, "timeout": config.tool_timeout}
+                        for name, server in mcp_servers.items()
                     }
                 }
             )
@@ -78,8 +77,9 @@ async def launch_chat_program(
             json.dumps([message_to_wire(message) for message in prompt]).encode(),
         )
         args.append(f"--initial-messages-file={path}")
+    # Tool commands must resolve against the task's PATH, not the harness venv.
     program = await runtime.prepare_uv_script(
-        source, config.resolved_env, activate=activate
+        source, config.resolved_env, activate=False
     )
     return await runtime.run_program(
         [*program, *args], env if env is not None else {**config.resolved_env}

@@ -66,6 +66,12 @@ On the `prime` runtime any pullable image reference just works: the first sandbo
 
 ## Additional features
 
+Harbor's `environment.mcp_servers` declarations use the task's existing packages and
+deployment. Commands and URLs are passed directly to the harness's MCP client inside the
+task runtime. No proxy or Verifiers installation is needed. The chosen harness must support
+the declared transport: Codex supports stdio and Streamable HTTP; ACP agents advertise
+HTTP/SSE support. Unsupported transports fail explicitly.
+
 By default, each task's declared agent and verifier timeouts are ignored (`ignore_timeouts = true`): Harbor task timeouts are authored against Harbor's own runtime, so enforcing them confounds model capability with the speed of your inference stack. Set `ignore_timeouts = false` (or pass `--no-env.taskset.ignore-timeouts`) to apply them, e.g. for a faithful comparison against the Harbor implementation.
 
 With `ignore_timeouts = false`, every Harbor taskset can also be modified with a `timeout_multiplier`, and any Harbor taskset with a `resource_multiplier`:

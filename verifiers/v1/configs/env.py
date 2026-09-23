@@ -43,6 +43,11 @@ class EnvConfig(BaseConfig):
     # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
+    mcp_packages: list[str] = Field(default_factory=list)
+    """Package references or absolute wheel/sdist paths for native sandbox tool servers.
+    Include the desired Verifiers build and the tool/task packages; their metadata
+    supplies dependencies. Empty uses the image's preinstalled Python environment.
+    Build local projects with `uv build --sdist` before starting the run."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a

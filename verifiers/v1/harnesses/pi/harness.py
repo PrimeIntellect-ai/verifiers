@@ -88,7 +88,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
@@ -142,14 +141,22 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
         mcp_args: list[str] = []
-        if mcp_urls:
+        if data.mcp_servers:
             extension_path = f"{agent_dir}/mcp.js"
-            mcp = {
-                "mcpServers": {
-                    name: {"url": url, "lifecycle": "eager", "directTools": True}
-                    for name, url in mcp_urls.items()
-                }
-            }
+            servers = {}
+            for name, server in data.mcp_servers.items():
+                spec = dict(server)
+                kind = spec.pop(
+                    "transport", "stdio" if "command" in spec else "streamable-http"
+                )
+                if kind not in {"stdio", "sse", "streamable-http"}:
+                    raise ValueError(
+                        f"Pi does not support MCP transport {kind!r} for {name!r}"
+                    )
+                if kind != "stdio":
+                    spec["httpTransport"] = kind
+                servers[name] = {**spec, "lifecycle": "eager", "directTools": True}
+            mcp = {"mcpServers": servers}
             extension = (
                 f'import {{ createMcpAdapter }} from "{MCP_ADAPTER}";\n'
                 "export default createMcpAdapter({ config: "
@@ -196,7 +203,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             command=ACP_COMMAND,
             prompt=prompt,
             # Pi's extension owns the task-scoped MCP configuration.
-            mcp_urls={},
+            mcp_servers={},
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

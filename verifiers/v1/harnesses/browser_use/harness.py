@@ -68,7 +68,6 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
@@ -114,7 +113,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             runtime,
             endpoint,
             secret,
-            mcp_urls,
+            data.mcp_servers,
             None if replaying_browser_prompt else system_prompt,
             prompt,
             extra_args=args,

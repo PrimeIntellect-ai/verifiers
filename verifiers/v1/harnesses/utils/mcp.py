@@ -25,6 +25,8 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
     # Bundled chat programs also run without tools; load MCP only when it is used.
     import httpx2
     from mcp import Client
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
@@ -32,16 +34,37 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
 
     stack = AsyncExitStack()
     try:
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(
-                headers=spec.get("headers") or None,
-                timeout=httpx2.Timeout(
-                    spec.get("timeout", MCP_TIMEOUT),
-                    connect=spec.get("connect_timeout", 5.0),
-                ),
-            )
+        kind = spec.get(
+            "transport", "stdio" if "command" in spec else "streamable-http"
         )
-        transport = streamable_http_client(spec["url"], http_client=http_client)
+        if kind == "stdio":
+            transport = stdio_client(
+                StdioServerParameters(
+                    command=spec["command"],
+                    args=spec.get("args", []),
+                    env=spec.get("env"),
+                )
+            )
+        elif kind == "sse":
+            transport = sse_client(
+                spec["url"],
+                headers=spec.get("headers"),
+                timeout=spec.get("connect_timeout", 5.0),
+                sse_read_timeout=spec.get("timeout", MCP_TIMEOUT),
+            )
+        elif kind == "streamable-http":
+            http_client = await stack.enter_async_context(
+                create_mcp_http_client(
+                    headers=spec.get("headers") or None,
+                    timeout=httpx2.Timeout(
+                        spec.get("timeout", MCP_TIMEOUT),
+                        connect=spec.get("connect_timeout", 5.0),
+                    ),
+                )
+            )
+            transport = streamable_http_client(spec["url"], http_client=http_client)
+        else:
+            raise ValueError(f"unsupported MCP transport: {kind!r}")
         yield await stack.enter_async_context(Client(transport))
     finally:
         with suppress(Exception):
@@ -134,36 +157,45 @@ async def connect_mcp(
     config: dict[str, Any], stack: AsyncExitStack, reserved: set[str] | None = None
 ) -> tuple[
     list[dict[str, Any]],
-    dict[str, tuple[str, str]],
-    dict[str, MCPConnection],
+    dict[str, tuple[MCPConnection, str]],
 ]:
-    """Enumerate MCP tools and return their schemas, dispatch map, and servers."""
+    """Enumerate MCP tools and map each schema to its connection and tool name."""
     tool_schemas: list[dict[str, Any]] = []
-    dispatch: dict[str, tuple[str, str]] = {}
-    servers: dict[str, MCPConnection] = {}
+    dispatch: dict[str, tuple[MCPConnection, str]] = {}
     reserved = reserved or set()
     for name, spec in config.get("mcpServers", {}).items():
-        server = servers[name] = MCPConnection(spec)
+        server = MCPConnection(spec)
         stack.push_async_callback(server.aclose)
-        result = await server.run(lambda client: client.list_tools())
-        for tool in result.tools:
-            full = f"{name}_{tool.name}" if name else tool.name
-            if full in reserved or full in dispatch:
-                raise ValueError(
-                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
-                )
-            tool_schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": full,
-                        "description": tool.description or "",
-                        "parameters": tool.input_schema,
-                    },
-                }
+        cursor = None
+        seen: set[str] = set()
+        while True:
+            result = await server.run(
+                lambda client, cursor=cursor: client.list_tools(cursor=cursor)
             )
-            dispatch[full] = (name, tool.name)
-    return tool_schemas, dispatch, servers
+            for tool in result.tools:
+                full = f"{name}_{tool.name}" if name else tool.name
+                if full in reserved or full in dispatch:
+                    raise ValueError(
+                        f"duplicate tool name {full!r}; keep MCP tool names qualified"
+                    )
+                tool_schemas.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": full,
+                            "description": tool.description or "",
+                            "parameters": tool.input_schema,
+                        },
+                    }
+                )
+                dispatch[full] = (server, tool.name)
+            cursor = result.next_cursor
+            if cursor is None:
+                break
+            if cursor in seen:
+                raise ValueError("MCP tools pagination returned a repeated cursor")
+            seen.add(cursor)
+    return tool_schemas, dispatch
 
 
 def mcp_content_to_chat_content(
@@ -187,15 +219,12 @@ def mcp_content_to_chat_content(
 
 
 async def call_mcp(
-    servers: dict[str, MCPConnection],
-    dispatch: dict[str, tuple[str, str]],
+    dispatch: dict[str, tuple[MCPConnection, str]],
     name: str,
     arguments: dict[str, Any],
 ) -> str | list[dict[str, Any]]:
     """Reuse the rollout's client, reconnecting before retrying a failed call."""
-    server_name, raw = dispatch[name]
+    server, raw = dispatch[name]
 
-    result = await servers[server_name].run(
-        lambda client: client.call_tool(raw, arguments)
-    )
+    result = await server.run(lambda client: client.call_tool(raw, arguments))
     return mcp_content_to_chat_content(result.content)

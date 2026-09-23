@@ -30,7 +30,6 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
         if self.config.disabled_tools:
