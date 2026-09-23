@@ -254,21 +254,26 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
 
     async def finalize(
-        self, trace: Trace, runtime: Runtime, service: str = "main"
+        self,
+        trace: Trace,
+        runtime: Runtime,
+        sidecars: dict[str, Runtime] | None = None,
     ) -> None:
-        """Run one service's collect hooks, then add its artifacts to the trace.
+        """Run collect hooks in authored order, then add artifacts to the trace, for
+        main or, when given, the named sidecars.
 
-        Harbor runs these after the agent phase, which is exactly what `finalize` means
-        for main. Sidecars are collected by the Harbor env once main has stopped.
+        Harbor runs main's after the agent phase, which is exactly what `finalize`
+        means. The Harbor env collects sidecars once main has stopped.
 
         Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
         output is observability, here it is a grading input, and a silently absent file
         makes the verifier score a stale state instead of failing loudly.
         """
-        for hook in [hook for hook in self.data.collect if hook.service == service]:
+        runtimes = sidecars or {"main": runtime}
+        for hook in [hook for hook in self.data.collect if hook.service in runtimes]:
             try:
                 result = await asyncio.wait_for(
-                    runtime.run(["sh", "-c", hook.command], {}),
+                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
@@ -281,28 +286,29 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        used = sum(len(archive or b"") for archive in trace.state.artifacts.values())
-        collected = await collect(
-            runtime,
-            [
-                artifact
-                for artifact in self.data.artifacts
-                if artifact.service == service
-            ],
-            max_bytes=self.data.artifact_max_bytes - used,
-            sweep=service == "main",
-        )
-        # Every service restores into the grader's one filesystem.
-        roots = [PurePosixPath(root) for root in trace.state.artifacts]
-        for source in map(PurePosixPath, collected):
-            if any(
-                source.is_relative_to(root) or root.is_relative_to(source)
-                for root in roots
-            ):
-                raise RuntimeError(
-                    f"artifact {str(source)!r} overlaps another service's"
-                )
-        trace.state.artifacts.update(collected)
+        for service, source_runtime in runtimes.items():
+            used = sum(len(data or b"") for data in trace.state.artifacts.values())
+            collected = await collect(
+                source_runtime,
+                [
+                    artifact
+                    for artifact in self.data.artifacts
+                    if artifact.service == service
+                ],
+                max_bytes=self.data.artifact_max_bytes - used,
+                sweep=service == "main",
+            )
+            # Every service restores into the grader's one filesystem.
+            roots = [PurePosixPath(root) for root in trace.state.artifacts]
+            for source in map(PurePosixPath, collected):
+                if any(
+                    source.is_relative_to(root) or root.is_relative_to(source)
+                    for root in roots
+                ):
+                    raise RuntimeError(
+                        f"artifact {str(source)!r} overlaps another service's"
+                    )
+            trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(

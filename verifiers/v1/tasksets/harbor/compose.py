@@ -149,7 +149,7 @@ async def compose_services(
                     "Remove container_name so Compose can name each rollout's services"
                 )
             base = yaml.safe_load(COMPOSE_PREBUILT_PATH.read_text())
-            if {"image", "build"} & authored["services"]["main"].keys():
+            if {"image", "build"} & authored["services"].get("main", {}).keys():
                 # A template default must not replace an authored image or skip its build.
                 del base["services"]["main"]["image"]
             (directory / "base.json").write_text(json.dumps(base))
@@ -218,6 +218,12 @@ async def compose_services(
                     .get("devices")
                 ):
                     raise SandboxError("Harbor Compose currently supports CPU tasks")
+                if service.get("scale", 1) != 1 or (
+                    service.get("deploy", {}).get("replicas", 1) != 1
+                ):
+                    raise SandboxError(
+                        "Harbor Compose requires one container per service"
+                    )
                 if any(
                     port.get("published") not in (None, "", 0, "0")
                     for port in service.get("ports", [])
@@ -277,10 +283,6 @@ async def compose_services(
             runtimes: dict[str, DockerRuntime] = {}
             for line in containers.splitlines():
                 container, service = line.split()
-                if service in runtimes:
-                    raise SandboxError(
-                        f"Harbor Compose requires one container per service: {service}"
-                    )
                 runtimes[service] = await stack.enter_async_context(
                     DockerRuntime.attach(
                         config,

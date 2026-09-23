@@ -60,12 +60,16 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             trust_compose=self.config.trust_compose,
             setup_timeout=timeouts.setup,
         ) as (services, stop_main):
+            # Ordered like the hooks, which Harbor runs as authored.
+            declared = dict.fromkeys(
+                entry.service for entry in (*task.data.collect, *task.data.artifacts)
+            )
+            if missing := declared.keys() - services.keys():
+                raise ValueError(f"Unknown Compose services: {sorted(missing)}")
             trace = await agents.agent.run(
                 task, runtime=services["main"], collect_artifacts=separate
             )
-            sidecars = {
-                entry.service for entry in (*task.data.artifacts, *task.data.collect)
-            } - {"main"}
+            sidecars = {name: services[name] for name in declared if name != "main"}
             if separate and trace.ok and sidecars:
                 # As in Harbor, main stops after its own collection so leftover agent
                 # processes cannot interfere with sidecar evidence.
@@ -74,8 +78,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
                     asyncio.timeout(timeouts.finalize),
                 ):
                     await stop_main()
-                    for service in sidecars:
-                        await task.finalize(trace, services[service], service)
+                    await task.finalize(trace, services["main"], sidecars)
 
     def verifier_config(self, task: HarborTask) -> RuntimeConfig:
         base = (
