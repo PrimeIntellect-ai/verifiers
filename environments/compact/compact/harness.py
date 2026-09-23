@@ -54,5 +54,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         }
         if data.mcp_servers:
             env["MCP_CONFIG"] = json.dumps({"mcpServers": data.mcp_servers})
-        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        program = await runtime.prepare_uv_script(
+            PROGRAM_SOURCE, self.config.env, activate=False
+        )
         return await runtime.run_program([*program, prompt], env)

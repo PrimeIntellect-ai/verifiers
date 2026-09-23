@@ -19,6 +19,7 @@ from acp import (
     PROTOCOL_VERSION,
     Client,
     RequestError,
+    default_environment,
     image_block,
     spawn_agent_process,
     text_block,
@@ -142,15 +143,14 @@ def mcp_servers(config: dict, capabilities: Any) -> list:
             "transport", "stdio" if "command" in spec else "streamable-http"
         )
         if kind == "stdio":
+            env = {**default_environment(), **spec.get("env", {})}
             servers.append(
                 McpServerStdio(
                     name=name,
-                    command=shutil.which(spec["command"]) or spec["command"],
+                    command=shutil.which(spec["command"], path=env.get("PATH"))
+                    or spec["command"],
                     args=spec.get("args", []),
-                    env=[
-                        EnvVariable(name=k, value=v)
-                        for k, v in {**os.environ, **spec.get("env", {})}.items()
-                    ],
+                    env=[EnvVariable(name=k, value=v) for k, v in env.items()],
                 )
             )
             continue
