@@ -6,7 +6,7 @@ sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process of a ru
 eval process and all the elastically-spawned env-server worker processes alike — not just
 within one process. One bucket file per name and run, keyed by the launcher's
 ``$VF_RUN_ID``, so a run's backlog (or the reservations a killed run left behind) never
-delays another run. Without a run id each process paces itself.
+delays another run.
 """
 
 import asyncio
@@ -23,10 +23,14 @@ LIMITER_DIR = CACHE_DIR / "limiter"
 
 def run_scope() -> str:
     """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, which
-    spawned env servers and pool workers inherit. Without one, each process is its own
-    scope."""
+    spawned env servers and pool workers inherit. Every entrypoint sets it."""
     run_id = os.environ.get("VF_RUN_ID")
-    return run_id.replace("/", "--") if run_id else f"pid{os.getpid()}"
+    if not run_id:
+        raise RuntimeError(
+            "VF_RUN_ID is unset: the creation limiter scopes its bucket to a run; "
+            "set it to the run id before creating sandboxes or tunnels"
+        )
+    return run_id.replace("/", "--")
 
 
 class CreationLimiter:

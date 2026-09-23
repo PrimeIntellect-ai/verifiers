@@ -9,6 +9,8 @@ and the actual parse is `pydantic_config.cli`.
 """
 
 import logging
+import uuid
+import os
 import sys
 
 from pydantic_config import cli
@@ -32,6 +34,8 @@ USAGE = "usage: uv run vf-gepa [<taskset-id>] [--env.id <id>] --model <model> [o
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Scopes the runtimes' creation limiters to this run; env servers inherit it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):

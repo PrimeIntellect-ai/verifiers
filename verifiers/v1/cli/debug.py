@@ -1,6 +1,8 @@
 """The debug entrypoint: setup tasks, run one shell action, and persist traces."""
 
 import asyncio
+import uuid
+import os
 import contextlib
 import logging
 import shlex
@@ -316,6 +318,8 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Scopes the runtimes' creation limiters to this run; env servers inherit it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(
         list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
     )

@@ -1,6 +1,8 @@
 """Model-free task-validation CLI."""
 
 import asyncio
+import uuid
+import os
 import contextlib
 import json
 import logging
@@ -425,6 +427,8 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Scopes the runtimes' creation limiters to this run; env servers inherit it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(
         list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
     )
