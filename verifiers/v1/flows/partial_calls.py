@@ -34,7 +34,7 @@ class PartialCalls(Flow[Config]):
                     self.config.available,
                     output=float,
                     key=f"solve/{i}",
-                    inputs=unit.data,
+                    cache_inputs=unit.data.model_dump(mode="json"),
                 )
                 for i in range(8)
             )

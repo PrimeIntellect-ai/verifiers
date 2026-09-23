@@ -33,9 +33,10 @@ from reuse inputs. Real pipelines declare their own meaningful task/model/gradin
 
 ## Calls and files
 
-`self.agents.solver.run(task, key=..., inputs=...)` uses native agent execution, retries and
-traces. Without a key it runs every time. A key and explicit inputs reuse successful results
-from disk; failures remain retryable. Agent `run()` returns a trace or raises; `attempt()`
+`self.agents.solver.run(task, key=..., cache_inputs=...)` uses native agent execution, retries and
+traces. Pass a key and a JSON object of cache dependencies together, or omit both to run every
+time. Use `{}` for no dependencies. Successful results are reused from disk; failures remain
+retryable. Agent `run()` returns a trace or raises; `attempt()`
 returns success or failure. Host functions use `self.call(func, ..., output=ResultType)`
 or `self.attempt(...)` with the same contract.
 
@@ -59,7 +60,7 @@ reachable under that choice: an all-local configuration cannot introduce a remot
 of Verifiers' state channel later. External tool URLs do not use that channel. Flow does not
 register state credentials for supplied shared tool servers; use task-scoped tools instead.
 
-Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(unit)`
+Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(unit.path)`
 optionally preserves work products independently of workflow state; publish the
 chosen revision in `Transition(data=unit.data)`. External effects before returning a
 transition are not rolled back by a hold.

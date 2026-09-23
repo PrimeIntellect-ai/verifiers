@@ -24,7 +24,7 @@ class Parallel(Flow[Config]):
     async def solve(self, unit: Unit[Data]) -> Transition[Data]:
         solver = self.agents.solver
         # This pipeline chooses its reuse dependencies; execution budgets are excluded.
-        inputs = {
+        cache_inputs = {
             "prompt": unit.data.prompt,
             "agent": solver.config.model_dump(
                 mode="json",
@@ -39,7 +39,9 @@ class Parallel(Flow[Config]):
         await self.gather(
             *(
                 solver.run(
-                    Task(TaskData(prompt=unit.data.prompt)), key=str(i), inputs=inputs
+                    Task(TaskData(prompt=unit.data.prompt)),
+                    key=str(i),
+                    cache_inputs=cache_inputs,
                 )
                 for i in range(self.config.samples)
             )

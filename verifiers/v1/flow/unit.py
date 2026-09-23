@@ -9,7 +9,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, Self, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, cast
 from uuid import uuid4
 
 from pydantic import (
@@ -58,7 +58,9 @@ class UnitState(BaseModel, Generic[D]):
     reason: str = ""
     data: D
     notes: list[str] = Field(default_factory=list)
-    controls: dict[str, int] = Field(default_factory=dict)
+    controls: dict[Literal["stage", "status", "reason"], NonNegativeInt] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def _validate_stage(self) -> Self:

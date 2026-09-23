@@ -14,8 +14,6 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.flow.unit import Unit
-
 ArtifactRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 """An immutable Git commit, addressed within its GitArtifacts repository."""
 KEEP = "refs/flow/artifacts"
@@ -41,8 +39,8 @@ def git(path: Path, *args: str) -> str:
 class GitArtifacts:
     """Writes produce retained revisions; selecting one is a separate workflow transition."""
 
-    def __init__(self, unit: Unit | Path | str) -> None:
-        self.path = (unit.path if isinstance(unit, Unit) else Path(unit)).resolve()
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
         if not (self.path / ".git").is_dir():
             self.path.mkdir(parents=True, exist_ok=True)
             git(self.path, "init", "-q")

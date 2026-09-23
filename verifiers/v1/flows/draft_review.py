@@ -32,7 +32,7 @@ class DraftReview(Flow[Config]):
     @stage
     async def draft(self, unit: Unit[Data]) -> Transition[Data]:
         trace = await self.agents.writer.run(Task(TaskData(prompt=unit.data.prompt)))
-        unit.data.revision = GitArtifacts(unit).write(
+        unit.data.revision = GitArtifacts(unit.path).write(
             base=None, files={"draft.md": trace.last_reply}
         )
         return Transition("written", stage="review", data=unit.data)
@@ -40,7 +40,7 @@ class DraftReview(Flow[Config]):
     @stage
     async def review(self, unit: Unit[Data]) -> Transition[Data]:
         assert unit.data.revision is not None
-        draft = GitArtifacts(unit).read(unit.data.revision, "draft.md")
+        draft = GitArtifacts(unit.path).read(unit.data.revision, "draft.md")
         trace = await self.agents.reviewer.run(
             Task(TaskData(prompt=f"Review this draft:\n{draft}"))
         )

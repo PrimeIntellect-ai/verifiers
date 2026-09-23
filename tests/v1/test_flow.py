@@ -60,7 +60,7 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
             trace = await self.agents.worker.run(
                 vf.Task(vf.TaskData(prompt="solve")),
                 key="solve",
-                inputs={},
+                cache_inputs={},
             )
             assert trace.id == traces[-1].id
             unit.data.value = 1
@@ -125,7 +125,7 @@ async def test_parallel_calls_reuses_successes_until_inputs_change(tmp_path):
                         i,
                         output=int,
                         key=str(i),
-                        inputs=unit.data,
+                        cache_inputs=unit.data.model_dump(mode="json"),
                     )
                     for i in range(2)
                 )
@@ -200,7 +200,7 @@ def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
         data=Data(),
         stages=["work"],
     )
-    store, revision = GitArtifacts(unit), unit.state().revision
+    store, revision = GitArtifacts(unit.path), unit.state().revision
     base = store.write(base=None, files={"rubric.md": "first"})
     newer = store.write(base=base, files={"rubric.md": "second"})
     assert store.write(base=base, files={"rubric.md": "second"}) == newer

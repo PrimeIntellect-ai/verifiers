@@ -28,7 +28,6 @@ from typing import Any, Generic, Self, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
-from pydantic_core import to_jsonable_python
 from typing_extensions import TypeVar
 
 from verifiers.v1.agent import Agents
@@ -51,6 +50,7 @@ from verifiers.v1.flow.events import (
     TRANSITIONS,
     CallEvent,
     CallIdentity,
+    CallKind,
     Event,
     Link,
     LinkEvent,
@@ -72,6 +72,7 @@ from verifiers.v1.utils.trace_store import TraceStore, trim_torn_tail
 
 logger = logging.getLogger("verifiers.flow")
 _pool_limits = TypeAdapter(PoolLimits)
+_cache_inputs = TypeAdapter(dict[str, JsonValue])
 
 T = TypeVar("T")
 ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)
@@ -136,10 +137,8 @@ class Pools:
                 self._changed.notify_all()
 
 
-def digest(*parts: Any) -> str:
-    return sha256(
-        json.dumps(to_jsonable_python(parts), sort_keys=True).encode()
-    ).hexdigest()
+def digest(*parts: JsonValue) -> str:
+    return sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Transition[Any]]])
@@ -461,12 +460,12 @@ class Flow(Generic[ConfigT]):
         *args: Any,
         output: type[T] | TypeAdapter[T],
         key: str | None = None,
-        inputs: JsonValue | BaseModel | None = None,
+        cache_inputs: dict[str, JsonValue] | None = None,
         **kwargs: Any,
     ) -> T:
         """Run typed host work; a key reuses successes for the declared inputs."""
         result = await self.attempt(
-            func, *args, output=output, key=key, inputs=inputs, **kwargs
+            func, *args, output=output, key=key, cache_inputs=cache_inputs, **kwargs
         )
         if not result.ok:
             raise CallFailed(result.error, result.trace_id)
@@ -478,7 +477,7 @@ class Flow(Generic[ConfigT]):
         *args: Any,
         output: type[T] | TypeAdapter[T],
         key: str | None = None,
-        inputs: JsonValue | BaseModel | None = None,
+        cache_inputs: dict[str, JsonValue] | None = None,
         **kwargs: Any,
     ) -> Result[T]:
         """Typed host work whose failure is returned alongside successful siblings."""
@@ -494,7 +493,9 @@ class Flow(Generic[ConfigT]):
             return adapter.validate_python(value)
 
         adapter = output if isinstance(output, TypeAdapter) else TypeAdapter(output)
-        return await self._record(execute, adapter, key=key, inputs=inputs, kind="fn")
+        return await self._record(
+            execute, adapter, key=key, cache_inputs=cache_inputs, kind="fn"
+        )
 
     @staticmethod
     async def gather(*calls: Awaitable[T]) -> list[T]:
@@ -520,17 +521,19 @@ class Flow(Generic[ConfigT]):
         output: TypeAdapter[T],
         *,
         key: str | None,
-        inputs: JsonValue | BaseModel | None,
-        kind: str,
+        cache_inputs: dict[str, JsonValue] | None,
+        kind: CallKind,
     ) -> Result[T]:
         """A value or failure. Successful keyed work is recorded; failures remain retryable."""
-        if key is not None and inputs is None:
+        if (key is None) != (cache_inputs is None):
             raise ValueError(
-                "keyed work requires explicit inputs; use {} for no dependencies"
+                "key and cache_inputs must be provided together; use {} for no dependencies"
             )
+        if cache_inputs is not None:
+            cache_inputs = _cache_inputs.validate_python(cache_inputs, strict=True)
         unit = self._unit
         name = key if key is not None else kind
-        cache = digest(kind, key, inputs)[:24] if key is not None else None
+        cache = digest(kind, key, cache_inputs)[:24] if key is not None else None
         file = self.root / "calls" / unit.id / f"{cache}.json" if cache else None
         call = uuid4().hex
         invocation = CallIdentity(

@@ -12,6 +12,7 @@ TRANSITIONS = "transitions.jsonl"
 
 Status = Literal["ready", "held", "waiting", "terminal"]
 RunReason = Literal["idle", "draining"]
+CallKind = Literal["agent", "fn"]
 CallStatus = Literal[
     "started", "succeeded", "failed", "attached", "stopped", "cancelled"
 ]
@@ -71,7 +72,7 @@ class CallIdentity(BaseModel):
     execution: str
     call: str
     key: str | None
-    kind: str
+    kind: CallKind
     cache: str | None
 
 

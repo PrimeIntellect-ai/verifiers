@@ -85,7 +85,7 @@ class _FlowAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         key: str | None = None,
-        inputs: JsonValue | BaseModel | None = None,
+        cache_inputs: dict[str, JsonValue] | None = None,
         interact: Callable[[Interaction], Awaitable[None]] | None = None,
     ) -> Trace:
         """Run or attach a trace; borrowed runtimes remain owned by their caller."""
@@ -96,7 +96,7 @@ class _FlowAgent(Agent):
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             key=key,
-            inputs=inputs,
+            cache_inputs=cache_inputs,
             interact=interact,
         )
         if not result.ok:
@@ -112,7 +112,7 @@ class _FlowAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         key: str | None = None,
-        inputs: JsonValue | BaseModel | None = None,
+        cache_inputs: dict[str, JsonValue] | None = None,
         interact: Callable[[Interaction], Awaitable[None]] | None = None,
     ) -> Result[Trace]:
         """Run or reuse agent work, returning success or failure for the stage to inspect."""
@@ -156,7 +156,11 @@ class _FlowAgent(Agent):
             return trace
 
         return await self.flow._record(
-            execute, TypeAdapter(Trace), key=key, inputs=inputs, kind="agent"
+            execute,
+            TypeAdapter(Trace),
+            key=key,
+            cache_inputs=cache_inputs,
+            kind="agent",
         )
 
     @asynccontextmanager
