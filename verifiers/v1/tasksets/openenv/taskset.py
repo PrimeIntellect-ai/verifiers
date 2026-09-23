@@ -8,10 +8,11 @@ ends the exchange. OpenEnv's per-step rewards are summed onto the seat's trace
 
 import json
 from collections.abc import Iterator
-from typing import Any, Self
+from copy import deepcopy
+from typing import Any
 
 import httpx
-from pydantic import Field, model_validator
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -37,12 +38,6 @@ class OpenEnvConfig(vf.TasksetConfig):
     resets: list[dict[str, Any]] = Field(default_factory=lambda: [{}])
     """One finite task per set of arguments passed to OpenEnv's `reset`."""
 
-    @model_validator(mode="after")
-    def validate_config(self) -> Self:
-        if not self.env and not self.base_url:
-            raise ValueError("pass `env` or `base_url`")
-        return self
-
 
 class OpenEnvTask(vf.Task[OpenEnvData]):
     pass
@@ -50,7 +45,7 @@ class OpenEnvTask(vf.Task[OpenEnvData]):
 
 def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
     """The model's reply as an OpenEnv action dict (JSON, fenced JSON, or — for a
-    single-required-field schema such as Wordle's — the raw field value)."""
+    single-field schema such as Wordle's — the raw field value)."""
     message = message.strip()
     if message.startswith("```") and message.endswith("```"):
         message = "\n".join(message.splitlines()[1:-1]).strip()
@@ -60,10 +55,15 @@ def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
         action = message
     if isinstance(action, dict):
         return action
-    required = action_schema.get("required", [])
-    if len(required) != 1:
-        raise ValueError("non-object actions require exactly one required field")
-    return {required[0]: action}
+    fields = action_schema.get("required") or [
+        name for name in action_schema.get("properties", {}) if name != "metadata"
+    ]
+    if len(fields) != 1:
+        raise ValueError("non-object actions require exactly one action field")
+    field = fields[0]
+    if action_schema.get("properties", {}).get(field, {}).get("type") == "string":
+        action = action if isinstance(action, str) else message
+    return {field: action}
 
 
 class OpenEnvEnvConfig(vf.EnvConfig):
@@ -84,12 +84,13 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                 data.env, use_docker=data.use_docker, **data.provider_kwargs
             )
         total = 0.0
+        scored = False
         async with client:
             # OpenEnv exposes schemas over HTTP but not through GenericEnvClient.
             base_url = client._base_url.replace("ws://", "http://", 1).replace(
                 "wss://", "https://", 1
             )
-            async with httpx.AsyncClient(timeout=10) as http:
+            async with httpx.AsyncClient(timeout=60) as http:
                 response = await http.get(f"{base_url}/schema")
                 response.raise_for_status()
             action_schema = response.json()["action"]
@@ -104,19 +105,69 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                     "available_tools": result.observation["tools"]
                 }
             result = await client.reset(**data.reset)
+            if result.reward is not None:
+                total += result.reward
+                scored = True
 
-            def payload() -> str:
-                return json.dumps(
-                    {
-                        "observation": result.observation,
-                        "action_schema": action_schema,
-                    },
+            def payload() -> str | vf.Messages:
+                observation = deepcopy(result.observation)
+                images: list[tuple[str, str]] = []
+                pending = [observation]
+                while pending:
+                    value = pending.pop()
+                    if isinstance(value, list):
+                        pending.extend(reversed(value))
+                    elif isinstance(value, dict):
+                        if value.get("type") == "image" and isinstance(
+                            value.get("data"), str
+                        ):
+                            images.append(
+                                (value.get("mimeType", "image/png"), value.pop("data"))
+                            )
+                            value["data"] = "<image>"
+                        for key, item in value.items():
+                            if (
+                                key.endswith("_base64")
+                                and isinstance(item, str)
+                                and item
+                            ):
+                                fmt = value.get("image_format") or (
+                                    "png"
+                                    if key.endswith("png_base64")
+                                    or value.get("image_kind") == "map"
+                                    else "jpeg"
+                                )
+                                images.append((f"image/{fmt}", item))
+                                value[key] = "<image>"
+                            elif isinstance(item, (dict, list)):
+                                pending.append(item)
+                message = json.dumps(
+                    {"observation": observation, "action_schema": action_schema},
                     ensure_ascii=False,
                 )
+                if not images:
+                    return message
+                return [
+                    vf.UserMessage(
+                        content=[
+                            vf.TextContentPart(text=message),
+                            *[
+                                vf.ImageUrlContentPart(
+                                    image_url=vf.ImageUrlSource(
+                                        url=f"data:{mime};base64,{data}"
+                                    )
+                                )
+                                for mime, data in images
+                            ],
+                        ]
+                    )
+                ]
 
             async with agents.player.interaction(task) as interaction:
-                segment = await interaction.turn(payload())
-                while not segment.terminated and not result.done:
+                segment = await interaction.turn(payload()) if not result.done else None
+                while (
+                    segment is not None and not segment.terminated and not result.done
+                ):
                     action = segment.last_reply.strip()
                     if not action:
                         # No action can advance OpenEnv. End this run explicitly
@@ -126,18 +177,23 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                         break
                     result = await client.step(parse_action(action, action_schema))
                     # OpenEnv reports per-step rewards; v1 scores their total.
-                    total += result.reward or 0.0
+                    if result.reward is not None:
+                        total += result.reward
+                        scored = True
                     if result.done:
                         break
                     segment = await interaction.turn(payload())
         trace = interaction.trace
-        trace.record_reward("openenv_reward", total)
+        if scored:
+            trace.record_reward("openenv_reward", total)
 
 
 class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
     def load(self) -> Iterator[OpenEnvTask]:
         config = self.config
         source = config.base_url or config.env
+        if source is None:
+            raise ValueError("pass `env` or `base_url`")
         for idx, reset in enumerate(config.resets):
             yield OpenEnvTask(
                 OpenEnvData(
