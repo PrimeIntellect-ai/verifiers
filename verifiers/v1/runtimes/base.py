@@ -29,14 +29,19 @@ logger = logging.getLogger(__name__)
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
+# The standalone install is retried: sandboxes sharing an egress IP see TLS handshakes to
+# astral.sh dropped during large launches, and the installer's own download does not retry.
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
     "|| apk add --no-cache curl ca-certificates"
 )
 _DOWNLOAD_UV = (
+    "for attempt in 1 2 3 4 5; do "
     "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
+    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }; "
+    "command -v uv >/dev/null 2>&1 && break; sleep $((attempt * 2)); done; "
+    "command -v uv >/dev/null 2>&1"
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
