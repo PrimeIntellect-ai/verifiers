@@ -19,6 +19,7 @@ from pydantic import model_validator
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,8 @@ class ApptainerRuntime(ContainerRuntime):
                 f"apptainer instance start failed: {started.stderr.strip()}"
             )
         self.info.id = self._instance
+        if await validate_runtime_mounts(self, []):
+            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         logger.info(
             "apptainer: started instance %s (image=%s)", self.name, self.config.image
         )
