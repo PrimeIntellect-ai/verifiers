@@ -10,6 +10,7 @@ run) for the user.
 
 import asyncio
 import fcntl
+import logging
 import os
 import time
 from typing import Self
@@ -18,17 +19,26 @@ from verifiers.v1.utils.paths import CACHE_DIR
 
 LIMITER_DIR = CACHE_DIR / "limiter"
 
+logger = logging.getLogger(__name__)
+
+BACKLOG_WARN_SECONDS = 10 * 60
+"""Backlog above which a reservation logs the bucket for diagnosis. A backlog this deep
+usually means admission far outpaces the configured rate, or a killed run left its
+reservations behind in the bucket file."""
+
 
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
     flock) and sleeps until it, so the aggregate creation rate across all of the user's
     processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
-    hold the lock. Backlogs over five minutes fail rather than silently stalling creation."""
+    hold the lock. Reservations are never released, so a cancelled waiter still holds its
+    slot; the backlog drains at `per_sec` regardless."""
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
         self._path = LIMITER_DIR / f"{name}.bucket"
+        self._last_warned = 0.0
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
@@ -41,18 +51,25 @@ class CreationLimiter:
                 now = time.time()
                 slot = max(now, float(data) if data else 0.0)
                 wait = slot - now
-                if wait > 5 * 60:
-                    raise TimeoutError(
-                        f"{self._path.stem} creation limiter backlog of {wait:.1f}s "
-                        f"exceeds 300s ({self._path})"
-                    )
                 f.seek(0)
                 f.truncate()
                 f.write(repr(slot + self._interval))
                 f.flush()
-                return wait
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        # Every queued rollout reserves at once, so warn once a minute, not once per slot.
+        if wait > BACKLOG_WARN_SECONDS and now - self._last_warned > 60:
+            self._last_warned = now
+            logger.warning(
+                "%s creation limiter backlog is %.0fs (%d queued at %.2f/s); "
+                "delete %s to discard reservations left by a killed run",
+                self._path.stem,
+                wait,
+                wait / self._interval,
+                1 / self._interval,
+                self._path,
+            )
+        return wait
 
     async def __aenter__(self) -> Self:
         wait = await asyncio.to_thread(self._reserve)
