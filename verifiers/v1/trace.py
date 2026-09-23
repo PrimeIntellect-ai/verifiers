@@ -513,16 +513,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def num_output_tokens(self) -> int:
-        """Model-generated tokens across all turns, summed across branches."""
-        return sum(branch.num_output_tokens for branch in self.branches)
+        """Model-generated tokens, counted once per model call in this rollout."""
+        usage = self.usage
+        return usage.completion_tokens if usage else 0
 
     @computed_field
     @property
     def num_total_tokens(self) -> int:
         """New input plus generated tokens, counted once per call across branches.
         Input is a lower bound when the engine drops tokens between calls."""
-        usage = self.usage
-        return self.num_input_tokens + (usage.completion_tokens if usage else 0)
+        return self.num_input_tokens + self.num_output_tokens
 
     @property
     def usage(self) -> Usage | None:
