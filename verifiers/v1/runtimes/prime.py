@@ -406,7 +406,8 @@ class PrimeRuntime(Runtime):
 
         self.stopped = True
         async with asyncio.timeout(60):
-            await self.teardown()
+            # teardown() consumes the client first, so the delete must not be cut short.
+            await run_shielded(self.teardown())
             if self.info.id is None:
                 return
             async with AsyncSandboxClient() as client:
