@@ -161,6 +161,9 @@ async def observation_content(
     parts: list[vf.ContentPart] = []
     for item in media:
         if isinstance(item, str):
+            # httpx fetches an absolute URL as-is, bypassing the env server.
+            if httpx.URL(item).is_absolute_url:
+                raise ValueError(f"`asset_path` must be a server path, got {item!r}")
             response = await http.get(item)
             response.raise_for_status()
             item = response.content
@@ -221,10 +224,14 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
         # Servers started from `env`, idle between episodes. OpenEnv servers default
         # to a single session, so each concurrent episode gets a server of its own.
         self._idle: list[tuple[Callable[[], None], str]] = []
+        self._starting: set[asyncio.Future] = set()
 
     async def stop(self) -> None:
+        # Starts abandoned by cancelled episodes still finish; stop those servers too.
+        started = await asyncio.gather(*self._starting, return_exceptions=True)
+        servers = [*self._idle, *(s for s in started if isinstance(s, tuple))]
         # gather runs every stop to completion even when one of them raises.
-        await asyncio.gather(*(asyncio.to_thread(stop) for stop, _ in self._idle))
+        await asyncio.gather(*(asyncio.to_thread(stop) for stop, _ in servers))
 
     async def run(self, task, agents):
         config = cast(OpenEnvConfig, self.taskset.config)
@@ -234,7 +241,12 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
         if self._idle:
             server = self._idle.pop()
         else:
-            server = await asyncio.to_thread(start_server, config)
+            # A worker thread can't be cancelled, so a cancelled episode leaves its
+            # start to finish under the shield and to `stop()`.
+            starting = asyncio.ensure_future(asyncio.to_thread(start_server, config))
+            self._starting.add(starting)
+            server = await asyncio.shield(starting)
+            self._starting.discard(starting)
         stop, base_url = server
         try:
             await self.play(task, agents, base_url)
@@ -332,7 +344,11 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
             if not config.base_url:
                 raise ValueError("`split` reads the Task API of a running `base_url`")
             base_url = config.base_url.rstrip("/")
-            (name,) = httpx.get(f"{base_url}/list_environments").json()
+            response = httpx.get(
+                f"{base_url}/list_environments", timeout=config.timeout
+            )
+            response.raise_for_status()
+            (name,) = response.json()
             response = httpx.post(
                 f"{base_url}/{name}/num_tasks",
                 json={"split": config.split},
