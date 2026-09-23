@@ -52,7 +52,8 @@ STOP_REASONS: dict[str, FinishReason] = {
     "stop_sequence": "stop",
 }
 # Claude may reorder mixed thinking block types between a response and its replay.
-THINKING = ("redacted_thinking", "thinking")
+# Native tool events share the final rank, preserving their relative order.
+THINKING_ORDER = {"redacted_thinking": 0, "thinking": 1}
 # These versioned tool families return calls to the harness; every other typed tool may execute
 # at the provider. Anchoring the pattern keeps new versions client-side without treating an
 # arbitrary dated provider tool as safe.
@@ -259,8 +260,10 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
-            state = [block for block in blocks if block["type"] in THINKING]
-            state.sort(key=lambda block: THINKING.index(block["type"]))
+            state = [
+                block for block in blocks if block["type"] not in ("text", "tool_use")
+            ]
+            state.sort(key=lambda block: THINKING_ORDER.get(block["type"], 2))
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -269,6 +272,7 @@ def parse_messages(body: dict) -> Messages:
                 ToolCall(
                     id=b.get("id", ""),
                     name=b.get("name", ""),
+                    namespace=b.get("toolset_name"),
                     arguments=json.dumps(b.get("input") or {}),
                 )
                 for b in blocks
@@ -311,8 +315,9 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     reasoning: list[str] = []
     calls: list[ToolCall] = []
     for block in message.content:
-        if block.type in THINKING:
-            state.append(block.model_dump())
+        if block.type not in ("text", "tool_use"):
+            # SDK-inserted defaults are absent when the native response is replayed.
+            state.append(block.model_dump(exclude_unset=True))
         if block.type == "text":
             content.append(block.text)
         elif block.type == "thinking":
@@ -322,10 +327,11 @@ def response_from_wire(message: AnthropicMessage) -> Response:
                 ToolCall(
                     id=block.id,
                     name=block.name,
+                    namespace=block.toolset_name,
                     arguments=json.dumps(block.input or {}),
                 )
             )
-    state.sort(key=lambda block: THINKING.index(block["type"]))
+    state.sort(key=lambda block: THINKING_ORDER.get(block["type"], 2))
     finish = STOP_REASONS.get(message.stop_reason or "")
     provider_usage = message.usage
     output_details = provider_usage.model_dump().get("output_tokens_details")
@@ -580,14 +586,23 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         }
 
     def parse_request(self, body: RawRequest) -> Request:
+        native_tools = body.get("tools") or []
+        if not isinstance(native_tools, list) or any(
+            not isinstance(tool, dict) for tool in native_tools
+        ):
+            raise ValueError("tools must be an array of objects")
         tools = [
-            Tool(
-                name=t["name"],
-                description=t.get("description", ""),
-                parameters=t.get("input_schema", {}),
+            Tool.model_validate(
+                {k: v for k, v in t.items() if k != "input_schema"}
+                | {
+                    "name": t.get("name") or t.get("mcp_server_name") or t.get("type"),
+                    "type": "function"
+                    if t.get("type") in (None, "custom")
+                    else t["type"],
+                    "parameters": t.get("input_schema") or {},
+                }
             )
-            for t in body.get("tools") or []
-            if "input_schema" in t  # skip server tools (web_search etc.)
+            for t in native_tools
         ] or None
         return Request(messages=parse_messages(body), tools=tools)
 
