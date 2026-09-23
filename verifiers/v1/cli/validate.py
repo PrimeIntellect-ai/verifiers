@@ -4,9 +4,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shutil
 import sys
 import time
+import uuid
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -425,6 +427,8 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(
         list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
     )
