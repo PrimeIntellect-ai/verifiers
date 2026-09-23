@@ -86,10 +86,6 @@ class HarborConfig(TasksetConfig):
     `ignore_timeouts=False`."""
     resource_multiplier: float = Field(1.0, gt=0)
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
-    image: str | None = None
-    """Override `[environment].docker_image` for every task."""
-    verifier_image: str | None = None
-    """Override a separate verifier's image. Must contain the complete `/tests` suite."""
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
     whether to reject it (True) or run it on the runtime's default image (False). A task
@@ -559,7 +555,7 @@ def resolve_image(
             f"{task_dir.name}: [{section}] needs a pullable docker_image instead of "
             f"building {dockerfile} — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Set the taskset's image override, or pass --env.taskset.ignore-dockerfile "
+            "Pass an image override to parse_task, or use --env.taskset.ignore-dockerfile "
             "to use the fallback image instead."
         )
     if require_image:
@@ -569,7 +565,15 @@ def resolve_image(
     return None
 
 
-def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
+def parse_task(
+    task_dir: Path,
+    idx: int,
+    harbor_config: HarborConfig,
+    *,
+    image: str | None = None,
+    verifier_image: str | None = None,
+) -> HarborData:
+    """Parse one task, applying optional image overrides before image validation."""
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
     from harbor.environments.definition import should_upload_environment_dir
     from harbor.models.task.config import NetworkMode
@@ -577,11 +581,13 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
-    artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
+    artifacts, hooks, verifier = parse_verifier_extras(
+        task_dir, parsed, harbor_config, verifier_image=verifier_image
+    )
     environment = parsed.environment
     image = resolve_image(
         task_dir,
-        harbor_config.image or environment.docker_image,
+        image or environment.docker_image,
         harbor_config.require_image,
         harbor_config.ignore_dockerfile,
     )
@@ -651,7 +657,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
 
 def parse_verifier_extras(
-    task_dir: Path, parsed, harbor_config: HarborConfig
+    task_dir: Path,
+    parsed,
+    harbor_config: HarborConfig,
+    *,
+    verifier_image: str | None = None,
 ) -> tuple[list[Artifact], list[CollectHook], VerifierConfig | None]:
     """Harbor's `artifacts`, `[[verifier.collect]]` blocks, and verifier environment,
     narrowed to what verifiers' verifier-runtime integration can honor.
@@ -705,11 +715,21 @@ def parse_verifier_extras(
             )
         hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
 
-    return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
+    return (
+        artifacts,
+        hooks,
+        parse_verifier_environment(
+            task_dir, parsed, harbor_config, verifier_image=verifier_image
+        ),
+    )
 
 
 def parse_verifier_environment(
-    task_dir: Path, parsed, harbor_config: HarborConfig
+    task_dir: Path,
+    parsed,
+    harbor_config: HarborConfig,
+    *,
+    verifier_image: str | None = None,
 ) -> VerifierConfig | None:
     """The box Harbor wants this task's verifier in, or None to grade in the agent's.
 
@@ -743,12 +763,12 @@ def parse_verifier_environment(
     image = (
         resolve_image(
             task_dir,
-            harbor_config.verifier_image or environment.docker_image,
+            verifier_image or environment.docker_image,
             require_image=True,
             ignore_dockerfile=harbor_config.ignore_dockerfile,
             verifier=True,
         )
-        if declared or harbor_config.verifier_image is not None
+        if declared or verifier_image is not None
         else None
     )
     unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
