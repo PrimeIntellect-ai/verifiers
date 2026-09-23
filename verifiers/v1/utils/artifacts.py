@@ -233,7 +233,8 @@ async def collect(
         # The grader reads artifacts inside writable mounts through the same mount.
         mounts = getattr(runtimes[artifact.service].config, "mounts", {})
         if any(
-            not mount.read_only and PurePosixPath(source).is_relative_to(target)
+            not mount.read_only
+            and PurePosixPath(posixpath.normpath(source)).is_relative_to(target)
             for target, mount in mounts.items()
         ):
             continue
