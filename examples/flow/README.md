@@ -67,7 +67,7 @@ transition are not rolled back by a hold.
 ## Agent control
 
 A monitoring coding agent reads published unit state, `transitions.jsonl`, call records and
-traces (including `live/` deltas). `inspect` exposes current state and executing stages.
+traces (including `live/` deltas). `inspect` exposes current state and whether execution is active.
 `steer` changes the next stage/status or appends a note; it does not interrupt a model's
 conversation. Live controls survive stage publication. `unit.before` and `unit.notes` are
 stage-start snapshots; `unit.state()` reads current published state. Publish edits to the

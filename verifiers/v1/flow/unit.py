@@ -121,14 +121,17 @@ class Unit(Generic[D, F]):
         if (
             data_type is not None
             and definition["data_type"]
-            != f"{data_type.__module__}:{data_type.__name__}"
+            != f"{data_type.__module__}:{data_type.__qualname__}"
         ):
             raise ValueError(
                 f"{path}: unit data model does not match {definition['data_type']}"
             )
         if data_type is None:
             module, name = definition["data_type"].split(":")
-            data_type = getattr(importlib.import_module(module), name)
+            obj: Any = importlib.import_module(module)
+            for attr in name.split("."):
+                obj = getattr(obj, attr)
+            data_type = obj
         self.data_type: type[D] = data_type
         self.state_type = cast(
             type[UnitState[D]], UnitState.__class_getitem__(data_type)
@@ -151,7 +154,7 @@ class Unit(Generic[D, F]):
                 _write_state(
                     path,
                     UnitState.__class_getitem__(type(data))(
-                        data_type=f"{type(data).__module__}:{type(data).__name__}",
+                        data_type=f"{type(data).__module__}:{type(data).__qualname__}",
                         stages=sorted(stages),
                         stage=stage,
                         data=data.model_dump(mode="json"),

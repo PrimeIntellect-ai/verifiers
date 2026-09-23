@@ -530,7 +530,7 @@ class Flow(Generic[ConfigT]):
             )
         unit = self._unit
         name = key if key is not None else kind
-        cache = digest(key, inputs)[:24] if key is not None else None
+        cache = digest(kind, key, inputs)[:24] if key is not None else None
         file = self.root / "calls" / unit.id / f"{cache}.json" if cache else None
         call = uuid4().hex
         invocation = CallIdentity(

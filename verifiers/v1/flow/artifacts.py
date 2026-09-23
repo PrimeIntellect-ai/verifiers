@@ -86,7 +86,7 @@ class GitArtifacts:
                 str(self.path),
                 "archive",
                 "--format=tar",
-                f"--prefix={prefix}",
+                f"--prefix={prefix.rstrip('/') + '/' if prefix else ''}",
                 revision,
                 *only,
             ],

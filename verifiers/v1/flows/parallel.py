@@ -27,7 +27,13 @@ class Parallel(Flow[Config]):
         inputs = {
             "prompt": unit.data.prompt,
             "agent": solver.config.model_dump(
-                mode="json", include={"model", "sampling", "harness"}
+                mode="json",
+                include={
+                    "model": True,
+                    "sampling": True,
+                    "harness": True,
+                    "client": {"type", "base_url", "renderer"},
+                },
             ),
         }
         await self.gather(
