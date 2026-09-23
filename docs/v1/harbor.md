@@ -19,29 +19,53 @@ class TerminalBench2Taskset(
     pass
 ```
 
-When loading an individual task directory in a custom taskset, pass `image` and/or `verifier_image` to `parse_task` to override that task's declared images:
+You can also write custom code for your tasksets. Override each task's `image` and `verifier_image` by rebuilding it around an updated copy of its data:
 
 ```python
 from pathlib import Path
+from typing import Literal
 
-from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask
-from verifiers.v1.tasksets.harbor.taskset import parse_task
+import verifiers.v1 as vf
+from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
 
-config = HarborConfig()
-task_dir = Path("/path/to/task")
-data = parse_task(
-    task_dir,
-    idx=0,
-    harbor_config=config,
-    image=f"registry.example.com/solver/{task_dir.name}:latest",
-    verifier_image=f"registry.example.com/verifier/{task_dir.name}:latest",
-)
-task = HarborTask(data, config.task)
+IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}:latest"
+VERIFIER_IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}-verifier:latest"
+
+
+class OpenThoughtsTBLiteConfig(HarborConfig):
+    dataset: Literal["openthoughts/openthoughts-tblite"] = (
+        "openthoughts/openthoughts-tblite"
+    )
+    # Load Dockerfile-only tasks before replacing their images below.
+    ignore_dockerfile: bool = True
+
+
+class OpenThoughtsTBLiteTaskset(
+    HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]
+):
+    def load(self) -> list[HarborTask]:
+        # Task data is frozen, so rebuild each task around an updated copy.
+        return [
+            HarborTask(
+                task.data.model_copy(
+                    update={
+                        "image": IMAGE_TEMPLATE.format(
+                            task=Path(task.data.task_dir).name
+                        ),
+                        "verifier_image": VERIFIER_IMAGE_TEMPLATE.format(
+                            task=Path(task.data.task_dir).name
+                        ),
+                    }
+                ),
+                task.config,
+            )
+            for task in super().load()
+        ]
 ```
 
-Both overrides apply before image validation, so supplying a pre-built image needs no `ignore_dockerfile` flag. Omitted overrides preserve the task's declared images. `verifier_image` applies only to a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. A verifier that uses a fresh solver environment inherits the overridden solver image unless `verifier_image` is supplied. The task's `task.toml` remains unchanged.
+Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. When `verifier_image` is `None`, a separate verifier inherits the task's current `image` and stages the task package's tests. These changes leave `task.toml` unchanged.
 
-To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and pass the resulting image reference to `parse_task`.
+To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 
 On the `prime` runtime any pullable image reference just works: the first sandbox to use an image makes the platform build and cache what it needs from it (for VM sandboxes this build can take ~10 minutes — the eval dashboard marks affected rollouts as `build` and a warning is logged); every later sandbox on the same reference starts in seconds.
 

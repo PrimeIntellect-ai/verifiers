@@ -121,9 +121,6 @@ class VerifierConfig(BaseModel):
     `None` on `HarborData` means shared — grade where the agent worked, which is still
     Harbor's default and every task that says nothing."""
 
-    image: str | None = None
-    """Pullable ref from `[verifier.environment].docker_image`. None keeps the task's
-    own image, which is what Harbor's fresh copy of `[environment]` resolves to."""
     resources: TaskResources = TaskResources()
     workdir: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -159,6 +156,9 @@ class HarborData(TaskData):
     healthcheck: dict | None = None
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
+    verifier_image: str | None = None
+    """Pullable image for a separate verifier, containing the complete `/tests` suite.
+    None keeps the solver image and stages the task package's tests."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -297,7 +297,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
-        if self.data.verifier is None or self.data.verifier.image is None:
+        if self.data.verifier is None or self.data.verifier_image is None:
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
             )
@@ -391,11 +391,13 @@ def verifier_box_data(data: HarborData) -> HarborData:
     return data.model_copy(
         update={
             "name": f"{data.name} (verifier)",
-            "image": verifier.image if verifier.image is not None else data.image,
+            "image": data.verifier_image
+            if data.verifier_image is not None
+            else data.image,
             "workdir": data.workdir if fresh else verifier.workdir,
             "resources": data.resources if fresh else verifier.resources,
             "upload_environment": data.upload_environment
-            if fresh and verifier.image is None
+            if fresh and data.verifier_image is None
             else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
@@ -555,8 +557,8 @@ def resolve_image(
             f"{task_dir.name}: [{section}] needs a pullable docker_image instead of "
             f"building {dockerfile} — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass an image override to parse_task, or use --env.taskset.ignore-dockerfile "
-            "to use the fallback image instead."
+            "Pass --env.taskset.ignore-dockerfile to load it with a fallback image, "
+            "then override the task's image or verifier_image with a pre-built image."
         )
     if require_image:
         raise ValueError(
@@ -565,15 +567,7 @@ def resolve_image(
     return None
 
 
-def parse_task(
-    task_dir: Path,
-    idx: int,
-    harbor_config: HarborConfig,
-    *,
-    image: str | None = None,
-    verifier_image: str | None = None,
-) -> HarborData:
-    """Parse one task, applying optional image overrides before image validation."""
+def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
     from harbor.environments.definition import should_upload_environment_dir
     from harbor.models.task.config import NetworkMode
@@ -581,15 +575,24 @@ def parse_task(
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
-    artifacts, hooks, verifier = parse_verifier_extras(
-        task_dir, parsed, harbor_config, verifier_image=verifier_image
-    )
+    artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
     image = resolve_image(
         task_dir,
-        image or environment.docker_image,
+        environment.docker_image,
         harbor_config.require_image,
         harbor_config.ignore_dockerfile,
+    )
+    verifier_image = (
+        resolve_image(
+            task_dir,
+            parsed.verifier.environment.docker_image,
+            require_image=True,
+            ignore_dockerfile=harbor_config.ignore_dockerfile,
+            verifier=True,
+        )
+        if verifier is not None and parsed.verifier.environment is not None
+        else None
     )
     environment_dir = task_dir / "environment"
     upload_environment = should_upload_environment_dir(
@@ -649,6 +652,7 @@ def parse_task(
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),
+        verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -657,11 +661,7 @@ def parse_task(
 
 
 def parse_verifier_extras(
-    task_dir: Path,
-    parsed,
-    harbor_config: HarborConfig,
-    *,
-    verifier_image: str | None = None,
+    task_dir: Path, parsed, harbor_config: HarborConfig
 ) -> tuple[list[Artifact], list[CollectHook], VerifierConfig | None]:
     """Harbor's `artifacts`, `[[verifier.collect]]` blocks, and verifier environment,
     narrowed to what verifiers' verifier-runtime integration can honor.
@@ -715,21 +715,11 @@ def parse_verifier_extras(
             )
         hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
 
-    return (
-        artifacts,
-        hooks,
-        parse_verifier_environment(
-            task_dir, parsed, harbor_config, verifier_image=verifier_image
-        ),
-    )
+    return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
 
 
 def parse_verifier_environment(
-    task_dir: Path,
-    parsed,
-    harbor_config: HarborConfig,
-    *,
-    verifier_image: str | None = None,
+    task_dir: Path, parsed, harbor_config: HarborConfig
 ) -> VerifierConfig | None:
     """The box Harbor wants this task's verifier in, or None to grade in the agent's.
 
@@ -760,17 +750,6 @@ def parse_verifier_environment(
     if environment is None:  # unreachable while the mode is SEPARATE
         raise ValueError(f"{task_dir.name}: separate verifier resolved no environment")
     declared = parsed.verifier.environment is not None
-    image = (
-        resolve_image(
-            task_dir,
-            verifier_image or environment.docker_image,
-            require_image=True,
-            ignore_dockerfile=harbor_config.ignore_dockerfile,
-            verifier=True,
-        )
-        if declared or verifier_image is not None
-        else None
-    )
     unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
@@ -781,7 +760,6 @@ def parse_verifier_environment(
 
     network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
     return VerifierConfig(
-        image=image,
         # A declared environment states its own resources; what it leaves out is the
         # run's default, not the agent task's. A fresh copy is the task's environment,
         # so it keeps whatever the agent box resolved to.
