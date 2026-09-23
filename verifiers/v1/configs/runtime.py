@@ -9,7 +9,7 @@ from pydantic_config import BaseConfig
 
 
 class BindMount(BaseConfig):
-    """An existing file or directory on the Docker daemon's host."""
+    """An existing file or directory on the container engine's host."""
 
     source: str = Field(pattern=r"^/[^\x00]*$")
     """Absolute host path. The runtime never creates or removes the source."""

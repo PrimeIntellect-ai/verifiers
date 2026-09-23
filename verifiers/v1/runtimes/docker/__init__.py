@@ -15,13 +15,10 @@ import sys
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
-
-from verifiers.v1.configs.runtime import BindMount, NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, Runtime, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
@@ -41,38 +38,6 @@ if TYPE_CHECKING:
 
 class DockerConfig(ContainerConfig, NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
-    mounts: dict[str, BindMount] = Field(default_factory=dict)
-    """Container paths mapped to host bind mounts, attached before task setup.
-    Read-only mounts include read-only submounts and require Docker Engine/CLI >=25.0
-    (API >=1.44) with Linux kernel >=5.12, including Docker Desktop's Linux VM.
-    Mount targets and artifact paths must not traverse symlinks inside the container.
-    Mount targets and their parent directories must not be moved.
-    Harbor Compose is unsupported."""
-
-    @field_validator("mounts")
-    @classmethod
-    def validate_mounts(cls, mounts: dict[str, BindMount]) -> dict[str, BindMount]:
-        paths: dict[PurePosixPath, BindMount] = {}
-        for target, mount in mounts.items():
-            path = PurePosixPath("/" + target.lstrip("/"))
-            if (
-                not target.startswith("/")
-                or path == PurePosixPath("/")
-                or ".." in path.parts
-                or "\x00" in target
-            ):
-                raise ValueError(
-                    f"mount target {target!r} must be an absolute path below '/' with no '..' or NUL"
-                )
-            if any(
-                path.is_relative_to(other) or other.is_relative_to(path)
-                for other in paths
-            ):
-                raise ValueError(f"mount target {target!r} overlaps another mount")
-            if path == PurePosixPath("/tmp"):
-                raise ValueError("/tmp is reserved for runtime and artifact staging")
-            paths[path] = mount
-        return {str(path): mount for path, mount in paths.items()}
 
 
 class PodmanConfig(ContainerConfig, NetworkPolicyConfig):
@@ -269,12 +234,10 @@ class DockerRuntime(ContainerRuntime):
         for target, mount in getattr(self.config, "mounts", {}).items():
             bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
             if mount.read_only:
-                # Refuse kernels that would leave nested mounts writable.
-                bind_options += [
-                    "readonly",
-                    "bind-recursive=readonly",
-                    "bind-propagation=rprivate",
-                ]
+                bind_options += ["readonly", "bind-propagation=rprivate"]
+                if self.engine == "docker":
+                    # Refuse kernels that would leave nested mounts writable.
+                    bind_options.append("bind-recursive=readonly")
             value = io.StringIO()
             csv.writer(value).writerow(bind_options)
             options += ["--mount", value.getvalue().removesuffix("\r\n")]
