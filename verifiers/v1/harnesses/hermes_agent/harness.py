@@ -86,8 +86,12 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         }
         if ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
+        servers = {name: dict(server) for name, server in data.mcp_servers.items()}
+        for name, headers in self.config.resolve_mcp_headers(servers).items():
+            servers[name]["headers"] = {**servers[name].get("headers", {}), **headers}
         config = {
             "model": model,
+            "mcp_servers": servers,
             # The ACP client already approves tool requests. Avoid routing Hermes'
             # redundant smart-approval model calls through interception as turns.
             "approvals": {"mode": "off"},
@@ -108,6 +112,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env=env,
+            # Hermes loads MCP from its native config before starting ACP.
+            mcp_servers={},
             command=[
                 f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
                 "-P",  # Keep task files from shadowing installed Hermes modules.

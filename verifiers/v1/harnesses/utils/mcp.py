@@ -1,5 +1,4 @@
 import asyncio
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -43,7 +42,7 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
                 StdioServerParameters(
                     command=spec["command"],
                     args=spec.get("args", []),
-                    env={**os.environ, **spec.get("env", {})},
+                    env=spec.get("env"),
                 )
             )
         elif kind == "sse":

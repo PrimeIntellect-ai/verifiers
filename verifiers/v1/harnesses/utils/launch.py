@@ -46,7 +46,6 @@ async def launch_chat_program(
     *,
     extra_args: Sequence[str] = (),
     env: dict[str, str] | None = None,
-    activate: bool = True,
 ) -> ProgramResult:
     """Prepare and run a standalone chat program with the shared wire arguments."""
     args = [
@@ -78,8 +77,9 @@ async def launch_chat_program(
             json.dumps([message_to_wire(message) for message in prompt]).encode(),
         )
         args.append(f"--initial-messages-file={path}")
+    # Tool commands must resolve against the task's PATH, not the harness venv.
     program = await runtime.prepare_uv_script(
-        source, config.resolved_env, activate=activate
+        source, config.resolved_env, activate=False
     )
     return await runtime.run_program(
         [*program, *args], env if env is not None else {**config.resolved_env}

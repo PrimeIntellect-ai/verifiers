@@ -122,5 +122,4 @@ class BashHarness(Harness[BashHarnessConfig]):
             prompt,
             extra_args=args,
             env=env,
-            activate=False,
         )
