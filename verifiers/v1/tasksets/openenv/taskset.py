@@ -61,7 +61,10 @@ def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
     if len(fields) != 1:
         raise ValueError("non-object actions require exactly one action field")
     field = fields[0]
-    if action_schema.get("properties", {}).get(field, {}).get("type") == "string":
+    schema = action_schema.get("properties", {}).get(field, {})
+    if schema.get("type") == "string" or any(
+        option.get("type") == "string" for option in schema.get("anyOf", [])
+    ):
         action = action if isinstance(action, str) else message
     return {field: action}
 
@@ -112,11 +115,11 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
             def payload() -> str | vf.Messages:
                 observation = deepcopy(result.observation)
                 images: list[tuple[str, str]] = []
-                pending = [observation]
+                pending = [(None, None, observation)]
                 while pending:
-                    value = pending.pop()
+                    parent, key, value = pending.pop()
                     if isinstance(value, list):
-                        pending.extend(reversed(value))
+                        pending.extend((None, None, item) for item in reversed(value))
                     elif isinstance(value, dict):
                         if value.get("type") == "image" and isinstance(
                             value.get("data"), str
@@ -125,22 +128,25 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                                 (value.get("mimeType", "image/png"), value.pop("data"))
                             )
                             value["data"] = "<image>"
-                        for key, item in value.items():
-                            if (
-                                key.endswith("_base64")
-                                and isinstance(item, str)
-                                and item
-                            ):
-                                fmt = value.get("image_format") or (
-                                    "png"
-                                    if key.endswith("png_base64")
-                                    or value.get("image_kind") == "map"
-                                    else "jpeg"
-                                )
-                                images.append((f"image/{fmt}", item))
-                                value[key] = "<image>"
-                            elif isinstance(item, (dict, list)):
-                                pending.append(item)
+                        pending.extend(
+                            (value, name, item)
+                            for name, item in reversed(list(value.items()))
+                        )
+                    elif (
+                        isinstance(parent, dict)
+                        and key is not None
+                        and key.endswith("_base64")
+                        and isinstance(value, str)
+                        and value
+                    ):
+                        fmt = parent.get("image_format") or (
+                            "png"
+                            if key.endswith("png_base64")
+                            or parent.get("image_kind") == "map"
+                            else "jpeg"
+                        )
+                        images.append((f"image/{fmt}", value))
+                        parent[key] = "<image>"
                 message = json.dumps(
                     {"observation": observation, "action_schema": action_schema},
                     ensure_ascii=False,
