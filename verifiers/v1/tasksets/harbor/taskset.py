@@ -62,7 +62,7 @@ class HarborTaskConfig(TaskConfig):
 
 class HarborConfig(TasksetConfig):
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
-    """Total byte limit for artifact archives transferred out of each solver runtime."""
+    """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
@@ -109,10 +109,16 @@ class Author(BaseModel):
 
 
 class CollectHook(BaseModel):
-    """One `[[verifier.collect]]` command, run in the agent's box by `finalize`."""
+    """One `[[verifier.collect]]` command, run in its service by `finalize`."""
 
     command: str
     timeout_sec: float = 600.0
+    service: str = "main"
+
+
+class HarborArtifact(Artifact):
+    service: str = "main"
+    """The Compose service to collect from; the grader restores at the same path."""
 
 
 class VerifierConfig(BaseModel):
@@ -163,6 +169,7 @@ class HarborData(TaskData):
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
+    artifacts: list[HarborArtifact] = Field(default_factory=list)
     collect: list[CollectHook] = Field(default_factory=list)
     """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
     after the agent stops, so the files can travel to a grading box as artifacts."""
@@ -246,18 +253,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 else healthcheck.interval_sec
             )
 
-    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
-        """Run Harbor's collect hooks while the agent's box is still alive.
+    async def finalize(
+        self, trace: Trace, runtime: Runtime, service: str = "main"
+    ) -> None:
+        """Run one service's collect hooks, then add its artifacts to the trace.
 
-        Harbor runs these after the agent phase and before artifact collection, which
-        is exactly what `finalize` means here, so the hook maps onto the existing
-        lifecycle rather than needing a stage of its own.
+        Harbor runs these after the agent phase, which is exactly what `finalize` means
+        for main. Sidecars are collected by the Harbor env once main has stopped.
 
         Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
         output is observability, here it is a grading input, and a silently absent file
         makes the verifier score a stale state instead of failing loudly.
         """
-        for hook in self.data.collect:
+        for hook in [hook for hook in self.data.collect if hook.service == service]:
             try:
                 result = await asyncio.wait_for(
                     runtime.run(["sh", "-c", hook.command], {}),
@@ -273,10 +281,28 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        if not self.scoring_deferred:
-            trace.state.artifacts = await collect(
-                runtime, self.data.artifacts, max_bytes=self.data.artifact_max_bytes
-            )
+        used = sum(len(archive or b"") for archive in trace.state.artifacts.values())
+        collected = await collect(
+            runtime,
+            [
+                artifact
+                for artifact in self.data.artifacts
+                if artifact.service == service
+            ],
+            max_bytes=self.data.artifact_max_bytes - used,
+            sweep=service == "main",
+        )
+        # Every service restores into the grader's one filesystem.
+        roots = [PurePosixPath(root) for root in trace.state.artifacts]
+        for source in map(PurePosixPath, collected):
+            if any(
+                source.is_relative_to(root) or root.is_relative_to(source)
+                for root in roots
+            ):
+                raise RuntimeError(
+                    f"artifact {str(source)!r} overlaps another service's"
+                )
+        trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
@@ -533,6 +559,13 @@ def resolve_image(
     """
     if image:
         return image
+    compose = task_dir / "environment" / "docker-compose.yaml"
+    if compose.is_file():
+        import yaml
+
+        main = yaml.safe_load(compose.read_text())["services"].get("main", {})
+        if main.get("image") or "build" in main:
+            return None
     if (task_dir / "environment" / "Dockerfile").exists():
         if ignore_dockerfile:
             return None
@@ -631,7 +664,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
 def parse_verifier_extras(
     task_dir: Path, parsed, harbor_config: HarborConfig
-) -> tuple[list[Artifact], list[CollectHook], VerifierConfig | None]:
+) -> tuple[list[HarborArtifact], list[CollectHook], VerifierConfig | None]:
     """Harbor's `artifacts`, `[[verifier.collect]]` blocks, and verifier environment,
     narrowed to what verifiers' verifier-runtime integration can honor.
 
@@ -640,7 +673,6 @@ def parse_verifier_extras(
     Prepending it would make it an explicitly declared entry, and declared entries are
     required — which would fail every task that never writes there.
     """
-    from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
         effective_artifact_service,
         normalize_artifact_entries,
@@ -650,20 +682,15 @@ def parse_verifier_extras(
     if verifier.user is not None:
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
-    artifacts: list[Artifact] = []
+    artifacts: list[HarborArtifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
-        if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
-            raise ValueError(
-                f"{task_dir.name}: artifact {entry.source!r} targets additional "
-                f"service {entry.service!r}; verifiers currently supports artifacts "
-                "from the main service only"
-            )
         # `destination` positions a file in Harbor's host trial directory. Verifiers has
         # no such directory (the trace is the record) and Harbor never lets destination
         # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
-            Artifact(
+            HarborArtifact(
                 source=entry.source,
+                service=effective_artifact_service(entry),
                 exclude=list(entry.exclude or []),
                 required=False,
             )
@@ -671,18 +698,22 @@ def parse_verifier_extras(
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
-        if hook.service != MAIN_SERVICE_NAME:
-            raise ValueError(
-                f"{task_dir.name}: collect hook targets additional service "
-                f"{hook.service!r}; verifiers currently supports collect hooks for "
-                "the main service only"
-            )
         if hook.user is not None:
             raise ValueError(
                 f"{task_dir.name}: collect hook `user` is not supported "
                 "(commands run as the runtime's default user)"
             )
-        hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
+        hooks.append(
+            CollectHook(
+                command=hook.command, timeout_sec=hook.timeout_sec, service=hook.service
+            )
+        )
+    services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}
+    if services and not (task_dir / "environment/docker-compose.yaml").is_file():
+        raise ValueError(
+            f"{task_dir.name}: artifacts or collect hooks target services "
+            f"{sorted(services)}, which need environment/docker-compose.yaml"
+        )
 
     return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
 

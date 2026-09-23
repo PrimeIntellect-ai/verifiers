@@ -77,6 +77,8 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
 
 class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
+    vm: bool = False
+    """Use a VM sandbox for workloads requiring a Docker daemon."""
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
@@ -135,6 +137,9 @@ class ModalProcess(RuntimeProcess):
 
     async def wait(self) -> int:
         return await self._process.wait.aio()
+
+    async def poll(self) -> int | None:
+        return await self._process.poll.aio()
 
     async def terminate(self) -> None:
         await self._signal("TERM")
@@ -233,6 +238,7 @@ class ModalRuntime(Runtime):
             ),
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
+            experimental_options={"vm_runtime": True} if self.config.vm else {},
         )
 
     async def prepare_execution(self, routes: list[str] | None) -> None:

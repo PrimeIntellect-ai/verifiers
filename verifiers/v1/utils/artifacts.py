@@ -39,8 +39,9 @@ async def collect(
     artifacts: list[Artifact] | None = None,
     *,
     max_bytes: int = MAX_ARTIFACT_BYTES,
+    sweep: bool = True,
 ) -> dict[str, bytes | None]:
-    """Tar the convention dir and every declared path out of `runtime`.
+    """Tar the convention dir (when `sweep`) and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
     they were declared, and a path cannot be collected twice.
@@ -61,7 +62,7 @@ async def collect(
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
     declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
-    if convention in declared_paths:
+    if not sweep or convention in declared_paths:
         entries = declared
     else:
         sweep_excludes = [
