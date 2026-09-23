@@ -40,5 +40,5 @@ def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> s
         "no task in this taskset sets Task.system_prompt — some tasksets bake instructions "
         "directly into `prompt` instead (e.g. gsm8k) and can't be optimized this way. Pass "
         "--initial-prompt to seed one explicitly, or pick a taskset whose load() sets "
-        "system_prompt on its task data (e.g. reverse-text, lean, textarena)."
+        "system_prompt on its task data (e.g. reverse-text, textarena)."
     )
