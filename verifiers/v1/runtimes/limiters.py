@@ -11,7 +11,6 @@ run left behind) never delays another run.
 
 import asyncio
 import fcntl
-import logging
 import os
 import time
 from pathlib import Path
@@ -20,13 +19,6 @@ from typing import Self
 from verifiers.v1.utils.paths import CACHE_DIR
 
 LIMITER_DIR = CACHE_DIR / "limiter"
-
-logger = logging.getLogger(__name__)
-
-BACKLOG_WARN_SECONDS = 10 * 60
-"""Backlog above which a reservation logs the bucket for diagnosis. A backlog this deep
-usually means admission far outpaces the configured rate, or a killed run left its
-reservations behind in the bucket file."""
 
 STALE_BUCKET_SECONDS = 24 * 60 * 60
 """Bucket files untouched this long belong to finished runs and are swept."""
@@ -41,7 +33,7 @@ def run_scope() -> str:
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
-    flock) and sleeps until it, so the aggregate creation rate across all of the user's
+    flock) and sleeps until it, so the aggregate creation rate across all of the run's
     processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
     hold the lock. Reservations are never released, so a cancelled waiter still holds its
     slot; the backlog drains at `per_sec` regardless."""
@@ -50,7 +42,6 @@ class CreationLimiter:
         self._interval = 1 / per_sec
         self._name = name
         self._path: Path | None = None
-        self._last_warned = 0.0
 
     def _open(self) -> Path:
         """Resolve the bucket on first use, after the launcher has set the run identity,
@@ -83,18 +74,6 @@ class CreationLimiter:
                 f.flush()
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        # Every queued rollout reserves at once, so warn once a minute, not once per slot.
-        if wait > BACKLOG_WARN_SECONDS and now - self._last_warned > 60:
-            self._last_warned = now
-            logger.warning(
-                "%s creation limiter backlog is %.0fs (%d queued at %.2f/s); "
-                "delete %s to discard reservations left by a killed run",
-                self._name,
-                wait,
-                wait / self._interval,
-                1 / self._interval,
-                self._path,
-            )
         return wait
 
     async def __aenter__(self) -> Self:
