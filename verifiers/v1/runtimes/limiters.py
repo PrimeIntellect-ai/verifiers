@@ -12,6 +12,7 @@ run left behind) never delays another run.
 import asyncio
 import fcntl
 import os
+import re
 import time
 from pathlib import Path
 from typing import Self
@@ -23,8 +24,10 @@ LIMITER_DIR = CACHE_DIR / "limiter"
 
 def run_scope() -> str:
     """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, else the
-    process group, which spawned env servers and pool workers inherit."""
-    return os.environ.get("VF_RUN_ID") or f"pg{os.getpgid(0)}"
+    process group, which spawned env servers and pool workers inherit. Reduced to a
+    filename-safe token."""
+    scope = os.environ.get("VF_RUN_ID") or f"pg{os.getpgid(0)}"
+    return re.sub(r"[^\w.-]", "_", scope)
 
 
 class CreationLimiter:
