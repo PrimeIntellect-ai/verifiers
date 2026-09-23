@@ -2,6 +2,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.tasksets.lean.taskset import LeanData, LeanTask, LeanTaskConfig
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
@@ -87,6 +88,80 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     config = vf.TaskConfig(rewards={"nope": vf.RewardFunctionConfig(weight=1.0)})
     with pytest.raises(ValueError, match="no @vf.reward method named 'nope'"):
         HookTask(HookData(idx=0, prompt="abc"), config).hooks("reward")
+
+
+@pytest.mark.parametrize(
+    "compiled,tampered,failed",
+    [
+        (True, False, False),
+        (False, False, False),
+        (True, True, False),
+        (True, False, True),
+    ],
+    ids=["valid-proof", "compile-failure", "changed-theorem", "failed-execution"],
+)
+async def test_lean_reward_during_rollout(
+    tmp_path, monkeypatch, compiled, tampered, failed
+):
+    harness = tmp_path / "lean_scoring_harness.py"
+    harness.write_text("""
+import verifiers.v1 as vf
+from verifiers.v1.runtimes import ProgramResult
+
+class Config(vf.HarnessConfig):
+    tampered: bool = False
+    failed: bool = False
+
+class LeanScoringHarness(vf.Harness[Config]):
+    NEEDS_CONTAINER = False
+    EXECUTES_CODE = False
+
+    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
+        name = "other" if self.config.tampered else "proof"
+        await runtime.write("proof.lean", f"theorem {name} : True := by\\n  trivial\\n".encode())
+        if self.config.failed:
+            raise RuntimeError("solver failed")
+        return ProgramResult(0, "", "")
+
+__all__ = ["LeanScoringHarness"]
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    compile_calls = []
+
+    class LocalLeanTask(LeanTask):
+        NEEDS_CONTAINER = False
+
+        async def _compile(self, runtime):
+            compile_calls.append(await runtime.read("proof.lean"))
+            return compiled, "compiler result", 0 if compiled else 1
+
+    task = LocalLeanTask(
+        LeanData(
+            prompt="Prove True",
+            formal_statement="theorem proof : True := by",
+            imports="",
+        ),
+        LeanTaskConfig(proof_file_path="proof.lean"),
+    )
+    config = vf.AgentConfig(
+        model="unused",
+        runtime={"type": "subprocess"},
+        harness={"id": "lean_scoring_harness", "tampered": tampered, "failed": failed},
+        retries={"max_retries": 0},
+    )
+    async with vf.Agent(config) as agent:
+        trace = await agent.run(task)
+
+    assert trace.ok is (not failed)
+    assert trace.reward == float(compiled and not tampered and not failed)
+    assert len(compile_calls) == int(not tampered and not failed)
+    if failed:
+        assert trace.errors
+        assert trace.rewards == {}
+    else:
+        assert trace.info["lean_tampered"] is tampered
+        if not tampered:
+            assert trace.info["lean_compiled"] is compiled
 
 
 async def test_defer_scoring_defers_only_task_scoring() -> None:

@@ -101,9 +101,6 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
     @reward(weight=1.0)
     async def lean_compiled(self, trace: Trace, runtime: Runtime) -> float:
         """Require both the assigned signature and a clean Lean compile."""
-        if trace.has_error:
-            return 0.0
-
         # Setup created this file, so a read failure is an infrastructure error.
         current = (await runtime.read(self.config.proof_file_path)).decode(
             "utf-8", "replace"
