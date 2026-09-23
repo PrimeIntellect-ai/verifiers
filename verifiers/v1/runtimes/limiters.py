@@ -4,15 +4,14 @@ A leaky bucket backed by a lock file under the user cache (``~/.cache/verifiers`
 back to the temp dir when no home is resolvable), so a provider's creation rate (Modal
 sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process of a run — the
 eval process and all the elastically-spawned env-server worker processes alike — not just
-within one process. One bucket file per name and run: the run is ``$VF_RUN_ID`` when the
-launcher sets it, else the process group, so a run's backlog (or the reservations a killed
-run left behind) never delays another run.
+within one process. One bucket file per name and run, keyed by the launcher's
+``$VF_RUN_ID``, so a run's backlog (or the reservations a killed run left behind) never
+delays another run. Without a run id each process paces itself.
 """
 
 import asyncio
 import fcntl
 import os
-import re
 import time
 from pathlib import Path
 from typing import Self
@@ -23,11 +22,11 @@ LIMITER_DIR = CACHE_DIR / "limiter"
 
 
 def run_scope() -> str:
-    """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, else the
-    process group, which spawned env servers and pool workers inherit. Reduced to a
-    filename-safe token."""
-    scope = os.environ.get("VF_RUN_ID") or f"pg{os.getpgid(0)}"
-    return re.sub(r"[^\w.-]", "_", scope)
+    """The key that groups one run's processes: the launcher's ``$VF_RUN_ID``, which
+    spawned env servers and pool workers inherit. Without one, each process is its own
+    scope."""
+    run_id = os.environ.get("VF_RUN_ID")
+    return run_id.replace("/", "--") if run_id else f"pid{os.getpid()}"
 
 
 class CreationLimiter:
