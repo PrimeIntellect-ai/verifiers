@@ -17,7 +17,7 @@ from functools import partial
 from typing import Any, cast
 
 import httpx
-from pydantic import Field
+from pydantic import Field, field_validator
 
 import verifiers.v1 as vf
 
@@ -59,6 +59,12 @@ class OpenEnvConfig(vf.TasksetConfig):
     timeout: float = 600.0
     """Seconds to wait for a started server to become ready, and for each OpenEnv
     reset or step reply."""
+
+    @field_validator("base_url")
+    @classmethod
+    def http_base_url(cls, url: str | None) -> str | None:
+        # OpenEnv's client also takes ws(s):// URLs; its HTTP routes need http(s)://.
+        return url and re.sub(r"^ws", "http", url)
 
 
 class OpenEnvTask(vf.Task[OpenEnvData]):
