@@ -62,8 +62,9 @@ def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("non-object actions require exactly one action field")
     field = fields[0]
     schema = action_schema.get("properties", {}).get(field, {})
-    if schema.get("type") == "string" or any(
-        option.get("type") == "string" for option in schema.get("anyOf", [])
+    if any(
+        "string" in (option.get("type") or [])
+        for option in [schema, *schema.get("anyOf", []), *schema.get("oneOf", [])]
     ):
         action = action if isinstance(action, str) else message
     return {field: action}
@@ -198,7 +199,7 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
     def load(self) -> Iterator[OpenEnvTask]:
         config = self.config
         source = config.base_url or config.env
-        if source is None:
+        if not source:
             raise ValueError("pass `env` or `base_url`")
         for idx, reset in enumerate(config.resets):
             yield OpenEnvTask(
