@@ -48,6 +48,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
 )
 
 if TYPE_CHECKING:
@@ -164,6 +165,13 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Top-k sampling head for this node's sampled tokens — the sampler's top-k
+    candidates (sampled token first), stored as flat `ids`/`logprobs` arrays with
+    `counts` row boundaries. Assistant nodes only, recorded when the rollout requested
+    `logprobs=k > 1`; score centering consumes it to cancel trainer/sampler drift. The
+    arrays serialize as raw-byte `__nd__` dictionaries."""
+
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -261,6 +269,29 @@ class MessageNode(BaseModel):
                 counts=_decode_ndarray(value["counts"]),
             )
         raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+
+    @field_serializer("top_logprobs")
+    def serialize_top_logprobs(self, head: TopLogprobs | None) -> dict | None:
+        if head is None:
+            return None
+        return {
+            "ids": _encode_ndarray(head.ids),
+            "logprobs": _encode_ndarray(head.logprobs),
+            "counts": _encode_ndarray(head.counts),
+        }
+
+    @field_validator("top_logprobs", mode="before")
+    @classmethod
+    def deserialize_top_logprobs(cls, value: Any) -> TopLogprobs | None:
+        if value is None or isinstance(value, TopLogprobs):
+            return value
+        if isinstance(value, dict):
+            return TopLogprobs(
+                ids=_decode_ndarray(value["ids"]),
+                logprobs=_decode_ndarray(value["logprobs"]),
+                counts=_decode_ndarray(value["counts"]),
+            )
+        raise TypeError(f"cannot build TopLogprobs from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -771,6 +802,22 @@ def _attribute_sampling_mask(
     node.sampling_mask = payload
 
 
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a completion-aligned top-k sampling head to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        return
+    node.top_logprobs = payload
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -930,6 +977,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+
+    # Top-k sampling heads are completion-aligned too.
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id

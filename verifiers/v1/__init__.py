@@ -127,6 +127,7 @@ from verifiers.v1.types import (
     SamplingConfig,
     SamplingMask,
     SystemMessage,
+    TopLogprobs,
     TextContentPart,
     Tool,
     ToolCall,
