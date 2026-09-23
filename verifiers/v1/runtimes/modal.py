@@ -32,7 +32,7 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.run import run_id
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,9 @@ class ModalRuntime(Runtime):
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
-                creation_limiter(self.config.creates_per_sec, "modal-sandbox", run_id())
+                creation_limiter(
+                    self.config.creates_per_sec, "modal-sandbox", run_scope()
+                )
                 or contextlib.nullcontext()
             ):
                 await run_shielded(self._create_sandbox(app))

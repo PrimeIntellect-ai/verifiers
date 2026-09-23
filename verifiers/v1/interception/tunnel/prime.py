@@ -12,7 +12,7 @@ from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
-from verifiers.v1.utils.run import run_id
+from verifiers.v1.utils.scope import run_scope
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
@@ -21,7 +21,7 @@ _TUNNELS_PER_MIN = 512
 
 
 def tunnel_limiter() -> CreationLimiter:
-    return CreationLimiter("prime-tunnel", run_id(), _TUNNELS_PER_MIN / 60)
+    return CreationLimiter("prime-tunnel", run_scope(), _TUNNELS_PER_MIN / 60)
 
 
 class PrimeTunnelConfig(BaseTunnelConfig):

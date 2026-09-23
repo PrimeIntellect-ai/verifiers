@@ -28,7 +28,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
-from verifiers.v1.utils.run import run_id
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,9 @@ class PrimeRuntime(Runtime):
         try:
             async with (
                 creation_limiter(
-                    (self.config.creates_per_min or 0) / 60, "prime-sandbox", run_id()
+                    (self.config.creates_per_min or 0) / 60,
+                    "prime-sandbox",
+                    run_scope(),
                 )
                 or contextlib.nullcontext()
             ):
