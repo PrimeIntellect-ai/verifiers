@@ -451,8 +451,10 @@ class ChatDialect(Dialect[ChatCompletion]):
 
         raw_tools = mediated.get("tools")
         tools = request_filter.tools(raw_tools)
-        if "tools" in mediated:
+        if tools:
             mediated["tools"] = tools
+        else:
+            mediated.pop("tools", None)
 
         choice = mediated.get("tool_choice")
         valid_choice = choice is None or (
