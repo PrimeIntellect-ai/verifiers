@@ -2,7 +2,7 @@
 
 Placement coverage is pairwise (see tests/v1/conftest.py): each list below names the
 combinations a test runs — every axis value at least once plus the cross-boundary pairs
-with distinct networking — instead of fanning the full cross product. prime/modal rows
+with distinct networking — instead of fanning the full cross product. prime/modal/e2b rows
 are local-only (their marks are excluded in CI)."""
 
 import shutil
@@ -170,11 +170,18 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pair("bash", "e2b", "bash-harness-in-e2b"),
     pytest.param(
         "bash",
         {"type": "modal", "allow": []},
         marks=[mark.bash, mark.modal],
         id="bash-harness-in-modal-framework-only",
+    ),
+    pytest.param(
+        "bash",
+        {"type": "e2b", "allow": []},
+        marks=[mark.bash, mark.e2b],
+        id="bash-harness-in-e2b-framework-only",
     ),
 ]
 
@@ -218,6 +225,7 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pair("rlm", "e2b", "rlm-acp-in-e2b"),
     pytest.param(
         "prime-agent",
         "prime",
@@ -246,7 +254,9 @@ TOOL_PLACEMENTS = [
     pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
     pair("prime", "colocated", "harness-in-prime-with-tool-colocated"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
+    pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
     pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
+    pair("subprocess", "e2b", "harness-in-subprocess-with-tool-in-e2b"),
 ]
 
 # The state channel rides the same reachability as TOOL_PLACEMENTS; cover each axis
