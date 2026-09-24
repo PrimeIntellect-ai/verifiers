@@ -10,7 +10,7 @@ stores only the tokens it *adds* to the cumulative sequence, keeping size linear
 and making a branch's training sample a cheap concat of node
 `token_ids`/`mask`/`logprobs` along its path.
 
-Token attribution (renderer client): the renderer reports, per prompt, each message's token
+Token attribution: the inference server reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new
 input message's node gets its span plus the leading template scaffold since the previous
 message; the trailing scaffold (the generation prompt) goes on the assistant node, prefixed
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import io
 import json
 import time
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ from pydantic import (
     field_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
-from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
+from renderers.base import MultiModalData, PlaceholderRange
 
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
@@ -156,7 +157,7 @@ class MessageNode(BaseModel):
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
-    the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
+    the turn's inference payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
@@ -485,9 +486,9 @@ def _matching_prefix_node(
 class PendingTurn:
     """A resolved prompt waiting on model inference.
 
-    `prepare_turn` resolves the graph prefix used for renderer bridging before inference. `commit`
-    preserves that inference-producing prefix, extends it with any matching nodes committed while
-    inference was in flight, then adds only the remaining prompt tail and sampled response.
+    `prepare_turn` resolves the matching message prefix before inference. `commit` checks
+    its token identity against the server response, reuses exact prefixes, then adds the
+    remaining prompt tail and sampled response.
     """
 
     trace: Trace
@@ -503,50 +504,6 @@ class PendingTurn:
     @property
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
-
-    def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
-        """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
-
-        The anchor must end at a sampled assistant node. That node stores generation-prompt
-        scaffold followed by sampled completion tokens, so split at the first sampled token.
-        """
-        if not self.prefix_node_ids:
-            return None
-        last = self.trace.nodes[self.prefix_node_ids[-1]]
-        if not last.sampled:
-            return None
-        first_sampled = next(
-            (i for i, sampled in enumerate(last.mask) if sampled), None
-        )
-        if first_sampled is None:
-            return None
-        if any(not sampled for sampled in last.mask[first_sampled:]):
-            return None
-
-        prompt_ids: list[int] = []
-        for nid in self.prefix_node_ids[:-1]:
-            prompt_ids.extend(self.trace.nodes[nid].token_ids)
-        prompt_ids.extend(last.token_ids[:first_sampled])
-        # Slicing already returns an independent list; avoid a second completion-sized copy.
-        completion_ids = last.token_ids[first_sampled:]
-        if not prompt_ids or not completion_ids:
-            return None
-        return prompt_ids, completion_ids
-
-    def prompt_message_spans(
-        self, tail_attribution: RenderedTokens
-    ) -> list[tuple[int, int] | None]:
-        """Convert bridge-tail attribution into full-prompt message spans."""
-        # Reused bridge tokens are unattributed, so scan only the newly rendered tail.
-        tail_spans = RenderedTokens(
-            message_indices=tail_attribution.message_indices[self.path_len :],
-            message_roles=tail_attribution.message_roles,
-        ).message_token_spans()
-        # Tail spans are slice-relative; restore their full-prompt token offsets.
-        return [None] * self.tail_start + [
-            None if span is None else (span[0] + self.path_len, span[1] + self.path_len)
-            for span in tail_spans
-        ]
 
     def commit(self, response: Response) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
@@ -728,7 +685,7 @@ def _attribute_routed_experts(
     path_len: int,
     payload: Any,
 ) -> None:
-    """Attach each new node's slice of this turn's MoE expert-routing array. The `generate`
+    """Attach each new node's slice of this turn's MoE expert-routing array. A compact
     payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
@@ -738,13 +695,20 @@ def _attribute_routed_experts(
     branch then reports no routing rather than misaligning."""
     if payload is None:
         return
-    raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
-        payload["shape"]
-    )
-    off = path_len - int(payload.get("start", 0) or 0)
+    new_tokens = sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
+    if isinstance(payload, str):
+        arr = np.load(io.BytesIO(binascii.a2b_base64(payload)), allow_pickle=False)
+        # Native vLLM .npy omits the final sampled token and any skipped prompt prefix;
+        # its row count therefore locates the new suffix without an explicit start field.
+        off = arr.shape[0] + 1 - new_tokens
+    else:
+        raw = binascii.a2b_base64(payload["data"])
+        arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
+            payload["shape"]
+        )
+        off = path_len - int(payload.get("start", 0) or 0)
     _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
-    needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
+    needed = off + new_tokens
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
         end = off + n
@@ -796,9 +760,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # tokens instead of silently inheriting stale ones. Comparing the *concatenated* prefix (not
     # per-message spans) is what makes this correct: a prior assistant's stored generation form
     # and its re-rendered input form place the turn-close scaffold in different nodes but at the
-    # same position, so only a genuine content/token change shifts the common prefix. The bridge
-    # keeps the prior verbatim so it matches fully (stays linear); the eval relay carries no token
-    # ids and keeps the message-hash prefix.
+    # same position, so only a genuine content/token change shifts the common prefix. Requests
+    # without token ids keep the message-hash prefix.
     prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
     if tokens is not None and prefix:

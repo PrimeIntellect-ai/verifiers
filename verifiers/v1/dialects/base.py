@@ -5,7 +5,7 @@ the program's native request + the provider's native response. The server serves
 registered dialect's `routes` (see `dialects.DIALECTS`), so a request's format is resolved from
 the endpoint the program's SDK posts to — the harness declares nothing.
 
-The eval client relays a request's native JSON with explicit eval settings applied, and
+The client relays a request's native JSON with explicit sampling settings applied, and
 the dialect reads copies of the JSON into vf types. The provider SDK assembles streams.
 Task hooks edit the typed copy, and their edits flow back into the native request through
 the setters `parse_request` returns. What a
@@ -81,7 +81,7 @@ class Dialect(ABC):
 
     aux_routes: ClassVar[tuple[str, ...]] = ()
     """Side endpoints the SDK may call that aren't model turns (e.g. Anthropic's
-    `count_tokens`): relayed as native JSON by the eval client, never recorded on the trace."""
+    `count_tokens`): relayed as native JSON by the client, never recorded on the trace."""
 
     upstream_path: ClassVar[str]
     """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""

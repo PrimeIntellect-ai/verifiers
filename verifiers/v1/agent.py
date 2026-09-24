@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 from verifiers.v1.clients import (
-    EvalClientConfig,
+    ClientConfig,
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
@@ -294,7 +294,7 @@ class Agent:
         self.harness = load_harness(config.harness)
         self.ctx = ModelContext(
             model=config.model,
-            client=config.client or EvalClientConfig(),
+            client=config.client or ClientConfig(),
             sampling=config.sampling,
         )
         self._closed = False

@@ -6,15 +6,18 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import base64
 import json
 from collections.abc import Mapping
 from functools import partial
 from typing import Any
 
+import msgpack
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionChunk
 
 from verifiers.v1.dialects.base import Dialect, RawRequest, Setter, patch_content
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -23,10 +26,12 @@ from verifiers.v1.types import (
     NativeContentPart,
     Request,
     Response,
+    SamplingMask,
     SystemMessage,
     Tool,
     ToolCall,
     ToolMessage,
+    TurnTokens,
     Usage,
     UserMessage,
     content_to_parts,
@@ -135,9 +140,8 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 
 # --- vf -> chat wire ----------------------------------------------------------
-# `message_to_wire` (chat-only): used by the bash harness (a Messages prompt) and the train
-# client (its generate request). The proxy preserves its parsed native JSON independently and
-# does not use this serializer.
+# `message_to_wire` serves typed harness prompts and judge calls. Intercepted requests keep
+# their native JSON independently and do not use this serializer.
 
 
 def _content_to_wire(content):
@@ -202,12 +206,60 @@ def _write_message(native: dict, message: Message) -> None:
 
 
 def response_from_wire(completion: dict) -> Response:
-    """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
-    into our typed `Response`). No token ids: training tokens come from the renderer client."""
+    """Parse the native completion and, when present, its exact inference tokens."""
     choice = completion["choices"][0]
     finish_reason = choice.get("finish_reason")
     finish: FinishReason = finish_reason if finish_reason in FINISH_REASONS else None
     usage = completion.get("usage")
+    tokens = None
+    prompt_ids = completion.get("prompt_token_ids")
+    completion_ids = choice.get("token_ids")
+    if prompt_ids is not None and completion_ids is not None:
+        logprobs = (choice.get("logprobs") or {}).get("content")
+        if logprobs is not None:
+            if len(logprobs) != len(completion_ids):
+                raise ValueError("completion token IDs and logprobs must align")
+            for token_id, entry in zip(completion_ids, logprobs, strict=True):
+                token = entry["token"]
+                if token.startswith("token_id:") and token != f"token_id:{token_id}":
+                    raise ValueError("logprobs refer to different completion token IDs")
+        metadata = completion.get("training_metadata") or {}
+        spans = metadata.get("message_spans")
+        previous_end = 0
+        for span in spans or []:
+            if span is not None:
+                start, end = span
+                if not previous_end <= start <= end <= len(prompt_ids):
+                    raise ValueError(
+                        "message spans must be ordered within prompt token IDs"
+                    )
+                previous_end = end
+        content = metadata.get("is_content")
+        if content is not None and len(content) != len(prompt_ids):
+            raise ValueError("content attribution must align with prompt token IDs")
+        sampling_mask = choice.get("sampling_mask")
+        if sampling_mask is not None and len(sampling_mask) != len(completion_ids):
+            raise ValueError("sampling masks must align with completion token IDs")
+        multi_modal_data = metadata.get("multi_modal_data")
+        tokens = TurnTokens(
+            prompt_ids=prompt_ids,
+            completion_ids=completion_ids,
+            completion_logprobs=[entry["logprob"] for entry in logprobs]
+            if logprobs is not None
+            else [],
+            message_spans=spans,
+            is_content=content,
+            multi_modal_data=MessageNode.deserialize_multi_modal_data(
+                msgpack.unpackb(base64.b64decode(multi_modal_data), raw=False)
+            )
+            if multi_modal_data is not None
+            else None,
+            mm_token_type_id_map=metadata.get("mm_token_type_id_map"),
+            routed_experts=choice.get("routed_experts"),
+            sampling_mask=SamplingMask.from_sampling_mask(sampling_mask)
+            if sampling_mask is not None
+            else None,
+        )
     return Response(
         id=completion.get("id") or "",
         created=completion.get("created") or 0,
@@ -216,6 +268,7 @@ def response_from_wire(completion: dict) -> Response:
         finish_reason=finish,
         # The SDK's lenient model carries provider extensions such as `cost`.
         usage=Usage.from_openai(CompletionUsage.construct(**usage)) if usage else None,
+        tokens=tokens,
     )
 
 
@@ -243,6 +296,9 @@ class ChatDialect(Dialect):
             "tool_choice",
             "parallel_tool_calls",
             "extra_body",
+            "return_token_ids",
+            "return_tokens_as_token_ids",
+            "return_training_metadata",
         }
     )
     max_tokens_keys = ("max_tokens", "max_completion_tokens")
@@ -278,11 +334,17 @@ class ChatDialect(Dialect):
         return response_from_wire(response)
 
     def rewrite_response(self, raw: dict, text: str) -> None:
+        # Replacement text was not sampled, so none of the original token records apply.
+        raw.pop("prompt_token_ids", None)
+        raw.pop("training_metadata", None)
         for choice in raw.get("choices") or []:
             if isinstance(choice.get("message"), dict):
                 choice["message"] = {"role": "assistant", "content": text}
                 choice["finish_reason"] = "stop"
                 choice.pop("logprobs", None)
+                choice.pop("token_ids", None)
+                choice.pop("sampling_mask", None)
+                choice.pop("routed_experts", None)
 
     def stream_events(self, raw: dict) -> list[bytes]:
         choice = (raw.get("choices") or [{}])[0]

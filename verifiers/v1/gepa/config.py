@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
@@ -42,11 +42,11 @@ class GEPAConfig(BaseConfig):
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
     """Model id for rollouts under optimization."""
-    client: EvalClientConfig = EvalClientConfig()
+    client: ClientConfig = ClientConfig()
     sampling: SamplingConfig = SamplingConfig()
     reflection_model: str | None = None
     """Teacher model that proposes new system prompts. None = reuse `model`."""
-    reflection_client: EvalClientConfig | None = None
+    reflection_client: ClientConfig | None = None
     """Endpoint for `reflection_model`. None = reuse `client`."""
 
     num_train: int = Field(100, ge=1)

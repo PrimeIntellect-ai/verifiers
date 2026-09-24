@@ -7,11 +7,11 @@ from typing import Any
 
 from pydantic import BaseModel, FiniteFloat, SerializeAsAny
 
-from verifiers.v1.clients import BaseClientConfig
+from verifiers.v1.clients import ClientConfig
 from verifiers.v1.types import ID, SamplingConfig
 
 
-class JudgeConfig(BaseClientConfig):
+class JudgeConfig(ClientConfig):
     id: ID = ""
     """Plugin id; empty for a judge called directly by task code."""
     name: str = ""
