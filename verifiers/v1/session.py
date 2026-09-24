@@ -31,7 +31,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
-from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.harnesses.utils.compaction import truncate_tool_output
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -345,11 +345,10 @@ class RolloutSession:
                             raise TypeError(
                                 f"expected {type(before).__name__}, got {type(after).__name__}"
                             )
-                        if isinstance(after, ToolMessage):
-                            after = ToolMessage.model_validate(
-                                bound_tool_message(after.model_dump())
-                            )
-                            result.messages[position] = after
+                        if isinstance(after, ToolMessage) and isinstance(
+                            after.content, str
+                        ):
+                            after.content = truncate_tool_output(after.content)
                         if isinstance(before, ToolMessage) and (
                             after.tool_call_id != before.tool_call_id
                             or after.name != before.name

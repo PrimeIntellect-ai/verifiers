@@ -1,30 +1,36 @@
-"""The eval client: proxies harness-native request to the provider."""
+"""Forward native evaluation requests through the provider SDKs."""
 
-import re
+import asyncio
 from collections.abc import Mapping
 
-import httpx
-from pydantic import ValidationError
-from pydantic_core import from_json, to_json
+import anthropic
+import httpx2 as httpx
+import openai
 
-from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.base import (
+    DEFAULT_LIMITS,
+    DEFAULT_TIMEOUT,
+    MAX_RETRIES,
+    SESSION_ID_HEADER,
+    join_url,
+)
+from verifiers.v1.clients.client import Client
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
-from verifiers.v1.dialects import Dialect
-from verifiers.v1.dialects.base import is_sse_done_event
-from verifiers.v1.errors import ProviderError, RolloutError, model_error
+from verifiers.v1.dialects import AnthropicDialect, ChatDialect, Dialect
+from verifiers.v1.errors import RolloutError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
 
-# These fields describe the localhost request, its original bytes, or its connection. HTTPX
-# rebuilds the provider request from JSON; endpoint configuration and provider auth apply last.
+# Local authentication, framing, and signatures must not reach the provider.
 _BLOCKED_REQUEST_HEADERS = (
     frozenset(
         {
             # The harness uses this rollout secret to authenticate with the localhost server.
-            # The dialect adds the actual provider authorization after filtering.
+            # The SDK supplies provider authorization after filtering.
             "authorization",
+            "x-api-key",
+            "x-stainless-raw-response",
             # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
             "accept-encoding",
             "content-encoding",
@@ -56,51 +62,23 @@ _BLOCKED_REQUEST_HEADERS = (
 )
 
 
-# Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
-# A trailing CR may still receive its LF in the next network chunk.
-_SSE_EVENT_END = re.compile(rb"(?>\r\n|\r(?!$)|\n){2}")
-
-
 class EvalClient(Client):
-    """Relay native JSON to the provider and parse a copy for the trace."""
+    """Preserve native payloads; project SDK responses into the trace."""
 
     def __init__(self, config: BaseClientConfig) -> None:
         self.base_url = config.base_url
-        self.api_key = resolve_api_key(config)
-        # Keep endpoint headers separate so they can override intercepted request headers before
-        # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
-
-    async def get_response(
-        self,
-        dialect: Dialect,
-        body: dict,
-        sampling: SamplingConfig,
-        session_id: str | None = None,
-        turn: PendingTurn | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> Response:
-        resp = await self._request(
-            join_url(self.base_url, dialect.upstream_path),
-            body,
-            self._headers(dialect, headers, session_id),
-        )
-        # A corrupted response (e.g. an HTML error page or a truncated body on a
-        # flaky tunnel) surfaces as a JSON parse failure or a schema validation
-        # failure — map these to a retryable 502 so the harness SDK retries the
-        # call instead of crashing the whole rollout on one bad response.
-        try:
-            raw = from_json(resp.content)
-            response = dialect.parse_response(dialect.validate_response(raw))
-        except (ValueError, ValidationError) as e:
-            raise model_error(
-                f"malformed upstream response: {type(e).__name__}: {e}",
-                status_code=502,
-            ) from e
-        # The interception server returns this full native provider object to the program.
-        response.raw = raw
-        return response
+        options = {
+            "base_url": config.base_url,
+            "api_key": resolve_api_key(config),
+            "timeout": DEFAULT_TIMEOUT,
+            "max_retries": MAX_RETRIES,
+            "http_client": httpx.AsyncClient(
+                timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS
+            ),
+        }
+        self.openai = openai.AsyncOpenAI(**options)
+        self.anthropic = anthropic.AsyncAnthropic(**options)
 
     async def _complete(
         self,
@@ -111,52 +89,81 @@ class EvalClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> tuple[Response, bytes | None]:
-        if not dialect.streaming(body):
-            return await super()._complete(
-                dialect,
-                body,
-                sampling,
-                session_id=session_id,
-                turn=turn,
-                headers=headers,
-            )
-        reply = await self.relay(dialect, body, session_id=session_id, headers=headers)
-        events = bytearray()
-        parser = dialect.stream_parser()
-        saw_terminal = False
+        client, reply = await self._request(
+            dialect, dialect.upstream_path, body, headers, session_id
+        )
         try:
-            async for chunk in reply.chunks:
-                # Downstream delivery has its own keepalives. Preserve every data event.
-                if not any(line.startswith(b"data:") for line in chunk.splitlines()):
-                    continue
-                events += chunk
-                saw_terminal |= dialect.is_terminal_event(chunk)
-                if parser.on_done is not None and is_sse_done_event(chunk):
-                    parser.on_done()
-                parser.feed(chunk)
-            if not saw_terminal:
-                raise ProviderError("upstream stream ended before its terminal event")
-            return parser.finish(), bytes(events)
+            events = None
+            if body.get("stream"):
+                # Parse during receipt, retaining decoded bytes for atomic delivery/replay.
+                # Bounded chunks keep cached or coalesced responses from starving other turns.
+                recorded = bytearray()
+                chunks = reply.iter_bytes(chunk_size=16_384)
+
+                async def capture():
+                    async for chunk in chunks:
+                        recorded.extend(chunk)
+                        yield chunk
+                        await asyncio.sleep(0)
+
+                stream_type = (
+                    anthropic.AsyncStream
+                    if isinstance(client, anthropic.AsyncAnthropic)
+                    else openai.AsyncStream
+                )
+                async with stream_type(
+                    cast_to=dialect.event_type,
+                    response=httpx.Response(
+                        reply.status_code,
+                        request=reply.http_response.request,
+                        content=capture(),
+                    ),
+                    client=client,
+                ) as stream:
+                    raw = await dialect.read_stream(stream)
+                # Chat's SDK stops at [DONE]; retain any trailing provider bytes too.
+                async for chunk in chunks:
+                    recorded.extend(chunk)
+                    await asyncio.sleep(0)
+                events = bytes(recorded)
+                if isinstance(dialect, ChatDialect) and not await asyncio.to_thread(
+                    any,
+                    (
+                        event.data == "[DONE]"
+                        for event in anthropic.Stream.raw_events(
+                            httpx.Response(200, content=events)
+                        )
+                    ),
+                ):
+                    raise ValueError("Chat stream ended without [DONE]")
+            else:
+                raw = await reply.json()
+            response = dialect.parse_response(raw)
+        except (
+            openai.OpenAIError,
+            anthropic.AnthropicError,
+            httpx.HTTPError,
+            ConnectionResetError,
+        ) as error:
+            raise model_error(error) from error
         except RolloutError:
             raise
-        except httpx.TimeoutException as error:
-            raise model_error(str(error), status_code=504) from error
-        except (httpx.HTTPError, ConnectionResetError) as error:
-            raise model_error(str(error), status_code=503) from error
         except Exception as error:
-            raise ProviderError(str(error)) from error
+            # SDK accumulation can reject malformed event sequences.
+            raise model_error(
+                f"malformed upstream response: {error}", status_code=502
+            ) from error
         finally:
             await reply.close()
+        response.raw = raw
+        return response, events
 
     def _headers(
         self,
-        dialect: Dialect,
         incoming: Mapping[str, str] | None,
         session_id: str | None,
-    ) -> httpx.Headers:
-        """Provider headers from the intercepted request: keep feature headers
-        (`openai-beta`, `anthropic-beta`), discard localhost auth and framing, then apply
-        endpoint headers, session routing, and real provider auth."""
+    ) -> dict[str, str]:
+        """Retain feature headers; let the SDK supply provider auth and HTTP framing."""
         headers = httpx.Headers(incoming)
         connection = headers.pop("connection", "")
         for name in _BLOCKED_REQUEST_HEADERS | set(
@@ -164,86 +171,50 @@ class EvalClient(Client):
         ):
             headers.pop(name, None)
         headers.update(self.headers)
+        # Configured headers cannot replace the provider key with a local rollout secret.
+        headers.pop("authorization", None)
+        headers.pop("x-api-key", None)
         if session_id:
             headers[SESSION_ID_HEADER] = session_id
-        headers.update(dialect.auth_headers(self.api_key))
-        return headers
+        return dict(headers)
 
     async def _request(
         self,
-        url: str,
-        body: dict,
-        headers: httpx.Headers,
-        *,
-        stream: bool = False,
-    ) -> httpx.Response:
-        headers.setdefault("content-type", "application/json")
-        request = self.client.build_request(
-            "POST",
-            url,
-            content=to_json(body, inf_nan_mode="null"),
-            headers=headers,
-        )
-        try:
-            response = await self.client.send(request, stream=stream)
-        except httpx.TimeoutException as e:
-            raise model_error(str(e), status_code=504) from e
-        except httpx.HTTPError as e:
-            raise model_error(str(e), status_code=503) from e
-        except ConnectionResetError as e:
-            raise model_error(str(e), status_code=503) from e
-        if not stream:
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise model_error(
-                    f"upstream {e.response.status_code}: {e.response.text}",
-                    status_code=e.response.status_code,
-                ) from e
-            return response
-        if response.status_code < 400:
-            return response
-        try:
-            text = (await response.aread()).decode("utf-8", errors="replace")
-        finally:
-            await response.aclose()
-        raise model_error(
-            f"upstream {response.status_code}: {text}", status_code=response.status_code
-        )
-
-    async def relay(
-        self,
         dialect: Dialect,
+        route: str,
         body: dict,
+        headers: Mapping[str, str] | None,
         session_id: str | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> RelayReply:
-        # Frame complete SSE events for parsing and exact-byte replay.
-        resp = await self._request(
-            join_url(self.base_url, dialect.upstream_path),
-            body,
-            self._headers(dialect, headers, session_id),
-            stream=True,
+    ):
+        client, response_type = (
+            (self.anthropic, anthropic.AsyncAPIResponse)
+            if isinstance(dialect, AnthropicDialect)
+            else (self.openai, openai.AsyncAPIResponse)
         )
-
-        async def chunks():
-            buffer = bytearray()
-            search_from = 0
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer, search_from):
-                    yield bytes(buffer[: match.end()])
-                    del buffer[: match.end()]
-                    search_from = 0
-                # A delimiter is at most four bytes and can straddle chunks.
-                search_from = max(0, len(buffer) - 3)
-            if buffer:
-                yield bytes(buffer)
-
-        return RelayReply(
-            chunks=chunks(),
-            close=resp.aclose,
-        )
+        request_headers = self._headers(headers, session_id)
+        # SDK defaults are plain dicts: match their casing so forwarded headers replace
+        # them instead of producing duplicate User-Agent or provider feature headers.
+        default_names = {name.lower(): name for name in client.default_headers}
+        request_headers = {
+            default_names.get(name.lower(), name): value
+            for name, value in request_headers.items()
+        }
+        if body.get("stream"):
+            # Ask the SDK for its unread response wrapper instead of a typed SSE iterator.
+            request_headers["X-Stainless-Raw-Response"] = "stream"
+        try:
+            # Low-level SDK requests preserve extension fields without signature filtering.
+            # The raw wrapper retains bytes and supports the SDK's permissive typed parse.
+            reply = await client.post(
+                join_url(self.base_url, route),
+                body=body,
+                cast_to=response_type[dict],
+                options={"headers": request_headers},
+                stream=bool(body.get("stream")),
+            )
+        except (openai.OpenAIError, anthropic.AnthropicError) as error:
+            raise model_error(error) from error
+        return client, reply
 
     async def relay_aux(
         self,
@@ -252,13 +223,12 @@ class EvalClient(Client):
         body: dict,
         headers: Mapping[str, str] | None = None,
     ) -> dict:
-        # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
-        resp = await self._request(
-            join_url(self.base_url, route),
-            body,
-            self._headers(dialect, headers, None),
-        )
-        return from_json(resp.content)
+        _, reply = await self._request(dialect, route, body, headers)
+        try:
+            return await reply.json()
+        finally:
+            await reply.close()
 
     async def close(self) -> None:
-        await self.client.aclose()
+        await self.openai.close()
+        await self.anthropic.close()

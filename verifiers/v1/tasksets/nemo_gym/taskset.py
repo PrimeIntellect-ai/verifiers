@@ -104,7 +104,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
             for idx, line in enumerate(filter(str.strip, lines)):
                 found = True
                 row = json.loads(line)
-                request = dialect.parse_request(row["responses_create_params"])
+                request = dialect.parse_request(row["responses_create_params"])[0]
                 yield NeMoGymTask(
                     NeMoGymData(
                         idx=idx,

@@ -22,15 +22,24 @@ class ImageUrlContentPart(BaseModel):
     image_url: ImageUrlSource
 
 
+class NativeContentPart(BaseModel):
+    """A content block the typed parts don't model (a document, a file, audio, a shell
+    result), kept verbatim in its wire shape so the trace records what the model saw."""
+
+    type: Literal["native"] = "native"
+    native: dict[str, Any]
+
+
 ContentPart = Annotated[
-    TextContentPart | ImageUrlContentPart, Field(discriminator="type")
+    TextContentPart | ImageUrlContentPart | NativeContentPart,
+    Field(discriminator="type"),
 ]
 MessageContent = str | list[ContentPart]
 """Plain text or typed multimodal content parts."""
 
 
 def content_to_parts(content) -> MessageContent:
-    """Type OpenAI content parts, dropping unsupported part types."""
+    """Type OpenAI content parts; parts without a typed model stay native."""
     if not isinstance(content, list):
         return content or ""
     parts: list[ContentPart] = []
@@ -42,6 +51,12 @@ def content_to_parts(content) -> MessageContent:
         elif p.get("type") == "image_url":
             url = (p.get("image_url") or {}).get("url", "")
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+        elif p.get("type") == "native":  # a dumped native part, round-tripping
+            parts.append(NativeContentPart.model_validate(p))
+        else:
+            parts.append(NativeContentPart(native=p))
+        if not isinstance(parts[-1], NativeContentPart):
+            parts[-1]._native = p
     return parts
 
 

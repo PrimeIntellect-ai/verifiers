@@ -24,7 +24,7 @@ the boundary isn't already clear from it.
 import contextlib
 from collections.abc import AsyncIterator
 
-from openai import OpenAIError
+import httpx2 as httpx
 
 
 class RolloutError(Exception):
@@ -89,27 +89,36 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
 
 
-def _provider_status(e: OpenAIError | str) -> int:
+def _provider_status(e: Exception | str) -> int:
     """The HTTP status to surface for an SDK error: the provider's own for an HTTP status error, a
     retryable 5xx for a transport/timeout fault, else 502."""
-    from openai import APIConnectionError, APIStatusError, APITimeoutError
+    import anthropic
+    import openai
 
-    if isinstance(e, APIStatusError):
-        return e.status_code
-    if isinstance(e, APITimeoutError):  # subclass of APIConnectionError — check first
+    if isinstance(e, (openai.APIStatusError, anthropic.APIStatusError)):
+        # An SSE error can retain the HTTP 200 that opened the stream.
+        return e.status_code if e.status_code >= 400 else 502
+    if isinstance(
+        e, (openai.APITimeoutError, anthropic.APITimeoutError, httpx.TimeoutException)
+    ):
         return 504
-    if isinstance(e, APIConnectionError):
+    if isinstance(
+        e,
+        (
+            openai.APIConnectionError,
+            anthropic.APIConnectionError,
+            httpx.HTTPError,
+            ConnectionResetError,
+        ),
+    ):
         return 503
     return 502
 
 
-def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
-) -> ProviderError:
+def model_error(e: Exception | str, *, status_code: int | None = None) -> ProviderError:
     """Map a provider failure to a `ProviderError`. `status_code` is the HTTP status surfaced to
     the harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error
-    when not given. Accepts an SDK error (the renderer) or the provider's raw error body (the
-    httpx proxy)."""
+    when not given. Streaming reads may raise HTTPX errors after the SDK returns headers."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     return ProviderError(
