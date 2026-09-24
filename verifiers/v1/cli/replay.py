@@ -12,8 +12,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from pydantic_config import cli
@@ -197,6 +199,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
 
 def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     if not argv or any(a in ("-h", "--help") for a in argv):
         print(USAGE)

@@ -68,6 +68,8 @@ class ToolCall(BaseModel):
     id: str
     type: Literal["function", "custom"] = "function"
     name: str
+    namespace: str | None = None
+    """Provider namespace qualifying the tool name, when sent separately."""
     arguments: str
     """Raw function arguments or custom-tool input, exactly as the model emitted it."""
 
@@ -97,9 +99,14 @@ Messages = list[Message]
 
 
 class Tool(BaseModel):
+    # Native declarations carry format, discovery, and provider-specific settings.
+    model_config = ConfigDict(extra="allow")
+
+    type: str = "function"
     name: str
-    description: str
-    parameters: dict[str, Any]
+    namespace: str | None = None
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
     strict: bool | None = None
 
 

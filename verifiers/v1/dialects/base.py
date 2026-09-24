@@ -15,13 +15,17 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
+from glob import has_magic
 from typing import Any, ClassVar, Generic, TypeVar
-from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import (
+    NetworkPolicyConfig,
+    intersect_network_hosts,
+    parse_network_rule,
+)
 from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -36,21 +40,90 @@ CAPABILITY_NOTICE = (
 )
 
 
-def blocked_url(
-    value: str, policy: NetworkPolicyConfig, blocked_urls: list[str] | None = None
-) -> bool:
-    """Whether a provider-resolved resource is neither inline nor policy-permitted."""
-    if value.lower().startswith("data:"):
-        return False
-    try:
-        url = AnyHttpUrl(value)
-    except ValidationError:
-        return True
-    host = url.host.lower().rstrip(".").strip("[]")
-    blocked = not policy.permits(url.scheme, host, url.port)
-    if blocked and blocked_urls is not None:
-        blocked_urls.append(value)
-    return blocked
+class RequestFilter:
+    """One request's omissions and blocked URLs; subclasses define native wire rules."""
+
+    wrappers: tuple[str, ...] = ()
+
+    def __init__(self, policy: NetworkPolicyConfig):
+        self.policy = policy
+        self.blocked_urls: list[str] = []
+        self.capabilities: list[str] = []
+
+    def blocked_url(self, value: object) -> bool:
+        if not isinstance(value, str):
+            return True
+        if value.lower().startswith("data:"):
+            return False
+        try:
+            url = AnyHttpUrl(value)
+        except ValidationError:
+            return True
+        blocked = not self.policy.permits(url.scheme, url.host.strip("[]"), url.port)
+        if blocked:
+            self.blocked_urls.append(value)
+        return blocked
+
+    def blocked(self, value, path: str) -> str | None:
+        """Find the first forbidden part, treating nested content as one unit."""
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if blocked := self.blocked(item, f"{path}[{index}]"):
+                    return blocked
+            return None
+        if not isinstance(value, dict):
+            return None
+        caller = value.get("caller")
+        if caller is not None and not (
+            isinstance(caller, dict) and caller.get("type") == "direct"
+        ):
+            return f"{path}.caller.type"
+        return self.blocked_part(value, path)
+
+    def blocked_part(self, value: dict, path: str) -> str | None:
+        raise NotImplementedError
+
+    def mediate(self, value, path: str):
+        """Remove forbidden parts while retaining supported wrapper blocks."""
+        if not isinstance(value, list):
+            if blocked := self.blocked(value, path):
+                self.capabilities.append(blocked)
+                return ""
+            return value
+        mediated = []
+        for index, block in enumerate(value):
+            item_path = f"{path}[{index}]"
+            wrapper = isinstance(block, dict) and block.get("type") in self.wrappers
+            scan = {**block, "content": []} if wrapper else block
+            if blocked := self.blocked(scan, item_path):
+                self.capabilities.append(blocked)
+                continue
+            if wrapper:
+                self.content(block, "content", f"{item_path}.content")
+            mediated.append(block)
+        return mediated
+
+    def content(self, parent: dict, key: str, path: str) -> bool:
+        """Rewrite a content field only when filtering removes something."""
+        before = len(self.capabilities)
+        content = self.mediate(parent.get(key), path)
+        changed = len(self.capabilities) != before
+        if changed:
+            parent[key] = content or ""
+        return changed
+
+    def tools(self, value, path: str = "tools") -> list[dict]:
+        if value is not None and not isinstance(value, list):
+            self.capabilities.append(path)
+            return []
+        tools = []
+        for index, tool in enumerate(value or []):
+            if (filtered := self.tool(tool, f"{path}[{index}]")) is not None:
+                tools.append(filtered)
+        return tools
+
+    def tool(self, value, path: str) -> dict | None:
+        raise NotImplementedError
 
 
 def provider_domains(
@@ -62,75 +135,54 @@ def provider_domains(
     Empty results mean the policy cannot be represented; never send an empty filter.
     """
     rules = policy.block or policy.allow
-    if not rules or "*" in rules:
+    if requested is not None and not isinstance(requested, list):
         return []
-    domains = []
-    hosts = []
-    for rule in rules:
-        try:
-            url = urlsplit(rule if "://" in rule else f"//{rule}")
-            port = url.port
-        except ValueError:
-            return []
-        host = (url.hostname or "").lower().rstrip(".")
-        domain = host.removeprefix("*.")
-        if (
-            url.scheme
-            or port is not None
-            or not domain
-            or any(char in domain for char in "*?[]")
-            or not domain.isascii()
-        ):
-            return []
-        hosts.append(host)
-        domains.append(domain)
+    hosts, requested_domains = [], []
+    for entries, output, is_filter in (
+        (rules, hosts, False),
+        (requested or [], requested_domains, True),
+    ):
+        for rule in entries:
+            if not isinstance(rule, str):
+                return []
+            try:
+                url, host, port = parse_network_rule(rule)
+            except ValueError:
+                return []
+            if is_filter and (
+                url.username is not None or url.path or url.query or url.fragment
+            ):
+                return []
+            domain = host if is_filter else host.removeprefix("*.")
+            if (
+                url.scheme
+                or port is not None
+                or not domain
+                or has_magic(domain)
+                or not domain.isascii()
+            ):
+                return []
+            output.append(host)
     for host in hosts:
         if not host.startswith("*.") and not (
             policy.block
             and any(
                 wildcard.startswith("*.")
-                and (host == wildcard[2:] or host.endswith(wildcard[1:]))
+                and intersect_network_hosts(wildcard, host) == host
                 for wildcard in hosts
             )
         ):
             return []
-    domains = list(dict.fromkeys(domains))
+    domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
     if requested is None:
         return domains
-    if not isinstance(requested, list):
-        return []
-    requested_domains = []
-    for domain in requested:
-        if not isinstance(domain, str):
-            return []
-        try:
-            url = urlsplit(domain if "://" in domain else f"//{domain}")
-            port = url.port
-        except ValueError:
-            return []
-        host = (url.hostname or "").lower().rstrip(".")
-        if (
-            url.scheme
-            or port is not None
-            or url.username is not None
-            or url.path
-            or url.query
-            or url.fragment
-            or not host
-            or any(char in host for char in "*?[]")
-            or not host.isascii()
-        ):
-            return []
-        requested_domains.append(host)
     if policy.block:
         return list(dict.fromkeys([*domains, *requested_domains]))
     intersection = []
     for allowed in domains:
         for requested_domain in requested_domains:
-            if allowed == requested_domain or allowed.endswith(f".{requested_domain}"):
-                intersection.append(allowed)
-            elif requested_domain.endswith(f".{allowed}"):
-                intersection.append(requested_domain)
+            if host := intersect_network_hosts(f"*.{allowed}", f"*.{requested_domain}"):
+                intersection.append(host.removeprefix("*."))
     return list(dict.fromkeys(intersection))
 
 

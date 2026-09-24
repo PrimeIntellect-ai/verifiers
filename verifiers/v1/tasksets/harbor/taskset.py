@@ -121,9 +121,6 @@ class VerifierConfig(BaseModel):
     `None` on `HarborData` means shared — grade where the agent worked, which is still
     Harbor's default and every task that says nothing."""
 
-    image: str | None = None
-    """Pullable ref from `[verifier.environment].docker_image`. None keeps the task's
-    own image, which is what Harbor's fresh copy of `[environment]` resolves to."""
     resources: TaskResources = TaskResources()
     workdir: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -159,6 +156,9 @@ class HarborData(TaskData):
     healthcheck: dict | None = None
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
+    verifier_image: str | None = None
+    """Pullable image for a separate verifier, containing the complete `/tests` suite.
+    None keeps the solver image and stages the task package's tests."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -297,7 +297,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
-        if self.data.verifier is None or self.data.verifier.image is None:
+        if self.data.verifier is None or self.data.verifier_image is None:
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
             )
@@ -391,10 +391,14 @@ def verifier_box_data(data: HarborData) -> HarborData:
     return data.model_copy(
         update={
             "name": f"{data.name} (verifier)",
-            "image": verifier.image if verifier.image is not None else data.image,
+            "image": data.verifier_image
+            if data.verifier_image is not None
+            else data.image,
             "workdir": data.workdir if fresh else verifier.workdir,
             "resources": data.resources if fresh else verifier.resources,
-            "upload_environment": data.upload_environment if fresh else False,
+            "upload_environment": data.upload_environment
+            if fresh and data.verifier_image is None
+            else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
             "skills": [],
@@ -524,27 +528,41 @@ def resolve_image(
     image: str | None,
     require_image: bool,
     ignore_dockerfile: bool = False,
+    *,
+    verifier: bool = False,
 ) -> str | None:
     """Choose a pullable image without silently ignoring a declared Dockerfile.
 
-    ``None`` tells the runtime to keep the harness image. That is the intended
-    fallback for tasks with no environment, but would score a Dockerfile task in
-    the wrong environment unless the user explicitly opts in.
+    ``None`` keeps the harness image for the solver, or the solver image for a
+    separate verifier. A declared verifier environment without an image implies
+    a build from tests/Dockerfile, even if that file is absent.
     """
     if image:
         return image
-    if (task_dir / "environment" / "Dockerfile").exists():
+    section = "verifier.environment" if verifier else "environment"
+    dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"
+    if verifier or (task_dir / dockerfile).exists():
         if ignore_dockerfile:
+            if verifier:
+                logger.warning(
+                    "%s: [%s] names no docker_image — grading in the agent's "
+                    "image rather than building %s, so the verifier runs somewhere "
+                    "the task never declared",
+                    task_dir.name,
+                    section,
+                    dockerfile,
+                )
             return None
         raise ValueError(
-            f"{task_dir.name}: environment is a Dockerfile, not a pullable "
-            "[environment].docker_image — building Dockerfiles isn't supported, so this "
+            f"{task_dir.name}: [{section}] needs a pullable docker_image instead of "
+            f"building {dockerfile} — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --env.taskset.ignore-dockerfile to run it on the harness runtime's image instead."
+            "Pass --env.taskset.ignore-dockerfile to load it with a fallback image, "
+            "then override the task's image or verifier_image with a pre-built image."
         )
     if require_image:
         raise ValueError(
-            f"{task_dir.name}: no [environment].docker_image and require_image=True"
+            f"{task_dir.name}: no [{section}].docker_image and require_image=True"
         )
     return None
 
@@ -559,10 +577,27 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     parsed = harbor_task.config
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
+    image = resolve_image(
+        task_dir,
+        environment.docker_image,
+        harbor_config.require_image,
+        harbor_config.ignore_dockerfile,
+    )
+    verifier_image = (
+        resolve_image(
+            task_dir,
+            parsed.verifier.environment.docker_image,
+            require_image=True,
+            ignore_dockerfile=harbor_config.ignore_dockerfile,
+            verifier=True,
+        )
+        if verifier is not None and parsed.verifier.environment is not None
+        else None
+    )
     environment_dir = task_dir / "environment"
     upload_environment = should_upload_environment_dir(
         environment_dir,
-        docker_image=environment.docker_image,
+        docker_image=image,
     )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
@@ -590,12 +625,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         name=harbor_task.name,
         description=task.description if task else None,
         prompt=harbor_task.instruction.strip(),
-        image=resolve_image(
-            task_dir,
-            environment.docker_image,
-            harbor_config.require_image,
-            harbor_config.ignore_dockerfile,
-        ),
+        image=image,
         workdir=environment.workdir,
         network_allow=(
             ["*"]
@@ -622,6 +652,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),
+        verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -719,23 +750,6 @@ def parse_verifier_environment(
     if environment is None:  # unreachable while the mode is SEPARATE
         raise ValueError(f"{task_dir.name}: separate verifier resolved no environment")
     declared = parsed.verifier.environment is not None
-
-    if declared and environment.docker_image is None:
-        if not harbor_config.ignore_dockerfile:
-            raise ValueError(
-                f"{task_dir.name}: [verifier.environment] names no docker_image, so "
-                "Harbor would build the verifier image from tests/Dockerfile. Verifiers "
-                "pulls images and never builds them: build and push it yourself (e.g. "
-                "`prime images push`) and set [verifier.environment].docker_image to the "
-                "resulting ref, or pass --taskset.ignore-dockerfile to grade in the "
-                "agent's image instead."
-            )
-        logger.warning(
-            "%s: [verifier.environment] names no docker_image — grading in the agent's "
-            "image rather than building tests/Dockerfile, so the verifier runs somewhere "
-            "the task never declared",
-            task_dir.name,
-        )
     unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
@@ -746,7 +760,6 @@ def parse_verifier_environment(
 
     network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
     return VerifierConfig(
-        image=environment.docker_image if declared else None,
         # A declared environment states its own resources; what it leaves out is the
         # run's default, not the agent task's. A fresh copy is the task's environment,
         # so it keeps whatever the agent box resolved to.

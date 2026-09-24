@@ -5412,9 +5412,6 @@ dependencies = [
 harbor = [
     { name = "harbor", marker = "python_full_version >= '3.12'" },
 ]
-lean = [
-    { name = "datasets" },
-]
 modal = [
     { name = "modal" },
 ]
