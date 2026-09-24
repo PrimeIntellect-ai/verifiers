@@ -479,12 +479,13 @@ class ChatDialect(Dialect[ChatCompletion]):
                     and tool.get("type", "function") in _CLIENT_TOOL_TYPES
                     for tool in allowed_tools
                 )
-        if raw_tools is not None and not tools and choice not in (None, "none"):
+        if not tools and choice not in (None, "none"):
             valid_choice = False
         if not valid_choice:
             capabilities.append(
                 "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
             )
+        if not valid_choice or not tools:
             mediated.pop("tool_choice", None)
 
         for message_index, message in enumerate(mediated.get("messages") or []):
