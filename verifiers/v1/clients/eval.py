@@ -11,7 +11,8 @@ from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import model_error
+from verifiers.v1.dialects.base import is_sse_done_event
+from verifiers.v1.errors import ProviderError, RolloutError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
@@ -56,7 +57,8 @@ _BLOCKED_REQUEST_HEADERS = (
 
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
-_SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
+# A trailing CR may still receive its LF in the next network chunk.
+_SSE_EVENT_END = re.compile(rb"(?>\r\n|\r(?!$)|\n){2}")
 
 
 class EvalClient(Client):
@@ -99,6 +101,52 @@ class EvalClient(Client):
         # The interception server returns this full native provider object to the program.
         response.raw = raw
         return response
+
+    async def _complete(
+        self,
+        dialect: Dialect,
+        body: dict,
+        sampling: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[Response, bytes | None]:
+        if not dialect.streaming(body):
+            return await super()._complete(
+                dialect,
+                body,
+                sampling,
+                session_id=session_id,
+                turn=turn,
+                headers=headers,
+            )
+        reply = await self.relay(dialect, body, session_id=session_id, headers=headers)
+        events = bytearray()
+        parser = dialect.stream_parser()
+        saw_terminal = False
+        try:
+            async for chunk in reply.chunks:
+                # Downstream delivery has its own keepalives. Preserve every data event.
+                if not any(line.startswith(b"data:") for line in chunk.splitlines()):
+                    continue
+                events += chunk
+                saw_terminal |= dialect.is_terminal_event(chunk)
+                if parser.on_done is not None and is_sse_done_event(chunk):
+                    parser.on_done()
+                parser.feed(chunk)
+            if not saw_terminal:
+                raise ProviderError("upstream stream ended before its terminal event")
+            return parser.finish(), bytes(events)
+        except RolloutError:
+            raise
+        except httpx.TimeoutException as error:
+            raise model_error(str(error), status_code=504) from error
+        except (httpx.HTTPError, ConnectionResetError) as error:
+            raise model_error(str(error), status_code=503) from error
+        except Exception as error:
+            raise ProviderError(str(error)) from error
+        finally:
+            await reply.close()
 
     def _headers(
         self,
@@ -170,8 +218,7 @@ class EvalClient(Client):
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        # Relay complete SSE events so the interception server can safely insert keepalives
-        # between them. Error responses are mapped before any event is handed back.
+        # Frame complete SSE events for parsing and exact-byte replay.
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,
@@ -194,7 +241,6 @@ class EvalClient(Client):
                 yield bytes(buffer)
 
         return RelayReply(
-            content_type=resp.headers.get("content-type", "text/event-stream"),
             chunks=chunks(),
             close=resp.aclose,
         )

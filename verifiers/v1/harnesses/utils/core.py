@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
+from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
@@ -259,7 +259,13 @@ async def chat(
         # The SDK retries request setup; only stream consumption is retried here.
         try:
             return await _read_chat_completion(raw_stream)
-        except (APIConnectionError, httpx.TransportError) as error:
+        except (APIError, httpx.TransportError) as error:
+            if not isinstance(
+                error, (APIConnectionError, httpx.TransportError)
+            ) and not (
+                isinstance(error.body, dict) and error.body.get("retryable") is True
+            ):
+                raise
             cause = error.__cause__ or error
             if attempt == client.max_retries:
                 raise
