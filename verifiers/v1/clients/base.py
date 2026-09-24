@@ -2,7 +2,7 @@
 
 import re
 
-import httpx
+import httpx2 as httpx
 from openai import AsyncOpenAI
 
 from verifiers.v1.configs.client import (
@@ -10,6 +10,9 @@ from verifiers.v1.configs.client import (
     resolve_api_key,
     resolve_headers,
 )
+
+SESSION_ID_HEADER = "X-Session-ID"
+"""Pin a rollout's requests to one provider engine for prefix-cache reuse."""
 
 DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 MAX_RETRIES = 0
@@ -27,13 +30,15 @@ def build_async_httpx(config: BaseClientConfig) -> httpx.AsyncClient:
 
 
 def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
-    # The SDK adopts the http client's timeout, so it is configured in one place.
+    http_client = build_async_httpx(config)
+    # Pass it explicitly: SDK defaults can replace a transport timeout equal to HTTPX's.
     return AsyncOpenAI(
         base_url=config.base_url,
         api_key=resolve_api_key(config),
         default_headers=resolve_headers(config) or None,
         max_retries=MAX_RETRIES,
-        http_client=build_async_httpx(config),
+        timeout=http_client.timeout,
+        http_client=http_client,
     )
 
 
