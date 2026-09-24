@@ -512,6 +512,14 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
+    def stream_keepalive(self, first: bool) -> bytes:
+        # Anthropic's own keepalive; its SDKs skip it anywhere in the stream.
+        return b'event: ping\ndata: {"type": "ping"}\n\n'
+
+    def stream_error(self, error: dict) -> bytes:
+        # The Anthropic SDKs raise only on a named `error` event.
+        return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"
+
     def parse_request(self, body: RawRequest) -> Request:
         native_tools = body.get("tools") or []
         if not isinstance(native_tools, list) or any(
