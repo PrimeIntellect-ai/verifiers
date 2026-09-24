@@ -116,13 +116,23 @@ class RolloutLimits:
 
 
 @dataclass
+class ToolState:
+    """Policy and canonical result for one conversation-prefix/call-id occurrence."""
+
+    blocked: bool | None = None
+    """None until the pre-check runs; False allows execution and True denies it."""
+    consulted: bool = False
+    result: ToolMessage | None = None
+    """A substituted or rewritten result to reapply to the harness's own history."""
+
+
+@dataclass
 class IdempotentRequest:
     """One buffered model request shared by its original call and retries."""
 
     binding: tuple[str, bytes]
-    response: "ReplayResponse | None" = None
+    task: "asyncio.Task[ReplayResponse]" = field(init=False)
     completed_at: float | None = None
-    inflight: "asyncio.Future[ReplayResponse | None] | None" = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,7 @@ class ReplayResponse:
     status: int
     body: bytes
     content_type: str
+    retryable: bool = False
 
 
 @dataclass
@@ -171,20 +182,7 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
-    tool_decisions: dict[tuple[str, str], ToolMessage | None] = field(
-        default_factory=dict
-    )
-    """The pre-execution verdict per proposed call occurrence: None to run it, else the result
-    the policy put in its place — that call must not execute."""
-    pinned_tool_results: dict[tuple[str, str], ToolMessage] = field(
-        default_factory=dict
-    )
-    """The results the model must see, by conversation prefix and call id: rewrites and results it
-    substituted for blocked calls. The harness keeps its own copy of each in its history and
-    re-sends it forever, so every request has these re-applied before the graph is matched —
-    the trace holds the pinned version, and a differing copy would fork it at that node."""
-    gated_tools: set[tuple[str, str]] = field(default_factory=set)
-    """Calls the harness's gate asked about before executing."""
+    tool_states: dict[tuple[str, str], ToolState] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
 
     @property
@@ -201,7 +199,9 @@ class RolloutSession:
             if isinstance(message, ToolMessage) and message.tool_call_id in calls:
                 key = calls[message.tool_call_id]
                 keys[position] = key
-                message = self.pinned_tool_results.get(key, message)
+                state = self.tool_states.get(key)
+                if state is not None and state.result is not None:
+                    message = state.result
             prefix.update(graph.message_hash(message).encode())
             if isinstance(message, AssistantMessage):
                 calls.update(
@@ -210,24 +210,29 @@ class RolloutSession:
                 )
         return keys
 
-    def pin_tool_results(self, request: Request) -> Request:
+    def pin_tool_results(
+        self, request: Request
+    ) -> tuple[Request, dict[int, tuple[str, str]]]:
         """Re-impose the pinned results on the harness's request. A result for a blocked call
         the harness never gated means the call ran anyway: the transcript would no longer
         describe the sandbox, so that fails the rollout instead of being papered over."""
+        keys = self.tool_result_keys(request)
         messages = list(request.messages)
         changed = False
-        for position, key in self.tool_result_keys(request).items():
-            pinned = self.pinned_tool_results.get(key)
-            if pinned is None:
+        for position, key in keys.items():
+            state = self.tool_states.get(key)
+            if state is None or state.result is None:
                 continue
-            if self.tool_decisions.get(key) is not None and key not in self.gated_tools:
+            if state.blocked and not state.consulted:
                 raise HarnessError(
                     f"tool call {key[1]!r} executed although the policy "
                     "blocked it: the harness never consulted the tool gate"
                 )
-            messages[position] = pinned
+            messages[position] = state.result
             changed = True
-        return request.model_copy(update={"messages": messages}) if changed else request
+        return (
+            request.model_copy(update={"messages": messages}) if changed else request
+        ), keys
 
     async def rewrite_request(
         self, request: Request, *, run_stops: bool = True
@@ -235,10 +240,21 @@ class RolloutSession:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
         pinned for the rest of the rollout."""
-        request = self.pin_tool_results(request)
-        tool_keys = self.tool_result_keys(request)
+        if (
+            not self.request_interceptors
+            and (not run_stops or not self.request_stops)
+            and not any(state.result is not None for state in self.tool_states.values())
+        ):
+            return request, [], None
+        request, tool_keys = self.pin_tool_results(request)
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
+        pinned = {
+            position
+            for position, key in tool_keys.items()
+            if (state := self.tool_states.get(key)) is not None
+            and state.result is not None
+        }
         candidates: set[int] = set()
         tail_start = graph.message_prefix_len(self.trace, request.messages)
         if self.request_interceptors:
@@ -252,10 +268,7 @@ class RolloutSession:
                             prepared_users[key] -= 1
                             continue
                     candidates.add(position)
-                elif (
-                    isinstance(message, ToolMessage)
-                    and tool_keys.get(position) not in self.pinned_tool_results
-                ):
+                elif isinstance(message, ToolMessage) and position not in pinned:
                     candidates.add(position)
 
         # A tool hook observes each result at the tail, including parallel calls.
@@ -263,10 +276,36 @@ class RolloutSession:
             position + 1
             for position in range(tail_start, len(request.messages))
             if isinstance(request.messages[position], ToolMessage)
-            and tool_keys.get(position) not in self.pinned_tool_results
+            and position not in pinned
         ]
         if not boundaries or boundaries[-1] != len(request.messages):
             boundaries.append(len(request.messages))
+        current, records, stopped = await self._run_request_hooks(
+            request, candidates, boundaries, run_stops=run_stops
+        )
+        if records and stopped is None:
+            tool_keys = self.tool_result_keys(current)
+            for position in candidates:
+                after = current.messages[position]
+                if (
+                    isinstance(after, ToolMessage)
+                    and after != request.messages[position]
+                    and position in tool_keys
+                ):
+                    self.tool_states.setdefault(
+                        tool_keys[position], ToolState()
+                    ).result = after
+        return current, records, stopped
+
+    async def _run_request_hooks(
+        self,
+        request: Request,
+        candidates: set[int],
+        boundaries: list[int],
+        *,
+        run_stops: bool = True,
+    ) -> tuple[Request, list[InterceptRecord], str | None]:
+        """Evaluate hooks at known boundaries without matching or changing stored history."""
         messages = list(request.messages)
         records: list[InterceptRecord] = []
         previous = 0
@@ -346,17 +385,7 @@ class RolloutSession:
             raise TaskError(
                 f"request interception failed: {type(error).__name__}: {error}"
             ) from error
-        current = request.model_copy(update={"messages": messages})
-        tool_keys = self.tool_result_keys(current)
-        for position in candidates:
-            after = current.messages[position]
-            if (
-                isinstance(after, ToolMessage)
-                and after != request.messages[position]
-                and position in tool_keys
-            ):
-                self.pinned_tool_results[tool_keys[position]] = after
-        return current, records, None
+        return request.model_copy(update={"messages": messages}), records, None
 
     def consume_prepared(self, messages: Messages) -> None:
         """Forget pre-harness user rewrites only after their model request commits."""
@@ -370,6 +399,8 @@ class RolloutSession:
         self, request: Request
     ) -> tuple[Request, list[InterceptRecord]]:
         """Intercept caller-owned user turns before the harness stores them."""
+        if not self.request_interceptors:
+            return request, []
         branch = self.trace.messages
         rewritten, records, _ = await self.rewrite_request(
             Request(messages=[*branch, *request.messages]), run_stops=False
@@ -449,28 +480,39 @@ class RolloutSession:
         ):
             return None
         branch = graph.path(self.trace, node)
-        for call in assistant.tool_calls:
-            probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
-            request = Request(messages=[*branch, probe], tools=self.trace.tools or None)
-            key = self.tool_result_keys(request)[len(branch)]
-            if key in self.tool_decisions:
+        probes = [
+            ToolMessage(tool_call_id=call.id, content="", name=call.name)
+            for call in assistant.tool_calls
+        ]
+        keys = self.tool_result_keys(Request(messages=[*branch, *probes]))
+        for position, probe in enumerate(probes, start=len(branch)):
+            state = self.tool_states.setdefault(keys[position], ToolState())
+            if state.blocked is not None:
                 raise HarnessError(
-                    f"tool call id {call.id!r} was reused in the same assistant turn"
+                    f"tool call id {probe.tool_call_id!r} was reused in the same assistant turn"
                 )
-            request, records, stopped = await self.rewrite_request(request)
+            request, records, stopped = await self._run_request_hooks(
+                Request(
+                    messages=[*branch, state.result or probe],
+                    tools=self.trace.tools or None,
+                ),
+                {len(branch)} if state.result is None else set(),
+                [len(branch) + 1],
+            )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
                 return stopped
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
-                self.tool_decisions[key] = None
+                state.blocked = False
                 continue
+            state.result = verdict
             if not self.gates_tools:
                 # The harness would run the call regardless; only ending the rollout keeps
                 # the transcript and the sandbox in agreement.
                 return records[-1].handler
-            self.tool_decisions[key] = verdict
+            state.blocked = True
         return None
 
     async def decide_tool(
@@ -528,8 +570,9 @@ class RolloutSession:
                 messages=[*branch, ToolMessage(tool_call_id=call.id, content="")]
             )
             key = self.tool_result_keys(request)[len(branch)]
-            self.gated_tools.add(key)
-            verdict = self.tool_decisions.get(key)
+            state = self.tool_states.setdefault(key, ToolState())
+            state.consulted = True
+            verdict = state.result if state.blocked else None
         elif matches or not name or len(leaves) != 1:
             raise HarnessError(
                 f"tool gate asked about {tool_call_id!r}, which matches "
@@ -543,10 +586,16 @@ class RolloutSession:
                 update={"tool_calls": [*(assistant.tool_calls or []), call]}
             )
             probe = ToolMessage(tool_call_id=call.id, content="", name=name)
-            request, records, stopped = await self.rewrite_request(
-                Request(
-                    messages=[*branch, assistant, probe], tools=self.trace.tools or None
-                )
+            request = Request(
+                messages=[*branch, assistant, probe], tools=self.trace.tools or None
+            )
+            position = len(request.messages) - 1
+            key = self.tool_result_keys(request)[position]
+            state = self.tool_states.setdefault(key, ToolState())
+            if state.result is not None:
+                request.messages[position] = state.result
+            request, records, stopped = await self._run_request_hooks(
+                request, {position} if state.result is None else set(), [position + 1]
             )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
@@ -554,8 +603,12 @@ class RolloutSession:
                 return {"action": "stop", "reason": stopped}
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
+            state.consulted = True
+            state.blocked = verdict != probe
             if verdict == probe:
                 verdict = None
+            else:
+                state.result = verdict
         if verdict is None:
             return {"action": "allow"}
         return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
