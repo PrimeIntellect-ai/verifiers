@@ -20,14 +20,27 @@ router pins a rollout's turns to one engine and its growing prefix stays KV-cach
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
+    """Complete upstream SSE events and their connection cleanup."""
 
-    content_type: str
     chunks: AsyncIterator[bytes]
     close: Callable[[], Awaitable[None]]
 
 
 class Client(ABC):
+    async def _complete(
+        self,
+        dialect: Dialect,
+        body: dict,
+        sampling: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[Response, bytes | None]:
+        """Complete an intercepted turn, optionally retaining native provider events."""
+        return await self.get_response(
+            dialect, body, sampling, session_id=session_id, turn=turn, headers=headers
+        ), None
+
     @abstractmethod
     async def get_response(
         self,
