@@ -450,20 +450,11 @@ class ChatDialect(Dialect[ChatCompletion]):
                 ] or ["text"]
 
         raw_tools = mediated.get("tools")
-        choice = mediated.get("tool_choice")
-        # An impossible tool choice is an invalid request, not a blocked capability.
-        if (raw_tools is None or raw_tools == []) and choice not in (
-            None,
-            "none",
-            "auto",
-        ):
-            raise ValueError("tool_choice requires nonempty tools")
         tools = request_filter.tools(raw_tools)
-        if tools:
+        if "tools" in mediated:
             mediated["tools"] = tools
-        else:
-            mediated.pop("tools", None)
 
+        choice = mediated.get("tool_choice")
         valid_choice = choice is None or (
             isinstance(choice, str) and choice in ("none", "auto", "required")
         )
@@ -486,13 +477,12 @@ class ChatDialect(Dialect[ChatCompletion]):
                     and tool.get("type", "function") in _CLIENT_TOOL_TYPES
                     for tool in allowed_tools
                 )
-        if raw_tools and not tools and choice not in (None, "none"):
+        if raw_tools is not None and not tools and choice not in (None, "none"):
             valid_choice = False
-        if not valid_choice and raw_tools:
+        if not valid_choice:
             capabilities.append(
                 "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
             )
-        if not valid_choice or not tools:
             mediated.pop("tool_choice", None)
 
         for message_index, message in enumerate(mediated.get("messages") or []):
