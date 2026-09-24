@@ -14,6 +14,7 @@ import certifi
 import httpx
 from openai import (
     APIConnectionError,
+    APIError,
     APIStatusError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
@@ -23,7 +24,7 @@ from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -267,7 +268,16 @@ async def chat(
         kwargs["tool_choice"] = tool_choice
     try:
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+            retry=retry_if_exception(
+                lambda error: (
+                    isinstance(error, (APIConnectionError, httpx.TransportError))
+                    or (
+                        isinstance(error, APIError)
+                        and isinstance(error.body, dict)
+                        and error.body.get("retryable") is True
+                    )
+                )
+            ),
             stop=stop_after_attempt(client.max_retries + 1),
             wait=wait_random_exponential(multiplier=0.5, max=8.0),
             before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),

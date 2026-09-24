@@ -27,9 +27,9 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 
 import httpx
@@ -40,18 +40,14 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
-    TrainClientConfig,
     resolve_api_key,
 )
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import (
-    PROVIDER_CAPABILITY_POLICY_CODE,
-    is_sse_done_event,
-)
+from verifiers.v1.dialects.base import PROVIDER_CAPABILITY_POLICY_CODE
 from verifiers.v1.errors import (
+    InterceptionError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -66,7 +62,7 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -113,30 +109,15 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
-def _completion_response(completion: dict | None) -> web.Response:
-    """Serialize a model's JSON-native response without an intermediate string."""
+def _json_reply(
+    completion: dict | None, *, status: int = 200, retryable: bool = False
+) -> ReplayResponse:
+    """Encode a buffered JSON result once, before HTTP delivery or replay."""
     try:
         body = to_json(completion, inf_nan_mode="constants")
     except PydanticSerializationError:
-        return web.json_response(completion)
-    return web.Response(body=body, content_type="application/json", charset="utf-8")
-
-
-def _capture_response(response: web.Response) -> ReplayResponse:
-    body = response.body
-    if body is None:
-        data = b""
-    elif isinstance(body, bytes):
-        data = body
-    elif isinstance(body, bytearray):
-        data = bytes(body)
-    else:
-        raise TypeError("coalesced interception responses must have a byte body")
-    return ReplayResponse(
-        status=response.status,
-        body=data,
-        content_type=response.headers["Content-Type"],
-    )
+        body = json.dumps(completion).encode("utf-8")
+    return ReplayResponse(status, body, "application/json; charset=utf-8", retryable)
 
 
 def _replay_response(response: ReplayResponse) -> web.Response:
@@ -147,98 +128,26 @@ def _replay_response(response: ReplayResponse) -> web.Response:
     )
 
 
-@dataclass(frozen=True)
-class _IdempotentAttempt:
-    session: RolloutSession
-    key: str
-    request: IdempotentRequest
-    future: asyncio.Future[ReplayResponse | None]
-
-
-_IDEMPOTENT_ATTEMPT = web.RequestKey("idempotent_attempt", _IdempotentAttempt)
-
-
-def _finish_idempotent_attempt(
-    request: web.Request, response: ReplayResponse | None
-) -> None:
-    attempt = request.get(_IDEMPOTENT_ATTEMPT)
-    if attempt is None:
-        return
-    record = attempt.request
-    if record.inflight is attempt.future:
-        record.inflight = None
-    if (
-        record.response is None
-        and attempt.session.idempotent_requests.get(attempt.key) is record
-    ):
-        attempt.session.idempotent_requests.pop(attempt.key)
-    if not attempt.future.done():
-        attempt.future.set_result(response)
-    if record.response is not None:
-        _prune_idempotent_requests(attempt.session, time.monotonic())
-
-
 def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
     """Expire and cap completed replays; active attempts are never evicted."""
-    completed = [
-        (key, request)
-        for key, request in session.idempotent_requests.items()
-        if request.response is not None and request.inflight is None
-    ]
-    for key, request in completed:
-        completed_at = request.completed_at or 0.0
-        if (
-            now - completed_at >= IDEMPOTENCY_CACHE_TTL_SECONDS
-            and session.idempotent_requests.get(key) is request
-        ):
-            session.idempotent_requests.pop(key)
-    completed = [
-        (key, request)
-        for key, request in completed
-        if session.idempotent_requests.get(key) is request
-    ]
+    completed = sorted(
+        [
+            (request.completed_at, key)
+            for key, request in session.idempotent_requests.items()
+            if request.completed_at is not None
+        ],
+        key=lambda item: item[0],
+    )
     excess = len(completed) - IDEMPOTENCY_CACHE_MAX_COMPLETED
-    if excess > 0:
-        for key, request in sorted(
-            completed, key=lambda item: item[1].completed_at or 0.0
-        )[:excess]:
-            if session.idempotent_requests.get(key) is request:
-                session.idempotent_requests.pop(key)
-
-
-async def _collect_stream(
-    dialect: Dialect, reply: RelayReply
-) -> tuple[Response, bytes]:
-    """Read a relayed provider stream whole: the assembled response and the events to serve
-    for it. Comment-only events (the provider's own keepalives) are dropped; the served
-    stream sends its own."""
-    events = bytearray()
-    parser = dialect.stream_parser()
-    saw_terminal = False
-    try:
-        async for chunk in reply.chunks:
-            if not any(line.startswith(b"data:") for line in chunk.splitlines()):
-                continue
-            events += chunk
-            saw_terminal |= dialect.is_terminal_event(chunk)
-            if parser.on_done is not None and is_sse_done_event(chunk):
-                parser.on_done()
-            parser.feed(chunk)
-        if not saw_terminal:
-            raise ProviderError("upstream stream ended before its terminal event")
-        return parser.finish(), bytes(events)
-    except RolloutError:
-        raise
-    except Exception as e:  # a malformed provider stream
-        raise ProviderError(str(e)) from e
-    finally:
-        await reply.close()
+    for position, (completed_at, key) in enumerate(completed):
+        if position < excess or now - completed_at >= IDEMPOTENCY_CACHE_TTL_SECONDS:
+            session.idempotent_requests.pop(key)
 
 
 async def _buffered_stream(
     request: web.Request,
     dialect: Dialect,
-    pending: Awaitable[web.Response],
+    pending: asyncio.Future[ReplayResponse],
     trace_id: str,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
@@ -247,12 +156,12 @@ async def _buffered_stream(
     nor a client's own idle timeout cuts a long turn. Once committed, a failure is framed
     as the dialect's SSE error. A reader that goes away leaves the turn running for its
     retries to coalesce onto."""
-    task = asyncio.ensure_future(pending)
+    task = asyncio.shield(pending)
     started = time.monotonic()
     try:
         done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_GRACE_SECONDS)
         if done:
-            return task.result()
+            return _replay_response(task.result())
         stream = web.StreamResponse(
             headers={
                 "Content-Type": "text/event-stream",
@@ -278,17 +187,17 @@ async def _buffered_stream(
                 trace_id,
                 time.monotonic() - started,
             )
-        response = await task
-        replay = _capture_response(response)
-        # Release coalesced retries now rather than after the write to this reader.
-        _finish_idempotent_attempt(request, replay)
+        replay = await task
         if connected:
             try:
-                await stream.write(
-                    replay.body
-                    if response.status < 400
-                    else dialect.stream_error(from_json(replay.body))
-                )
+                body = replay.body
+                if replay.status >= 400:
+                    error = from_json(body)
+                    error["error"].update(
+                        status_code=replay.status, retryable=replay.retryable
+                    )
+                    body = dialect.stream_error(error)
+                await stream.write(body)
                 await stream.write_eof()
             except ConnectionResetError:
                 logger.warning(
@@ -301,7 +210,7 @@ async def _buffered_stream(
     finally:
         if not task.done():
             logger.info(
-                "intercept stream: turn cancelled: id=%s after=%.1fs",
+                "intercept stream: reader cancelled: id=%s after=%.1fs",
                 trace_id,
                 time.monotonic() - started,
             )
@@ -394,39 +303,17 @@ class InterceptionServer(Interception):
         finally:
             self.unregister(model_secret, state_secret)
 
-    def _handler_for(self, dialect: Dialect):
-        """Bind a route's dialect to the request handler — the route the SDK posts to is what
-        selects the wire format (see `dialects.DIALECTS`)."""
-
-        async def handler(request: web.Request) -> web.StreamResponse:
-            try:
-                response = await self.handle_request(request, dialect)
-            except BaseException:
-                _finish_idempotent_attempt(request, None)
-                raise
-            replay = (
-                _capture_response(response)
-                if isinstance(response, web.Response)
-                else None
-            )
-            _finish_idempotent_attempt(request, replay)
-            return response
-
-        return handler
-
-    def _aux_handler_for(self, dialect: Dialect, route: str):
-        async def handler(request: web.Request) -> web.Response:
-            return await self.handle_aux(request, dialect, route)
-
-        return handler
-
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)
         for dialect in DIALECTS:
             for route in dialect.routes:
-                app.router.add_post(route, self._handler_for(dialect))
+                app.router.add_post(
+                    route, partial(self.handle_request, dialect=dialect)
+                )
             for aux in dialect.aux_routes:
-                app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+                app.router.add_post(
+                    aux, partial(self.handle_aux, dialect=dialect, route=aux)
+                )
         app.router.add_get("/v1/models", self.handle_models)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
@@ -446,7 +333,7 @@ class InterceptionServer(Interception):
             self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
         site = web.TCPSite(self.runner, self.host, bind_port)
         await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
+        self.port = self.runner.addresses[0][1]
         logger.info("interception up: url=http://%s:%d", self.host, self.port)
         self.stack.callback(
             logger.info, "interception down: url=http://%s:%d", self.host, self.port
@@ -459,17 +346,26 @@ class InterceptionServer(Interception):
             )
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
-    ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
-        session.error = error
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: Exception,
+        *,
+        committed: bool = False,
+    ) -> ReplayResponse:
+        """Stash a model or hook failure so the rollout re-raises the real cause,
+        and report it to the harness as an HTTP error."""
+        session.error = (
+            error if isinstance(error, RolloutError) else InterceptionError(str(error))
+        )
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
-        return web.json_response(
+        status = error.status_code if isinstance(error, ProviderError) else 400
+        return _json_reply(
             dialect.error_body(str(error)),
-            status=getattr(error, "status_code", 502),
+            status=status,
+            retryable=not committed and (status in (408, 409, 429) or status >= 500),
         )
 
     def mediate_capabilities(
@@ -595,9 +491,6 @@ class InterceptionServer(Interception):
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
-        # A streamed request is served whole once its turn commits: the eval client's
-        # provider stream is read to the end, and the train client generates the response.
-        relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -646,12 +539,12 @@ class InterceptionServer(Interception):
                 ),
                 status=400,
             )
-        if idempotent is not None and idempotent.response is not None:
+        if idempotent is not None and idempotent.task.done():
             logger.debug(
                 "intercept replay: id=%s (idempotent request)", session.trace.id
             )
             idempotent.completed_at = now
-            return _replay_response(idempotent.response)
+            return _replay_response(idempotent.task.result())
 
         try:
             model_request = dialect.parse_request(body)
@@ -666,213 +559,147 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
                 status=400,
             )
-        if idempotent is None:
-            idempotent = IdempotentRequest(binding=binding)
-            session.idempotent_requests[replay_key] = idempotent
 
-        async def coalesced(
-            inflight: "asyncio.Future[ReplayResponse | None]",
-        ) -> web.Response:
-            logger.debug(
-                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
-            )
-            response = await asyncio.shield(inflight)
-            if response is None:
-                return web.json_response(
-                    dialect.error_body("upstream attempt failed"), status=503
+        async def sample(body: dict, model_request: Request) -> ReplayResponse:
+            try:
+                refused = await session.refused()
+                if refused is not None:
+                    return _json_reply(
+                        dialect.error_body(f"rollout stopped: {refused}"), status=400
+                    )
+                original_request = model_request
+                (
+                    model_request,
+                    request_rewrites,
+                    stopped,
+                ) = await session.rewrite_request(model_request)
+                session.trace.request_rewrites.extend(request_rewrites)
+                # A pinned tool result changes the request without a fresh record.
+                if stopped is None and model_request != original_request:
+                    dialect.rewrite_request(body, original_request, model_request)
+            except RolloutError as error:
+                return self._fail(session, dialect, error)
+            except Exception as error:  # noqa: BLE001 - surface task hook failures
+                return self._fail(
+                    session,
+                    dialect,
+                    TaskError(
+                        f"model boundary hook failed: {type(error).__name__}: {error}"
+                    ),
                 )
-            return _replay_response(response)
-
-        if idempotent.inflight is not None:
-            if streaming:
-                return await _buffered_stream(
-                    request, dialect, coalesced(idempotent.inflight), session.trace.id
+            if stopped is not None:
+                turn = graph.prepare_turn(
+                    session.trace, model_request.messages, model_request.tools
                 )
-            return await coalesced(idempotent.inflight)
-        future: asyncio.Future[ReplayResponse | None] = (
-            asyncio.get_running_loop().create_future()
-        )
-        idempotent.inflight = future
-        request[_IDEMPOTENT_ATTEMPT] = _IdempotentAttempt(
-            session=session,
-            key=replay_key,
-            request=idempotent,
-            future=future,
-        )
-
-        try:
-            refused = await session.refused()
-            if refused is not None:
-                return web.json_response(
-                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                turn.commit_prompt()
+                session.trace.stop(stopped)
+                return _json_reply(
+                    dialect.error_body(f"rollout stopped: {stopped}"),
+                    status=400,
                 )
-            original_request = model_request
-            model_request, request_rewrites, stopped = await session.rewrite_request(
-                model_request
-            )
-            session.trace.request_rewrites.extend(request_rewrites)
-            # A pinned tool result changes the request without a fresh record.
-            if stopped is None and model_request != original_request:
-                dialect.rewrite_request(body, original_request, model_request)
-        except RolloutError as error:
-            return self._fail(session, dialect, error)
-        except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
-                session,
-                dialect,
-                TaskError(
-                    f"model boundary hook failed: {type(error).__name__}: {error}"
-                ),
-            )
-        except BaseException:
-            raise
-        if stopped is not None:
-            turn = graph.prepare_turn(
-                session.trace, model_request.messages, model_request.tools
-            )
-            turn.commit_prompt()
-            session.trace.stop(stopped)
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {stopped}"),
-                status=400,
-            )
 
-        try:
-            body, policy_paths = self.mediate_capabilities(session, dialect, body)
-            # Restricted mediation can mutate the body without reporting policy paths.
-            if request_rewrites or session.network_policy.network_restricted:
-                model_request = dialect.parse_request(body)
-            turn = graph.prepare_turn(
-                session.trace, model_request.messages, model_request.tools
-            )
-        except ValueError as error:
-            return web.json_response(dialect.error_body(str(error)), status=400)
-        except RolloutError as error:
-            return self._fail(session, dialect, error)
-        # The tail is what the harness added since the last turn (tool results, user
-        # turns): live watchers see it now rather than with the model's reply.
-        session.trace.preview(turn, turn.tail)
-
-        def serve(response: Response, events: bytes | None) -> web.Response:
-            if streaming:
-                # The committed turn as SSE: the provider's own events when relayed
-                # unchanged, else framed from the response (training generates it whole,
-                # and a hook may have rewritten a relayed one).
-                served = web.Response(
-                    body=events
-                    if events is not None
-                    else b"".join(dialect.stream_events(response.raw or {})),
-                    content_type="text/event-stream",
+            try:
+                body, policy_paths = self.mediate_capabilities(session, dialect, body)
+                # Restricted mediation can mutate the body without reporting policy paths.
+                if request_rewrites or session.network_policy.network_restricted:
+                    model_request = dialect.parse_request(body)
+                turn = graph.prepare_turn(
+                    session.trace, model_request.messages, model_request.tools
                 )
-            else:
-                served = _completion_response(response.raw)
-            idempotent.response = _capture_response(served)
-            idempotent.completed_at = time.monotonic()
-            return served
+            except ValueError as error:
+                return _json_reply(dialect.error_body(str(error)), status=400)
+            except RolloutError as error:
+                return self._fail(session, dialect, error)
+            # The tail is what the harness added since the last turn (tool results, user
+            # turns): live watchers see it now rather than with the model's reply.
+            session.trace.preview(turn, turn.tail)
 
-        async def sample() -> web.Response:
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
             node: int | None = None
-            error: Exception | None = None
+            error: BaseException | None = None
             started = time.time()
             try:
-                try:
-                    # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
-                    logger.debug(
-                        "intercept turn: id=%s tools=%d",
-                        session.trace.id,
-                        len(call_response.message.tool_calls or []),
+                # What actually goes upstream: the native body with the rollout's model +
+                # sampling imposed — recorded raw on the trace, per call.
+                call_response, events = await session.client._complete(
+                    dialect,
+                    body,
+                    session.ctx.sampling,
+                    headers=upstream_headers,
+                    session_id=session.trace.id,
+                    turn=turn,
+                )
+                logger.debug(
+                    "intercept turn: id=%s tools=%d",
+                    session.trace.id,
+                    len(call_response.message.tool_calls or []),
+                )
+                if session.released:  # concluded while sampling — seal holds
+                    return _json_reply(
+                        dialect.error_body("rollout concluded"),
+                        status=409,
+                        retryable=True,
                     )
-                    if session.released:  # concluded while sampling — seal holds
-                        return web.json_response(
-                            dialect.error_body("rollout concluded"), status=409
+                response_rewrites = []
+                stopped = None
+                if session.response_interceptors or session.response_stops:
+                    (
+                        call_response,
+                        response_rewrites,
+                        stopped,
+                    ) = await session.rewrite_response(call_response)
+                    if response_rewrites:
+                        events = None
+                        assert call_response.raw is not None
+                        dialect.rewrite_response(
+                            call_response.raw, call_response.message.content or ""
                         )
-                    response_rewrites = []
-                    stopped = None
-                    if session.response_interceptors or session.response_stops:
-                        (
-                            call_response,
-                            response_rewrites,
-                            stopped,
-                        ) = await session.rewrite_response(call_response)
-                        if response_rewrites:
-                            events = None
-                            assert call_response.raw is not None
-                            dialect.rewrite_response(
-                                call_response.raw, call_response.message.content or ""
-                            )
-                            raw_response = call_response.raw
-                            call_response = dialect.parse_response(
-                                dialect.validate_response(raw_response)
-                            )
-                            call_response.raw = raw_response
-                    if session.stopped:
-                        return web.json_response(
-                            dialect.error_body(
-                                f"rollout stopped: {session.trace.stop_condition}"
-                            ),
-                            status=400,
+                        raw_response = call_response.raw
+                        call_response = dialect.parse_response(
+                            dialect.validate_response(raw_response)
                         )
-                    node = turn.commit(call_response)
-                    session.consume_prepared(turn.tail)
-                    session.trace.response_rewrites.extend(response_rewrites)
-                    if stopped is None:
-                        stopped = await session.gate_tool_calls(node)
-                    if stopped is not None:
-                        session.trace.stop(stopped)
-                        return web.json_response(
-                            dialect.error_body(f"rollout stopped: {stopped}"),
-                            status=400,
-                        )
-                except RolloutError as e:
-                    # Stash the real cause; the rollout re-raises it after the harness returns.
-                    # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                    error = e
-                    session.error = e
-                    logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
+                        call_response.raw = raw_response
+                if session.stopped:
+                    return _json_reply(
+                        dialect.error_body(
+                            f"rollout stopped: {session.trace.stop_condition}"
+                        ),
+                        status=400,
                     )
-                    return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                # Encode before committing; an unusable reply must not publish a turn.
+                served = (
+                    ReplayResponse(
+                        status=200,
+                        body=events
+                        if events is not None
+                        else b"".join(dialect.stream_events(call_response.raw or {})),
+                        content_type="text/event-stream",
                     )
-                except Exception as e:  # noqa: BLE001 - surface as an API error
-                    error = e
-                    logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
+                    if streaming
+                    else _json_reply(call_response.raw)
+                )
+                node = turn.commit(call_response)
+                session.consume_prepared(turn.tail)
+                session.trace.response_rewrites.extend(response_rewrites)
+                if stopped is None:
+                    stopped = await session.gate_tool_calls(node)
+                if stopped is not None:
+                    session.trace.stop(stopped)
+                    return _json_reply(
+                        dialect.error_body(f"rollout stopped: {stopped}"),
+                        status=400,
                     )
-                    return web.json_response(dialect.error_body(str(e)), status=502)
-                except BaseException as e:
-                    # A cancelled exchange (harness disconnect, shutdown) is still
-                    # recorded, coupled to its cancellation.
-                    error = e
-                    raise
+                return served
+            except Exception as e:  # noqa: BLE001 - surface as an API error
+                error = e
+                return self._fail(session, dialect, e, committed=node is not None)
+            except BaseException as e:
+                # A cancelled exchange (session teardown, shutdown) is still
+                # recorded, coupled to its cancellation.
+                error = e
+                raise
             finally:
                 if node is None:
                     turn.abandon()
@@ -892,11 +719,34 @@ class InterceptionServer(Interception):
                     policy_paths=policy_paths,
                     acp=acp,
                 )
-            return serve(call_response, events)
 
+        async def serve() -> ReplayResponse:
+            try:
+                reply = await sample(body, model_request)
+                if not reply.retryable:
+                    idempotent.completed_at = time.monotonic()
+                return reply
+            finally:
+                if idempotent.completed_at is not None:
+                    _prune_idempotent_requests(session, time.monotonic())
+                elif session.idempotent_requests.get(replay_key) is idempotent:
+                    session.idempotent_requests.pop(replay_key)
+
+        if idempotent is None:
+            idempotent = IdempotentRequest(binding=binding)
+            session.idempotent_requests[replay_key] = idempotent
+            # Keep the task for both in-flight coalescing and completed-result replay.
+            idempotent.task = asyncio.create_task(serve())
+            session.adopt(idempotent.task)
+        else:
+            logger.debug(
+                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
+            )
         if streaming:
-            return await _buffered_stream(request, dialect, sample(), session.trace.id)
-        return await sample()
+            return await _buffered_stream(
+                request, dialect, idempotent.task, session.trace.id
+            )
+        return _replay_response(await asyncio.shield(idempotent.task))
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
