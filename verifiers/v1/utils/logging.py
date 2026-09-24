@@ -4,7 +4,9 @@ The library (`verifiers.v1`) logs via stdlib logging and is silent by default
 (a NullHandler on the package root). A CLI opts in: it points loguru at
 stderr — so logs never mix with the results printed to stdout — and installs an
 `InterceptHandler` on the `verifiers.v1` logger so those records render through
-loguru. Mirrors prime-rl's `intercept_vf_logging`.
+loguru. Mirrors prime-rl's `intercept_vf_logging`. The `prime_tunnel.frpc` logger
+(frpc output from each prime tunnel) is routed the same way at WARNING and above, so
+tunnel disconnects and reconnects show up in the run's logs.
 """
 
 import logging
@@ -14,6 +16,7 @@ from pathlib import Path
 from loguru import logger
 
 LIBRARY_LOGGER = "verifiers.v1"
+TUNNEL_LOGGER = "prime_tunnel.frpc"
 FORMAT = (
     "<dim>{time:HH:mm:ss}</dim> <level>{level: >7}</level> <level>{message}</level>"
 )
@@ -58,3 +61,10 @@ def setup_logging(
     library.addHandler(InterceptHandler())
     library.setLevel(lvl)
     library.propagate = False
+    # frpc logs routine events at INFO for every tunnel; only its warnings and errors
+    # (dropped control connections, failed reconnects) are worth a line per run.
+    tunnel = logging.getLogger(TUNNEL_LOGGER)
+    tunnel.handlers.clear()
+    tunnel.addHandler(InterceptHandler())
+    tunnel.setLevel(logging.WARNING)
+    tunnel.propagate = False
