@@ -7,7 +7,9 @@ box it worked in. A separate-verifier task is graded by `finalize` instead: the
 solver's declared artifacts travel (collected after its task `finalize` while its
 box is alive), a fresh box is provisioned from the task's verifier declaration,
 `tests/` is staged there, and the verifier's rewards land on the solver's trace.
-No second agent is involved — the verifier is the task's own `tests/test.sh`.
+No second agent is involved — the verifier is the task's own `tests/test.sh`,
+staged by the task's own class, so taskset subclasses customize grading through
+their task hooks rather than a custom env.
 """
 
 import asyncio
@@ -104,8 +106,10 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         Provision a fresh box from the task's verifier declaration, restore the
         solver's collected artifacts, stage `tests/`, run the verifier, and record
         its rewards (and any extra reward.json keys as metrics) on the solver's
-        trace. Setup, restoration, staging, and scoring failures retry per
-        `verifier.retries`; the last one fails the episode."""
+        trace. The grader is the task's own class, so a `HarborTask` subclass's
+        `setup` and `stage_verifier` run in the verifier box too. Setup,
+        restoration, staging, and scoring failures retry per `verifier.retries`;
+        the last one fails the episode."""
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
         solution = episode.traces[0]
@@ -114,13 +118,13 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         runtime = solution.agent.runtime
         if task.data.verifier.fresh_copy and runtime is not None and runtime.borrowed:
             # Compose resolves images and workdirs at startup, including local builds.
-            task = HarborTask(
+            task = type(task)(
                 task.data.model_copy(
                     update=runtime.model_dump(include={"image", "workdir"})
                 ),
                 task.config,
             )
-        grader = HarborTask(verifier_box_data(task.data))
+        grader = type(task)(verifier_box_data(task.data), task.config)
         scores, solution = await self.grade(
             self.verifier_config(task),
             grader,

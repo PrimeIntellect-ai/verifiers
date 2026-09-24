@@ -3,13 +3,15 @@
 import argparse
 import asyncio
 import json
+import logging
+import random
 import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI, omit
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 
 if TYPE_CHECKING:
@@ -240,12 +242,37 @@ async def chat(
     *,
     tool_choice: str | None = None,
 ):
-    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    kwargs = {"model": model, "messages": messages}
+    if tools:
+        kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    raw_stream = await client.chat.completions.create(
-        **kwargs, stream=True, stream_options={"include_usage": True}
-    )
+    for attempt in range(client.max_retries + 1):
+        # Reuse the interception server's body-digest replay guard on stream retries.
+        headers = {"x-stainless-retry-count": str(attempt)} if attempt else omit
+        raw_stream = await client.chat.completions.create(
+            **kwargs,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_headers=headers,
+        )
+        # The SDK retries request setup; only stream consumption is retried here.
+        try:
+            return await _read_chat_completion(raw_stream)
+        except (APIConnectionError, httpx.TransportError) as error:
+            cause = error.__cause__ or error
+            if attempt == client.max_retries:
+                raise
+            logging.getLogger(__name__).warning(
+                "Retrying interrupted model stream (%s/%s): %r",
+                attempt + 1,
+                client.max_retries,
+                cause,
+            )
+            await asyncio.sleep(min(0.5 * 2**attempt, 8.0) * random.uniform(0.75, 1.0))
+
+
+async def _read_chat_completion(raw_stream):
     # Accumulate native deltas without auto-parsing tool arguments or treating
     # finish_reason="length" as an exception: compaction owns that decision.
     async with AsyncChatCompletionStream(
@@ -269,7 +296,10 @@ async def chat(
             or not completion.choices
             or any(choice.finish_reason is None for choice in completion.choices)
         ):
-            raise RuntimeError("model stream ended before a completion finished")
+            raise APIConnectionError(
+                message="Model stream ended before a completion finished",
+                request=raw_stream.response.request,
+            )
         for choice in completion.choices:
             overrides = message_overrides.setdefault(choice.index, {})
             overrides.setdefault("role", "assistant")
