@@ -3,6 +3,7 @@
 import json
 import logging
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -26,6 +27,8 @@ ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+
+GATE_EXTENSION = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 
 INSTALL = r"""
 set -e
@@ -57,6 +60,7 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
@@ -201,3 +205,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        agent_dir = config.env["PI_CODING_AGENT_DIR"]
+        await runtime.write(f"{agent_dir}/gate.mjs", GATE_EXTENSION.encode())
+        gated = f"{agent_dir}/pi-gated"
+        await runtime.write(
+            gated,
+            f"#!/bin/sh\nexec {config.env['PI_ACP_PI_COMMAND']} "
+            f'--extension {agent_dir}/gate.mjs "$@"\n'.encode(),
+        )
+        await runtime.run(["chmod", "+x", gated], {})
+        config.env["PI_ACP_PI_COMMAND"] = gated
