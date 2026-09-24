@@ -479,9 +479,9 @@ class ChatDialect(Dialect[ChatCompletion]):
                     and tool.get("type", "function") in _CLIENT_TOOL_TYPES
                     for tool in allowed_tools
                 )
-        if not tools and choice not in (None, "none"):
+        if raw_tools and not tools and choice not in (None, "none"):
             valid_choice = False
-        if not valid_choice:
+        if not valid_choice and raw_tools:
             capabilities.append(
                 "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
             )
