@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import logging
-import random
 import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -13,6 +12,13 @@ from typing import TYPE_CHECKING
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
+from tenacity import (
+    AsyncRetrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -247,9 +253,16 @@ async def chat(
         kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    for attempt in range(client.max_retries + 1):
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+        stop=stop_after_attempt(client.max_retries + 1),
+        wait=wait_random_exponential(multiplier=0.5, max=8.0),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+        reraise=True,
+    ):
         # Reuse the interception server's body-digest replay guard on stream retries.
-        headers = {"x-stainless-retry-count": str(attempt)} if attempt else omit
+        retry_count = attempt.retry_state.attempt_number - 1
+        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
         raw_stream = await client.chat.completions.create(
             **kwargs,
             stream=True,
@@ -257,19 +270,8 @@ async def chat(
             extra_headers=headers,
         )
         # The SDK retries request setup; only stream consumption is retried here.
-        try:
+        with attempt:
             return await _read_chat_completion(raw_stream)
-        except (APIConnectionError, httpx.TransportError) as error:
-            cause = error.__cause__ or error
-            if attempt == client.max_retries:
-                raise
-            logging.getLogger(__name__).warning(
-                "Retrying interrupted model stream (%s/%s): %r",
-                attempt + 1,
-                client.max_retries,
-                cause,
-            )
-            await asyncio.sleep(min(0.5 * 2**attempt, 8.0) * random.uniform(0.75, 1.0))
 
 
 async def _read_chat_completion(raw_stream):
