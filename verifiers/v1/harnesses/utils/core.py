@@ -15,8 +15,9 @@ from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
+    stop_after_delay,
     wait_random_exponential,
 )
 
@@ -33,6 +34,10 @@ if TYPE_CHECKING:
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
 SERPER_URL = "https://google.serper.dev/search"
+# How long an interrupted model stream keeps being resumed. Retries coalesce onto the
+# interception server's in-flight turn (or replay it), so waiting costs no generation.
+STREAM_RETRY_SECONDS = 300
+TUNNEL_NOT_FOUND = "Tunnel not found"
 
 BASH_TOOL = {
     "type": "function",
@@ -254,8 +259,11 @@ async def chat(
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
-        stop=stop_after_attempt(client.max_retries + 1),
+        retry=retry_if_exception(_resumable),
+        # `max_retries=0` disables stream retries, as it does the SDK's own.
+        stop=stop_after_delay(STREAM_RETRY_SECONDS)
+        if client.max_retries
+        else stop_after_attempt(1),
         wait=wait_random_exponential(multiplier=0.5, max=8.0),
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True,
@@ -263,15 +271,35 @@ async def chat(
         # Reuse the interception server's body-digest replay guard on stream retries.
         retry_count = attempt.retry_state.attempt_number - 1
         headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-        raw_stream = await client.chat.completions.create(
-            **kwargs,
-            stream=True,
-            stream_options={"include_usage": True},
-            extra_headers=headers,
-        )
-        # The SDK retries request setup; only stream consumption is retried here.
+        # The SDK retries request setup on its own; a broken stream, or a reopen that still
+        # fails once the SDK gives up, is retried here.
         with attempt:
+            raw_stream = await client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_headers=headers,
+            )
             return await _read_chat_completion(raw_stream)
+
+
+def _resumable(error: BaseException) -> bool:
+    if isinstance(error, (APIConnectionError, httpx.TransportError)):
+        return True
+    # The Prime tunnel briefly answers 404 "Tunnel not found" while it restores a route; any
+    # other status error (including a real 404) is final.
+    return (
+        isinstance(error, APIStatusError)
+        and error.status_code == 404
+        and TUNNEL_NOT_FOUND in _error_text(error)
+    )
+
+
+def _error_text(error: APIStatusError) -> str:
+    try:
+        return error.response.text
+    except httpx.ResponseNotRead:
+        return str(error.body or "")
 
 
 async def _read_chat_completion(raw_stream):

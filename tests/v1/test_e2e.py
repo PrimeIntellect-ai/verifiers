@@ -20,12 +20,14 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("interruption", [None, "disconnect", "timeout", "eof"])
+@pytest.mark.parametrize(
+    "interruption", [None, "disconnect", "timeout", "eof", "tunnel_404", "real_404"]
+)
 async def test_chat_harness_preserves_streamed_reasoning(interruption):
     import json
 
     import httpx
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, NotFoundError
 
     from verifiers.v1.harnesses.utils.core import chat
 
@@ -87,7 +89,20 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
 
     async def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        stream = CompletionStream(request, interruption and len(requests) == 1)
+        # The Prime tunnel's transient "route missing" page, vs. a genuine 404.
+        if interruption == "tunnel_404" and len(requests) == 1:
+            page = (
+                "<html><h1>404</h1><p>Tunnel not found or no longer active.</p></html>"
+            )
+            return httpx.Response(404, text=page, request=request)
+        if interruption == "real_404":
+            return httpx.Response(
+                404, json={"error": {"message": "no"}}, request=request
+            )
+        stream = CompletionStream(
+            request,
+            interruption in ("disconnect", "timeout", "eof") and len(requests) == 1,
+        )
         streams.append(stream)
         return httpx.Response(
             200,
@@ -102,6 +117,11 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
             base_url="https://example.test/v1",
             http_client=http_client,
         )
+        if interruption == "real_404":
+            with pytest.raises(NotFoundError):
+                await chat(client, "test-model", [], [])
+            assert len(requests) == 1
+            return
         completion = await chat(client, "test-model", [], [])
 
     assert len(requests) == (2 if interruption else 1)
