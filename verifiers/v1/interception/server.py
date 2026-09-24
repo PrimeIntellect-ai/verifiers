@@ -237,7 +237,10 @@ async def _collect_stream(
 
 
 async def _buffered_stream(
-    request: web.Request, dialect: Dialect, pending: Awaitable[web.Response]
+    request: web.Request,
+    dialect: Dialect,
+    pending: Awaitable[web.Response],
+    trace_id: str,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
@@ -246,6 +249,7 @@ async def _buffered_stream(
     as the dialect's SSE error. A reader that goes away leaves the turn running for its
     retries to coalesce onto."""
     task = asyncio.ensure_future(pending)
+    started = time.monotonic()
     try:
         done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_GRACE_SECONDS)
         if done:
@@ -267,22 +271,41 @@ async def _buffered_stream(
                 first = False
                 await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
         except ConnectionResetError:
+            # A reader that goes away mid-turn is the failure a tunnel or proxy drop looks
+            # like from here; its retry (if any) coalesces onto this turn.
             connected = False
+            logger.warning(
+                "intercept stream: reader disconnected: id=%s after=%.1fs",
+                trace_id,
+                time.monotonic() - started,
+            )
         response = await task
         replay = _capture_response(response)
         # Release coalesced retries now rather than after the write to this reader.
         _finish_idempotent_attempt(request, replay)
         if connected:
-            with contextlib.suppress(ConnectionResetError):
+            try:
                 await stream.write(
                     replay.body
                     if response.status < 400
                     else dialect.stream_error(from_json(replay.body))
                 )
                 await stream.write_eof()
+            except ConnectionResetError:
+                logger.warning(
+                    "intercept stream: reader disconnected before the turn was served: "
+                    "id=%s after=%.1fs",
+                    trace_id,
+                    time.monotonic() - started,
+                )
         return stream
     finally:
         if not task.done():
+            logger.info(
+                "intercept stream: turn cancelled: id=%s after=%.1fs",
+                trace_id,
+                time.monotonic() - started,
+            )
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -583,10 +606,11 @@ class InterceptionServer(Interception):
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         logger.debug(
-            "intercept %s: id=%s stream=%s",
+            "intercept %s: id=%s stream=%s retry=%s",
             request.path,
             session.trace.id,
             streaming,
+            request.headers.get(RETRY_COUNT_HEADER, "0"),
         )
         # Graph atomicity under retries: one logical buffered call must commit at most
         # one turn. An explicit key identifies that call directly; otherwise only the SDK's
@@ -660,7 +684,7 @@ class InterceptionServer(Interception):
         if idempotent.inflight is not None:
             if streaming:
                 return await _buffered_stream(
-                    request, dialect, coalesced(idempotent.inflight)
+                    request, dialect, coalesced(idempotent.inflight), session.trace.id
                 )
             return await coalesced(idempotent.inflight)
         future: asyncio.Future[ReplayResponse | None] = (
@@ -867,7 +891,7 @@ class InterceptionServer(Interception):
             return serve(call_response, events)
 
         if streaming:
-            return await _buffered_stream(request, dialect, sample())
+            return await _buffered_stream(request, dialect, sample(), session.trace.id)
         return await sample()
 
     async def handle_aux(
