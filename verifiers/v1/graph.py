@@ -42,6 +42,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
+    ImageUrlContentPart,
     Message,
     Response,
     SamplingMask,
@@ -295,8 +296,10 @@ def message_hash(message: Message) -> str:
             add(part.type)
             if isinstance(part, TextContentPart):
                 add(part.text)
-            else:
+            elif isinstance(part, ImageUrlContentPart):
                 add(part.image_url.url)
+            else:
+                add(json.dumps(part.native, sort_keys=True))
     else:
         add("content_text")
         add(message.content or "")

@@ -11,30 +11,20 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from functools import partial
 from typing import Any
-from urllib.parse import urlsplit
 
-from openai.types.chat import ChatCompletion
-from openai.types.chat.chat_completion import Choice
+from openai.types import CompletionUsage
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.dialects.base import (
-    Dialect,
-    RawRequest,
-    RequestFilter,
-    StreamParser,
-    append_user_notice,
-    parse_sse_event,
-)
+from verifiers.v1.dialects.base import Dialect, RawRequest, Setter, StreamParser
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Message,
     Messages,
+    NativeContentPart,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     Tool,
     ToolCall,
@@ -44,67 +34,8 @@ from verifiers.v1.types import (
     content_to_parts,
 )
 
-
-class ModdedChoice(Choice):
-    # Logprobs are relayed in Response.raw; trace conversion never reads them.
-    logprobs: Any = None
-
-
-class ModdedChatCompletion(ChatCompletion):
-    """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
-    outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
-    valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
-    lenient about the label instead of dropping it."""
-
-    choices: list[ModdedChoice]
-    service_tier: str | None = None
-
-
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
-# Client tools return calls to the harness; every other type may execute at the provider.
-_CLIENT_TOOL_TYPES = ("function", "custom")
-_SAFE_CONTENT_TYPES = ("text", "refusal", "input_audio", "image_url", "file")
-
-
-class ChatRequestFilter(RequestFilter):
-    def tool(self, tool, path: str) -> dict | None:
-        if (
-            isinstance(tool, dict)
-            and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-        ):
-            return tool
-        self.capabilities.append(f"{path}.type")
-        return None
-
-    def blocked(self, value, path: str) -> str | None:
-        # Chat content parts are flat; nested lists and non-object parts are invalid.
-        kind = value.get("type") if isinstance(value, dict) else None
-        if kind not in _SAFE_CONTENT_TYPES:
-            return f"{path}.type"
-        if kind == "image_url":
-            image = value.get("image_url") or {}
-            url = image.get("url") if isinstance(image, dict) else image
-            if self.blocked_url(url):
-                return f"{path}.image_url.url"
-        if kind == "file":
-            file = value.get("file")
-            if not isinstance(file, dict):
-                return f"{path}.file"
-            if file.get("file_id"):
-                return f"{path}.file.file_id"
-            data = file.get("file_data")
-            if data is None:
-                return None
-            if not isinstance(data, str):
-                return f"{path}.file.file_data"
-            try:
-                parsed = urlsplit(data)
-            except ValueError:
-                return f"{path}.file.file_data"
-            if (parsed.scheme or parsed.netloc) and self.blocked_url(data):
-                return f"{path}.file.file_data"
-        return None
-
+_TOOL_CALL_TYPES = ("function", "custom")
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -131,9 +62,42 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
     return None
 
 
+def parse_assistant(raw: dict) -> AssistantMessage:
+    """An OpenAI assistant message dict -> a typed assistant message; its body flattens to
+    text."""
+    content = raw.get("content")
+    details = raw.get("reasoning_details")
+    text = (
+        "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if isinstance(content, list)
+        else content or ""
+    )
+    calls = []
+    for call in raw.get("tool_calls") or []:
+        kind = call.get("type") or (
+            "custom" if call.get("custom") is not None else "function"
+        )
+        native = call[kind]
+        calls.append(
+            ToolCall(
+                id=call["id"],
+                type=kind,
+                name=native["name"],
+                namespace=native.get("namespace"),
+                arguments=native["input" if kind == "custom" else "arguments"],
+            )
+        )
+    return AssistantMessage(
+        content=text or None,
+        reasoning_content=reasoning_text(raw),
+        tool_calls=calls or None,
+        provider_state=details if isinstance(details, list) and details else None,
+    )
+
+
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant bodies flatten to text."""
+    content parts (multimodal ingress); assistant bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
     if role == "system":
@@ -145,33 +109,7 @@ def parse_message(raw: dict) -> Message:
             name=raw.get("name"),
         )
     if role == "assistant":
-        details = raw.get("reasoning_details")
-        text = (
-            "".join(part.get("text", "") for part in content if isinstance(part, dict))
-            if isinstance(content, list)
-            else content or ""
-        )
-        calls = []
-        for call in raw.get("tool_calls") or []:
-            kind = call.get("type") or (
-                "custom" if call.get("custom") is not None else "function"
-            )
-            native = call[kind]
-            calls.append(
-                ToolCall(
-                    id=call["id"],
-                    type=kind,
-                    name=native["name"],
-                    namespace=native.get("namespace"),
-                    arguments=native["input" if kind == "custom" else "arguments"],
-                )
-            )
-        return AssistantMessage(
-            content=text or None,
-            reasoning_content=reasoning_text(raw),
-            tool_calls=calls or None,
-            provider_state=details if isinstance(details, list) and details else None,
-        )
+        return parse_assistant(raw)
     return UserMessage(content=content_to_parts(content))
 
 
@@ -209,7 +147,10 @@ def _content_to_wire(content):
     provider / renderer sees the native `image_url` shape)."""
     if isinstance(content, str):
         return content
-    return [part.model_dump() for part in content]
+    return [
+        part.native if isinstance(part, NativeContentPart) else part.model_dump()
+        for part in content
+    ]
 
 
 def message_to_wire(message: Message) -> dict:
@@ -251,29 +192,38 @@ def message_to_wire(message: Message) -> dict:
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
-def response_from_wire(completion: ChatCompletion) -> Response:
+def _write_message(native: dict, message: Message) -> None:
+    native["content"] = _content_to_wire(message.content)
+    if isinstance(message, ToolMessage):
+        if message.name is None:
+            native.pop("name", None)
+        else:
+            native["name"] = message.name
+
+
+def response_from_wire(completion: dict) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
-    choice = completion.choices[0]
-    message = parse_message(choice.message.model_dump())
-    assert isinstance(message, AssistantMessage)
-    finish: FinishReason = (
-        choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
-    )
-    usage = Usage.from_openai(completion.usage)
+    choice = completion["choices"][0]
+    finish_reason = choice.get("finish_reason")
+    finish: FinishReason = finish_reason if finish_reason in FINISH_REASONS else None
+    usage = completion.get("usage")
     return Response(
-        id=completion.id,
-        created=completion.created,
-        model=completion.model,
-        message=message,
+        id=completion.get("id") or "",
+        created=completion.get("created") or 0,
+        model=completion.get("model") or "",
+        message=parse_assistant(choice["message"]),
         finish_reason=finish,
-        usage=usage,
+        # The SDK's lenient model carries provider extensions such as `cost`.
+        usage=Usage.from_openai(CompletionUsage.construct(**usage)) if usage else None,
     )
 
 
 @dataclass
 class ChatStreamParser(StreamParser):
-    """Incrementally assemble Chat Completions deltas without retaining SSE bytes."""
+    """Assemble Chat Completions deltas. Providers repeat identity fields (`role`, tool call
+    ids and names, `reasoning_details` ids) on every delta, so those keep one value where the
+    SDK's accumulator would concatenate them."""
 
     message: dict = dataclass_field(
         default_factory=lambda: {"role": "assistant", "content": None}
@@ -289,14 +239,11 @@ class ChatStreamParser(StreamParser):
     usage: dict | None = None
     head: dict | None = None
 
-    def feed(self, raw: bytes) -> None:
-        chunk = parse_sse_event(raw)
-        if chunk is None:
-            return
+    def feed(self, event: dict) -> None:
         if self.head is None:
-            self.head = chunk
-        self.usage = chunk.get("usage") or self.usage
-        for choice in chunk.get("choices") or []:
+            self.head = event
+        self.usage = event.get("usage") or self.usage
+        for choice in event.get("choices") or []:
             if choice.get("index", 0) != 0:
                 continue
             self.finish_reason = choice.get("finish_reason") or self.finish_reason
@@ -357,7 +304,7 @@ class ChatStreamParser(StreamParser):
                     delta_native.get(input_field) or ""
                 )
 
-    def finish(self) -> Response:
+    def finish(self) -> dict:
         for key, parts in self.message_parts.items():
             if parts:
                 self.message[key] = "".join(parts)
@@ -370,14 +317,14 @@ class ChatStreamParser(StreamParser):
         tool_calls = [
             self.tool_calls[index]
             for index in sorted(self.tool_calls)
-            if self.tool_calls[index].get("type") in _CLIENT_TOOL_TYPES
+            if self.tool_calls[index].get("type") in _TOOL_CALL_TYPES
         ]
         if tool_calls:
             self.message["tool_calls"] = tool_calls
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        completion = {
+        return {
             "id": head.get("id", "vf-intercept"),
             "object": "chat.completion",
             "created": head.get("created", int(time.time())),
@@ -391,12 +338,9 @@ class ChatStreamParser(StreamParser):
             ],
             "usage": self.usage,
         }
-        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
-        response.raw = completion
-        return response
 
 
-class ChatDialect(Dialect[ChatCompletion]):
+class ChatDialect(Dialect):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -422,97 +366,17 @@ class ChatDialect(Dialect[ChatCompletion]):
             "extra_body",
         }
     )
+    max_tokens_keys = ("max_tokens", "max_completion_tokens")
+    effort_path = ("reasoning_effort",)
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
-    response_type = ModdedChatCompletion
+    terminal_events = frozenset({"[DONE]"})
 
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        mediated = body
-        request_filter = ChatRequestFilter(policy)
-        capabilities = request_filter.capabilities
-
-        if mediated.pop("web_search_options", None) is not None:
-            capabilities.append("web_search_options")
-        if mediated.pop("plugins", None) is not None:
-            capabilities.append("plugins")
-
-        audio = mediated.get("audio")
-        voice = audio.get("voice") if isinstance(audio, dict) else None
-        if isinstance(voice, dict) and voice.get("id"):
-            capabilities.append("audio.voice.id")
-            mediated.pop("audio")
-            modalities = mediated.get("modalities")
-            if isinstance(modalities, list):
-                mediated["modalities"] = [
-                    item for item in modalities if item != "audio"
-                ] or ["text"]
-
-        raw_tools = mediated.get("tools")
-        tools = request_filter.tools(raw_tools)
-        if "tools" in mediated:
-            mediated["tools"] = tools
-
-        choice = mediated.get("tool_choice")
-        valid_choice = choice is None or (
-            isinstance(choice, str) and choice in ("none", "auto", "required")
-        )
-        if isinstance(choice, dict):
-            kind = choice.get("type", "function")
-            valid_choice = any(
-                kind == tool.get("type", "function")
-                and isinstance(tool.get(kind), dict)
-                and isinstance(choice.get(kind), dict)
-                and tool[kind].get("name") == choice[kind].get("name")
-                for tool in tools
-            )
-            if kind == "allowed_tools":
-                allowed = choice.get("allowed_tools")
-                allowed_tools = (
-                    allowed.get("tools") if isinstance(allowed, dict) else None
-                )
-                valid_choice = isinstance(allowed_tools, list) and all(
-                    isinstance(tool, dict)
-                    and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-                    for tool in allowed_tools
-                )
-        if raw_tools is not None and not tools and choice not in (None, "none"):
-            valid_choice = False
-        if not valid_choice:
-            capabilities.append(
-                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
-            )
-            mediated.pop("tool_choice", None)
-
-        for message_index, message in enumerate(mediated.get("messages") or []):
-            if not isinstance(message, dict):
-                continue
-            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
-                path = f"messages[{message_index}].audio.id"
-                capabilities.append(path)
-                message.pop("audio")
-                if message.get("content") is None:
-                    message["content"] = ""
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            safe_content = request_filter.mediate(
-                content, f"messages[{message_index}].content"
-            )
-            message["content"] = safe_content or ""
-
-        if capabilities:
-            append_user_notice(
-                mediated.setdefault("messages", []),
-                blocked_urls=request_filter.blocked_urls,
-            )
-        return mediated, capabilities
-
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(self, body: RawRequest) -> tuple[Request, list[Setter | None]]:
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
+        setters: list[Setter | None] = []
         tool_names: dict[str, str] = {}
         for raw in body.get("messages", []):
             message = parse_message(raw)
@@ -521,33 +385,18 @@ class ChatDialect(Dialect[ChatCompletion]):
                 if name is not None:
                     message = message.model_copy(update={"name": name})
             messages.append(message)
+            setters.append(
+                partial(_write_message, raw)
+                if isinstance(message, (UserMessage, ToolMessage))
+                else None
+            )
             if isinstance(message, AssistantMessage):
                 for call in message.tool_calls or []:
                     tool_names[call.id] = call.name
-        return Request(messages=messages, tools=parse_tools(body.get("tools")))
+        return Request(messages=messages, tools=parse_tools(body.get("tools"))), setters
 
-    def parse_sampling(self, body: RawRequest) -> Sampling:
-        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
-        # Canonicalize the max-tokens alias; when both ride the wire (an eval override
-        # on top of a harness's `max_completion_tokens`), the override wins.
-        if (mct := settings.pop("max_completion_tokens", None)) is not None:
-            settings.setdefault("max_tokens", mct)
-        return Sampling.model_validate(settings)
-
-    def parse_response(self, response: ChatCompletion) -> Response:
+    def parse_response(self, response: dict) -> Response:
         return response_from_wire(response)
-
-    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        for native, original, rewritten in zip(
-            body.get("messages", []), before.messages, after.messages, strict=True
-        ):
-            if rewritten != original:
-                native["content"] = _content_to_wire(rewritten.content)
-                if isinstance(rewritten, ToolMessage):
-                    if rewritten.name is None:
-                        native.pop("name", None)
-                    else:
-                        native["name"] = rewritten.name
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         for choice in raw.get("choices") or []:
@@ -579,19 +428,3 @@ class ChatDialect(Dialect[ChatCompletion]):
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
-
-    def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
-    ) -> RawRequest:
-        # Preserve the program's native fields, overlaying only what the eval owns: the model and
-        # the sampling knobs it set. The selected model is authoritative even if a permissive
-        # sampling config carries an extra field named `model`.
-        overrides = sampling.wire_args()
-        max_token_keys = {"max_tokens", "max_completion_tokens"}
-        max_tokens_overridden = not max_token_keys.isdisjoint(overrides)
-        steered = {
-            k: v
-            for k, v in body.items()
-            if not max_tokens_overridden or k not in max_token_keys
-        }
-        return {**steered, **overrides, "model": model}

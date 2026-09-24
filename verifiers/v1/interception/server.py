@@ -47,10 +47,7 @@ from verifiers.v1.configs.client import (
     resolve_api_key,
 )
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import (
-    PROVIDER_CAPABILITY_POLICY_CODE,
-    is_sse_done_event,
-)
+from verifiers.v1.dialects.policy import PROVIDER_CAPABILITY_POLICY_CODE, mediate
 from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
@@ -206,6 +203,26 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
                 session.idempotent_requests.pop(key)
 
 
+def _sse_data(raw: bytes) -> bytes | None:
+    """One complete SSE event's data payload, or None for a comment-only event."""
+    lines = [
+        line.removeprefix(b"data:").strip()
+        for line in raw.splitlines()
+        if line.startswith(b"data:")
+    ]
+    return b"\n".join(lines) if lines else None
+
+
+def _sse_json(data: bytes) -> dict:
+    try:
+        return from_json(data)
+    except ValueError:
+        logger.warning(
+            "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
+        )
+        return json.loads(data.decode("utf-8", errors="replace"))
+
+
 async def _collect_stream(
     dialect: Dialect, reply: RelayReply
 ) -> tuple[Response, bytes]:
@@ -217,16 +234,30 @@ async def _collect_stream(
     saw_terminal = False
     try:
         async for chunk in reply.chunks:
-            if not any(line.startswith(b"data:") for line in chunk.splitlines()):
+            data = _sse_data(chunk)
+            if data is None:
                 continue
             events += chunk
-            saw_terminal |= dialect.is_terminal_event(chunk)
-            if parser.on_done is not None and is_sse_done_event(chunk):
-                parser.on_done()
-            parser.feed(chunk)
+            if data == b"[DONE]":
+                saw_terminal |= "[DONE]" in dialect.terminal_events
+            elif data:
+                event = _sse_json(data)
+                # The provider SDKs raise on an event carrying `error`; so does the turn.
+                if error := event.get("error"):
+                    detail = (
+                        error.get("message", error)
+                        if isinstance(error, dict)
+                        else error
+                    )
+                    raise ProviderError(f"upstream stream error: {detail}")
+                saw_terminal |= event.get("type") in dialect.terminal_events
+                parser.feed(event)
         if not saw_terminal:
             raise ProviderError("upstream stream ended before its terminal event")
-        return parser.finish(), bytes(events)
+        raw = parser.finish()
+        response = dialect.parse_response(raw)
+        response.raw = raw
+        return response, bytes(events)
     except RolloutError:
         raise
     except Exception as e:  # a malformed provider stream
@@ -477,10 +508,7 @@ class InterceptionServer(Interception):
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(
-            body, session.network_policy
-        )
-        capabilities = list(dict.fromkeys(capabilities))
+        mediated, capabilities = mediate(dialect, body, session.network_policy)
         if capabilities:
             logger.warning(
                 "interception removed provider content/capabilities blocked by the network "
@@ -594,7 +622,7 @@ class InterceptionServer(Interception):
         except ValueError:
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        streaming = dialect.streaming(body)
+        streaming = bool(body.get("stream"))
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
@@ -654,7 +682,7 @@ class InterceptionServer(Interception):
             return _replay_response(idempotent.response)
 
         try:
-            model_request = dialect.parse_request(body)
+            model_request, setters = dialect.parse_request(body)
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)
         if session.released:
@@ -713,7 +741,14 @@ class InterceptionServer(Interception):
             session.trace.request_rewrites.extend(request_rewrites)
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
-                dialect.rewrite_request(body, original_request, model_request)
+                for setter, before, after in zip(
+                    setters,
+                    original_request.messages,
+                    model_request.messages,
+                    strict=True,
+                ):
+                    if after != before:
+                        setter(after)
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -741,7 +776,7 @@ class InterceptionServer(Interception):
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
             # Restricted mediation can mutate the body without reporting policy paths.
             if request_rewrites or session.network_policy.network_restricted:
-                model_request = dialect.parse_request(body)
+                model_request = dialect.parse_request(body)[0]
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools
             )
@@ -822,9 +857,7 @@ class InterceptionServer(Interception):
                                 call_response.raw, call_response.message.content or ""
                             )
                             raw_response = call_response.raw
-                            call_response = dialect.parse_response(
-                                dialect.validate_response(raw_response)
-                            )
+                            call_response = dialect.parse_response(raw_response)
                             call_response.raw = raw_response
                     if session.stopped:
                         return web.json_response(

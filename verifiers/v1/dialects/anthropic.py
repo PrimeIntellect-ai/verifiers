@@ -7,34 +7,25 @@ trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded
 """
 
 import json
-import re
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from functools import partial
 
-from anthropic.types import Message as AnthropicMessage
-from anthropic.types import Usage as AnthropicUsage
+# The accumulator the SDK's own `MessageStream` runs over each event.
+from anthropic.lib.streaming._messages import accumulate_event
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.dialects.base import (
-    Dialect,
-    RawRequest,
-    RequestFilter,
-    StreamParser,
-    append_user_notice,
-    parse_sse_event,
-    provider_domains,
-)
+from verifiers.v1.dialects.base import Dialect, RawRequest, Setter, StreamParser
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
     FinishReason,
     ImageUrlContentPart,
     ImageUrlSource,
+    Message,
+    MessageContent,
     Messages,
+    NativeContentPart,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -54,59 +45,11 @@ STOP_REASONS: dict[str, FinishReason] = {
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
 THINKING_ORDER = {"redacted_thinking": 0, "thinking": 1}
-# These versioned tool families return calls to the harness; every other typed tool may execute
-# at the provider. Anchoring the pattern keeps new versions client-side without treating an
-# arbitrary dated provider tool as safe.
-_CLIENT_TOOL_TYPE = re.compile(r"(?:bash|text_editor|computer|memory)_\d{8}").fullmatch
-_WEB_TOOL_TYPE = re.compile(r"web_(?:search|fetch)_\d{8}").fullmatch
-_CONTENT_WRAPPERS = (
-    "tool_result",
-    "code_execution_tool_result",
-    "bash_code_execution_tool_result",
-    "text_editor_code_execution_tool_result",
-    "web_search_tool_result",
-    "web_fetch_tool_result",
-    "tool_search_tool_result",
-    "mcp_tool_result",
-    "advisor_tool_result",
-    "code_execution_result",
-    "bash_code_execution_result",
-    "encrypted_code_execution_result",
-    "web_fetch_result",
-)
-_SAFE_CONTENT_TYPES = (
-    "text",
-    "image",
-    "document",
-    "tool_reference",
-    "thinking",
-    "redacted_thinking",
-    "tool_use",
-    "search_result",
-    "server_tool_use",
-    "mid_conv_system",
-    "compaction",
-    "fallback",
-    "mcp_tool_use",
-    "web_search_result",
-    "web_search_tool_result_error",
-    "web_fetch_tool_result_error",
-    "tool_search_tool_search_result",
-    "tool_search_tool_result_error",
-    "code_execution_tool_result_error",
-    "bash_code_execution_tool_result_error",
-    "text_editor_code_execution_tool_result_error",
-    "text_editor_code_execution_create_result",
-    "text_editor_code_execution_str_replace_result",
-    "text_editor_code_execution_view_result",
-    "advisor_result",
-    "advisor_redacted_result",
-    "advisor_tool_result_error",
-)
 
 
-def parse_content(content) -> str | list[ContentPart]:
-    """Anthropic user-side content (text + image blocks) -> typed content parts."""
+def parse_content(content) -> MessageContent:
+    """Anthropic user-side content blocks -> typed content parts; blocks without a typed
+    model (documents, search results, file references) stay native."""
     if isinstance(content, str):
         return content
     if (
@@ -117,88 +60,33 @@ def parse_content(content) -> str | list[ContentPart]:
         return content[0].get("text", "")
     parts: list[ContentPart] = []
     for block in content or []:
-        if block.get("type") == "text":
+        kind = block.get("type")
+        source = block.get("source") or {}
+        if kind == "text":
             parts.append(TextContentPart(text=block.get("text", "")))
-        elif block.get("type") == "image":
-            source = block.get("source") or {}
-            if source.get("type") == "url":
-                url = source.get("url", "")
-            else:
-                url = f"data:{source.get('media_type', '')};base64,{source.get('data', '')}"
+        elif kind == "image" and source.get("type") in ("url", "base64"):
+            url = (
+                source.get("url", "")
+                if source["type"] == "url"
+                else f"data:{source.get('media_type', '')};base64,{source.get('data', '')}"
+            )
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+        else:
+            parts.append(NativeContentPart(native=block))
     return parts
 
 
-class AnthropicRequestFilter(RequestFilter):
-    wrappers = _CONTENT_WRAPPERS
-
-    def tool(self, tool, path: str) -> dict | None:
-        kind = tool.get("type") if isinstance(tool, dict) else None
-        if isinstance(kind, str) and _WEB_TOOL_TYPE(kind):
-            callers = tool.get("allowed_callers")
-            filter_key = "blocked_domains" if self.policy.block else "allowed_domains"
-            other_key = "allowed_domains" if self.policy.block else "blocked_domains"
-            domains = (
-                provider_domains(self.policy, tool.get(filter_key))
-                # Anthropic does not support combining allow and block filters.
-                if tool.get(other_key) in (None, [])
-                and (
-                    callers is None or isinstance(callers, list) and "direct" in callers
-                )
-                else []
-            )
-            if domains:
-                web_tool = {**tool, filter_key: domains, "allowed_callers": ["direct"]}
-                web_tool.pop(other_key, None)
-                return web_tool
-        if isinstance(tool, dict) and (
-            (isinstance(kind, str) and _CLIENT_TOOL_TYPE(kind))
-            or (kind in (None, "custom") and "input_schema" in tool)
-        ):
-            return tool
-        self.capabilities.append(f"{path}.type")
-        return None
-
-    def blocked_part(self, value: dict, path: str) -> str | None:
-        kind = value.get("type")
-        if kind in ("image", "document"):
-            source_path = f"{path}.source"
-            source = value.get("source") or {}
-            if not isinstance(source, dict):
-                return source_path
-            source_kind = source.get("type")
-            if source_kind == "content":
-                return self.blocked(source.get("content"), f"{source_path}.content")
-            if source_kind == "url" and self.blocked_url(source.get("url")):
-                return f"{source_path}.url"
-            if source_kind == "file":
-                return (
-                    f"{source_path}.file_id"
-                    if source.get("file_id")
-                    else f"{source_path}.type"
-                )
-            if source_kind not in ("base64", "text", "url"):
-                return f"{source_path}.type"
-
-        if kind in (
-            "container_upload",
-            "code_execution_output",
-            "bash_code_execution_output",
-        ) and value.get("file_id"):
-            return f"{path}.file_id"
-        if kind in self.wrappers:
-            return self.blocked(value.get("content"), f"{path}.content")
-        return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
-
-
-def content_to_wire(content) -> str | list[dict]:
-    """Typed text/image content in Anthropic's native request shape."""
+def content_to_wire(content: MessageContent) -> str | list[dict]:
+    """Typed content in Anthropic's native request shape."""
     if isinstance(content, str):
         return content
     blocks = []
     for part in content:
         if isinstance(part, TextContentPart):
             blocks.append({"type": "text", "text": part.text})
+            continue
+        if isinstance(part, NativeContentPart):
+            blocks.append(part.native)
             continue
         metadata, separator, data = part.image_url.url.partition(",")
         if separator and metadata.startswith("data:") and metadata.endswith(";base64"):
@@ -222,13 +110,40 @@ def content_to_wire(content) -> str | list[dict]:
     return blocks
 
 
-def parse_messages(body: dict) -> Messages:
-    """The request's top-level `system` + `messages` -> typed messages. Assistant turns fold
-    their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
-    tool_result blocks become individual tool messages, its rest one user message."""
+def _write_text(message: dict, edited: Message) -> None:
+    message["content"] = content_to_wire(edited.content)
+
+
+def _write_tool_result(block: dict, edited: Message) -> None:
+    block["content"] = content_to_wire(edited.content)
+
+
+def _write_rest(message: dict, edited: Message) -> None:
+    """Replace a user turn's blocks besides its tool results, where the first of them sat."""
+    replacement = content_to_wire(edited.content)
+    if isinstance(replacement, str):
+        replacement = [{"type": "text", "text": replacement}]
+    updated = []
+    inserted = False
+    for block in message.get("content") or []:
+        if block.get("type") == "tool_result":
+            updated.append(block)
+        elif not inserted:
+            updated.extend(replacement)
+            inserted = True
+    message["content"] = updated
+
+
+def parse_messages(body: dict) -> tuple[Messages, list[Setter | None]]:
+    """The request's top-level `system` + `messages` -> typed messages and their setters.
+    Assistant turns fold their blocks into one message (thinking -> reasoning, tool_use -> tool
+    calls); a user turn's tool_result blocks become individual tool messages, its rest one user
+    message."""
     prompt: Messages = []
+    setters: list[Setter | None] = []
     if system := body.get("system"):
         prompt.append(SystemMessage(content=parse_content(system)))
+        setters.append(None)
     for message in body.get("messages", []):
         content = message.get("content")
         if message.get("role") == "assistant":
@@ -263,9 +178,14 @@ def parse_messages(body: dict) -> Messages:
                     provider_state=state or None,
                 )
             )
+            setters.append(None)
+            continue
+        if isinstance(content, str):
+            prompt.append(UserMessage(content=content))
+            setters.append(partial(_write_text, message))
             continue
         rest = []
-        for block in [] if isinstance(content, str) else content or []:
+        for block in content or []:
             if block.get("type") == "tool_result":
                 prompt.append(
                     ToolMessage(
@@ -273,152 +193,96 @@ def parse_messages(body: dict) -> Messages:
                         content=parse_content(block.get("content")),
                     )
                 )
+                setters.append(partial(_write_tool_result, block))
             else:
                 rest.append(block)
-        if isinstance(content, str) or rest:
-            prompt.append(
-                UserMessage(
-                    content=content if isinstance(content, str) else parse_content(rest)
-                )
-            )
-    return prompt
+        if rest:
+            prompt.append(UserMessage(content=parse_content(rest)))
+            setters.append(partial(_write_rest, message))
+    return prompt, setters
 
 
-def response_from_wire(message: AnthropicMessage) -> Response:
+def response_from_wire(message: dict) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
     state: list[dict] = []
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
-    for block in message.content:
-        if block.type not in ("text", "tool_use"):
-            # SDK-inserted defaults are absent when the native response is replayed.
-            state.append(block.model_dump(exclude_unset=True))
-        if block.type == "text":
-            content.append(block.text)
-        elif block.type == "thinking":
-            reasoning.append(block.thinking)
-        elif block.type == "tool_use":
+    for block in message.get("content") or []:
+        kind = block.get("type")
+        if kind == "text":
+            content.append(block.get("text", ""))
+        elif kind == "tool_use":
             calls.append(
                 ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    namespace=block.toolset_name,
-                    arguments=json.dumps(block.input or {}),
+                    id=block.get("id", ""),
+                    name=block.get("name", ""),
+                    namespace=block.get("toolset_name"),
+                    arguments=json.dumps(block.get("input") or {}),
                 )
             )
-    state.sort(key=lambda block: THINKING_ORDER.get(block["type"], 2))
-    finish = STOP_REASONS.get(message.stop_reason or "")
-    provider_usage = message.usage
-    output_details = provider_usage.model_dump().get("output_tokens_details")
-    # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
-    # cache reads are the reusable subset exposed separately by vf.Usage.
-    usage = Usage(
-        prompt_tokens=provider_usage.input_tokens
-        + (provider_usage.cache_creation_input_tokens or 0),
-        completion_tokens=provider_usage.output_tokens,
-        cached_input_tokens=provider_usage.cache_read_input_tokens,
-        # This is a re-tokenized raw-thinking estimate inside output_tokens, not the
-        # token count of the visible thinking summary.
-        reasoning_tokens=output_details.get("thinking_tokens")
-        if output_details
-        else None,
-        cost=getattr(provider_usage, "cost", None),
-    )
+        else:
+            # Replayed verbatim on the next turn, so the native block is the state.
+            state.append(block)
+            if kind == "thinking":
+                reasoning.append(block.get("thinking", ""))
+    state.sort(key=lambda block: THINKING_ORDER.get(block.get("type"), 2))
+    usage = None
+    if provider_usage := message.get("usage"):
+        # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
+        # cache reads are the reusable subset exposed separately by vf.Usage.
+        usage = Usage(
+            prompt_tokens=provider_usage["input_tokens"]
+            + (provider_usage.get("cache_creation_input_tokens") or 0),
+            completion_tokens=provider_usage["output_tokens"],
+            cached_input_tokens=provider_usage.get("cache_read_input_tokens"),
+            # This is a re-tokenized raw-thinking estimate inside output_tokens, not the
+            # token count of the visible thinking summary.
+            reasoning_tokens=(provider_usage.get("output_tokens_details") or {}).get(
+                "thinking_tokens"
+            ),
+            cost=provider_usage.get("cost"),
+        )
     return Response(
-        id=message.id,
+        id=message.get("id") or "",
         created=0,
-        model=message.model,
+        model=message.get("model") or "",
         message=AssistantMessage(
             content="".join(content) or None,
             reasoning_content="".join(reasoning) or None,
             tool_calls=calls or None,
             provider_state=state or None,
         ),
-        finish_reason=finish,
+        finish_reason=STOP_REASONS.get(message.get("stop_reason") or ""),
         usage=usage,
     )
 
 
-@dataclass
 class AnthropicStreamParser(StreamParser):
-    """Incrementally assemble Anthropic message events without retaining SSE bytes."""
+    """Assemble message events with the SDK's accumulator."""
 
-    validate_response: Callable[[dict], AnthropicMessage]
-    message: dict = field(default_factory=dict)
-    blocks: dict[int, dict] = field(default_factory=dict)
-    block_parts: dict[int, dict[str, list[str]]] = field(default_factory=dict)
-    partial_json: dict[int, list[str]] = field(default_factory=dict)
+    def __init__(self) -> None:
+        self.snapshot = None
 
-    def feed(self, raw: bytes) -> None:
-        event = parse_sse_event(raw)
-        if event is None:
-            return
+    def feed(self, event: dict) -> None:
         kind = event.get("type")
-        if kind == "message_start":
-            self.message = event.get("message") or {}
-        elif kind == "content_block_start":
-            index = event["index"]
-            self.blocks[index] = dict(event.get("content_block") or {})
-            self.block_parts.pop(index, None)
-        elif kind == "content_block_delta":
-            index = event["index"]
-            block = self.blocks.setdefault(index, {"type": "text", "text": ""})
-            delta = event.get("delta") or {}
-            delta_type = delta.get("type")
-            if delta_type in (
-                "text_delta",
-                "thinking_delta",
-                "signature_delta",
-            ):
-                field_name = delta_type.removesuffix("_delta")
-                parts = self.block_parts.setdefault(index, {}).setdefault(
-                    field_name, [block.get(field_name, "")]
-                )
-                parts.append(delta.get(field_name, ""))
-            elif delta_type == "input_json_delta":
-                self.partial_json.setdefault(index, []).append(
-                    delta.get("partial_json", "")
-                )
-        elif kind == "message_delta":
-            self.message.update(
-                {
-                    key: value
-                    for key, value in (event.get("delta") or {}).items()
-                    if value is not None
-                }
-            )
-            self.message["usage"] = {
-                **(self.message.get("usage") or {}),
-                **(event.get("usage") or {}),
-            }
+        if kind == "ping":  # the SDK's stream skips pings before accumulating
+            return
+        if kind == "message_delta" and self.snapshot is not None:
+            # The SDK copies the cumulative output count over unconditionally; when a gateway
+            # omits it, the count so far stands.
+            usage = event.get("usage") or {}
+            if usage.get("output_tokens") is None:
+                output_tokens = self.snapshot.usage.output_tokens
+                event = {**event, "usage": {**usage, "output_tokens": output_tokens}}
+        self.snapshot = accumulate_event(event=event, current_snapshot=self.snapshot)
 
-    def finish(self) -> Response:
-        for index, fields in self.block_parts.items():
-            for field_name, parts in fields.items():
-                self.blocks[index][field_name] = "".join(parts)
-        for index, parts in self.partial_json.items():
-            self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
-        self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        response = response_from_wire(self.validate_response(self.message))
-        response.raw = self.message
-        return response
+    def finish(self) -> dict:
+        return self.snapshot.to_dict()
 
 
-class ModdedUsage(AnthropicUsage):
-    """The SDK closes `service_tier` to a fixed Literal, but Anthropic-compatible gateways
-    report their own tiers (e.g. Prime's `provisioned`). Widen to a plain string — we don't
-    consume it — so parsing stays lenient about the label instead of dropping it."""
-
-    service_tier: str | None = None  # type: ignore[assignment]
-
-
-class ModdedAnthropicMessage(AnthropicMessage):
-    usage: ModdedUsage  # type: ignore[assignment]
-
-
-class AnthropicDialect(Dialect[AnthropicMessage]):
+class AnthropicDialect(Dialect):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -432,72 +296,12 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             "output_config",
         }
     )
+    max_tokens_keys = ("max_tokens",)
+    effort_path = ("output_config", "effort")
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
-    response_type = ModdedAnthropicMessage
-
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        mediated = body
-        request_filter = AnthropicRequestFilter(policy)
-        capabilities = request_filter.capabilities
-
-        for key in ("container", "mcp_servers"):
-            if mediated.pop(key, None):
-                capabilities.append(key)
-
-        if (
-            request_filter.content(mediated, "system", "system")
-            and not mediated["system"]
-        ):
-            mediated.pop("system")
-
-        for message_index, message in enumerate(mediated.get("messages") or []):
-            if not isinstance(message, dict):
-                continue
-            request_filter.content(
-                message,
-                "content",
-                f"messages[{message_index}].content",
-            )
-
-        tools = request_filter.tools(mediated.get("tools"))
-        if "tools" in mediated:
-            mediated["tools"] = tools
-
-        choice = mediated.get("tool_choice")
-        valid_choice = choice is None
-        if isinstance(choice, dict):
-            kind = choice.get("type")
-            valid_choice = (
-                kind == "none"
-                or bool(tools)
-                and (
-                    kind in ("auto", "any")
-                    or kind == "tool"
-                    and any(tool.get("name") == choice.get("name") for tool in tools)
-                )
-            )
-        if not valid_choice:
-            capabilities.append(
-                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
-            )
-            mediated.pop("tool_choice", None)
-
-        if capabilities:
-            append_user_notice(
-                mediated.setdefault("messages", []),
-                blocked_urls=request_filter.blocked_urls,
-            )
-        return mediated, capabilities
-
-    def is_terminal_event(self, chunk: bytes) -> bool:
-        return any(
-            line.removeprefix(b"event:").strip() == b"message_stop"
-            for line in chunk.splitlines()
-        )
+    terminal_events = frozenset({"message_stop"})
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
@@ -520,7 +324,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # The Anthropic SDKs raise only on a named `error` event.
         return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"
 
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(self, body: RawRequest) -> tuple[Request, list[Setter | None]]:
         native_tools = body.get("tools") or []
         if not isinstance(native_tools, list) or any(
             not isinstance(tool, dict) for tool in native_tools
@@ -539,60 +343,11 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             )
             for t in native_tools
         ] or None
-        return Request(messages=parse_messages(body), tools=tools)
+        messages, setters = parse_messages(body)
+        return Request(messages=messages, tools=tools), setters
 
-    def parse_response(self, response: AnthropicMessage) -> Response:
+    def parse_response(self, response: dict) -> Response:
         return response_from_wire(response)
-
-    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        original = [
-            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        rewritten = [
-            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        targets: list[tuple[dict, dict | None]] = []
-        for native in body.get("messages", []):
-            if native.get("role") == "assistant":
-                continue
-            content = native.get("content")
-            if isinstance(content, str):
-                targets.append((native, None))
-                continue
-            blocks = content or []
-            targets.extend(
-                (native, block)
-                for block in blocks
-                if block.get("type") == "tool_result"
-            )
-            if any(block.get("type") != "tool_result" for block in blocks):
-                targets.append((native, None))
-
-        for (native, block), old, new in zip(targets, original, rewritten, strict=True):
-            if old == new:
-                continue
-            if block is not None:
-                block["content"] = content_to_wire(new.content)
-                continue
-            replacement = content_to_wire(new.content)
-            if isinstance(native.get("content"), str):
-                native["content"] = replacement
-                continue
-            replacement = (
-                [{"type": "text", "text": replacement}]
-                if isinstance(replacement, str)
-                else replacement
-            )
-            blocks = native.get("content") or []
-            updated = []
-            inserted = False
-            for current in blocks:
-                if current.get("type") == "tool_result":
-                    updated.append(current)
-                elif not inserted:
-                    updated.extend(replacement)
-                    inserted = True
-            native["content"] = updated
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         raw["content"] = [{"type": "text", "text": text}]
@@ -638,42 +393,4 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         ]
 
     def stream_parser(self) -> StreamParser:
-        return AnthropicStreamParser(self.validate_response)
-
-    def parse_sampling(self, body: RawRequest) -> Sampling:
-        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
-        # Lift `output_config.effort` (where `apply_overrides` puts the eval's
-        # reasoning effort) onto the typed knob; keep any other output-config keys.
-        if isinstance(config := settings.get("output_config"), dict):
-            config = dict(config)
-            if config.get("effort"):
-                settings["reasoning_effort"] = config.pop("effort")
-            if config:
-                settings["output_config"] = config
-            else:
-                settings.pop("output_config")
-        return Sampling.model_validate(settings)
-
-    def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
-    ) -> RawRequest:
-        # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
-        # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
-        # the API, so the program's is kept unless the eval sets one.
-        s = sampling.wire_args()
-        reasoning_effort = s.pop("reasoning_effort", None)
-        sampling_output_config = s.pop("output_config", None)
-        overrides: dict = {**s, "model": model}
-        if sampling_output_config is not None or reasoning_effort is not None:
-            overrides["output_config"] = {
-                **dict(body.get("output_config") or {}),
-                **dict(sampling_output_config or {}),
-            }
-            if reasoning_effort is not None:
-                overrides["output_config"]["effort"] = reasoning_effort
-        steered = {
-            k: v
-            for k, v in body.items()
-            if k not in ("temperature", "top_p") and k not in overrides
-        }
-        return {**steered, **overrides}
+        return AnthropicStreamParser()

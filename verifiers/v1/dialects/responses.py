@@ -8,26 +8,9 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 """
 
 import json
-import re
-from collections import deque
+from functools import partial
 
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-    ResponseUsage,
-)
-from pydantic import BaseModel, ConfigDict
-
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.dialects.base import (
-    Dialect,
-    RawRequest,
-    RequestFilter,
-    StreamParser,
-    append_user_notice,
-    parse_sse_event,
-    provider_domains,
-)
+from verifiers.v1.dialects.base import Dialect, RawRequest, Setter, StreamParser
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
@@ -35,11 +18,12 @@ from verifiers.v1.types import (
     FinishReason,
     ImageUrlContentPart,
     ImageUrlSource,
+    Message,
+    MessageContent,
     Messages,
+    NativeContentPart,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -63,85 +47,8 @@ _KEEPALIVE_RESPONSE = {
     "tools": [],
 }
 
-FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
-# Byte markers for the terminal event types above, in both compact and spaced JSON, so the
-# interception server can cheaply spot the turn-ending event without parsing each delta.
-_TERMINAL_MARKERS = tuple(
-    marker.encode()
-    for event in FINAL_EVENTS
-    for marker in (f'"type":"{event}"', f'"type": "{event}"')
-)
-# Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
-_SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
-# Client tools return calls to the harness; every other type may execute at the provider.
-_CLIENT_TOOL_TYPES = (
-    "function",
-    "custom",
-    "local_shell",
-    "apply_patch",
-    "computer",
-    "computer_use_preview",
-)
-_WEB_SEARCH_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
-_SAFE_INPUT_TYPES = (
-    "input_text",
-    "input_file",
-    "input_image",
-    "computer_screenshot",
-    "output_text",
-    "refusal",
-    "computer_call",
-    "function_call",
-    "custom_tool_call",
-    "reasoning",
-    "compaction",
-    "tool_search_call",
-    "local_shell_call",
-    "local_shell_call_output",
-    "shell_call",
-    "shell_call_output",
-    "apply_patch_call",
-    "apply_patch_call_output",
-    "compaction_trigger",
-)
-TEXT_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
-BLANK_PNG = (
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-    "AAAADUlEQVR42mNk+M/wHwAF/gL+Xw4AAAAASUVORK5CYII="
-)
 
-
-class ProviderUsageInputTokensDetails(InputTokensDetails):
-    """Permissive input token details: OpenAI-compatible providers may omit fields
-    the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
-
-    cache_write_tokens: int | None = None
-    cached_tokens: int | None = None
-
-
-class ProviderUsageOutputTokensDetails(OutputTokensDetails):
-    """Permissive output token details: providers may omit ``reasoning_tokens``."""
-
-    reasoning_tokens: int | None = None
-
-
-class ProviderUsage(ResponseUsage):
-    """Responses usage with optional detail objects for OpenAI-compatible providers."""
-
-    input_tokens_details: ProviderUsageInputTokensDetails | None = None
-    output_tokens_details: ProviderUsageOutputTokensDetails | None = None
-
-
-class OpenAIResponse(BaseModel):
-    """Permissive parse-only view of a Responses object: `extra='allow'` keeps it a plain dict
-    for the trace (read via `model_dump`), so a strict SDK model can't crash the rollout on a
-    provider/SDK enum skew (e.g. a value the pinned `openai` rejects)."""
-
-    model_config = ConfigDict(extra="allow")
-    usage: ProviderUsage | None = None
-
-
-def parse_content(content) -> str | list[ContentPart]:
+def parse_content(content) -> MessageContent:
     if isinstance(content, str):
         return content
     parts: list[ContentPart] = []
@@ -149,88 +56,68 @@ def parse_content(content) -> str | list[ContentPart]:
         kind = part.get("type")
         if kind in ("input_text", "output_text"):
             parts.append(TextContentPart(text=part.get("text", "")))
-        elif kind == "input_image":
+        elif kind == "input_image" and part.get("image_url"):
             parts.append(
-                ImageUrlContentPart(
-                    image_url=ImageUrlSource(url=part.get("image_url", ""))
-                )
+                ImageUrlContentPart(image_url=ImageUrlSource(url=part["image_url"]))
             )
+        else:
+            parts.append(NativeContentPart(native=part))
     return parts
 
 
-class ResponsesRequestFilter(RequestFilter):
-    def tool(self, tool, path: str) -> dict | None:
-        if not isinstance(tool, dict):
-            self.capabilities.append(path)
-            return None
-        kind = tool.get("type")
-        if isinstance(kind, str) and _WEB_SEARCH_TOOL_TYPE(kind):
-            filter_key = "blocked_domains" if self.policy.block else "allowed_domains"
-            filters = tool.get("filters")
-            if filters is None:
-                filters = {}
-            if isinstance(filters, dict):
-                domains = provider_domains(self.policy, filters.get(filter_key))
-                if domains and len(domains) <= 100:
-                    return {**tool, "filters": {**filters, filter_key: domains}}
-        if kind == "namespace":
-            nested = self.tools(tool.get("tools"), f"{path}.tools")
-            return {**tool, "tools": nested} if nested else None
-        environment = tool.get("environment")
-        if (
-            kind in _CLIENT_TOOL_TYPES
-            or kind == "tool_search"
-            and tool.get("execution") == "client"
-            or kind == "shell"
-            and isinstance(environment, dict)
-            and environment.get("type") == "local"
-        ):
-            return tool
-        self.capabilities.append(f"{path}.type")
-        return None
+def _content_to_wire(content: MessageContent) -> str | list[dict]:
+    """Typed content in this format's input shape."""
+    if isinstance(content, str):
+        return content
+    return [
+        {"type": "input_text", "text": part.text}
+        if isinstance(part, TextContentPart)
+        else {"type": "input_image", "image_url": part.image_url.url}
+        if isinstance(part, ImageUrlContentPart)
+        else part.native
+        for part in content
+    ]
 
-    def blocked_part(self, value: dict, path: str) -> str | None:
-        kind = value.get("type")
-        if kind in ("input_file", "input_image", "computer_screenshot"):
-            if value.get("file_id"):
-                return f"{path}.file_id"
-            url_field = "file_url" if kind == "input_file" else "image_url"
-            if kind != "input_file" or url_field in value:
-                if self.blocked_url(value.get(url_field)):
-                    return f"{path}.{url_field}"
-            elif not isinstance(value.get("file_data"), str):
-                return f"{path}.file_data"
 
-        if (
-            kind == "reasoning"
-            and value.get("id")
-            and not value.get("encrypted_content")
-        ):
-            return f"{path}.id"
-        if kind == "item_reference" or kind is None and set(value) == {"id"}:
-            return f"{path}.id"
+def _output_content(output) -> MessageContent:
+    """A tool output's content: text, content parts, or one native result object (e.g. a
+    computer screenshot)."""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return parse_content(output)
+    return [NativeContentPart(native=output)]
 
-        if kind == "tool_search_call" and value.get("execution") != "client":
-            return f"{path}.execution"
-        if kind == "shell_call":
-            environment = value.get("environment")
-            if not (
-                isinstance(environment, dict) and environment.get("type") == "local"
-            ):
-                return f"{path}.environment"
-        if kind in ("additional_tools", "tool_search_output"):
-            if kind == "tool_search_output" and value.get("execution") != "client":
-                return f"{path}.execution"
-            # Nested tool lists are atomic: report only their first omission.
-            probe = ResponsesRequestFilter(self.policy)
-            probe.tools(value.get("tools"), f"{path}.tools")
-            return next(iter(probe.capabilities), None)
 
-        if kind in ("computer_call_output", *TEXT_TOOL_OUTPUT_TYPES):
-            return self.blocked(value.get("output"), f"{path}.output")
-        if kind in (None, "message") and "role" in value and "content" in value:
-            return self.blocked(value["content"], f"{path}.content")
-        return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
+def _write_input(body: dict, message: Message) -> None:
+    content = _content_to_wire(message.content)
+    body["input"] = (
+        content if isinstance(content, str) else [{"role": "user", "content": content}]
+    )
+
+
+def _write_content(item: dict, message: Message) -> None:
+    item["content"] = _content_to_wire(message.content)
+
+
+def _write_output(item: dict, message: Message) -> None:
+    content = _content_to_wire(message.content)
+    if (
+        isinstance(item["output"], dict)
+        and isinstance(content, list)
+        and len(content) == 1
+    ):
+        content = content[0]  # a single result object, sent back in its own shape
+    item["output"] = content
+
+
+def _write_item(item: dict, message: Message) -> None:
+    """Replace a protocol item recorded verbatim with its edited native form."""
+    content = _content_to_wire(message.content)
+    if not (isinstance(content, list) and len(content) == 1):
+        raise ValueError(f"a {item.get('type')} item can only become one native part")
+    item.clear()
+    item.update(content[0])
 
 
 def fold_assistant(items: list[dict] | None) -> AssistantMessage:
@@ -272,16 +159,12 @@ def fold_assistant(items: list[dict] | None) -> AssistantMessage:
     )
 
 
-def response_from_wire(response: OpenAIResponse) -> Response:
+def response_from_wire(response: dict) -> Response:
     """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
     assistant message)."""
-    # Copy the output snapshot without traversing echoed tools or request settings.
-    data = response.model_dump(
-        include={"id", "created_at", "model", "status", "error", "output"}
-    )
-    status = data.get("status")
+    status = response.get("status")
     if status not in (None, "completed", "incomplete"):
-        error = data.get("error") or {}
+        error = response.get("error") or {}
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         detail = ": ".join(str(value) for value in (status, code, message) if value)
@@ -296,32 +179,29 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             f"upstream Responses request did not complete: {detail}",
             status_code=status_code,
         )
-    message = fold_assistant(data.get("output"))
+    message = fold_assistant(response.get("output"))
     finish: FinishReason = (
         "length"
-        if data.get("status") == "incomplete"
+        if status == "incomplete"
         else ("tool_calls" if message.tool_calls else "stop")
     )
     usage = None
-    if response.usage:
-        provider_usage = response.usage
-        input_details = provider_usage.input_tokens_details
-        output_details = provider_usage.output_tokens_details
-        cached = input_details.cached_tokens if input_details else None
+    if provider_usage := response.get("usage"):
+        cached = (provider_usage.get("input_tokens_details") or {}).get("cached_tokens")
         # Responses input_tokens includes cache hits; vf keeps the buckets disjoint.
         usage = Usage(
-            prompt_tokens=provider_usage.input_tokens - (cached or 0),
-            completion_tokens=provider_usage.output_tokens,
+            prompt_tokens=provider_usage["input_tokens"] - (cached or 0),
+            completion_tokens=provider_usage["output_tokens"],
             cached_input_tokens=cached,
-            reasoning_tokens=output_details.reasoning_tokens
-            if output_details
-            else None,
-            cost=getattr(provider_usage, "cost", None),
+            reasoning_tokens=(provider_usage.get("output_tokens_details") or {}).get(
+                "reasoning_tokens"
+            ),
+            cost=provider_usage.get("cost"),
         )
     return Response(
-        id=data.get("id", ""),
-        created=data.get("created_at", 0),
-        model=data.get("model", ""),
+        id=response.get("id") or "",
+        created=response.get("created_at") or 0,
+        model=response.get("model") or "",
         message=message,
         finish_reason=finish,
         usage=usage,
@@ -329,31 +209,20 @@ def response_from_wire(response: OpenAIResponse) -> Response:
 
 
 class ResponsesStreamParser(StreamParser):
-    """Retain only the complete terminal response event and trailing DONE event."""
+    """A Responses stream's terminal event carries the whole response; keep only that."""
 
     def __init__(self) -> None:
-        self.events: deque[bytes] = deque(maxlen=2)
-        self.feed = self.events.append
-        self.terminal_events: tuple[bytes, ...] | None = None
+        self.response: dict = {}
 
-    def on_done(self) -> None:
-        # Freeze the terminal tail before later relay chunks can evict it.
-        self.terminal_events = tuple(self.events)
+    def feed(self, event: dict) -> None:
+        if event.get("type") in ResponsesDialect.terminal_events:
+            self.response = event["response"]
 
-    def finish(self) -> Response:
-        events = self.terminal_events or self.events
-        for raw in reversed(events):
-            event = parse_sse_event(raw)
-            if event and event.get("type") in FINAL_EVENTS:
-                response = response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
-                response.raw = event["response"]
-                return response
-        raise ValueError("Responses stream ended without a terminal event")
+    def finish(self) -> dict:
+        return self.response
 
 
-class ResponsesDialect(Dialect[OpenAIResponse]):
+class ResponsesDialect(Dialect):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -369,149 +238,29 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             "truncation",
         }
     )
+    max_tokens_keys = ("max_output_tokens",)
+    effort_path = ("reasoning", "effort")
     routes = ("/v1/responses",)
     upstream_path = "/responses"
-    response_type = OpenAIResponse
+    # A Responses client (e.g. codex) ends its turn on its final event, before the `[DONE]`.
+    terminal_events = frozenset(
+        {"response.completed", "response.incomplete", "response.failed"}
+    )
 
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        mediated = body
-        request_filter = ResponsesRequestFilter(policy)
-        capabilities = request_filter.capabilities
-
-        for field in ("previous_response_id", "conversation", "prompt", "plugins"):
-            if mediated.pop(field, None) is not None:
-                capabilities.append(field)
-
-        raw_input = mediated.get("input")
-        if isinstance(raw_input, list):
-            safe_input = []
-            for item_index, item in enumerate(raw_input):
-                item_path = f"input[{item_index}]"
-                if not isinstance(item, dict):
-                    safe_input.append(item)
-                    continue
-                kind = item.get("type")
-                if kind in ("additional_tools", "tool_search_output"):
-                    if blocked := request_filter.blocked(
-                        {**item, "tools": []}, item_path
-                    ):
-                        capabilities.append(blocked)
-                        continue
-                    item["tools"] = request_filter.tools(
-                        item.get("tools"), f"{item_path}.tools"
-                    )
-                    if kind == "tool_search_output" or item["tools"]:
-                        safe_input.append(item)
-                    continue
-                content_field = None
-                if kind in TEXT_TOOL_OUTPUT_TYPES:
-                    content_field = "output"
-                elif kind in (None, "message") and "content" in item:
-                    content_field = "content"
-
-                if content_field:
-                    request_filter.content(
-                        item, content_field, f"{item_path}.{content_field}"
-                    )
-
-                scan = {**item, content_field: []} if content_field else item
-                blocked = request_filter.blocked(scan, item_path)
-                if blocked is None:
-                    safe_input.append(item)
-                else:
-                    capabilities.append(blocked)
-                    if kind == "computer_call_output" and blocked.startswith(
-                        f"{item_path}.output"
-                    ):
-                        item["output"] = {
-                            "type": "computer_screenshot",
-                            "image_url": BLANK_PNG,
-                        }
-                        safe_input.append(item)
-            mediated["input"] = safe_input
-        elif blocked := request_filter.blocked(raw_input, "input"):
-            capabilities.append(blocked)
-            mediated["input"] = []
-
-        tools = request_filter.tools(mediated.get("tools"))
-        if "tools" in mediated:
-            mediated["tools"] = tools
-            if not tools:
-                mediated.pop("tool_choice", None)
-
-        choice = mediated.get("tool_choice")
-        valid_choice = choice is None or (
-            isinstance(choice, str) and choice in ("none", "auto", "required")
-        )
-        if isinstance(choice, dict):
-            kind = choice.get("type")
-            valid_choice = any(
-                tool.get("type") == kind
-                and ("name" not in choice or tool.get("name") == choice["name"])
-                for tool in tools
-            )
-            if kind == "allowed_tools":
-                # Tool-choice validation reports the choice as one capability.
-                choice_filter = ResponsesRequestFilter(policy)
-                choice_tools = choice_filter.tools(
-                    choice.get("tools"), "tool_choice.tools"
-                )
-                valid_choice = not choice_filter.capabilities
-                mediated["tool_choice"] = {**choice, "tools": choice_tools}
-        if not valid_choice:
-            capabilities.append("tool_choice")
-            mediated.pop("tool_choice")
-
-        if not capabilities:
-            return mediated, capabilities
-
-        input_items = mediated.get("input")
-        if not isinstance(input_items, list):
-            input_items = (
-                []
-                if input_items is None
-                else [{"role": "user", "content": input_items}]
-            )
-        append_user_notice(
-            input_items,
-            blocked_urls=request_filter.blocked_urls,
-            text_type="input_text",
-            message_type="message",
-        )
-        mediated["input"] = input_items
-        return mediated, capabilities
-
-    def is_terminal_event(self, chunk: bytes) -> bool:
-        # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
-        # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
-        return any(marker in chunk for marker in _TERMINAL_MARKERS)
-
-    def parse_sampling(self, body: RawRequest) -> Sampling:
-        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
-        # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
-        # (e.g. `summary`) as the wire sent them.
-        if isinstance(reasoning := settings.get("reasoning"), dict):
-            reasoning = dict(reasoning)
-            if reasoning.get("effort"):
-                settings["reasoning_effort"] = reasoning.pop("effort")
-            if reasoning:
-                settings["reasoning"] = reasoning
-            else:
-                settings.pop("reasoning")
-        if "max_output_tokens" in settings:
-            settings["max_tokens"] = settings.pop("max_output_tokens")
-        return Sampling.model_validate(settings)
-
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(self, body: RawRequest) -> tuple[Request, list[Setter | None]]:
         prompt: Messages = []
+        setters: list[Setter | None] = []
+
+        def add(message: Message, setter: Setter | None = None) -> None:
+            prompt.append(message)
+            setters.append(setter)
+
         if instructions := body.get("instructions"):
-            prompt.append(SystemMessage(content=instructions))
+            add(SystemMessage(content=instructions))
         raw = body.get("input")
-        items = (
-            [{"role": "user", "content": raw}] if isinstance(raw, str) else raw or []
-        )
+        if isinstance(raw, str):
+            add(UserMessage(content=raw), partial(_write_input, body))
+        items = raw if isinstance(raw, list) else []
         run: list[dict] = []  # the current run of assistant-side items
         for item in items:
             role = item.get("role")
@@ -521,29 +270,38 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                 and not (item.get("type") or "").endswith(("_output", "_response"))
             )
             if run and not assistant:
-                prompt.append(fold_assistant(run))
+                add(fold_assistant(run))
                 run = []
             if assistant:
                 run.append(item)
-            elif item.get("type") in TEXT_TOOL_OUTPUT_TYPES:
-                output = item.get("output")
-                content = (
-                    parse_content(output)
-                    if isinstance(output, (str, list))
-                    else json.dumps(output)
-                )
-                prompt.append(
+            elif role in ("system", "developer"):
+                add(SystemMessage(content=parse_content(item.get("content"))))
+            elif item.get("output") is not None:
+                add(
                     ToolMessage(
-                        tool_call_id=item.get("call_id", ""),
-                        content=content,
-                    )
+                        tool_call_id=item.get("call_id") or item.get("id") or "",
+                        content=_output_content(item["output"]),
+                    ),
+                    partial(_write_output, item),
                 )
-            elif item.get("role") in ("system", "developer"):
-                prompt.append(SystemMessage(content=parse_content(item.get("content"))))
+            elif "content" in item:
+                add(
+                    UserMessage(content=parse_content(item["content"])),
+                    partial(_write_content, item),
+                )
             else:
-                prompt.append(UserMessage(content=parse_content(item.get("content"))))
+                # A protocol item with no message body (an MCP approval, a tool search
+                # result): recorded verbatim, as the result of its call when it has one.
+                native = [NativeContentPart(native=item)]
+                call_id = item.get("call_id")
+                add(
+                    ToolMessage(tool_call_id=call_id, content=native)
+                    if call_id
+                    else UserMessage(content=native),
+                    partial(_write_item, item),
+                )
         if run:
-            prompt.append(fold_assistant(run))
+            add(fold_assistant(run))
         tools = []
         declarations = []
         for item in items:
@@ -575,69 +333,10 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                     )
                 )
         tools = list({(t.namespace, t.name, t.type): t for t in tools}.values())
-        return Request(messages=prompt, tools=tools or None)
+        return Request(messages=prompt, tools=tools or None), setters
 
-    def parse_response(self, response: OpenAIResponse) -> Response:
+    def parse_response(self, response: dict) -> Response:
         return response_from_wire(response)
-
-    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        original = [
-            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        rewritten = [
-            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        items = body.get("input")
-        if isinstance(items, str):
-            if original != rewritten:
-                message = rewritten[0]
-                content = (
-                    message.content
-                    if isinstance(message.content, str)
-                    else [
-                        {"type": "input_text", "text": part.text}
-                        if isinstance(part, TextContentPart)
-                        else {
-                            "type": "input_image",
-                            "image_url": part.image_url.url,
-                        }
-                        for part in message.content
-                    ]
-                )
-                body["input"] = (
-                    content
-                    if isinstance(content, str)
-                    else [{"role": "user", "content": content}]
-                )
-            return
-
-        targets = []
-        for item in items or []:
-            role = item.get("role")
-            kind = item.get("type") or ""
-            assistant = role == "assistant" or (
-                role is None and not kind.endswith(("_output", "_response"))
-            )
-            if assistant or role in ("system", "developer"):
-                continue
-            targets.append(item)
-        for item, old, new in zip(targets, original, rewritten, strict=True):
-            if old == new:
-                continue
-            content = (
-                new.content
-                if isinstance(new.content, str)
-                else [
-                    {"type": "input_text", "text": part.text}
-                    if isinstance(part, TextContentPart)
-                    else {
-                        "type": "input_image",
-                        "image_url": part.image_url.url,
-                    }
-                    for part in new.content
-                ]
-            )
-            item["output" if isinstance(new, ToolMessage) else "content"] = content
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         original = next(
@@ -733,43 +432,3 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()
-
-    def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
-    ) -> RawRequest:
-        # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
-        # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
-        s = sampling.wire_args()
-        max_tokens = s.pop("max_tokens", None)
-        reasoning_effort = s.pop("reasoning_effort", None)
-        sampling_reasoning = s.pop("reasoning", None)
-        name = model.rsplit("/", 1)[-1]
-        reasoning_model = (
-            name.startswith(("gpt-5", "o1", "o3", "o4"))
-            and "-chat" not in name
-            and ("/" not in model or model.startswith("openai/"))
-        )
-        overrides: dict = {**s, "model": model}
-        if reasoning_model:
-            # Preserve opaque reasoning state so it can be replayed on the next turn.
-            include = list(overrides.get("include") or body.get("include") or [])
-            if "reasoning.encrypted_content" not in include:
-                include.append("reasoning.encrypted_content")
-            overrides["include"] = include
-        if max_tokens is not None:
-            overrides["max_output_tokens"] = max_tokens
-        reasoning = {
-            **({"summary": "auto"} if reasoning_model else {}),
-            **dict(body.get("reasoning") or {}),
-            **dict(sampling_reasoning or {}),
-        }
-        if reasoning_effort is not None:
-            reasoning["effort"] = reasoning_effort
-        if reasoning:
-            overrides["reasoning"] = reasoning
-        steered = {
-            k: v
-            for k, v in body.items()
-            if k not in _SAMPLING_KEYS and k not in overrides
-        }
-        return {**steered, **overrides}

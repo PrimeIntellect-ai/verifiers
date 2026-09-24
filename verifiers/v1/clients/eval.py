@@ -4,14 +4,13 @@ import re
 from collections.abc import Mapping
 
 import httpx
-from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import model_error
+from verifiers.v1.errors import RolloutError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
@@ -85,13 +84,15 @@ class EvalClient(Client):
             self._headers(dialect, headers, session_id),
         )
         # A corrupted response (e.g. an HTML error page or a truncated body on a
-        # flaky tunnel) surfaces as a JSON parse failure or a schema validation
-        # failure — map these to a retryable 502 so the harness SDK retries the
-        # call instead of crashing the whole rollout on one bad response.
+        # flaky tunnel) surfaces as a JSON parse failure or a missing field — map these
+        # to a retryable 502 so the harness SDK retries the call instead of crashing the
+        # whole rollout on one bad response.
         try:
             raw = from_json(resp.content)
-            response = dialect.parse_response(dialect.validate_response(raw))
-        except (ValueError, ValidationError) as e:
+            response = dialect.parse_response(raw)
+        except RolloutError:
+            raise
+        except Exception as e:
             raise model_error(
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 status_code=502,

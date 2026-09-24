@@ -352,7 +352,7 @@ class TrainClient(Client):
             prompt = turn.prompt
             tools = turn.tools
         else:
-            request = dialect.parse_request(body)
+            request = dialect.parse_request(body)[0]
             prompt = request.messages
             tools = request.tools
         from renderers.client import generate
