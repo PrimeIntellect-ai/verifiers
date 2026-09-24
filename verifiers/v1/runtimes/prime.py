@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
 bounded by idle detection or rollout cancellation; 30 days is above any real run."""
+_OUTPUT_RETRIES = 10
+"""Re-reads of a finished job's output that the SDK failed to fetch (each read has its
+own bounded deadline), before the exec is reported as failed."""
 
 
 BASE_LABELS: list[str] = []
@@ -279,18 +282,32 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
             delay = 0.1
+            output_retries = 0
+            missing = None
             while True:
                 result = await self._client.get_background_job(self.info.id, job)
-                if result.completed:
+                # Under load the SDK can see a job finish yet miss its output (its bounded
+                # output reads expire while queued) and reports that as `*_error`. The job
+                # is done, so asking again re-reads the output.
+                missing = result.stdout_error or result.stderr_error
+                if result.completed and (
+                    missing is None or output_retries == _OUTPUT_RETRIES
+                ):
                     break
+                if result.completed:
+                    output_retries += 1
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
+        if missing is not None:
+            raise SandboxError(f"prime exec output unavailable: {missing}")
+        if result.exit_code is None:
+            raise SandboxError("prime exec completed without an exit code")
         return ProgramResult(
-            exit_code=result.exit_code or 0,
+            exit_code=result.exit_code,
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
