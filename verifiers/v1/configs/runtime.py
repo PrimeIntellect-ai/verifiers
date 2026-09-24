@@ -1,4 +1,4 @@
-"""Shared configuration for execution-time network policy."""
+"""Shared execution runtime configuration."""
 
 from fnmatch import fnmatchcase
 from glob import has_magic
@@ -8,6 +8,14 @@ from urllib.parse import SplitResult, urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
+
+
+class BindMount(BaseConfig):
+    """An existing file or directory on the container engine's host."""
+
+    source: str = Field(pattern=r"^/[^\x00]*$")
+    """Absolute host path. The runtime never creates or removes the source."""
+    read_only: bool = True
 
 
 def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:

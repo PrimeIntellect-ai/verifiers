@@ -133,6 +133,9 @@ class PrimeProcess(RuntimeProcess):
     async def wait(self) -> int:
         return await self._process.wait()
 
+    async def poll(self) -> int | None:
+        return self._process.returncode
+
     async def terminate(self) -> None:
         await self._process.terminate()
 
@@ -424,6 +427,28 @@ class PrimeRuntime(Runtime):
 
             with contextlib.suppress(Exception):
                 SandboxClient(APIClient()).delete(self.info.id)
+
+    async def stop_and_wait(self) -> None:
+        """Confirm termination before another runtime consumes this box's artifacts."""
+        from prime_sandboxes import APIError, AsyncSandboxClient
+
+        self.stopped = True
+        async with asyncio.timeout(60):
+            # teardown() consumes the client first, so the delete must not be cut short.
+            await run_shielded(self.teardown())
+            if self.info.id is None:
+                return
+            async with AsyncSandboxClient() as client:
+                while True:
+                    try:
+                        sandbox = await client.get(self.info.id)
+                    except APIError as error:
+                        if str(error).startswith("HTTP 404:"):
+                            return
+                        raise
+                    if str(sandbox.status) == "TERMINATED":
+                        return
+                    await asyncio.sleep(1)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via

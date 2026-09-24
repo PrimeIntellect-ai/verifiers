@@ -62,7 +62,7 @@ class HarborTaskConfig(TaskConfig):
 
 class HarborConfig(TasksetConfig):
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
-    """Total byte limit for artifact archives transferred out of each solver runtime."""
+    """Total archive bytes collected from one solver, across all services."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
@@ -113,6 +113,7 @@ class CollectHook(BaseModel):
 
     command: str
     timeout_sec: float = 600.0
+    service: str = "main"
 
 
 class VerifierConfig(BaseModel):
@@ -171,7 +172,14 @@ class HarborData(TaskData):
     grades in the agent's box."""
 
 
-class HarborTask(Task[HarborData, State, HarborTaskConfig]):
+class HarborState(State):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    services: dict[str, Runtime] = Field(default_factory=dict, exclude=True)
+    """Live Compose execution targets, owned by the Harbor environment."""
+
+
+class HarborTask(Task[HarborData, HarborState, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
     verifier_staged: bool = False
@@ -246,21 +254,29 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 else healthcheck.interval_sec
             )
 
-    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
-        """Run Harbor's collect hooks while the agent's box is still alive.
+    async def finalize(
+        self, trace: Trace, runtime: Runtime, *, services: set[str] | None = None
+    ) -> None:
+        """Run collect hooks and capture artifacts from the selected services.
 
-        Harbor runs these after the agent phase and before artifact collection, which
-        is exactly what `finalize` means here, so the hook maps onto the existing
-        lifecycle rather than needing a stage of its own.
-
-        Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
-        output is observability, here it is a grading input, and a silently absent file
-        makes the verifier score a stale state instead of failing loudly.
+        Separate grading captures main here; the environment collects sidecars after
+        harness cleanup and stopping main. Hook failures remain errors because these
+        files are grading inputs.
         """
+        runtimes = {**trace.state.services, "main": runtime}
+        declared = {
+            entry.service for entry in (*self.data.collect, *self.data.artifacts)
+        }
+        if missing := declared - runtimes.keys():
+            raise ValueError(f"Unknown artifact or collect services: {sorted(missing)}")
+        if services is None and self.data.verifier is not None:
+            services = {"main"}
         for hook in self.data.collect:
+            if services is not None and hook.service not in services:
+                continue
             try:
                 result = await asyncio.wait_for(
-                    runtime.run(["sh", "-c", hook.command], {}),
+                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
@@ -273,10 +289,16 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
-        if not self.scoring_deferred:
-            trace.state.artifacts = await collect(
-                runtime, self.data.artifacts, max_bytes=self.data.artifact_max_bytes
-            )
+        used = sum(
+            len(value) for value in trace.state.artifacts.values() if value is not None
+        )
+        collected = await collect(
+            runtimes,
+            self.data.artifacts,
+            max_bytes=self.data.artifact_max_bytes - used,
+            services=services,
+        )
+        trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if any(
@@ -539,6 +561,13 @@ def resolve_image(
     """
     if image:
         return image
+    compose = task_dir / "environment" / "docker-compose.yaml"
+    if not verifier and compose.is_file():
+        import yaml
+
+        main = yaml.safe_load(compose.read_text())["services"].get("main", {})
+        if main.get("image") or "build" in main:
+            return None
     section = "verifier.environment" if verifier else "environment"
     dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"
     if verifier or (task_dir / dockerfile).exists():
@@ -671,7 +700,6 @@ def parse_verifier_extras(
     Prepending it would make it an explicitly declared entry, and declared entries are
     required — which would fail every task that never writes there.
     """
-    from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
         effective_artifact_service,
         normalize_artifact_entries,
@@ -683,18 +711,13 @@ def parse_verifier_extras(
 
     artifacts: list[Artifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
-        if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
-            raise ValueError(
-                f"{task_dir.name}: artifact {entry.source!r} targets additional "
-                f"service {entry.service!r}; verifiers currently supports artifacts "
-                "from the main service only"
-            )
         # `destination` positions a file in Harbor's host trial directory. Verifiers has
         # no such directory (the trace is the record) and Harbor never lets destination
         # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
             Artifact(
                 source=entry.source,
+                service=effective_artifact_service(entry),
                 exclude=list(entry.exclude or []),
                 required=False,
             )
@@ -702,18 +725,16 @@ def parse_verifier_extras(
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
-        if hook.service != MAIN_SERVICE_NAME:
-            raise ValueError(
-                f"{task_dir.name}: collect hook targets additional service "
-                f"{hook.service!r}; verifiers currently supports collect hooks for "
-                "the main service only"
-            )
         if hook.user is not None:
             raise ValueError(
                 f"{task_dir.name}: collect hook `user` is not supported "
                 "(commands run as the runtime's default user)"
             )
-        hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
+        hooks.append(
+            CollectHook(
+                command=hook.command, timeout_sec=hook.timeout_sec, service=hook.service
+            )
+        )
 
     return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
 

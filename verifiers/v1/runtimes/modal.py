@@ -75,6 +75,8 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
 
 class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
+    vm: bool = False
+    """Use a VM sandbox for workloads requiring a Docker daemon."""
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
@@ -98,7 +100,9 @@ class ModalConfig(NetworkPolicyConfig):
     env-server worker process (None/<= 0 disables it)."""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "ModalConfig":
+    def _validate_config(self) -> "ModalConfig":
+        if self.vm and self.gpu is not None:
+            raise ValueError("Modal VM sandboxes do not support GPUs")
         if not self.network_restricted:
             return self
         if not self.network_access:
@@ -133,6 +137,9 @@ class ModalProcess(RuntimeProcess):
 
     async def wait(self) -> int:
         return await self._process.wait.aio()
+
+    async def poll(self) -> int | None:
+        return await self._process.poll.aio()
 
     async def terminate(self) -> None:
         await self._signal("TERM")
@@ -233,6 +240,7 @@ class ModalRuntime(Runtime):
             ),
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
+            experimental_options={"vm_runtime": True} if self.config.vm else {},
         )
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
@@ -402,6 +410,18 @@ class ModalRuntime(Runtime):
         if sandbox is not None:  # keep info.id available after teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
+
+    async def stop_and_wait(self) -> None:
+        """Confirm termination before another runtime consumes this box's artifacts."""
+        sandbox = self._sandbox
+        if sandbox is None:
+            return
+        self.stopped = True
+        async with asyncio.timeout(60):
+            await sandbox.terminate.aio()
+            await sandbox.wait.aio(raise_on_termination=False)
+        # Keep the cleanup handle until termination is confirmed.
+        self._sandbox = None
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly
