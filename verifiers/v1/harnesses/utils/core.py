@@ -14,10 +14,10 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
+    RetryCallState,
     before_sleep_log,
     retry_if_exception,
     stop_after_attempt,
-    stop_after_delay,
     wait_random_exponential,
 )
 
@@ -34,8 +34,10 @@ if TYPE_CHECKING:
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
 SERPER_URL = "https://google.serper.dev/search"
-# How long an interrupted model stream keeps being resumed. Retries coalesce onto the
-# interception server's in-flight turn (or replay it), so waiting costs no generation.
+# How long an interrupted model stream keeps being resumed: the time spent waiting between
+# retries, not the call's age (a turn can stream for many minutes before it breaks).
+# Retries coalesce onto the interception server's in-flight turn (or replay it once it
+# commits), so waiting costs no generation.
 STREAM_RETRY_SECONDS = 300
 TUNNEL_NOT_FOUND = "Tunnel not found"
 
@@ -261,9 +263,7 @@ async def chat(
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_resumable),
         # `max_retries=0` disables stream retries, as it does the SDK's own.
-        stop=stop_after_delay(STREAM_RETRY_SECONDS)
-        if client.max_retries
-        else stop_after_attempt(1),
+        stop=_retried_too_long if client.max_retries else stop_after_attempt(1),
         wait=wait_random_exponential(multiplier=0.5, max=8.0),
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True,
@@ -281,6 +281,10 @@ async def chat(
                 extra_headers=headers,
             )
             return await _read_chat_completion(raw_stream)
+
+
+def _retried_too_long(state: RetryCallState) -> bool:
+    return state.idle_for >= STREAM_RETRY_SECONDS
 
 
 def _resumable(error: BaseException) -> bool:
