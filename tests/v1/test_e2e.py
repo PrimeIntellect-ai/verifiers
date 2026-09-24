@@ -60,8 +60,10 @@ async def test_chat_harness_preserves_streamed_reasoning():
     events = [chunk("Plan: "), chunk("call ls", "stop")]
     content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
     content += "data: [DONE]\n\n"
+    requests = []
 
     async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
         return httpx.Response(
             200,
             content=content,
@@ -78,6 +80,8 @@ async def test_chat_harness_preserves_streamed_reasoning():
         completion = await chat(client, "test-model", [], [])
 
     message = completion.choices[0].message.model_dump(exclude_none=True)
+    assert "tools" not in requests[0]
+    assert "tool_choice" not in requests[0]
     assert message["role"] == "assistant"
     assert message["reasoning"] == "Plan: call ls"
     assert message["reasoning_content"] == "Plan: call ls"
@@ -91,6 +95,59 @@ async def test_chat_harness_preserves_streamed_reasoning():
             "text": "Plan: call ls",
         }
     ]
+
+
+def test_chat_tool_mediation_distinguishes_invalid_from_blocked():
+    from verifiers.v1.configs.runtime import NetworkPolicyConfig
+    from verifiers.v1.dialects.chat import ChatDialect
+
+    dialect = ChatDialect()
+    policy = NetworkPolicyConfig()
+
+    for tools in ("absent", None, []):
+        for choice in (None, "none", "auto"):
+            request = {"messages": [{"role": "user", "content": "hi"}]}
+            if tools != "absent":
+                request["tools"] = tools
+            if choice is not None:
+                request["tool_choice"] = choice
+            mediated, blocked = dialect.mediate_external_capabilities(request, policy)
+            assert "tools" not in mediated
+            assert "tool_choice" not in mediated
+            assert blocked == []
+            assert mediated["messages"] == [{"role": "user", "content": "hi"}]
+
+    for tools in ("absent", None, []):
+        for choice in ("required", {"type": "function", "function": {"name": "run"}}):
+            request = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": choice,
+            }
+            if tools != "absent":
+                request["tools"] = tools
+            with pytest.raises(ValueError, match="tool_choice requires nonempty tools"):
+                dialect.mediate_external_capabilities(request, policy)
+
+    function = {"type": "function", "function": {"name": "run"}}
+    request = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [function],
+        "tool_choice": "required",
+    }
+    mediated, blocked = dialect.mediate_external_capabilities(request, policy)
+    assert mediated["tools"] == [function]
+    assert mediated["tool_choice"] == "required"
+    assert blocked == []
+
+    request = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "web_search"}],
+        "tool_choice": "required",
+    }
+    mediated, blocked = dialect.mediate_external_capabilities(request, policy)
+    assert "tools" not in mediated
+    assert "tool_choice" not in mediated
+    assert blocked == ["tools[0].type", "tool_choice"]
 
 
 # harness x harness runtime: every harness once, both local runtimes hit (subprocess
