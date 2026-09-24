@@ -5,7 +5,7 @@ import json
 
 import httpx
 import pytest
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI
 
 from verifiers.v1.harnesses.utils.core import chat
 
@@ -40,7 +40,10 @@ def chunk(text: str, finish_reason: str | None = None) -> dict:
     }
 
 
-@pytest.mark.parametrize("interruption", [None, "disconnect", "timeout", "eof"])
+@pytest.mark.parametrize(
+    "interruption",
+    [None, "disconnect", "timeout", "eof", "retryable-error", "terminal-error"],
+)
 async def test_chat_preserves_streamed_reasoning(interruption):
     events = [chunk("Plan: "), chunk("call ls", "stop")]
     content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
@@ -63,6 +66,14 @@ async def test_chat_preserves_streamed_reasoning(interruption):
                     raise httpx.ReadError("connection reset", request=self.request)
                 if interruption == "timeout":
                     raise httpx.ReadTimeout("read timed out", request=self.request)
+                if interruption in ("retryable-error", "terminal-error"):
+                    error = {
+                        "error": {
+                            "message": "upstream failed",
+                            "retryable": interruption == "retryable-error",
+                        }
+                    }
+                    yield f"data: {json.dumps(error)}\n\n".encode()
                 return
             yield content.encode()
 
@@ -86,14 +97,21 @@ async def test_chat_preserves_streamed_reasoning(interruption):
             base_url="https://example.test/v1",
             http_client=http_client,
         )
-        completion = await chat(client, "test-model", [], [])
+        if interruption == "terminal-error":
+            with pytest.raises(APIError, match="upstream failed"):
+                await chat(client, "test-model", [], [])
+        else:
+            completion = await chat(client, "test-model", [], [])
 
-    assert len(requests) == (2 if interruption else 1)
+    retried = interruption is not None and interruption != "terminal-error"
+    assert len(requests) == (2 if retried else 1)
     assert [r.headers["x-stainless-retry-count"] for r in requests] == (
-        ["0", "1"] if interruption else ["0"]
+        ["0", "1"] if retried else ["0"]
     )
     assert all(r.content == requests[0].content for r in requests)
     assert all(stream.closed for stream in streams)
+    if interruption == "terminal-error":
+        return
     message = completion.choices[0].message.model_dump(exclude_none=True)
     assert message["role"] == "assistant"
     assert message["reasoning"] == "Plan: call ls"
