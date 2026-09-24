@@ -449,7 +449,6 @@ class ChatDialect(Dialect[ChatCompletion]):
                     item for item in modalities if item != "audio"
                 ] or ["text"]
 
-        had_tools_field = "tools" in mediated
         raw_tools = mediated.get("tools")
         tools = request_filter.tools(raw_tools)
         if tools:
@@ -480,9 +479,9 @@ class ChatDialect(Dialect[ChatCompletion]):
                     and tool.get("type", "function") in _CLIENT_TOOL_TYPES
                     for tool in allowed_tools
                 )
-        if had_tools_field and not tools and choice not in (None, "none"):
+        if raw_tools and not tools and choice not in (None, "none"):
             valid_choice = False
-        if not valid_choice and (had_tools_field or tools):
+        if not valid_choice and raw_tools:
             capabilities.append(
                 "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
             )
