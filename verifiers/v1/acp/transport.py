@@ -16,6 +16,8 @@ class ProcessTransport(NdjsonTransport):
         self._process = process
         self._pending = b""
         self._tasks = TaskSupervisor(source="verifiers.acp")
+        # The SDK reassembles lines after LimitOverrunError, so StreamReader's
+        # buffer limit does not cap ACP message size.
         reader = asyncio.StreamReader()
         self._tasks.create(self._read(reader))
         # MessageSender needs write/drain; the runtime performs the actual I/O.
