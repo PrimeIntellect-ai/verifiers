@@ -183,22 +183,10 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
-_STREAMED_MESSAGE_FIELDS = (
-    "role",
-    "reasoning",
-    "reasoning_content",
-    "reasoning_details",
-)
-
-
 def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
-    """Accumulate message fields whose stream semantics differ from the SDK defaults."""
+    """Preserve repeated role and reasoning-detail metadata the SDK concatenates."""
     if role := delta.get("role"):
         accumulated["role"] = role
-
-    for field_name in ("reasoning", "reasoning_content"):
-        if value := delta.get(field_name):
-            accumulated[field_name] = accumulated.get(field_name, "") + value
 
     delta_details = delta.get("reasoning_details") or []
     if not delta_details:
@@ -285,9 +273,7 @@ async def _read_chat_completion(raw_stream):
                 completion = event.snapshot
                 for choice in event.chunk.choices:
                     delta = choice.delta.model_dump(exclude_none=True)
-                    if any(
-                        delta.get(field_name) for field_name in _STREAMED_MESSAGE_FIELDS
-                    ):
+                    if delta.get("role") or delta.get("reasoning_details"):
                         _accumulate_streamed_message(
                             message_overrides.setdefault(choice.index, {}), delta
                         )
@@ -333,25 +319,58 @@ async def gate_tool_call(
     return decision
 
 
+def initial_messages(args: argparse.Namespace) -> list[dict]:
+    """Consume a resume transcript once, or start with the supplied prompt."""
+    initial = []
+    if args.initial_messages_file:
+        path = Path(args.initial_messages_file)
+        payload = path.read_bytes()
+        path.unlink()
+        initial = json.loads(payload)
+    messages = (
+        [{"role": "system", "content": args.system_prompt}]
+        if args.system_prompt
+        else []
+    )
+    if initial:
+        messages.extend(initial)
+    elif args.prompt:
+        messages.append({"role": "user", "content": args.prompt})
+    return messages
+
+
 async def run_chat_loop(
     args: argparse.Namespace,
-    compactor: "Compactor",
+    client: AsyncOpenAI,
+    tools: list[dict],
     messages: list[dict],
+    local_tools: dict,
     dispatch: dict,
     servers: dict,
-    tool_client: httpx.AsyncClient | None,
+    *,
+    compactor: "Compactor | None" = None,
+    tool_client: httpx.AsyncClient | None = None,
 ) -> None:
-    """Run the tool-calling conversation until a text-only reply or context exhaustion."""
+    """Run a conversation, with bounded streaming turns when a compactor is supplied.
+
+    Other programs use ordinary SDK completions and retain tool results verbatim.
+    """
     while True:
         try:
-            completion, messages = await compactor.complete(messages)
+            if compactor is None:
+                completion = await client.chat.completions.create(
+                    model=args.model, messages=messages, tools=tools or None
+                )
+            else:
+                completion, messages = await compactor.complete(messages)
         except APIStatusError as error:
-            # Without compaction (off, or on with no discoverable window to compact
-            # against), context exhaustion is a budget limit, not a crash: end the run
-            # with the transcript so far. When the compactor could act, it already
-            # tried, so an overflow reaching here is a real failure.
-            compacting = compactor.enabled and compactor.threshold is not None
-            if compacting or not is_context_overflow(error):
+            # Bounded chat programs treat exhaustion without an active compaction
+            # threshold as a budget stop. Ordinary SDK clients propagate the error.
+            if (
+                compactor is None
+                or (compactor.enabled and compactor.threshold is not None)
+                or not is_context_overflow(error)
+            ):
                 raise
             return
         message = completion.choices[0].message
@@ -365,19 +384,21 @@ async def run_chat_loop(
                 "role": "tool",
                 "tool_call_id": call.id,
                 "content": "",
-                "name": name,
             }
-            if args.tool_interception_url:
-                assert tool_client is not None
+            if compactor is not None:
+                tool_message["name"] = name
+            if tool_client is not None:
                 decision = await gate_tool_call(
                     tool_client, args.tool_interception_url, args.api_key, call
                 )
                 if decision["action"] == "deny":
-                    denied = bound_tool_message(decision["message"])
+                    denied = decision["message"]
+                    if compactor is not None:
+                        denied = bound_tool_message(denied)
+                        tool_result_tokens += estimated_tokens(
+                            str(denied.get("content", ""))
+                        )
                     messages.append(denied)
-                    tool_result_tokens += estimated_tokens(
-                        str(denied.get("content", ""))
-                    )
                     continue
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
@@ -389,32 +410,21 @@ async def run_chat_loop(
                     content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
                 elif name in dispatch:
                     content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "bash" and args.bash:
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                elif name == "edit" and args.edit:
-                    content = await asyncio.to_thread(
-                        run_edit,
-                        tool_args.get("path"),
-                        tool_args.get("old_str"),
-                        tool_args.get("new_str"),
-                    )
-                elif name == "search" and args.search:
-                    content = await asyncio.to_thread(
-                        run_search,
-                        tool_args.get("query", ""),
-                        args.serper_key,
-                        tool_args.get("num_results", 5),
-                    )
+                elif name in local_tools:
+                    content = await asyncio.to_thread(local_tools[name], tool_args)
                 else:
                     content = f"error: unknown tool {name!r}"
             tool_message["content"] = content
             # Results are rewritten at the model boundary, not here.
-            tool_message = bound_tool_message(tool_message)
+            if compactor is not None:
+                tool_message = bound_tool_message(tool_message)
+                tool_result_tokens += estimated_tokens(str(tool_message["content"]))
             messages.append(tool_message)
-            tool_result_tokens += estimated_tokens(str(tool_message["content"]))
-        if compactor.reached(completion, tool_result_tokens) and compactable(messages):
+        if (
+            compactor is not None
+            and compactor.reached(completion, tool_result_tokens)
+            and compactable(messages)
+        ):
             messages = await compactor.compact(messages)
 
 
@@ -439,12 +449,7 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    messages = initial_messages(args)
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
@@ -457,14 +462,28 @@ async def main() -> None:
     )
     config = json.loads(args.mcp_config or "{}")
     tools = [BASH_TOOL] if args.bash else []
+    local_tools = (
+        {"bash": lambda values: run_bash(values.get("command", ""))}
+        if args.bash
+        else {}
+    )
     reserved = {"bash"} if args.bash else set()
     if args.edit:
         tools.append(EDIT_TOOL)
         reserved.add("edit")
+        local_tools["edit"] = lambda values: run_edit(
+            values.get("path"), values.get("old_str"), values.get("new_str")
+        )
     if args.search:
         tools.append(SEARCH_TOOL)
         reserved.add("search")
+        local_tools["search"] = lambda values: run_search(
+            values.get("query", ""), args.serper_key, values.get("num_results", 5)
+        )
     async with AsyncExitStack() as mcp_stack:
+        await mcp_stack.enter_async_context(client)
+        if tool_client is not None:
+            await mcp_stack.enter_async_context(tool_client)
         if config.get("mcpServers"):
             mcp_tools, dispatch, servers = await asyncio.wait_for(
                 connect_mcp(config, mcp_stack, reserved),
@@ -473,15 +492,6 @@ async def main() -> None:
         else:
             mcp_tools, dispatch, servers = [], {}, {}
         tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
         compactor = Compactor(
             client,
             args.model,
@@ -494,11 +504,14 @@ async def main() -> None:
         # The initial conversation is the floor for checkpoint fallbacks: a first-turn
         # checkpoint must never retry from an empty base.
         compactor.note_good(messages)
-        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
-    if tool_client is not None:
-        await tool_client.aclose()
-
-
-# Inert on package import; the entry point once this module ends the bundled script.
-if __name__ == "__main__":
-    asyncio.run(main())
+        await run_chat_loop(
+            args,
+            client,
+            tools,
+            messages,
+            local_tools,
+            dispatch,
+            servers,
+            compactor=compactor,
+            tool_client=tool_client,
+        )

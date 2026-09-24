@@ -318,11 +318,7 @@ class Rollout:
                     )
                 if not self._session.stopped:
                     session_kwargs = (
-                        {
-                            "tool_interception_url": runtime.host_url(
-                                f"{base_url.rstrip('/')}/tool"
-                            )
-                        }
+                        {"tool_interception_url": f"{base_url.rstrip('/')}/tool"}
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
                             self._session.request_interceptors

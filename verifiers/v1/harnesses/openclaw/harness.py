@@ -146,7 +146,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             label="OpenClaw",
             shell=("bash", "-o", "pipefail", "-c"),
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
