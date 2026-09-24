@@ -24,7 +24,21 @@ def pair(a: str, b: str, id: str, *extra_marks):
     "interruption",
     [None, "disconnect", "timeout", "eof", "retryable-error", "terminal-error"],
 )
-async def test_chat_harness_preserves_streamed_reasoning(interruption):
+@pytest.mark.parametrize(
+    ("headers", "expected_name", "expected_namespace"),
+    [
+        (
+            [("call_", "get_", "wea"), ("123", "weather", "ther")],
+            "get_weather",
+            "weather",
+        ),
+        ([("call_123", "get_weather", "weather")] * 2, "get_weather", "weather"),
+        ([("call_123", "echo", "fs"), (None, "echo", "fs")], "echoecho", "fsfs"),
+    ],
+)
+async def test_chat_harness_preserves_streamed_reasoning(
+    interruption, headers, expected_name, expected_namespace
+):
     import json
 
     import httpx
@@ -61,7 +75,22 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
             ],
         }
 
-    events = [chunk("Plan: "), chunk("call ls", "stop")]
+    events = [chunk("Plan: "), chunk("call ls", "tool_calls")]
+    for event, (call_id, name, namespace), arguments in zip(
+        events, headers, ['{"city":', '"Paris"}']
+    ):
+        event["choices"][0]["delta"]["tool_calls"] = [
+            {
+                "index": 0,
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "namespace": namespace,
+                    "arguments": arguments,
+                },
+            }
+        ]
     content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
     content += "data: [DONE]\n\n"
 
@@ -142,6 +171,13 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
             "text": "Plan: call ls",
         }
     ]
+    (tool_call,) = message["tool_calls"]
+    assert tool_call["id"] == "call_123"
+    assert tool_call["function"] == {
+        "name": expected_name,
+        "namespace": expected_namespace,
+        "arguments": '{"city":"Paris"}',
+    }
 
 
 # harness x harness runtime: every harness once, both local runtimes hit (subprocess

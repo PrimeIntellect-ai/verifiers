@@ -195,7 +195,7 @@ def test_wire_trace_round_trip(history_type):
         "strict": False,
     }
     stale = function | {"parameters": {"type": "object"}, "strict": True}
-    request = ResponsesDialect().parse_request(
+    request, _ = ResponsesDialect().parse_request(
         {
             "input": [
                 {
@@ -259,7 +259,7 @@ def test_wire_trace_round_trip(history_type):
     assert mcp["headers"] == {"Authorization": "Bearer trace-test-header-token"}
     assert mcp["Authorization"] == "trace-test-case-oauth-token"
     assert mcp["Headers"] == {"X-Api-Key": "trace-test-case-header-token"}
-    chat_request = ChatDialect().parse_request(
+    chat_request, _ = ChatDialect().parse_request(
         {"tools": [mcp, mcp | {"server_label": "beta"}]}
     )
     chat_trace = tr.model_copy(update={"tools": []})
