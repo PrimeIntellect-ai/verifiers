@@ -2,10 +2,13 @@
 
 import re
 
-import httpx
+import httpx2 as httpx
 from openai import AsyncOpenAI
 
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+
+SESSION_ID_HEADER = "X-Session-ID"
+"""Pin a rollout's requests to one provider engine for prefix-cache reuse."""
 
 # No read timeout: agentic completions are slow and the rollout timeout is the real
 # backstop. The connect bound stays so an unreachable endpoint still fails fast.

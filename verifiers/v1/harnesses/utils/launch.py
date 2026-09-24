@@ -10,6 +10,7 @@ from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
+from verifiers.v1.utils import chat
 
 PEP_723_END = "# ///\n"
 
@@ -29,7 +30,7 @@ CHAT_PROGRAM = (
     '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, chat, core)
 
 
 async def launch_chat_program(

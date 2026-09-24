@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, omit
-from openai.lib.streaming.chat import AsyncChatCompletionStream
+
+# Standalone programs embed the stream reader before this module.
+if __name__ != "__main__":
+    from verifiers.v1.utils.chat import read_chat_completion
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -183,57 +186,6 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
-_STREAMED_MESSAGE_FIELDS = (
-    "role",
-    "reasoning",
-    "reasoning_content",
-    "reasoning_details",
-)
-
-
-def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
-    """Accumulate message fields whose stream semantics differ from the SDK defaults."""
-    if role := delta.get("role"):
-        accumulated["role"] = role
-
-    for field_name in ("reasoning", "reasoning_content"):
-        if value := delta.get(field_name):
-            accumulated[field_name] = accumulated.get(field_name, "") + value
-
-    delta_details = delta.get("reasoning_details") or []
-    if not delta_details:
-        return
-    reasoning_details = accumulated.setdefault("reasoning_details", [])
-    for detail in delta_details:
-        previous = reasoning_details[-1] if reasoning_details else {}
-        detail_type = detail.get("type")
-        content_field = {
-            "reasoning.summary": "summary",
-            "reasoning.text": "text",
-        }.get(detail_type)
-        if (
-            content_field
-            and detail_type == previous.get("type")
-            and all(
-                previous.get(field_name) is None
-                or detail.get(field_name) is None
-                or previous[field_name] == detail[field_name]
-                for field_name in ("id", "index", "format")
-            )
-        ):
-            previous[content_field] = (previous.get(content_field) or "") + (
-                detail.get(content_field) or ""
-            )
-            for field_name in ("id", "index", "signature", "format"):
-                if (
-                    previous.get(field_name) is None
-                    and detail.get(field_name) is not None
-                ):
-                    previous[field_name] = detail[field_name]
-        else:
-            reasoning_details.append(dict(detail))
-
-
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -258,7 +210,7 @@ async def chat(
         )
         # The SDK retries request setup; only stream consumption is retried here.
         try:
-            return await _read_chat_completion(raw_stream)
+            return await read_chat_completion(raw_stream)
         except (APIError, httpx.TransportError) as error:
             if not isinstance(
                 error, (APIConnectionError, httpx.TransportError)
@@ -276,42 +228,6 @@ async def chat(
                 cause,
             )
             await asyncio.sleep(min(0.5 * 2**attempt, 8.0) * random.uniform(0.75, 1.0))
-
-
-async def _read_chat_completion(raw_stream):
-    # Accumulate native deltas without auto-parsing tool arguments or treating
-    # finish_reason="length" as an exception: compaction owns that decision.
-    async with AsyncChatCompletionStream(
-        raw_stream=raw_stream, response_format=omit, input_tools=[]
-    ) as response:
-        completion = None
-        message_overrides: dict[int, dict] = {}
-        async for event in response:
-            if event.type == "chunk":
-                completion = event.snapshot
-                for choice in event.chunk.choices:
-                    delta = choice.delta.model_dump(exclude_none=True)
-                    if any(
-                        delta.get(field_name) for field_name in _STREAMED_MESSAGE_FIELDS
-                    ):
-                        _accumulate_streamed_message(
-                            message_overrides.setdefault(choice.index, {}), delta
-                        )
-        if (
-            completion is None
-            or not completion.choices
-            or any(choice.finish_reason is None for choice in completion.choices)
-        ):
-            raise APIConnectionError(
-                message="Model stream ended before a completion finished",
-                request=raw_stream.response.request,
-            )
-        for choice in completion.choices:
-            overrides = message_overrides.setdefault(choice.index, {})
-            overrides.setdefault("role", "assistant")
-            for field_name, value in overrides.items():
-                setattr(choice.message, field_name, value)
-        return completion
 
 
 async def gate_tool_call(
