@@ -206,6 +206,18 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
                 session.idempotent_requests.pop(key)
 
 
+# Upstream attempts per model call for transient provider failures: a stream cut
+# mid-response, a 5xx or a 429. A relayed stream is buffered, so nothing reaches the
+# harness before an attempt succeeds.
+UPSTREAM_ATTEMPTS = 6
+UPSTREAM_BACKOFF_MAX_SECONDS = 30.0
+
+
+def _transient_upstream(error: ProviderError) -> bool:
+    status = getattr(error, "status_code", None)
+    return status is None or status == 429 or status >= 500
+
+
 async def _collect_stream(
     dialect: Dialect, reply: RelayReply
 ) -> tuple[Response, bytes]:
@@ -780,24 +792,49 @@ class InterceptionServer(Interception):
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
+                    # sampling imposed — recorded raw on the trace, per call. A relayed
+                    # stream is read whole before anything is served, so a transient
+                    # upstream failure (a cut stream, a 5xx or 429) retries the call here
+                    # instead of failing the harness's turn.
+                    for attempt in range(UPSTREAM_ATTEMPTS):
+                        try:
+                            if relay:
+                                reply = await session.client.relay(
+                                    dialect,
+                                    body,
+                                    headers=upstream_headers,
+                                    session_id=session.trace.id,
+                                )
+                                call_response, events = await _collect_stream(
+                                    dialect, reply
+                                )
+                            else:
+                                call_response = await session.client.get_response(
+                                    dialect,
+                                    body,
+                                    session.ctx.sampling,
+                                    headers=upstream_headers,
+                                    session_id=session.trace.id,
+                                    turn=turn,
+                                )
+                            break
+                        except ProviderError as e:
+                            if (
+                                attempt == UPSTREAM_ATTEMPTS - 1
+                                or session.released
+                                or not _transient_upstream(e)
+                            ):
+                                raise
+                            delay = min(UPSTREAM_BACKOFF_MAX_SECONDS, 2.0**attempt)
+                            logger.warning(
+                                "upstream call failed, retrying in %.0fs (%d/%d): id=%s %s",
+                                delay,
+                                attempt + 1,
+                                UPSTREAM_ATTEMPTS - 1,
+                                session.trace.id,
+                                e,
+                            )
+                            await asyncio.sleep(delay)
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
