@@ -55,9 +55,7 @@ def on_over_budget(
     Returns ``True`` when later roots should be omitted without tarring.
     """
     if on_limit == "raise":
-        raise SandboxError(
-            f"collect: {source!r} over remaining {budget} byte budget"
-        )
+        raise SandboxError(f"collect: {source!r} over remaining {budget} byte budget")
     logger.warning(
         "collect: %s over remaining %s byte budget; omitting later roots",
         source,

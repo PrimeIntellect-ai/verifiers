@@ -52,6 +52,7 @@ def _host_file(source: str, destination: str | None) -> str:
         path = f"{path}.tar"
     return path
 
+
 def _entries(
     runtime: Runtime,
     artifacts: list[Artifact] | None,
@@ -75,13 +76,12 @@ def _entries(
         entries.append(Artifact(source=source))
     return entries
 
+
 def _resolved_destinations(
     workdir: PurePosixPath, destinations: Mapping[str, str]
 ) -> dict[str, str]:
-    return {
-        str(workdir / source): dest
-        for source, dest in destinations.items()
-    }
+    return {str(workdir / source): dest for source, dest in destinations.items()}
+
 
 async def archive(
     runtime: Runtime,

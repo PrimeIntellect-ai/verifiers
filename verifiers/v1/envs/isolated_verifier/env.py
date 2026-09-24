@@ -120,7 +120,9 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                 await invoke(task.setup, {"trace": solution, "runtime": runtime})
             await vf.restore(runtime, artifacts)
             async with boundary(TaskError, "verifier staging"):
-                await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
+                await invoke(
+                    task.stage_verifier, {"trace": solution, "runtime": runtime}
+                )
         finally:
             artifacts.clear()
             solution.state.artifacts.clear()
