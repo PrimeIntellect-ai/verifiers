@@ -240,7 +240,9 @@ async def chat(
     *,
     tool_choice: str | None = None,
 ):
-    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    kwargs = {"model": model, "messages": messages}
+    if tools:
+        kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
     raw_stream = await client.chat.completions.create(
