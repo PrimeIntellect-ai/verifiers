@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from grid import agent_seats, runtime_config
 
-from verifiers.v1.clients import EvalClientConfig, ModelContext
+from verifiers.v1.clients import ClientConfig, ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.episode import Episode
@@ -201,7 +201,7 @@ async def live_ctx():
     # Endpoint config only — each rollout builds and closes its own client.
     yield ModelContext(
         model=CI_MODEL,
-        client=EvalClientConfig(),
+        client=ClientConfig(),
         sampling=SamplingConfig(max_tokens=2048, reasoning_effort=CI_REASONING_EFFORT),
     )
 

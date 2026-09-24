@@ -6,7 +6,7 @@ import httpx2 as httpx
 from openai import AsyncOpenAI
 
 from verifiers.v1.configs.client import (
-    BaseClientConfig,
+    ClientConfig,
     resolve_api_key,
     resolve_headers,
 )
@@ -23,13 +23,13 @@ being silently reattempted."""
 VERSION_SEGMENT = re.compile(r"v\d+")
 
 
-def build_async_httpx(config: BaseClientConfig) -> httpx.AsyncClient:
+def build_async_httpx(config: ClientConfig) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         timeout=httpx.Timeout(**config.timeout.model_dump()), limits=DEFAULT_LIMITS
     )
 
 
-def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+def build_async_openai(config: ClientConfig) -> AsyncOpenAI:
     http_client = build_async_httpx(config)
     # Pass it explicitly: SDK defaults can replace a transport timeout equal to HTTPX's.
     return AsyncOpenAI(
