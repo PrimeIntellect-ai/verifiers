@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NotRequired
 
 import numpy as np
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -103,7 +103,7 @@ class ToolMessage(BaseModel):
     tool_call_id: str
     content: MessageContent
     name: str | None = None
-    """Needed by templates such as Harmony when bridge tails omit the issuing call."""
+    """Tool name for templates such as Harmony when the issuing call is absent."""
 
 
 Message = Annotated[
@@ -199,11 +199,12 @@ class Usage(BaseModel):
 
 
 class RoutedExperts(TypedDict):
-    """Base64 uint8 `[tokens, layers, top_k]` routing and its prompt offset."""
+    """Base64 integer `[tokens, layers, top_k]` routing and its prompt offset."""
 
     data: Any
     shape: list[int]
     start: int
+    dtype: NotRequired[str]
 
 
 @dataclass
@@ -233,7 +234,7 @@ class SamplingMask:
 
 
 class TurnTokens(BaseModel):
-    """Training tokens from renderer tokenization or provider-returned token IDs."""
+    """Exact inference tokens and optional per-message training attribution."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -254,10 +255,10 @@ class TurnTokens(BaseModel):
     # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
     # rendering renderer is multimodal.
     mm_token_type_id_map: dict[int, int] | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
+    # Transient carrier (excluded): the inference server's MoE expert-routing data (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
-    routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
+    routed_experts: RoutedExperts | str | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)

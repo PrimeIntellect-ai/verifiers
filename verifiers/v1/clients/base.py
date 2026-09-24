@@ -5,7 +5,7 @@ import re
 import httpx2 as httpx
 from openai import AsyncOpenAI
 
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import ClientConfig, resolve_api_key
 
 SESSION_ID_HEADER = "X-Session-ID"
 """Pin a rollout's requests to one provider engine for prefix-cache reuse."""
@@ -22,7 +22,7 @@ being silently reattempted."""
 VERSION_SEGMENT = re.compile(r"v\d+")
 
 
-def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+def build_async_openai(config: ClientConfig) -> AsyncOpenAI:
     return AsyncOpenAI(
         base_url=config.base_url,
         api_key=resolve_api_key(config),

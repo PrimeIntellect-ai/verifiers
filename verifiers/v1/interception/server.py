@@ -38,10 +38,10 @@ from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
-from verifiers.v1.clients import Client, resolve_client
+from verifiers.v1.clients import Client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.configs.client import (
-    BaseClientConfig,
+    ClientConfig,
     resolve_api_key,
 )
 from verifiers.v1.dialects import DIALECTS, Dialect
@@ -262,7 +262,7 @@ class InterceptionServer(Interception):
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
 
-    def _client(self, config: BaseClientConfig) -> Client:
+    def _client(self, config: ClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
         by every session registered under it, so the rollouts this server multiplexes reuse
         one bounded keepalive pool instead of each opening (and tearing down) their own
@@ -270,7 +270,7 @@ class InterceptionServer(Interception):
         key = config.model_dump_json()
         client = self.clients.get(key)
         if client is None:
-            client = self.clients[key] = resolve_client(config)
+            client = self.clients[key] = Client(config)
             self.stack.push_async_callback(client.close)
         return client
 
@@ -631,10 +631,8 @@ class InterceptionServer(Interception):
                 call_response, events = await session.client._complete(
                     dialect,
                     body,
-                    session.ctx.sampling,
                     headers=upstream_headers,
                     session_id=session.trace.id,
-                    turn=turn,
                 )
                 logger.debug(
                     "intercept turn: id=%s tools=%d",

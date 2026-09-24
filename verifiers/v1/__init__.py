@@ -5,13 +5,9 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.clients import (
-    BaseClientConfig,
     Client,
     ClientConfig,
-    EvalClientConfig,
     ModelContext,
-    TrainClientConfig,
-    resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
@@ -279,11 +275,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TunnelError",
     # clients
     "Client",
-    "BaseClientConfig",
     "ClientConfig",
-    "EvalClientConfig",
-    "TrainClientConfig",
-    "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
     "TaskConfig",

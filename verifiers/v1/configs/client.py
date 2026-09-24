@@ -1,22 +1,10 @@
-"""Client configs: describe an OpenAI-compatible endpoint.
-
-A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env var
-+ extra headers); `clients.resolve_client` turns one into a live `Client` — the
-interception server builds one per distinct config and shares it across the rollouts
-it multiplexes. The default Prime endpoint, API key, and team fall back to
-the active Prime CLI config, so direct `uv run vf-eval` calls behave like `prime eval`.
-Both the eval entrypoint (its model client) and in-env LLM calls (e.g. a judge reward)
-build clients from these. `ClientConfig` is the CLI-selectable discriminated union
-(eval | train).
-"""
+"""Endpoint configuration shared by evaluation, training, and in-env model calls."""
 
 import os
-from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
-from renderers import RendererConfig
 
 from verifiers.v1.utils.prime import load_prime_config
 
@@ -26,7 +14,7 @@ PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
 
 
-class BaseClientConfig(BaseConfig):
+class ClientConfig(BaseConfig):
     """An OpenAI-compatible endpoint. The API key is read from an env var."""
 
     base_url: str = DEFAULT_PRIME_INFERENCE_URL
@@ -35,7 +23,7 @@ class BaseClientConfig(BaseConfig):
     """Extra HTTP headers sent on every request."""
 
     @model_validator(mode="after")
-    def apply_prime_config(self) -> "BaseClientConfig":
+    def apply_prime_config(self) -> "ClientConfig":
         if self.api_key_var != "PRIME_API_KEY":
             return self
         prime_config = load_prime_config()
@@ -57,40 +45,7 @@ class BaseClientConfig(BaseConfig):
         return self
 
 
-class EvalClientConfig(BaseClientConfig):
-    """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
-
-    type: Literal["eval"] = "eval"
-
-
-class TrainClientConfig(BaseClientConfig):
-    """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
-    `TrainClient`), so responses carry token ids + logprobs. Needs a running vLLM engine."""
-
-    type: Literal["train"] = "train"
-    renderer: RendererConfig | None = None
-    """The `renderers.RendererConfig` to use (the same shared type prime-rl configures).
-    `None` auto-resolves from the model — which falls back to the default renderer (no
-    tool support) for models not in the renderer map, so set it explicitly for
-    fine-tunes / tool-using envs."""
-    renderer_model_name: str | None = None
-    """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
-    adapter name (served only for sampling) never drives tokenizer loading. Falls back to
-    the per-request model when None."""
-    multiplex: int = Field(256, ge=1)
-    """Rollouts that share one renderer (~75-95 MB each): the pool warms one and grows on
-    demand, so N concurrent rollouts hold ~N/multiplex tokenizers. A renderer is only busy
-    for the render itself (ms against a multi-second turn), so one absorbs many rollouts;
-    lower this when rendering is the slow part (very long prompts, frequent bridge misses)."""
-
-
-# Discriminated union for a CLI-selectable client (`--client.type eval|train`).
-ClientConfig = Annotated[
-    EvalClientConfig | TrainClientConfig, Field(discriminator="type")
-]
-
-
-def resolve_api_key(config: BaseClientConfig) -> str:
+def resolve_api_key(config: ClientConfig) -> str:
     """The API key for `config`: its env var, falling back to the Prime CLI config for a
     `PRIME_API_KEY`-keyed pinference endpoint. `"EMPTY"` when unset."""
     api_key = os.environ.get(config.api_key_var)

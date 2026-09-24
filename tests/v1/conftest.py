@@ -264,12 +264,12 @@ def run_v1_server():
 async def live_ctx():
     """The e2e `ModelContext` (default model + endpoint config, provider-default sampling)
     for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
-    from verifiers.v1.clients import EvalClientConfig, ModelContext
+    from verifiers.v1.clients import ClientConfig, ModelContext
     from verifiers.v1.types import SamplingConfig
 
     # Endpoint config only — each rollout builds and closes its own client.
     yield ModelContext(
         model=CI_MODEL,
-        client=EvalClientConfig(),
+        client=ClientConfig(),
         sampling=SamplingConfig(max_tokens=2048),
     )

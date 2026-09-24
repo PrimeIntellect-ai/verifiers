@@ -84,9 +84,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "api": endpoint,
             "api_key": secret,
             "discover_models": False,
+            "transport": "${HERMES_INTERCEPT_TRANSPORT}",
         }
-        if ctx.client.type == "eval":
-            provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
         config = {
             "model": model,
             # The ACP client already approves tool requests. Avoid routing Hermes'
