@@ -40,6 +40,8 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle`) requires it
 - `num_rollouts` — rollouts per task
+- `max_concurrent` / `-c` — episodes in flight at once (default: 128)
+- `max_agent_runs` — `Agent.run`s in flight at once (`None` = no extra cap)
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
 - `rich` — the live dashboard (default); `--no-rich` streams logs to the console and

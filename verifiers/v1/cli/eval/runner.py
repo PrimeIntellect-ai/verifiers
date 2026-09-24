@@ -65,7 +65,7 @@ OnComplete = Callable[[Episode], Awaitable[None]]
 async def _in_process(
     env: Env,
     config: EvalConfig,
-    semaphore: asyncio.Semaphore | None,
+    episodes: asyncio.Semaphore | None,
     on_complete: OnComplete,
 ) -> AsyncIterator[RunSlotFn]:
     """Run slots in-process: serving resources (shared tool servers, interception)
@@ -75,7 +75,7 @@ async def _in_process(
     )
 
     async def run(slot: RunSlot) -> Episode:
-        return await env.run_slot(slot, ctx, semaphore, on_complete)
+        return await env.run_slot(slot, ctx, episodes, on_complete)
 
     async with env.serving():
         yield run
@@ -132,9 +132,13 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     start = time.time()
     logger.info("results: %s", out)
 
-    semaphore = (
+    episodes = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
+    env._agent_runs = (
+        asyncio.Semaphore(config.max_agent_runs) if config.max_agent_runs else None
+    )
+
     write_lock = asyncio.Lock()
     push_state = PushState()
 
@@ -152,7 +156,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     # The run is closed out whatever breaks, env setup and teardown included.
     try:
-        async with _in_process(env, config, semaphore, on_complete) as run_slot:
+        async with _in_process(env, config, episodes, on_complete) as run_slot:
             # the env's own slots: it fills their live traces as the rollouts run
             planned = [slot for task, n in plan for slot in env.slots(task, n)]
             slots = [RunSlot.finished(episode) for episode in finished] + planned
@@ -163,16 +167,16 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
             )
             async with display:
                 results = await gather_rollouts(run_slot(slot) for slot in planned)
-                episodes = finished + list(results)
+                completed = finished + list(results)
                 # Drain and close out off the event loop so the view keeps refreshing.
                 # Shielded: a Ctrl-C here must not cancel the close-out before the
                 # worker picks it up (a cancelled executor item never runs), so it
                 # runs to completion first and the interrupt is re-raised after —
                 # by which point the run is finished and `abort_run` has nothing to do.
                 await run_shielded(
-                    asyncio.to_thread(finish_run, run, episodes, push_state)
+                    asyncio.to_thread(finish_run, run, completed, push_state)
                 )
     except BaseException as e:
         await asyncio.to_thread(abort_run, run, e, push_state)
         raise
-    return episodes
+    return completed

@@ -72,9 +72,13 @@ class GEPAConfig(BaseConfig):
     sets one (see `resolve_gepa_seed_prompt`)."""
 
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128,
+        validation_alias=AliasChoices("max_episodes", "max_concurrent", "c"),
     )
     """Max rollouts in flight at once, across the whole run."""
+    max_agent_runs: int | None = Field(None, ge=1)
+    """Live `Agent.run`s in flight at once across the process, `None` for no extra cap.
+    Same meaning as eval's `--max-agent-runs`."""
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )

@@ -101,11 +101,17 @@ class EvalConfig(BaseConfig):
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
-        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
+        128,
+        ge=1,
+        validation_alias=AliasChoices("max_episodes", "max_concurrent", "c"),
     )
     """Episodes in flight at once, `None` for no limit. An episode plays its agents one
     at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
-    says otherwise."""
+    says otherwise. `--max-agent-runs` then caps those live runs across episodes."""
+    max_agent_runs: int | None = Field(None, ge=1)
+    """Live `Agent.run`s (and interaction segments) in flight at once across the whole
+    process, `None` for no extra cap. Independent of `-c` (episodes) and of
+    `--env.max-concurrent-agents` (one episode)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)

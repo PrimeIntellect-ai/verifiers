@@ -230,6 +230,7 @@ def run_v1_server():
                 "address_queue": address_queue,
                 "config_data": env_config_data(config.env),
                 "max_concurrent": config.max_concurrent,
+                "max_agent_runs": config.max_agent_runs,
             },
         )
         proc.start()

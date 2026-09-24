@@ -6,7 +6,7 @@ pool knobs onto its own config."""
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_config import BaseConfig
 
 
@@ -37,8 +37,8 @@ PoolConfig = Annotated[
 
 class ServeConfig(BaseConfig):
     """The `[serve]` block: the worker pool, the ZMQ address, and each worker's
-    episode bound. Read by whoever hosts the env — a server-backed eval, a
-    trainer's env-server process."""
+    episode and agent-run bounds. Read by whoever hosts the env — a server-backed
+    eval, a trainer's env-server process."""
 
     pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on
@@ -47,11 +47,19 @@ class ServeConfig(BaseConfig):
     """ZMQ address the ROUTER binds (and clients connect to). None leaves the choice
     to whoever hosts the env — `serve_env` falls back to its default loopback bind, a
     launcher may derive one per server."""
-    max_concurrent: int | None = Field(None, ge=1)
+    max_concurrent: int | None = Field(
+        None,
+        ge=1,
+        validation_alias=AliasChoices("max_episodes", "max_concurrent"),
+    )
     """Episodes in flight per worker (None = take the run's own bound, e.g. an eval's
     `--max-concurrent`). Pin it to hold a worker below what the run asks for; how many
     agent runs one episode carries is the env's own
     (`--env.max-concurrent-agents`, one at a time by default)."""
+    max_agent_runs: int | None = Field(None, ge=1)
+    """Live `Agent.run`s per worker (None = take the run's `--max-agent-runs`, else no
+    extra cap). Pin it to hold a worker below the EvalConfig.max_agent_runs;
+    does not span the pool (`workers * this`)."""
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:

@@ -31,10 +31,14 @@ class EnvServer:
         config: EnvConfig,
         address: str = "tcp://127.0.0.1:5000",
         max_concurrent: int | None = None,
+        max_agent_runs: int | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
+        self.env._agent_runs = (
+            asyncio.Semaphore(max_agent_runs) if max_agent_runs else None
+        )
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from
@@ -49,7 +53,7 @@ class EnvServer:
                 "a served task must survive the wire whole (drop exclude=True)"
             )
         # This worker's episode bound (`--max-concurrent`), spanning requests.
-        self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
+        self._episodes = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
         self.ctx = zmq.asyncio.Context()
@@ -105,12 +109,12 @@ class EnvServer:
                 [client_id, request_id, b"delta", data], copy=False
             )
 
-        # The gate spans requests: `--max-concurrent` bounds this worker's episodes
-        # in flight the same way the in-process eval's semaphore does. The streamer
-        # ships each trace as it changes; the reply below carries only the rest.
+        # `_episodes` spans requests: `--max-concurrent` bounds this worker's episodes
+        # in flight the same way the in-process eval's `episodes` semaphore does.
+        # The streamer ships each trace as it changes; the reply below carries only the rest.
         async with DeltaStreamer(slot, send_delta) as streamer:
             episode = await self.env.run_slot(
-                slot, ctx, self._gate, on_trace=streamer.watch
+                slot, ctx, self._episodes, on_trace=streamer.watch
             )
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
