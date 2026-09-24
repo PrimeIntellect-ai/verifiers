@@ -577,7 +577,10 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     assert trace.nodes[0].token_ids == [1, 9, 9]
     assert trace.nodes[0].is_content == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
-    assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
+    assert [trace.nodes[nid].logical_ids for nid in turn.prefix_node_ids] == [
+        [1, 9],
+        [3, 4],
+    ]
 
     with pytest.raises(ValueError, match="exactly extend"):
         turn.commit(
