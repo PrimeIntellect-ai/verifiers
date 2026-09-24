@@ -363,6 +363,7 @@ def full_trace_fixture() -> vf.Trace:
                     content="Let me look it up.",
                     reasoning_content="SECRET REASONING",
                     provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
+                    provider_identity=[("reasoning", {"data": "SECRET STATE"})],
                     tool_calls=[
                         ToolCall(id="1", name="search", arguments='{"q": "france"}')
                     ],
@@ -402,6 +403,7 @@ def test_agentic_judge_trace_hidden_reasoning_toggle():
     assert assistant["tool_calls"][0]["name"] == "search"
     assert "reasoning_content" not in assistant
     assert "provider_state" not in assistant
+    assert "provider_identity" not in assistant
 
     task = JudgeTask.from_trace(
         full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True)

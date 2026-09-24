@@ -8,7 +8,6 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 """
 
 import json
-import re
 from collections import deque
 
 from openai.types.responses.response_usage import (
@@ -18,15 +17,17 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
-    RequestFilter,
     StreamParser,
-    append_user_notice,
     parse_sse_event,
-    provider_domains,
+    with_provider_identity,
+)
+from verifiers.v1.dialects.request import (
+    ContentTarget,
+    NativeRequest,
+    provider_declaration,
 )
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
@@ -73,42 +74,7 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
-# Client tools return calls to the harness; every other type may execute at the provider.
-_CLIENT_TOOL_TYPES = (
-    "function",
-    "custom",
-    "local_shell",
-    "apply_patch",
-    "computer",
-    "computer_use_preview",
-)
-_WEB_SEARCH_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
-_SAFE_INPUT_TYPES = (
-    "input_text",
-    "input_file",
-    "input_image",
-    "computer_screenshot",
-    "output_text",
-    "refusal",
-    "computer_call",
-    "function_call",
-    "custom_tool_call",
-    "reasoning",
-    "compaction",
-    "tool_search_call",
-    "local_shell_call",
-    "local_shell_call_output",
-    "shell_call",
-    "shell_call_output",
-    "apply_patch_call",
-    "apply_patch_call_output",
-    "compaction_trigger",
-)
 TEXT_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
-BLANK_PNG = (
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-    "AAAADUlEQVR42mNk+M/wHwAF/gL+Xw4AAAAASUVORK5CYII="
-)
 
 
 class ProviderUsageInputTokensDetails(InputTokensDetails):
@@ -158,83 +124,32 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-class ResponsesRequestFilter(RequestFilter):
-    def tool(self, tool, path: str) -> dict | None:
-        if not isinstance(tool, dict):
-            self.capabilities.append(path)
-            return None
-        kind = tool.get("type")
-        if isinstance(kind, str) and _WEB_SEARCH_TOOL_TYPE(kind):
-            filter_key = "blocked_domains" if self.policy.block else "allowed_domains"
-            filters = tool.get("filters")
-            if filters is None:
-                filters = {}
-            if isinstance(filters, dict):
-                domains = provider_domains(self.policy, filters.get(filter_key))
-                if domains and len(domains) <= 100:
-                    return {**tool, "filters": {**filters, filter_key: domains}}
-        if kind == "namespace":
-            nested = self.tools(tool.get("tools"), f"{path}.tools")
-            return {**tool, "tools": nested} if nested else None
-        environment = tool.get("environment")
-        if (
-            kind in _CLIENT_TOOL_TYPES
-            or kind == "tool_search"
-            and tool.get("execution") == "client"
-            or kind == "shell"
-            and isinstance(environment, dict)
-            and environment.get("type") == "local"
-        ):
-            return tool
-        self.capabilities.append(f"{path}.type")
-        return None
+def content_to_wire(content):
+    if isinstance(content, str):
+        return content
+    return [
+        {"type": "input_text", "text": part.text}
+        if isinstance(part, TextContentPart)
+        else {"type": "input_image", "image_url": part.image_url.url}
+        for part in content
+    ]
 
-    def blocked_part(self, value: dict, path: str) -> str | None:
-        kind = value.get("type")
-        if kind in ("input_file", "input_image", "computer_screenshot"):
-            if value.get("file_id"):
-                return f"{path}.file_id"
-            url_field = "file_url" if kind == "input_file" else "image_url"
-            if kind != "input_file" or url_field in value:
-                if self.blocked_url(value.get(url_field)):
-                    return f"{path}.{url_field}"
-            elif not isinstance(value.get("file_data"), str):
-                return f"{path}.file_data"
 
-        if (
-            kind == "reasoning"
-            and value.get("id")
-            and not value.get("encrypted_content")
-        ):
-            return f"{path}.id"
-        if kind == "item_reference" or kind is None and set(value) == {"id"}:
-            return f"{path}.id"
-
-        if kind == "tool_search_call" and value.get("execution") != "client":
-            return f"{path}.execution"
-        if kind == "shell_call":
-            environment = value.get("environment")
-            if not (
-                isinstance(environment, dict) and environment.get("type") == "local"
-            ):
-                return f"{path}.environment"
-        if kind in ("additional_tools", "tool_search_output"):
-            if kind == "tool_search_output" and value.get("execution") != "client":
-                return f"{path}.execution"
-            # Nested tool lists are atomic: report only their first omission.
-            probe = ResponsesRequestFilter(self.policy)
-            probe.tools(value.get("tools"), f"{path}.tools")
-            return next(iter(probe.capabilities), None)
-
-        if kind in ("computer_call_output", *TEXT_TOOL_OUTPUT_TYPES):
-            return self.blocked(value.get("output"), f"{path}.output")
-        if kind in (None, "message") and "role" in value and "content" in value:
-            return self.blocked(value["content"], f"{path}.content")
-        return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
+def input_to_wire(content):
+    encoded = content_to_wire(content)
+    return (
+        encoded if isinstance(encoded, str) else [{"role": "user", "content": encoded}]
+    )
 
 
 def fold_assistant(items: list[dict] | None) -> AssistantMessage:
     """Assistant-side Responses items -> one typed assistant message."""
+    items = [
+        {**item, "tools": [provider_declaration(t) for t in item.get("tools") or []]}
+        if item.get("type") in ("additional_tools", "tool_search_output")
+        else item
+        for item in items or []
+    ]
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
@@ -264,11 +179,13 @@ def fold_assistant(items: list[dict] | None) -> AssistantMessage:
                     if p.get("type") in ("input_text", "output_text")
                 )
             )
-    return AssistantMessage(
-        content=content or None,
-        reasoning_content="\n".join(r for r in reasoning if r) or None,
-        tool_calls=calls or None,
-        provider_state=items,
+    return with_provider_identity(
+        AssistantMessage(
+            content=content or None,
+            reasoning_content="\n".join(r for r in reasoning if r) or None,
+            tool_calls=calls or None,
+            provider_state=items,
+        )
     )
 
 
@@ -373,116 +290,6 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
     upstream_path = "/responses"
     response_type = OpenAIResponse
 
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        mediated = body
-        request_filter = ResponsesRequestFilter(policy)
-        capabilities = request_filter.capabilities
-
-        for field in ("previous_response_id", "conversation", "prompt", "plugins"):
-            if mediated.pop(field, None) is not None:
-                capabilities.append(field)
-
-        raw_input = mediated.get("input")
-        if isinstance(raw_input, list):
-            safe_input = []
-            for item_index, item in enumerate(raw_input):
-                item_path = f"input[{item_index}]"
-                if not isinstance(item, dict):
-                    safe_input.append(item)
-                    continue
-                kind = item.get("type")
-                if kind in ("additional_tools", "tool_search_output"):
-                    if blocked := request_filter.blocked(
-                        {**item, "tools": []}, item_path
-                    ):
-                        capabilities.append(blocked)
-                        continue
-                    item["tools"] = request_filter.tools(
-                        item.get("tools"), f"{item_path}.tools"
-                    )
-                    if kind == "tool_search_output" or item["tools"]:
-                        safe_input.append(item)
-                    continue
-                content_field = None
-                if kind in TEXT_TOOL_OUTPUT_TYPES:
-                    content_field = "output"
-                elif kind in (None, "message") and "content" in item:
-                    content_field = "content"
-
-                if content_field:
-                    request_filter.content(
-                        item, content_field, f"{item_path}.{content_field}"
-                    )
-
-                scan = {**item, content_field: []} if content_field else item
-                blocked = request_filter.blocked(scan, item_path)
-                if blocked is None:
-                    safe_input.append(item)
-                else:
-                    capabilities.append(blocked)
-                    if kind == "computer_call_output" and blocked.startswith(
-                        f"{item_path}.output"
-                    ):
-                        item["output"] = {
-                            "type": "computer_screenshot",
-                            "image_url": BLANK_PNG,
-                        }
-                        safe_input.append(item)
-            mediated["input"] = safe_input
-        elif blocked := request_filter.blocked(raw_input, "input"):
-            capabilities.append(blocked)
-            mediated["input"] = []
-
-        tools = request_filter.tools(mediated.get("tools"))
-        if "tools" in mediated:
-            mediated["tools"] = tools
-            if not tools:
-                mediated.pop("tool_choice", None)
-
-        choice = mediated.get("tool_choice")
-        valid_choice = choice is None or (
-            isinstance(choice, str) and choice in ("none", "auto", "required")
-        )
-        if isinstance(choice, dict):
-            kind = choice.get("type")
-            valid_choice = any(
-                tool.get("type") == kind
-                and ("name" not in choice or tool.get("name") == choice["name"])
-                for tool in tools
-            )
-            if kind == "allowed_tools":
-                # Tool-choice validation reports the choice as one capability.
-                choice_filter = ResponsesRequestFilter(policy)
-                choice_tools = choice_filter.tools(
-                    choice.get("tools"), "tool_choice.tools"
-                )
-                valid_choice = not choice_filter.capabilities
-                mediated["tool_choice"] = {**choice, "tools": choice_tools}
-        if not valid_choice:
-            capabilities.append("tool_choice")
-            mediated.pop("tool_choice")
-
-        if not capabilities:
-            return mediated, capabilities
-
-        input_items = mediated.get("input")
-        if not isinstance(input_items, list):
-            input_items = (
-                []
-                if input_items is None
-                else [{"role": "user", "content": input_items}]
-            )
-        append_user_notice(
-            input_items,
-            blocked_urls=request_filter.blocked_urls,
-            text_type="input_text",
-            message_type="message",
-        )
-        mediated["input"] = input_items
-        return mediated, capabilities
-
     def is_terminal_event(self, chunk: bytes) -> bool:
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
@@ -504,8 +311,9 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             settings["max_tokens"] = settings.pop("max_output_tokens")
         return Sampling.model_validate(settings)
 
-    def parse_request(self, body: RawRequest) -> Request:
+    def bind_request(self, body: RawRequest) -> NativeRequest:
         prompt: Messages = []
+        targets = {}
         if instructions := body.get("instructions"):
             prompt.append(SystemMessage(content=instructions))
         raw = body.get("input")
@@ -532,6 +340,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                     if isinstance(output, (str, list))
                     else json.dumps(output)
                 )
+                targets[len(prompt)] = ContentTarget(item, "output", content_to_wire)
                 prompt.append(
                     ToolMessage(
                         tool_call_id=item.get("call_id", ""),
@@ -541,10 +350,15 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             elif item.get("role") in ("system", "developer"):
                 prompt.append(SystemMessage(content=parse_content(item.get("content"))))
             else:
+                targets[len(prompt)] = (
+                    ContentTarget(body, "input", input_to_wire)
+                    if isinstance(raw, str)
+                    else ContentTarget(item, "content", content_to_wire)
+                )
                 prompt.append(UserMessage(content=parse_content(item.get("content"))))
         if run:
             prompt.append(fold_assistant(run))
-        tools = []
+        tools, provider_tools = [], []
         declarations = []
         for item in items:
             if item.get("type") in ("additional_tools", "tool_search_output"):
@@ -554,20 +368,21 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         for group in declarations:
             namespace = group["name"] if group.get("type") == "namespace" else None
             for tool in group["tools"] if namespace else [group]:
-                if tool.get("type") == "mcp":
-                    # Connection credentials belong in the native request, not the trace.
-                    tool = {
-                        key: value
-                        for key, value in tool.items()
-                        if key.lower() not in ("authorization", "headers")
-                    }
+                if tool.get("type") not in ("function", "custom"):
+                    declaration = provider_declaration(tool)
+                    if namespace:
+                        declaration = {
+                            "type": "namespace",
+                            "name": namespace,
+                            "tools": [declaration],
+                        }
+                    provider_tools.append(declaration)
+                    continue
                 tools.append(
                     Tool.model_validate(
                         tool
                         | {
-                            "name": tool.get("name")
-                            or tool.get("server_label")
-                            or tool.get("type"),
+                            "name": tool["name"],
                             "namespace": namespace,
                             "description": tool.get("description") or "",
                             "parameters": tool.get("parameters") or {},
@@ -575,69 +390,12 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                     )
                 )
         tools = list({(t.namespace, t.name, t.type): t for t in tools}.values())
-        return Request(messages=prompt, tools=tools or None)
+        return NativeRequest(
+            body, Request(messages=prompt, tools=tools or None), targets, provider_tools
+        )
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
-
-    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        original = [
-            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        rewritten = [
-            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
-        ]
-        items = body.get("input")
-        if isinstance(items, str):
-            if original != rewritten:
-                message = rewritten[0]
-                content = (
-                    message.content
-                    if isinstance(message.content, str)
-                    else [
-                        {"type": "input_text", "text": part.text}
-                        if isinstance(part, TextContentPart)
-                        else {
-                            "type": "input_image",
-                            "image_url": part.image_url.url,
-                        }
-                        for part in message.content
-                    ]
-                )
-                body["input"] = (
-                    content
-                    if isinstance(content, str)
-                    else [{"role": "user", "content": content}]
-                )
-            return
-
-        targets = []
-        for item in items or []:
-            role = item.get("role")
-            kind = item.get("type") or ""
-            assistant = role == "assistant" or (
-                role is None and not kind.endswith(("_output", "_response"))
-            )
-            if assistant or role in ("system", "developer"):
-                continue
-            targets.append(item)
-        for item, old, new in zip(targets, original, rewritten, strict=True):
-            if old == new:
-                continue
-            content = (
-                new.content
-                if isinstance(new.content, str)
-                else [
-                    {"type": "input_text", "text": part.text}
-                    if isinstance(part, TextContentPart)
-                    else {
-                        "type": "input_image",
-                        "image_url": part.image_url.url,
-                    }
-                    for part in new.content
-                ]
-            )
-            item["output" if isinstance(new, ToolMessage) else "content"] = content
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         original = next(

@@ -81,6 +81,10 @@ class AssistantMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None
     provider_state: list[dict[str, Any]] | None = None
     """Opaque native items replayed to preserve signed or encrypted reasoning state."""
+    provider_identity: list[tuple[str, dict[str, Any]]] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    """Protocol-projected continuation identity, independent of transient wire metadata."""
 
 
 class ToolMessage(BaseModel):

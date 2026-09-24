@@ -16,7 +16,7 @@ from renderers.base import ToolCallParseStatus, is_multimodal
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
-from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
+from verifiers.v1.dialects import FINISH_REASONS, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
@@ -339,15 +339,7 @@ class TrainClient(Client):
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
         # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
         # its `Response` for the program instead of relaying provider bytes.
-        if not isinstance(dialect, ChatDialect):
-            # The renderer renders a chat template, so it's only validated for chat-completions
-            # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
-            # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.
-            raise NotImplementedError(
-                f"The renderer client only supports the chat-completions dialect, got "
-                f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
-                f"renderer support for it."
-            )
+        dialect.validate_training(body)
         if turn is not None:
             prompt = turn.prompt
             tools = turn.tools

@@ -106,9 +106,10 @@ Docker framework routes take precedence over deny rules, while ordinary Prime de
 are applied unchanged and may block a matching route. Restricted Harbor tasks require
 Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained
 when their initial destination matches the effective policy. OpenAI Responses web search and
-Anthropic web search/fetch receive wildcard host allowlists translated to provider domains;
-policies that cannot be translated without widening still disable them. Every other hosted
-tool and provider-held resource remains disabled.
+Anthropic web search/fetch are accepted only when the request's own domain filters
+already enforce the effective policy. Requests with incompatible hosted tools,
+provider-held resources, or external URLs are rejected before inference. Interception
+preserves accepted requests; it does not remove content or inject policy messages.
 
 ## Artifacts and collect hooks
 
