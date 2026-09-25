@@ -115,6 +115,12 @@ class ModalConfig(NetworkPolicyConfig):
             _egress_domain(rule)
         return self
 
+    @model_validator(mode="after")
+    def _validate_vm(self) -> "ModalConfig":
+        if self.vm and self.gpu:
+            raise ValueError("Modal VM sandboxes support CPU workloads only")
+        return self
+
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
     pass
