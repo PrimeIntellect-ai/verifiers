@@ -9,12 +9,14 @@ and the actual parse is `pydantic_config.cli`.
 """
 
 import logging
+import os
 import sys
+import uuid
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -25,6 +27,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.gepa import GEPAConfig, run_gepa
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import TRACES_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,8 @@ USAGE = "usage: uv run vf-gepa [<taskset-id>] [--env.id <id>] --model <model> [o
 
 
 def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):

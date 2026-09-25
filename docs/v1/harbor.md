@@ -19,7 +19,7 @@ class TerminalBench2Taskset(
     pass
 ```
 
-You can also write custom code for your tasksets. A common customization is to set images for tasks that don’t come with one in their `task.toml`:
+You can also write custom code for your tasksets. Override each task's `image` and `verifier_image` by rebuilding it around an updated copy of its data:
 
 ```python
 from pathlib import Path
@@ -29,13 +29,14 @@ import verifiers.v1 as vf
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
 
 IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}:latest"
+VERIFIER_IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}-verifier:latest"
 
 
 class OpenThoughtsTBLiteConfig(HarborConfig):
     dataset: Literal["openthoughts/openthoughts-tblite"] = (
         "openthoughts/openthoughts-tblite"
     )
-    # Tell verifiers to use the pre-built image
+    # Load Dockerfile-only tasks before replacing their images below.
     ignore_dockerfile: bool = True
 
 
@@ -43,15 +44,17 @@ class OpenThoughtsTBLiteTaskset(
     HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]
 ):
     def load(self) -> list[HarborTask]:
-        # Use the public image instead to avoid building the image at runtime; the row
-        # data is frozen, so rebuild each task around an updated copy.
+        # Task data is frozen, so rebuild each task around an updated copy.
         return [
             HarborTask(
                 task.data.model_copy(
                     update={
                         "image": IMAGE_TEMPLATE.format(
                             task=Path(task.data.task_dir).name
-                        )
+                        ),
+                        "verifier_image": VERIFIER_IMAGE_TEMPLATE.format(
+                            task=Path(task.data.task_dir).name
+                        ),
                     }
                 ),
                 task.config,
@@ -60,7 +63,9 @@ class OpenThoughtsTBLiteTaskset(
         ]
 ```
 
-To create and reuse images for your tasksets, build the Dockerfile with Docker and push it to a registry, then set the resulting image reference as the task's `image` field.
+Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. When `verifier_image` is `None`, a separate verifier inherits the task's current `image` and stages the task package's tests. These changes leave `task.toml` unchanged.
+
+To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 
 On the `prime` runtime any pullable image reference just works: the first sandbox to use an image makes the platform build and cache what it needs from it (for VM sandboxes this build can take ~10 minutes — the eval dashboard marks affected rollouts as `build` and a warning is logged); every later sandbox on the same reference starts in seconds.
 

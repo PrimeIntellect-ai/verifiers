@@ -18,13 +18,19 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, BaseRuntimeInfo, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    BaseRuntimeInfo,
+    Runtime,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
 from verifiers.v1.runtimes.docker.egress import (
     EgressProxy,
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +226,11 @@ class DockerRuntime(ContainerRuntime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        self._label_args = ["--label", f"verifiers.run={run_scope()}"]
         run = await cli(
             self.engine,
             "run",
+            *self._label_args,
             "--detach",
             *options,
             *env_args,
@@ -363,6 +371,7 @@ class DockerRuntime(ContainerRuntime):
             helper = await cli(
                 self.engine,
                 "run",
+                *self._label_args,
                 "--rm",
                 "--user",
                 "0",
@@ -456,6 +465,7 @@ class DockerRuntime(ContainerRuntime):
         cut = await cli(
             self.engine,
             "run",
+            *self._label_args,
             "--rm",
             "--network",
             f"container:{self._container}",

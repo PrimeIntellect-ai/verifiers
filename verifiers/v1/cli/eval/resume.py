@@ -16,9 +16,9 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import TRACES_FILE
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.task import task_key
+from verifiers.v1.utils.trace_store import TRACES_FILE
 
 
 def load(

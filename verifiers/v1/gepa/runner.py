@@ -11,7 +11,7 @@ import logging
 from gepa.api import optimize
 from gepa.core.result import GEPAResult
 
-from verifiers.v1.cli.output import append_episode, output_path, save_config
+from verifiers.v1.cli.output import output_path, save_config
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Env
 from verifiers.v1.episode import Episode
@@ -22,6 +22,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
+from verifiers.v1.utils.trace_store import append_episode
 
 logger = logging.getLogger(__name__)
 

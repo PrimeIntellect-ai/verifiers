@@ -10,7 +10,6 @@ from pydantic_config import cli
 
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import (
-    TRACES_FILE,
     create_attempt_log_dir,
     output_path,
     saved_config_path,
@@ -26,6 +25,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import TRACES_FILE
 
 logger = logging.getLogger(__name__)
 

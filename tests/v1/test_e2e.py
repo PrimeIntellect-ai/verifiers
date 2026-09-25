@@ -20,7 +20,8 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 
 @pytest.mark.asyncio
-async def test_chat_harness_preserves_streamed_reasoning():
+@pytest.mark.parametrize("interruption", [None, "disconnect", "timeout", "eof"])
+async def test_chat_harness_preserves_streamed_reasoning(interruption):
     import json
 
     import httpx
@@ -61,10 +62,36 @@ async def test_chat_harness_preserves_streamed_reasoning():
     content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
     content += "data: [DONE]\n\n"
 
+    requests = []
+    streams = []
+
+    class CompletionStream(httpx.AsyncByteStream):
+        closed = False
+
+        def __init__(self, request, interrupted):
+            self.request = request
+            self.interrupted = interrupted
+
+        async def __aiter__(self):
+            if self.interrupted:
+                yield f"data: {json.dumps(chunk('discard this attempt'))}\n\n".encode()
+                if interruption == "disconnect":
+                    raise httpx.ReadError("connection reset", request=self.request)
+                if interruption == "timeout":
+                    raise httpx.ReadTimeout("read timed out", request=self.request)
+                return
+            yield content.encode()
+
+        async def aclose(self):
+            self.closed = True
+
     async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        stream = CompletionStream(request, interruption and len(requests) == 1)
+        streams.append(stream)
         return httpx.Response(
             200,
-            content=content,
+            stream=stream,
             headers={"content-type": "text/event-stream"},
             request=request,
         )
@@ -77,6 +104,12 @@ async def test_chat_harness_preserves_streamed_reasoning():
         )
         completion = await chat(client, "test-model", [], [])
 
+    assert len(requests) == (2 if interruption else 1)
+    assert [r.headers["x-stainless-retry-count"] for r in requests] == (
+        ["0", "1"] if interruption else ["0"]
+    )
+    assert all(r.content == requests[0].content for r in requests)
+    assert all(stream.closed for stream in streams)
     message = completion.choices[0].message.model_dump(exclude_none=True)
     assert message["role"] == "assistant"
     assert message["reasoning"] == "Plan: call ls"
@@ -373,14 +406,21 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
     if harness.id != "kimi-code":
         assert trace.num_branches == 1
-    # Native MCP tools need not appear in the intercepted model request that
-    # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
     if harness.id == "pi":
         recall = next(tool for tool in trace.tools if tool.name == "resume_recall")
         assert recall.parameters["properties"]["codeword"]["type"] == "string"
         assert "codeword" in recall.parameters["required"]
+    if harness.id == "codex":
+        recall = next(tool for tool in trace.tools if tool.name.endswith("recall"))
+        assert recall.namespace
+        assert "codeword" in recall.parameters["properties"]
+        assert any(
+            call.namespace == recall.namespace and call.name == recall.name
+            for message in trace.assistant_messages
+            for call in message.tool_calls or []
+        )
     if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
         assert all(call.acp is not None for call in trace.calls)
@@ -700,8 +740,8 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
-    from verifiers.v1.cli.output import read_episodes
     from verifiers.v1.trace import WireTrace
+    from verifiers.v1.utils.trace_store import read_episodes
 
     (record,) = read_episodes(tmp_path, WireTrace)
     assert {t.agent.name for t in record.traces} == {"assistant", "user"}
