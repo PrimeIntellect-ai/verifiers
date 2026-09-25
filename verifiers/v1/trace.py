@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 import traceback
 import uuid
@@ -729,7 +730,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        reward = Reward(score=float(value), weight=float(weight))
+        score = float(value)
+        if not math.isfinite(score):
+            # A NaN/inf score turns every mean it joins into NaN/inf; fail the
+            # rollout so it can be retried instead of recording a poisoned reward.
+            raise ValueError(f"reward {name!r} is not a finite number: {score}")
+        reward = Reward(score=score, weight=float(weight))
         self.rewards[name] = reward
 
     def record_judge_call(
