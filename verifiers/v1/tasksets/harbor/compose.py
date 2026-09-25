@@ -3,6 +3,7 @@
 import asyncio
 import atexit
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
 from verifiers.v1.runtimes.container import cli
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
 from verifiers.v1.utils.aio import run_shielded
+
+logger = logging.getLogger(__name__)
 
 # Docker routing and credential-helper lookup need these; local Compose must not see
 # unrelated evaluator secrets through shell interpolation.
@@ -115,6 +118,17 @@ async def compose_services(
             check=True,
         )
         atexit.unregister(down)
+
+    async def release() -> None:
+        # Like a provider sandbox's deletion, a failed removal must not fail the
+        # rollout or mask its error; the atexit backstop retries it.
+        try:
+            await asyncio.to_thread(down)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            detail = e.stderr.decode(errors="replace").strip() if e.stderr else ""
+            logger.warning(
+                "Compose project %s removal failed: %s %s", project[-1], e, detail
+            )
 
     try:
         async with asyncio.timeout(setup_timeout):
@@ -282,7 +296,7 @@ async def compose_services(
 
             if local:
                 atexit.register(down)
-                stack.push_async_callback(asyncio.to_thread, down)
+                stack.push_async_callback(release)
             # Cancellation kills the local CLI; the stack removes the project or VM.
             await compose("up", "--detach", "--wait")
             containers = await compose(
