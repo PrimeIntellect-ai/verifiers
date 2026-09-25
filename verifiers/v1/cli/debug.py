@@ -17,7 +17,7 @@ from uuid import uuid4
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import append_trace, save_config
+from verifiers.v1.cli.output import save_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_taskset_config,
@@ -34,6 +34,7 @@ from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import append_trace
 
 logger = logging.getLogger(__name__)
 

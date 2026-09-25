@@ -10,7 +10,6 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.cli.output import write_episode
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
@@ -26,6 +25,7 @@ from verifiers.v1.semantic import (
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.trace_store import write_episode
 
 
 class MyTask(vf.TaskData):
