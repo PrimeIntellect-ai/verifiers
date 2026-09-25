@@ -110,15 +110,13 @@ class SubprocessRuntime(Runtime):
         )
         try:
             stdout, stderr = await proc.communicate()
-        finally:
-            # If the await didn't finish, the caller cancelled it (e.g. the rollout's
-            # scoring_timeout / agent_timeout fired): communicate() leaves the process
-            # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
-            # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
-            # no-op once it has exited on its own.
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except BaseException:
+            # Descendants can hold the output pipes open after the leader exits.
+            # start_new_session makes pgid == pid; the saved id still addresses
+            # that group when getpgid(pid) can no longer find the leader.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            raise
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout.decode(errors="replace"),
