@@ -58,7 +58,7 @@ INVOCATION: ContextVar[CallIdentity] = ContextVar("flow_invocation")
 
 
 class Record(BaseModel):
-    """A durable call's record, `calls/<unit>/<digest>.json`."""
+    """A durable call's record, `calls/<job>/<digest>.json`."""
 
     key: str
     execution: str
@@ -204,7 +204,7 @@ class Live:
             self._dispatch[trace.id] = {
                 "id": invocation.call,
                 "kind": "flow",
-                "task": invocation.unit,
+                "task": invocation.job,
                 "started": trace.timing.start,
                 "invocation": invocation.model_dump(mode="json"),
             }

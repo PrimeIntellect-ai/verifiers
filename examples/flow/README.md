@@ -1,12 +1,32 @@
 # Flow
 
-A `Flow` subclass owns shared services and scheduling policy. Each `Unit` is work that can
-be paused or resumed independently. A `@stage` method receives that unit and returns a
-`Transition`: its next stage, status, and optional typed data, published together in one atomic `state.json` update.
-`setup()` runs on every launch, including resume. Persistent changes must be safe to repeat;
-`create_unit()` preserves existing checkpoints. Updates take a short write lock and increment
-the workflow revision; the execution lock spans the stage. Only the current state is retained.
-Transition outcomes and steering history live in the run's `transitions.jsonl` ledger.
+A `Flow` subclass owns stages, shared services and scheduling policy. A `Job[Data]` is
+one independently progressing instance, identified by a caller-chosen ID. It is passed
+to a `@stage` method; authors do not subclass it.
+
+```python
+self.create(id="task-7", stage="author", data=TaskData(...))
+
+# Apply a control immediately, from a stage or a monitor.
+self.apply("campaign", Transition(stage="fix", status="ready"))
+
+# Return from a stage to publish this job's next checkpoint.
+return Transition(stage="evaluate", status="ready", data=job.data, outcome="authored")
+```
+
+`setup()` runs on every launch. `create()` preserves existing checkpoints, so use stable
+IDs. Returning a `Transition` publishes only after the stage finishes successfully;
+`apply()` publishes immediately, even when targeting the current job. It does not
+interrupt that job's executing stage. Explicit controls override the returned transition
+field by field; later explicit controls win over earlier ones. Omitted fields stay unchanged.
+`reason` describes the state; `outcome` and `report` label the recorded transition.
+
+Each job keeps one atomic `jobs/<id>/state.json` checkpoint. A short write lock protects
+updates and increments its revision; the execution lock spans the stage. Mutating
+`job.data` changes only the working copy: publish it with `Transition(data=job.data)`.
+Data is a complete typed snapshot, never a patch. Immediate replacements require an
+inactive job and `expected=job.state().revision`; stale revisions are rejected. Stage
+returns need no explicit revision. Events live in `transitions.jsonl`.
 
 Start with these short, runnable plugins:
 
@@ -14,7 +34,7 @@ Start with these short, runnable plugins:
 - [parallel.py](../../verifiers/v1/flows/parallel.py): concurrent agents; retain successes if a sibling fails.
 - [draft_review.py](../../verifiers/v1/flows/draft_review.py): two stages exchange a Git artifact revision.
 - [partial_calls.py](../../verifiers/v1/flows/partial_calls.py): try partial failure and resume entirely offline.
-- [cross_unit.py](../../verifiers/v1/flows/cross_unit.py): a repair stage steers a waiting task into review, entirely offline.
+- [cross_job.py](../../verifiers/v1/flows/cross_job.py): a repair stage steers a waiting task into review, entirely offline.
 
 Export exactly one Flow subclass in the installed package's `__all__`. Its `Flow[Config]`
 specialization selects its Pydantic config. Prime-RL handles launch paths and logging:
@@ -23,7 +43,7 @@ specialization selects its Pydantic config. Prime-RL handles launch paths and lo
 uv run flow --flow.id single-agent --flow.model MODEL --run.name answers
 uv run flow --flow.id partial-calls --run.name demo --dashboard false
 uv run flow inspect --root outputs/demo
-uv run flow steer --root outputs/demo --unit task --status ready
+uv run flow apply --root outputs/demo --job task --status ready
 uv run flow --flow.id partial-calls --run.name demo --flow.available true --dashboard false
 ```
 
@@ -60,33 +80,33 @@ reachable under that choice: an all-local configuration cannot introduce a remot
 of Verifiers' state channel later. External tool URLs do not use that channel. Flow does not
 register state credentials for supplied shared tool servers; use task-scoped tools instead.
 
-Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(unit.path)`
+Reuse restores a value or trace, **never sandbox side effects**. `GitArtifacts(job.path)`
 optionally preserves work products independently of workflow state; publish the
-chosen revision in `Transition(data=unit.data)`. External effects before returning a
+chosen revision in `Transition(data=job.data)`. External effects before returning a
 transition are not rolled back by a hold.
 
 ## Agent control
 
-A monitoring coding agent reads published unit state, `transitions.jsonl`, call records and
+A monitoring coding agent reads published job state, `transitions.jsonl`, call records and
 traces (including `live/` deltas). `inspect` exposes current state and whether execution is active.
-`steer` changes the next stage/status or appends a note; it does not interrupt a model's
-conversation. Live controls survive stage publication. `unit.before` and `unit.notes` are
-stage-start snapshots; `unit.state()` reads current published state. Publish edits to the
-stage's `unit.data` explicitly with a transition. Operator data edits require a settled unit
-and its inspected revision (`--data patch.json --expected REVISION`).
+`apply` changes the next stage/status or appends a note; it does not interrupt a model's
+conversation. Live controls survive stage publication. `job.before` and `job.notes` are
+stage-start snapshots; `job.state()` reads current published state. Publish edits to the
+stage's `job.data` explicitly with a transition. Operator data replacements require a settled job
+and its inspected revision (`--data-file data.json --expected REVISION`).
 
-`admit(unit)` sees accepted executions in `self.active`, including their original executing
-stage after a live route. Pipelines define barriers and success policy; `run()` returns unit
+`admit(job)` sees accepted executions in `self.active`, including their original executing
+stage after a live route. Pipelines define barriers and success policy; `run()` returns job
 states and an `idle` or `draining` reason. Use `flow.stay_alive = true` to wait for new work.
-Stage concurrency is unbounded unless `flow.pools.units` is configured.
+Stage concurrency is unbounded unless `flow.pools.jobs` is configured.
 
 `flow drain --root outputs/demo` finishes running calls and stops new work. Remove the
 `drain` file to launch again. Ctrl-C drains once and cancels on a second signal.
 `pools.json` holds the current named limits; replace it atomically to resize them.
-For a run configured with a `units` pool:
+For a run configured with a `jobs` pool:
 
 ```sh
-printf '%s\n' '{"units": 2}' > outputs/my-run/pools.json.tmp
+printf '%s\n' '{"jobs": 2}' > outputs/my-run/pools.json.tmp
 mv outputs/my-run/pools.json.tmp outputs/my-run/pools.json
 ```
 

@@ -26,7 +26,7 @@ class FlowConfig(BaseConfig):
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape, as in `EnvConfig`; tunneled when any seat's runtime is remote."""
     pools: PoolLimits = Field(default_factory=dict)
-    """Optional stage limit (`units`); absent means unbounded. Other pools are acquired explicitly."""
+    """Optional stage limit (`jobs`); absent means unbounded. Other pools are acquired explicitly."""
     stay_alive: bool = False
     """Wait for new runnable work when idle; exit only on drain."""
 

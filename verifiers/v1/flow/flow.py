@@ -1,4 +1,4 @@
-"""Run admitted, ready units until idle or drained. Pipelines own scheduling policy."""
+"""Run admitted, ready jobs until idle or drained. Pipelines own scheduling policy."""
 
 from __future__ import annotations
 
@@ -58,10 +58,11 @@ from verifiers.v1.flow.events import (
     RunReason,
     StageEvent,
     Status,
+    Transition,
     append_event,
     now,
 )
-from verifiers.v1.flow.unit import STATE, D, Execution, Transition, Unit, UnitState
+from verifiers.v1.flow.job import STATE, D, Execution, Job, JobState
 from verifiers.v1.interception import make_interception
 from verifiers.v1.runtimes import runtime_is_local
 from verifiers.v1.runtimes.base import RUN_LABEL_VAR
@@ -76,19 +77,19 @@ _cache_inputs = TypeAdapter(dict[str, JsonValue])
 
 T = TypeVar("T")
 ConfigT = TypeVar("ConfigT", bound=FlowConfig, default=FlowConfig)
-UNITS = "units"
+JOBS = "jobs"
 DRAIN_FILE = "drain"
 """A file of this name in the root drains the flow, as Ctrl-C once does. Remove it to launch again."""
 _LINKS: ContextVar[list[Link] | None] = ContextVar("flow_links", default=None)
-"""The other units the running stage touched, `{unit, label}`: the edges between lanes."""
+"""The other jobs the running stage touched, `{job, label}`: the edges between lanes."""
 
 
-def unit_path(root: Path, name: str) -> Path:
+def job_path(root: Path, name: str) -> Path:
     if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
-        raise ValueError(f"unsafe unit id: {name!r}")
-    path = root / UNITS / name
-    if not path.resolve().is_relative_to((root / UNITS).resolve()):
-        raise ValueError(f"unit path escapes root: {name!r}")
+        raise ValueError(f"unsafe job id: {name!r}")
+    path = root / JOBS / name
+    if not path.resolve().is_relative_to((root / JOBS).resolve()):
+        raise ValueError(f"job path escapes root: {name!r}")
     return path
 
 
@@ -96,15 +97,15 @@ class RunResult(BaseModel):
     """Execution facts; a pipeline decides which outcomes count as success."""
 
     reason: RunReason
-    units: dict[str, UnitState[Any]]
+    jobs: dict[str, JobState[Any]]
 
     @property
     def counts(self) -> dict[Status, int]:
-        return dict(Counter(state.status for state in self.units.values()))
+        return dict(Counter(state.status for state in self.jobs.values()))
 
 
 class Stopped(Exception):
-    """The flow is draining: no call starts; the stage's unit stays ready to resume."""
+    """The flow is draining: no call starts; the stage's job stays ready to resume."""
 
 
 class Pools:
@@ -142,17 +143,17 @@ def digest(*parts: JsonValue) -> str:
 
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Transition[Any]]])
-_CURRENT: ContextVar[Unit[Any, Any]] = ContextVar("flow_unit")
+_CURRENT: ContextVar[Job[Any, Any]] = ContextVar("flow_job")
 
 
 def stage(method: F) -> F:
-    """Mark a named method as a durable unit stage."""
+    """Mark a named method as a durable job stage."""
     method.__dict__["_flow_stage"] = True
     return method
 
 
 class Flow(Generic[ConfigT]):
-    """Owns a run root: units, call results, traces, events, configuration and launch lock."""
+    """Owns a run root: jobs, call results, traces, events, configuration and launch lock."""
 
     def __init__(self, config: ConfigT, *, root: Path) -> None:
         self.root, self.config = root, config
@@ -160,7 +161,7 @@ class Flow(Generic[ConfigT]):
         if not isinstance(config, config_type):
             raise TypeError(f"{type(self).__name__} requires {config_type.__name__}")
         self.stages: dict[
-            str, Callable[[Unit[Any, Self]], Awaitable[Transition[Any]]]
+            str, Callable[[Job[Any, Self]], Awaitable[Transition[Any]]]
         ] = {
             name: getattr(self, name)
             for name, method in inspect.getmembers(type(self))
@@ -175,10 +176,10 @@ class Flow(Generic[ConfigT]):
         self._active: dict[str, Execution] = {}
 
     async def setup(self) -> None:
-        """Prepare the pipeline and seed its initial units; safe to repeat on resume."""
+        """Prepare the pipeline and seed its initial jobs; safe to repeat on resume."""
 
-    def admit(self, unit: Unit[Any, Self]) -> bool:
-        """Whether a ready unit may start; earlier admissions are already active."""
+    def admit(self, job: Job[Any, Self]) -> bool:
+        """Whether a ready job may start; earlier admissions are already active."""
         return True
 
     def exit_code(self, result: RunResult) -> int:
@@ -206,7 +207,7 @@ class Flow(Generic[ConfigT]):
                 )
                 if not (self.root / "pools.json").exists():
                     (self.root / "pools.json").write_text(json.dumps(self.config.pools))
-                (self.root / UNITS).mkdir(exist_ok=True)
+                (self.root / JOBS).mkdir(exist_ok=True)
                 trim_torn_tail(self.root / TRANSITIONS)
                 trim_torn_tail(self.root / "traces.jsonl")
                 self.traces, self.live = (
@@ -220,37 +221,43 @@ class Flow(Generic[ConfigT]):
                 else:
                     os.environ[RUN_LABEL_VAR] = previous_label
 
-    # -- units -----------------------------------------------------------------------------
+    # -- jobs -----------------------------------------------------------------------------
 
-    def units(self) -> list[Unit[Any, Self]]:
+    def jobs(self) -> list[Job[Any, Self]]:
         return [
-            self.unit(p.name)
-            for p in sorted((self.root / UNITS).iterdir())
+            self.job(p.name)
+            for p in sorted((self.root / JOBS).iterdir())
             if (p / STATE).is_file()
         ]
 
-    def unit(self, name: str) -> Unit[Any, Self]:
-        unit = Unit[Any, Self](unit_path(self.root, name))
-        unit.flow = self
-        return unit
+    def job(self, name: str) -> Job[Any, Self]:
+        job = Job[Any, Self](job_path(self.root, name))
+        job.flow = self
+        return job
 
-    def create_unit(self, name: str, *, stage: str, data: D) -> Unit[D, Self]:
-        """Seed a typed unit without resetting an existing checkpoint."""
-        unit = Unit[D, Self].create(
-            unit_path(self.root, name),
+    def create(self, id: str, *, stage: str, data: D) -> Job[D, Self]:
+        """Seed a typed job without resetting an existing checkpoint."""
+        job = Job[D, Self]._create(
+            job_path(self.root, id),
             stage=stage,
             data=data,
             stages=self.stages,
         )
-        unit.flow = self
-        self.touch(name, "seeded")
-        return unit
+        job.flow = self
+        self.touch(id, "seeded")
+        return job
 
-    def touch(self, unit: str, label: str) -> None:
-        """Note that the running stage acted on another unit (created it, released it, made it
+    def apply(
+        self, id: str, transition: Transition[D], *, expected: int | None = None
+    ) -> int:
+        """Apply a control now; replacing data requires a settled job and its revision."""
+        return self.job(id)._apply(transition, expected=expected).revision
+
+    def touch(self, job: str, label: str) -> None:
+        """Note that the running stage acted on another job (created it, released it, made it
         ready): the transition records the link, so a dashboard can draw the edge between lanes."""
         if (links := _LINKS.get()) is not None:
-            links.append(Link(unit=unit, label=label))
+            links.append(Link(job=job, label=label))
 
     # -- the loop ---------------------------------------------------------------------------
 
@@ -312,7 +319,7 @@ class Flow(Generic[ConfigT]):
                     release(name)
         result = RunResult(
             reason="draining" if self.draining else "idle",
-            units={unit.id: unit.state() for unit in self.units()},
+            jobs={job.id: job.state() for job in self.jobs()},
         )
         self.event(
             RunEvent(type="run_finished", reason=result.reason, counts=result.counts)
@@ -320,31 +327,31 @@ class Flow(Generic[ConfigT]):
         return result
 
     def _launch(self, running: dict[str, tuple[asyncio.Task[None], ExitStack]]) -> None:
-        limit = self.pools.limits.get("units")
-        for unit in self.units():
+        limit = self.pools.limits.get("jobs")
+        for job in self.jobs():
             if self.draining or (limit is not None and len(running) >= limit):
                 break
-            if unit.id in running or unit.state().status != "ready":
+            if job.id in running or job.state().status != "ready":
                 continue
-            if not self.admit(unit):
+            if not self.admit(job):
                 continue
             with ExitStack() as stack:
-                stack.enter_context(unit.executing())
-                if unit.before.status != "ready":
+                stack.enter_context(job.executing())
+                if job.before.status != "ready":
                     continue
-                self._active[unit.id] = unit.execution
-                running[unit.id] = (
-                    asyncio.create_task(self._stage(unit)),
+                self._active[job.id] = job.execution
+                running[job.id] = (
+                    asyncio.create_task(self._stage(job)),
                     stack.pop_all(),
                 )
 
-    async def _stage(self, unit: Unit[Any, Self]) -> None:
-        before, execution = unit.before, unit.execution
+    async def _stage(self, job: Job[Any, Self]) -> None:
+        before, execution = job.before, job.execution
         name = execution.stage
         self.event(
             StageEvent(
                 type="started",
-                unit=unit.id,
+                job=job.id,
                 stage=name,
                 execution=execution.id,
                 error=None,
@@ -353,15 +360,15 @@ class Flow(Generic[ConfigT]):
         error = None
         links: list[Link] = []
         token = _LINKS.set(links)
-        current = _CURRENT.set(unit)
+        current = _CURRENT.set(job)
         try:
-            transition = await self.stages[name](unit)
+            transition = await self.stages[name](job)
         except (Stopped, asyncio.CancelledError) as exc:
             cancelled = isinstance(exc, asyncio.CancelledError)
             self.event(
                 StageEvent(
                     type="cancelled" if cancelled else "stopped",
-                    unit=unit.id,
+                    job=job.id,
                     stage=name,
                     execution=execution.id,
                     error=None,
@@ -371,19 +378,19 @@ class Flow(Generic[ConfigT]):
                 raise
             return
         except Exception as exc:
-            logger.exception("%s/%s failed", unit.id, name)
+            logger.exception("%s/%s failed", job.id, name)
             error = Error(type=type(exc).__name__, message=str(exc))
             transition = Transition(
-                "held", f"{type(exc).__name__}: {exc}", status="held"
+                outcome="held", reason=f"{type(exc).__name__}: {exc}", status="held"
             )
         finally:
             _LINKS.reset(token)
             _CURRENT.reset(current)
-        committed = unit.apply(transition, before=before)
+        committed = job._apply(transition, before=before)
         self.event(
             StageEvent(
                 type="transition",
-                unit=unit.id,
+                job=job.id,
                 stage=name,
                 execution=execution.id,
                 error=error,
@@ -438,18 +445,18 @@ class Flow(Generic[ConfigT]):
             yield
 
     @property
-    def _unit(self) -> Unit[Any, Self]:
-        """The executing unit in this task; shared Flow instances never store a current cursor."""
-        unit = _CURRENT.get()
-        if unit.flow is not self:
+    def _job(self) -> Job[Any, Self]:
+        """The executing job in this task; shared Flow instances never store a current cursor."""
+        job = _CURRENT.get()
+        if job.flow is not self:
             raise RuntimeError("call belongs to another flow")
-        return unit
+        return job
 
     def link_from(self, source_execution: str, *, label: str) -> None:
         self.event(
             LinkEvent(
                 source_execution=source_execution,
-                target_execution=self._unit.execution.id,
+                target_execution=self._job.execution.id,
                 label=label,
             )
         )
@@ -531,15 +538,15 @@ class Flow(Generic[ConfigT]):
             )
         if cache_inputs is not None:
             cache_inputs = _cache_inputs.validate_python(cache_inputs, strict=True)
-        unit = self._unit
+        job = self._job
         name = key if key is not None else kind
         cache = digest(kind, key, cache_inputs)[:24] if key is not None else None
-        file = self.root / "calls" / unit.id / f"{cache}.json" if cache else None
+        file = self.root / "calls" / job.id / f"{cache}.json" if cache else None
         call = uuid4().hex
         invocation = CallIdentity(
-            unit=unit.id,
-            stage=unit.execution.stage,
-            execution=unit.execution.id,
+            job=job.id,
+            stage=job.execution.stage,
+            execution=job.execution.id,
             call=call,
             key=key,
             kind=kind,
@@ -585,7 +592,7 @@ class Flow(Generic[ConfigT]):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 record = Record(
                     key=name,
-                    execution=unit.execution.id,
+                    execution=job.execution.id,
                     call=call,
                     trace_id=cast(Trace, value).id if kind == "agent" else None,
                     payload=None
@@ -621,7 +628,7 @@ class Flow(Generic[ConfigT]):
     def check_running(self) -> None:
         """Refuse new work after drain, including work that waited for a pool."""
         if self.draining:
-            raise Stopped(self._unit.execution.stage)
+            raise Stopped(self._job.execution.stage)
 
 
 @contextmanager

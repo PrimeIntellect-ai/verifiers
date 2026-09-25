@@ -11,15 +11,15 @@ from verifiers.v1.flow import (
     Flow,
     FlowConfig,
     GitArtifacts,
+    JobData,
     Transition,
-    UnitData,
     stage,
 )
 from verifiers.v1.flow.artifacts import git
-from verifiers.v1.flow.unit import Unit
+from verifiers.v1.flow.job import Job
 
 
-class Data(UnitData):
+class Data(JobData):
     value: int = 0
 
 
@@ -53,20 +53,20 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     class Example(Flow[AgentFlowConfig]):
         async def setup(self):
             assert os.environ["VF_RUN_LABEL"] == self.label
-            self.create_unit("t", stage="work", data=Data())
+            self.create("t", stage="work", data=Data())
 
         @stage
-        async def work(self, unit: Unit[Data]):
+        async def work(self, job: Job[Data]):
             trace = await self.agents.worker.run(
                 vf.Task(vf.TaskData(prompt="solve")),
                 key="solve",
                 cache_inputs={},
             )
             assert trace.id == traces[-1].id
-            unit.data.value = 1
+            job.data.value = 1
             recorded.set()
             await finish.wait()
-            return Transition("done", status="terminal", data=unit.data)
+            return Transition(outcome="done", status="terminal", data=job.data)
 
     cfg = AgentFlowConfig(
         model="offline", client={"type": "eval", "base_url": "http://localhost:1"}
@@ -77,13 +77,13 @@ async def test_recorded_trace_survives_interrupted_stage(tmp_path, monkeypatch):
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
         await running
-    assert flow.unit("t").state().data.value == 0 and not flow.active
+    assert flow.job("t").state().data.value == 0 and not flow.active
     assert os.environ["VF_RUN_LABEL"] == "outer"
 
     finish.set()
     flow = Example(cfg, root=tmp_path)
     assert (await flow.run()).counts == {"terminal": 1}
-    assert flow.unit("t").state().data.value == 1 and len(traces) == 2
+    assert flow.job("t").state().data.value == 1 and len(traces) == 2
     assert flow.traces.get(traces[0].id) is None
     assert flow.traces.get(traces[-1].id) is not None
     assert not list((tmp_path / "live").iterdir())
@@ -113,35 +113,40 @@ async def test_parallel_calls_reuses_successes_until_inputs_change(tmp_path):
 
     class Example(Flow):
         async def setup(self):
-            self.create_unit("t", stage="work", data=Data())
+            self.create("t", stage="work", data=Data())
 
         @stage
-        async def work(self, unit: Unit[Data]):
+        async def work(self, job: Job[Data]):
             results = await self.gather(
                 *(
                     self.attempt(
                         work,
-                        unit.data.value,
+                        job.data.value,
                         i,
                         output=int,
                         key=str(i),
-                        cache_inputs=unit.data.model_dump(mode="json"),
+                        cache_inputs=job.data.model_dump(mode="json"),
                     )
                     for i in range(2)
                 )
             )
             return Transition(
-                "evaluated", status="terminal" if all(r.ok for r in results) else "held"
+                outcome="evaluated",
+                status="terminal" if all(r.ok for r in results) else "held",
             )
 
     flow = Example(FlowConfig(), root=tmp_path)
     assert (await flow.run()).counts == {"held": 1}
-    unit = flow.unit("t")
-    unit.steer(status="ready")
+    job = flow.job("t")
+    flow.apply(job.id, Transition(status="ready"))
     unavailable = False
     assert (await flow.run()).counts == {"terminal": 1}
     assert calls.count((0, 0)) == 1 and calls.count((0, 1)) == 2
-    unit.steer(data={"value": 1}, expected=unit.state().revision, status="ready")
+    flow.apply(
+        job.id,
+        Transition(data=Data(value=1), status="ready"),
+        expected=job.state().revision,
+    )
     assert (await flow.run()).counts == {"terminal": 1}
     assert {i for value, i in calls if value == 1} == {0, 1}
 
@@ -152,91 +157,110 @@ async def test_live_controls_survive_stage_publication(tmp_path, route):
 
     class Example(Flow):
         async def setup(self):
-            unit = self.create_unit("t", stage="work", data=Data())
-            unit.steer(note="first")
+            job = self.create("t", stage="work", data=Data())
+            self.apply(job.id, Transition(note="first"))
 
         @stage
-        async def work(self, unit: Unit[Data]):
-            assert unit.notes == "first"
+        async def work(self, job: Job[Data]):
+            assert job.notes == "first"
+            if route is None:
+                self.apply(job.id, Transition(status="held"))
             entered.set()
             await finish.wait()
-            unit.data.value = 1
-            return Transition("built", stage="review", data=unit.data)
+            job.data.value = 1
+            return Transition(
+                outcome="built", stage="review", status="ready", data=job.data
+            )
 
         review = repair = work
 
     flow = Example(FlowConfig(), root=tmp_path)
     running = asyncio.create_task(flow.run())
     await asyncio.wait_for(entered.wait(), 10)
-    unit = flow.unit("t")
+    job = flow.job("t")
     try:
         if route is not None:
-            unit.steer(stage="repair")
-        unit.steer(status="held", stage=route, note="late")
-        assert unit.inspect().active and flow.active["t"].stage == "work"
+            flow.apply(job.id, Transition(stage="repair"))
+        flow.apply(
+            job.id,
+            Transition(status="held" if route else None, stage=route, note="late"),
+        )
+        assert job.inspect().active and flow.active["t"].stage == "work"
         with pytest.raises(RuntimeError, match="still active"):
-            unit.steer(data={"value": 2}, expected=unit.state().revision)
+            flow.apply(
+                job.id,
+                Transition(data=Data(value=2)),
+                expected=job.state().revision,
+            )
     finally:
         finish.set()
         await running
-    state = unit.state()
+    state = job.state()
     assert (state.stage, state.status, state.data.value) == (
         route or "review",
         "held",
         1,
     )
     assert state.notes == ["late"]
-    assert not unit.inspect().active
-    old = unit.state().revision
-    unit.steer(data={"value": 2}, expected=old)
+    assert not job.inspect().active
+    old = job.state().revision
+    flow.apply(
+        job.id,
+        Transition(data=Data(value=2)),
+        expected=old,
+    )
     with pytest.raises(ValueError, match="stale"):
-        unit.steer(data={"value": 3}, expected=old)
+        flow.apply(
+            job.id,
+            Transition(data=Data(value=3)),
+            expected=old,
+        )
 
 
 def test_artifact_revisions_are_retained_and_independent_of_workflow(tmp_path):
-    unit = Unit.create(
-        tmp_path / "units" / "unit",
+    job = Job._create(
+        tmp_path / "jobs" / "job",
         stage="work",
         data=Data(),
         stages=["work"],
     )
-    store, revision = GitArtifacts(unit.path), unit.state().revision
+    store, revision = GitArtifacts(job.path), job.state().revision
     base = store.write(base=None, files={"rubric.md": "first"})
     newer = store.write(base=base, files={"rubric.md": "second"})
     assert store.write(base=base, files={"rubric.md": "second"}) == newer
-    assert unit.state().revision == revision
-    git(unit.path, "gc", "--prune=now")
+    assert job.state().revision == revision
+    git(job.path, "gc", "--prune=now")
     assert store.read(base, "rubric.md") == "first"
     assert store.read(newer, "rubric.md") == "second"
     with pytest.raises(ValueError, match="unsafe"):
         store.write(base=base, files={"../escape": "bad"})
 
 
-async def test_admission_reserves_units_and_run_reports_idle_or_drain(tmp_path):
+async def test_admission_reserves_jobs_and_run_reports_idle_or_drain(tmp_path):
     seen = []
 
     class Example(Flow):
         async def setup(self):
-            self.create_unit("campaign", stage="work", data=Data(value=2))
-            self.create_unit("other", stage="work", data=UnitData())
+            self.create("campaign", stage="work", data=Data(value=2))
+            self.create("other", stage="work", data=JobData())
 
-        def admit(self, unit):
+        def admit(self, job):
             return not self.active
 
         @stage
-        async def work(self, unit):
+        async def work(self, job):
             await asyncio.sleep(0)
-            seen.append((unit.id, list(self.active)))
-            return Transition("waiting", status="waiting")
+            seen.append((job.id, list(self.active)))
+            return Transition(outcome="waiting", status="waiting")
 
     flow = Example(FlowConfig(), root=tmp_path)
     result = await flow.run()
     assert result.reason == "idle" and result.counts == {"waiting": 2}
     assert seen == [("campaign", ["campaign"]), ("other", ["other"])]
-    assert isinstance(result.units["campaign"].data, Data)
-    assert type(result.units["other"].data) is UnitData
-    flow.unit("campaign").steer(status="ready")
+    assert isinstance(result.jobs["campaign"].data, Data)
+    assert type(result.jobs["other"].data) is JobData
+    flow.job("campaign").flow.apply(flow.job("campaign").id, Transition(status="ready"))
     flow.drain()
     result = await flow.run()
-    assert result.reason == "draining" and result.units["campaign"].status == "ready"
+    assert result.reason == "draining" and result.jobs["campaign"].status == "ready"
     assert len(seen) == 2 and not flow.active

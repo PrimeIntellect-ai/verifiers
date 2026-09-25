@@ -15,14 +15,14 @@ class Stats(BaseModel):
 
 class FlowStats(BaseModel):
     run: Stats = Field(default_factory=Stats)
-    units: dict[str, Stats] = Field(default_factory=dict)
+    jobs: dict[str, Stats] = Field(default_factory=dict)
     executions: dict[str, Stats] = Field(default_factory=dict)
 
 
 def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
     """Sum final call traces once, never attachments, earlier retries or extra usage.
 
-    Unit elapsed time spans its first execution start through its latest finish.
+    Job elapsed time spans its first execution start through its latest finish.
     After TraceStore.index(), pass TraceStore.tokens as the trace-ID mapping.
     """
     result = FlowStats()
@@ -35,13 +35,13 @@ def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
             elif event.type == "run_finished":
                 result.run.finished_at = event.at
         elif isinstance(event, StageEvent):
-            unit = result.units.setdefault(event.unit, Stats())
+            job = result.jobs.setdefault(event.job, Stats())
             if event.type == "started":
-                unit.started_at = unit.started_at or event.at
-                unit.finished_at = None
+                job.started_at = job.started_at or event.at
+                job.finished_at = None
                 result.executions[event.execution] = Stats(started_at=event.at)
             else:
-                unit.finished_at = event.at
+                job.finished_at = event.at
                 result.executions[event.execution].finished_at = event.at
         elif (
             isinstance(event, CallEvent)
@@ -54,7 +54,7 @@ def summarize(events: Iterable[Event], tokens: Mapping[str, int]) -> FlowStats:
             if recorded is not None:
                 for target in (
                     result.run,
-                    result.units[event.invocation.unit],
+                    result.jobs[event.invocation.job],
                     result.executions[event.invocation.execution],
                 ):
                     target.tokens = (target.tokens or 0) + recorded

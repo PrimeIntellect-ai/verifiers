@@ -2,9 +2,16 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SerializeAsAny,
+    TypeAdapter,
+)
 
 from verifiers.v1.trace import Error
 
@@ -34,9 +41,9 @@ class RunEvent(BaseEvent):
 
 
 class Link(BaseModel):
-    """A unit affected by a stage; does not identify a target execution."""
+    """A job affected by a stage; does not identify a target execution."""
 
-    unit: str
+    job: str
     label: str
 
 
@@ -51,7 +58,7 @@ class LinkEvent(BaseEvent):
 
 class StageEvent(BaseEvent):
     type: Literal["started", "stopped", "cancelled", "transition"]
-    unit: str
+    job: str
     stage: str
     execution: str
     error: Error | None = None
@@ -67,7 +74,7 @@ class StageEvent(BaseEvent):
 
 class CallIdentity(BaseModel):
     model_config = ConfigDict(frozen=True)
-    unit: str
+    job: str
     stage: str
     execution: str
     call: str
@@ -86,19 +93,32 @@ class CallEvent(BaseEvent):
     source_execution: str | None = None
 
 
-class Steering(BaseModel):
+T = TypeVar("T")
+
+
+class Transition(BaseModel, Generic[T]):
+    """A job change: return it at stage completion, or apply it immediately.
+
+    Omitted fields leave state unchanged. Data is a complete typed snapshot.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     stage: str | None = None
     status: Status | None = None
     reason: str | None = None
+    data: SerializeAsAny[T] | None = None
     note: str | None = None
-    data: dict[str, JsonValue] | None = None
+    outcome: str | None = None
+    report: str | None = None
+    """Pipeline-written filename under the run's reports/."""
 
 
 class SteerEvent(BaseEvent):
     type: Literal["steer"] = "steer"
-    unit: str
+    job: str
     revision: int
-    action: Steering
+    action: Transition[dict[str, JsonValue]]
 
 
 Event = RunEvent | StageEvent | CallEvent | SteerEvent | LinkEvent
