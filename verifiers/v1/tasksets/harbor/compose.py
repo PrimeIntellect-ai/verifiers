@@ -45,9 +45,17 @@ VM_HOST = {
     ModalConfig: {"image": "docker:28.3.3-dind", "workdir": "/", "vm": True},
 }
 INSTALL_DOCKER = (
-    "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
-    "apt-get install -y -qq --no-install-recommends docker.io docker-cli docker-compose iptables "
-    "> /tmp/docker-install.log 2>&1 || { tail -40 /tmp/docker-install.log; exit 1; }"
+    "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
+    "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io "
+    "docker-cli docker-compose iptables > /tmp/docker-install.log 2>&1 "
+    "|| { tail -40 /tmp/docker-install.log; exit 1; }; }"
+)
+# A host image can ship `docker save` archives here so services need no registry.
+# Each archive is removed once loaded, returning its disk space to the services.
+COMPOSE_IMAGES = "/opt/verifiers/compose-images"
+LOAD_IMAGES = (
+    f'for f in {COMPOSE_IMAGES}/*.tar; do [ -e "$f" ] || continue; '
+    'docker load -q -i "$f" && rm -f "$f" || exit 1; done'
 )
 
 
@@ -157,8 +165,11 @@ async def compose_services(
 
             root = str(directory)
             if not local:
+                host_config = VM_HOST[type(config)]
+                if task.data.compose_host_image is not None:
+                    host_config = {**host_config, "image": task.data.compose_host_image}
                 host = await stack.enter_async_context(
-                    provision_runtime(config.model_copy(update=VM_HOST[type(config)]))
+                    provision_runtime(config.model_copy(update=host_config))
                 )
                 if isinstance(config, PrimeConfig):
                     install = await host.run(["sh", "-c", INSTALL_DOCKER], {})
@@ -174,6 +185,11 @@ async def compose_services(
                 async with asyncio.timeout(60):
                     while (await run_host("docker", "info")).exit_code:
                         await asyncio.sleep(1)
+                loaded = await run_host("sh", "-c", LOAD_IMAGES)
+                if loaded.exit_code:
+                    raise SandboxError(
+                        f"Loading host images failed: {loaded.stderr or loaded.stdout}"
+                    )
                 root = "/harbor"
                 await host.write(
                     "/tmp/harbor.tar.gz",

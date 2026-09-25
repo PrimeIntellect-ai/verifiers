@@ -116,6 +116,11 @@ container images. Prime VM ports cannot be published externally. Modal publishes
 main's runtime service port through its encrypted tunnel, including when main shares
 another service's network namespace.
 
+A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
+daemon instead of the stock one. Docker is installed only when the image lacks it, and
+`docker save` archives shipped in `/opt/verifiers/compose-images/` load before the
+services start, so services referencing their tags pull nothing from a registry.
+
 The Harbor environment removes the entire project or remote sandbox before
 separate grading, which retains the ordinary fresh verifier runtime. A verifier
 without its own image inherits the resolved main image; a fresh copy also inherits
