@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
+import httpx
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
@@ -45,6 +46,15 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_POLL_RETRIES = 10
+"""Consecutive job-status reads that hit a gateway 5xx or a dropped connection before
+the exec is reported as failed; a status read is idempotent, so the job is unaffected."""
+
+
+def _transient(e: BaseException) -> bool:
+    cause = e.__cause__
+    status = getattr(getattr(cause, "response", None), "status_code", None)
+    return isinstance(cause, httpx.RequestError) or (status or 0) >= 500
 
 
 BASE_LABELS: list[str] = []
@@ -291,12 +301,21 @@ class PrimeRuntime(Runtime):
                 env=self.process_env(env),
             )
             delay = 0.1
-            output_retries = 0
+            output_retries = poll_failures = 0
             missing = None
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
-                )
+                try:
+                    result = await self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    )
+                except Exception as e:
+                    if poll_failures == _POLL_RETRIES or not _transient(e):
+                        raise
+                    poll_failures += 1
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 3)
+                    continue
+                poll_failures = 0
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
                 # is done, so asking again re-reads the output.
