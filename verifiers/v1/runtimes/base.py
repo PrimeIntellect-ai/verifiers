@@ -50,9 +50,6 @@ _ENSURE_UV = (
 # a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
 SERVICE_PORT = 8000
 
-RUN_LABEL_VAR = "VF_RUN_LABEL"
-"""Optional process-wide run identity, also inherited by child processes."""
-
 
 @dataclass(frozen=True)
 class ProgramResult:

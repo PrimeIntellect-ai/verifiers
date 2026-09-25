@@ -5,7 +5,6 @@ import contextlib
 import io
 import logging
 import math
-import os
 import shlex
 import tempfile
 from collections.abc import AsyncIterator
@@ -20,7 +19,6 @@ from pydantic import Field, model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
-    RUN_LABEL_VAR,
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
@@ -187,15 +185,14 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
-        labels = [*BASE_LABELS, *self.config.labels]
-        if label := os.environ.get(RUN_LABEL_VAR):
-            labels.append(label)
+        scope = run_scope()
+        labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
             async with (
                 creation_limiter(
                     (self.config.creates_per_min or 0) / 60,
                     "prime-sandbox",
-                    run_scope(),
+                    scope,
                 )
                 or contextlib.nullcontext()
             ):

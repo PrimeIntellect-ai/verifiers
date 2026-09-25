@@ -5,7 +5,6 @@ import array
 import contextlib
 import json
 import logging
-import os
 import re
 import shlex
 import socket
@@ -19,7 +18,6 @@ from urllib.parse import urlsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
-    RUN_LABEL_VAR,
     SERVICE_PORT,
     BaseRuntimeInfo,
     parse_gpu,
@@ -30,6 +28,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +162,7 @@ class DockerRuntime(ContainerRuntime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
-        self._label_args = (
-            ["--label", f"verifiers.run={label}"]
-            if (label := os.environ.get(RUN_LABEL_VAR))
-            else []
-        )
+        self._label_args = ["--label", f"verifiers.run={run_scope()}"]
         run = await cli(
             self.engine,
             "run",
