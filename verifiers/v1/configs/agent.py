@@ -111,7 +111,7 @@ def resolve_agent(
 ) -> AgentConfig:
     """`spec` with what it leaves unset filled from the run's defaults; its own
     sampling values merge over the run's. The one place a seat's identity resolves,
-    for an env's roles and a flow's seats alike."""
+    for configured agent roles."""
     merged = spec.sampling if sampling is None else sampling
     if sampling is not None and spec.sampling is not None:
         merged = sampling.model_copy(

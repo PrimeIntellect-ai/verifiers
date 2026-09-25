@@ -1,4 +1,4 @@
-"""Incremental trace deltas shared by served episodes and Flow.
+"""Incremental trace deltas for episode streams and file writers.
 
 The worker streams a served episode as it grows. Each trace announces its own changes
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
