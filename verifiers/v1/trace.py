@@ -163,6 +163,8 @@ class ModelCall(BaseModel):
     """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
     """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
+    provider_tools: list[dict] = Field(default_factory=list)
+    """Native provider declarations, with connection credentials omitted."""
     finish_reason: FinishReason = None
     """Why the model stopped, normalized (`stop` / `length` / `tool_calls`)."""
     usage: Usage | None = None
@@ -172,7 +174,7 @@ class ModelCall(BaseModel):
     error: Error | None = None
     """The failure that ended this call, coupled to the exchange that caused it."""
     policy: PolicyEvent | None = None
-    """Policy mediation applied to the request before this call."""
+    """Policy decision made before inference, including rejected requests."""
     acp: ACPInfo | None = None
     """Metadata advertised by the ACP harness for this model request."""
 

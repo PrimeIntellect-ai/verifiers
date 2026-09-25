@@ -271,10 +271,6 @@ def _canonical_tool_arguments(arguments: str) -> str:
         return arguments
 
 
-# Provider-specific fields not represented by typed messages but required on replay.
-_PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "phase"})
-
-
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant reasoning content when present, assistant tool calls,
@@ -304,37 +300,16 @@ def message_hash(message: Message) -> str:
         if message.reasoning_content is not None:
             add("reasoning_content")
             add(message.reasoning_content)
-        for item in message.provider_state or []:
-            kind = item.get("type") or (
-                "message" if item.get("role") == "assistant" else ""
-            )
-            hashed_state = {
-                key: item[key]
-                for key in _PROVIDER_STATE_FIELDS
-                if item.get(key) is not None
-            }
-            if kind == "message" and isinstance(item.get("content"), list):
-                # Keep content parts the typed message does not expose, such as refusals.
-                unparsed_content = [
-                    part
-                    for part in item.get("content") or []
-                    if part.get("type") not in ("input_text", "output_text")
-                ]
-                if unparsed_content:
-                    hashed_state["content"] = unparsed_content
-            represented = kind in ("message", "reasoning") or (
-                kind in ("function_call", "custom_tool_call")
-                and any(
-                    call.id == item.get("call_id") for call in message.tool_calls or []
-                )
-            )
-            if represented and not hashed_state:
-                continue
-            # Unknown provider items still distinguish built-in calls and actions.
-            state = hashed_state if represented else item
+        if message.provider_identity is not None:
+            for kind, state in message.provider_identity:
+                add("provider_state")
+                add(kind)
+                add(json.dumps(state, sort_keys=True))
+        elif message.provider_state:
+            # Manually authored opaque state has no protocol projection; preserve its
+            # full identity without interpreting provider-specific fields here.
             add("provider_state")
-            add(kind)
-            add(json.dumps(state, sort_keys=True))
+            add(json.dumps(message.provider_state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
             add(tc.type)
