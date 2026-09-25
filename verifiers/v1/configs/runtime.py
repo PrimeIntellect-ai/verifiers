@@ -2,6 +2,7 @@
 
 from fnmatch import fnmatchcase
 from glob import has_magic
+from ipaddress import IPv6Address
 from itertools import product
 from typing import Self
 from urllib.parse import SplitResult, urlsplit
@@ -17,6 +18,33 @@ def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:
     if parsed.scheme and port is None:
         port = 443 if parsed.scheme == "https" else 80
     return parsed, (parsed.hostname or "").lower().rstrip("."), port
+
+
+def check_network_rule(rule: str) -> None:
+    """Refuse a rule `parse_network_rule` would read differently from the glob it looks
+    like. `urlsplit` sees `?` and `#` as a query and a fragment, and `[...]` as an IPv6
+    literal, so `api?.example.com` quietly becomes the host `api` and `[a-z]*.com`
+    becomes `a-z`: a policy that matches the wrong destination, or nothing, without
+    saying so. A wrong egress rule should fail at config time, not at match time."""
+    if rule == "*":
+        return
+    if "?" in rule or "#" in rule:
+        raise ValueError(
+            f"network rule {rule!r}: '?' and '#' start a URL query or fragment, not a glob"
+        )
+    try:
+        _parsed, host, _port = parse_network_rule(rule)
+    except ValueError as e:
+        raise ValueError(f"network rule {rule!r}: {e}") from e
+    if not host:
+        raise ValueError(f"network rule {rule!r}: no host")
+    if "[" in rule:
+        try:
+            IPv6Address(host)
+        except ValueError:
+            raise ValueError(
+                f"network rule {rule!r}: brackets are an IPv6 literal, not a glob class"
+            ) from None
 
 
 def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
@@ -73,6 +101,8 @@ class NetworkPolicyConfig(BaseConfig):
             raise ValueError(
                 "non-empty concrete allow and block egress lists are mutually exclusive"
             )
+        for rule in [*self.allow, *self.block]:
+            check_network_rule(rule)
         return self
 
     @property
