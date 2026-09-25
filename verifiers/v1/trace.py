@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, field_serializer
+from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -357,16 +357,19 @@ class Branch(BaseModel):
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
@@ -386,7 +389,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
-    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+    """Tools observed across requests; the latest definition wins for each identity."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph, including physical and semantic parent links."""
@@ -472,6 +475,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def has_error(self) -> bool:
         return not self.ok
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once across all branches —
@@ -487,11 +491,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     total += increment
         return total
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         """Model-generated tokens across all turns, summed across branches."""
         return sum(branch.num_output_tokens for branch in self.branches)
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         """New input plus generated tokens, counted once per call across branches.
@@ -684,7 +690,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 if message.content:
                     lines.append(message.content)
                 lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
+                    f"[tool_call {call.namespace + '.' if call.namespace else ''}"
+                    f"{call.name}({call.arguments})]"
                     for call in message.tool_calls or []
                 )
             else:

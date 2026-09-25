@@ -17,11 +17,10 @@ from collections.abc import AsyncIterator
 from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
-from urllib.parse import urlsplit
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -32,6 +31,7 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,7 @@ _APP_NAME = "verifiers-v1"
 
 def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     """Translate only domains Modal can filter without broadening the rule."""
-    parsed = urlsplit(rule if "://" in rule else f"//{rule}")
-    host = (parsed.hostname or "").lower().rstrip(".")
+    parsed, host, port = parse_network_rule(rule)
     try:
         address = ip_address(host)
     except ValueError:
@@ -57,9 +56,8 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
         return None
     if (
         parsed.scheme not in (("https",) if framework else ("", "https"))
-        or parsed.port not in (None, 443)
+        or port not in (None, 443)
         or parsed.username is not None
-        or parsed.password is not None
         or address is not None
         or not re.fullmatch(
             r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
@@ -96,7 +94,7 @@ class ModalConfig(NetworkPolicyConfig):
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 40.0
-    """Pace sandbox creation to this many per second, enforced user-wide across every
+    """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it)."""
 
     @model_validator(mode="after")
@@ -184,7 +182,9 @@ class ModalRuntime(Runtime):
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
-                creation_limiter(self.config.creates_per_sec, "modal-sandbox")
+                creation_limiter(
+                    self.config.creates_per_sec, "modal-sandbox", run_scope()
+                )
                 or contextlib.nullcontext()
             ):
                 await run_shielded(self._create_sandbox(app))

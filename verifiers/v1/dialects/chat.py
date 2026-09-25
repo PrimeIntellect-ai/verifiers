@@ -21,9 +21,9 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
+    RequestFilter,
     StreamParser,
     append_user_notice,
-    blocked_url,
     parse_sse_event,
 )
 from verifiers.v1.types import (
@@ -64,6 +64,46 @@ FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # Client tools return calls to the harness; every other type may execute at the provider.
 _CLIENT_TOOL_TYPES = ("function", "custom")
 _SAFE_CONTENT_TYPES = ("text", "refusal", "input_audio", "image_url", "file")
+
+
+class ChatRequestFilter(RequestFilter):
+    def tool(self, tool, path: str) -> dict | None:
+        if (
+            isinstance(tool, dict)
+            and tool.get("type", "function") in _CLIENT_TOOL_TYPES
+        ):
+            return tool
+        self.capabilities.append(f"{path}.type")
+        return None
+
+    def blocked(self, value, path: str) -> str | None:
+        # Chat content parts are flat; nested lists and non-object parts are invalid.
+        kind = value.get("type") if isinstance(value, dict) else None
+        if kind not in _SAFE_CONTENT_TYPES:
+            return f"{path}.type"
+        if kind == "image_url":
+            image = value.get("image_url") or {}
+            url = image.get("url") if isinstance(image, dict) else image
+            if self.blocked_url(url):
+                return f"{path}.image_url.url"
+        if kind == "file":
+            file = value.get("file")
+            if not isinstance(file, dict):
+                return f"{path}.file"
+            if file.get("file_id"):
+                return f"{path}.file.file_id"
+            data = file.get("file_data")
+            if data is None:
+                return None
+            if not isinstance(data, str):
+                return f"{path}.file.file_data"
+            try:
+                parsed = urlsplit(data)
+            except ValueError:
+                return f"{path}.file.file_data"
+            if (parsed.scheme or parsed.netloc) and self.blocked_url(data):
+                return f"{path}.file.file_data"
+        return None
 
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
@@ -122,6 +162,7 @@ def parse_message(raw: dict) -> Message:
                     id=call["id"],
                     type=kind,
                     name=native["name"],
+                    namespace=native.get("namespace"),
                     arguments=native["input" if kind == "custom" else "arguments"],
                 )
             )
@@ -135,21 +176,26 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
-    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
-    # tools) parses to None, not [] — the same contract as the anthropic/responses
-    # dialects, and what keeps an empty parse from clearing `Trace.tools`.
-    if not raw:
-        return None
-    return [
-        Tool(
-            name=t["function"]["name"],
-            description=t["function"].get("description", ""),
-            parameters=t["function"].get("parameters", {}),
-            strict=t["function"].get("strict"),
+    tools = []
+    for declaration in raw or []:
+        kind = declaration.get("type", "function")
+        tool = declaration.get(kind, declaration)
+        if kind == "mcp":
+            tool = {
+                key: value
+                for key, value in tool.items()
+                if key.lower() not in ("authorization", "headers")
+            }
+        tools.append(
+            Tool.model_validate(
+                tool
+                | {
+                    "type": kind,
+                    "name": tool.get("name") or tool.get("server_label") or kind,
+                }
+            )
         )
-        for t in raw
-        if t.get("type", "function") == "function"
-    ] or None
+    return tools or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
@@ -184,6 +230,7 @@ def message_to_wire(message: Message) -> dict:
                     "type": call.type,
                     call.type: {
                         "name": call.name,
+                        **({"namespace": call.namespace} if call.namespace else {}),
                         "input"
                         if call.type == "custom"
                         else "arguments": call.arguments,
@@ -302,8 +349,9 @@ class ChatStreamParser(StreamParser):
                 slot["type"] = kind
                 native = slot.setdefault(kind, {"name": ""})
                 delta_native = tool_call.get(kind) or {}
-                if delta_native.get("name"):
-                    native["name"] = delta_native["name"]
+                for field in ("name", "namespace"):
+                    if delta_native.get(field):
+                        native[field] = delta_native[field]
                 input_field = "input" if kind == "custom" else "arguments"
                 self.tool_inputs.setdefault(index, []).append(
                     delta_native.get(input_field) or ""
@@ -382,8 +430,8 @@ class ChatDialect(Dialect[ChatCompletion]):
         self, body: RawRequest, policy: NetworkPolicyConfig
     ) -> tuple[RawRequest, list[str]]:
         mediated = body
-        capabilities: list[str] = []
-        blocked_urls: list[str] = []
+        request_filter = ChatRequestFilter(policy)
+        capabilities = request_filter.capabilities
 
         if mediated.pop("web_search_options", None) is not None:
             capabilities.append("web_search_options")
@@ -402,18 +450,7 @@ class ChatDialect(Dialect[ChatCompletion]):
                 ] or ["text"]
 
         raw_tools = mediated.get("tools")
-        tool_items = raw_tools if isinstance(raw_tools, list) else []
-        if raw_tools is not None and not isinstance(raw_tools, list):
-            capabilities.append("tools")
-        tools = []
-        for index, tool in enumerate(tool_items):
-            if (
-                isinstance(tool, dict)
-                and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-            ):
-                tools.append(tool)
-            else:
-                capabilities.append(f"tools[{index}].type")
+        tools = request_filter.tools(raw_tools)
         if "tools" in mediated:
             mediated["tools"] = tools
 
@@ -460,49 +497,15 @@ class ChatDialect(Dialect[ChatCompletion]):
             content = message.get("content")
             if not isinstance(content, list):
                 continue
-            safe_content = []
-            for part_index, part in enumerate(content):
-                path = f"messages[{message_index}].content[{part_index}]"
-                capability = None
-                kind = part.get("type") if isinstance(part, dict) else None
-                if kind not in _SAFE_CONTENT_TYPES:
-                    capability = f"{path}.type"
-                elif kind == "image_url":
-                    image = part.get("image_url") or {}
-                    url = image.get("url") if isinstance(image, dict) else image
-                    if not isinstance(url, str) or blocked_url(
-                        url, policy, blocked_urls
-                    ):
-                        capability = f"{path}.image_url.url"
-                elif kind == "file":
-                    file = part.get("file")
-                    if not isinstance(file, dict):
-                        capability = f"{path}.file"
-                    elif file.get("file_id"):
-                        capability = f"{path}.file.file_id"
-                    else:
-                        file_data = file.get("file_data")
-                        if file_data is not None and not isinstance(file_data, str):
-                            capability = f"{path}.file.file_data"
-                        elif isinstance(file_data, str):
-                            try:
-                                parsed = urlsplit(file_data)
-                            except ValueError:
-                                capability = f"{path}.file.file_data"
-                            else:
-                                if (parsed.scheme or parsed.netloc) and blocked_url(
-                                    file_data, policy, blocked_urls
-                                ):
-                                    capability = f"{path}.file.file_data"
-                if capability is None:
-                    safe_content.append(part)
-                else:
-                    capabilities.append(capability)
+            safe_content = request_filter.mediate(
+                content, f"messages[{message_index}].content"
+            )
             message["content"] = safe_content or ""
 
         if capabilities:
             append_user_notice(
-                mediated.setdefault("messages", []), blocked_urls=blocked_urls
+                mediated.setdefault("messages", []),
+                blocked_urls=request_filter.blocked_urls,
             )
         return mediated, capabilities
 

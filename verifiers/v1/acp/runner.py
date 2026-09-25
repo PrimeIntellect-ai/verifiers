@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1"]
+# dependencies = ["agent-client-protocol==0.12.1", "httpx"]
 # ///
 """Run harness segments through an ACP agent."""
 
@@ -14,6 +14,7 @@ from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import httpx
 from acp import (
     PROTOCOL_VERSION,
     Client,
@@ -45,8 +46,42 @@ class ACPTurn:
     update_metadata: list[dict[str, Any]]
 
 
+class ToolGate:
+    """The rollout's `/tool` gate, asked before every tool call the agent wants to run."""
+
+    def __init__(self, url: str, secret: str) -> None:
+        self.url = url
+        self.client = httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=httpx.Timeout(120, connect=5),
+        )
+
+    async def decision(self, tool_call_id: str, arguments: Any) -> str:
+        try:
+            # pi-acp wraps extension confirmations in a separate UI permission call.
+            if (
+                tool_call_id.startswith("pi-ui-")
+                and isinstance(arguments, dict)
+                and arguments.get("method") == "confirm"
+            ):
+                tool_call_id, arguments = (
+                    arguments["title"],
+                    json.loads(arguments["message"]),
+                )
+            response = await self.client.post(
+                self.url, json={"tool_call_id": tool_call_id, "arguments": arguments}
+            )
+            response.raise_for_status()
+            return response.json()["action"]
+        except Exception as error:  # noqa: BLE001 - an unreachable gate lets nothing run
+            print(f"tool gate denied {tool_call_id}: {error}", file=sys.stderr)
+            return "deny"
+
+
 class VerifiersACPClient(Client):
     def __init__(self) -> None:
+        self.gate: ToolGate | None = None
+        self.prompt_task: asyncio.Task | None = None
         self.visible_reply = ""
         self.message_id: str | None = None
         self.stop_reason: str | None = None
@@ -90,9 +125,23 @@ class VerifiersACPClient(Client):
         options: list[PermissionOption],
         **kwargs: Any,
     ) -> RequestPermissionResponse:
+        """Ask the rollout before execution: deny rejects one call; stop cancels the turn."""
+        kinds = ("allow_once", "allow_always")
+        if self.gate is not None:
+            decision = await self.gate.decision(
+                tool_call.tool_call_id, tool_call.raw_input
+            )
+            if decision == "stop":
+                self.stop_reason = "cancelled"
+                if self.prompt_task is not None:
+                    self.prompt_task.cancel()
+                return RequestPermissionResponse(
+                    outcome=DeniedOutcome(outcome="cancelled")
+                )
+            if decision != "allow":
+                kinds = ("reject_once", "reject_always")
         option = next(
-            (item for item in options if item.kind in ("allow_once", "allow_always")),
-            None,
+            (item for kind in kinds for item in options if item.kind == kind), None
         )
         outcome = (
             AllowedOutcome(outcome="selected", option_id=option.option_id)
@@ -165,12 +214,21 @@ async def prompt(
     if not blocks:
         raise ValueError("ACP prompt has no content")
     try:
-        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        client.prompt_task = asyncio.create_task(
+            connection.prompt(session_id=session_id, prompt=blocks)
+        )
+        response = await client.prompt_task
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
+    except asyncio.CancelledError:
+        if client.stop_reason != "cancelled":
+            raise
+        await connection.cancel(session_id=session_id)
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+    finally:
+        client.prompt_task = None
     return client.turn_result()
 
 
@@ -222,6 +280,9 @@ class ACPSession:
         self.is_new = True
 
     async def run(self, config: dict) -> ACPTurn:
+        gate = config.get("tool_interception")
+        if gate and self.client.gate is None:
+            self.client.gate = ToolGate(gate["url"], gate["secret"])
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -253,6 +314,9 @@ class ACPSession:
             try:
                 await self.stack.aclose()
             finally:
+                if self.client.gate is not None:
+                    await self.client.gate.client.aclose()
+                    self.client.gate = None
                 self._reset()
         return response_metadata
 

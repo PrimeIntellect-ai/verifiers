@@ -69,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="fc5734d20c5fe74f6ab527ecb7ab10299f3bb965", min_length=1
+        default="b425f2d1e6bcf7587818b3eb1ea44e747bd24709", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -92,6 +92,10 @@ class RLMHarnessConfig(HarnessConfig):
     raised to an explicit `max_depth` when needed to keep the policy valid."""
     max_subagent_calls: PositiveInt | None = None
     """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
+    delegation_prompt: bool | None = None
+    """Append nano-rlm's delegation guidance (when to spawn children, how to brief,
+    watch, collect and reconcile them) for every agent that can still delegate; `None`
+    uses nano-rlm's default (off)."""
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
@@ -197,6 +201,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "max_depth": self.config.max_depth,
             "max_concurrent_subagents": max_concurrent_subagents,
             "max_subagent_calls": self.config.max_subagent_calls,
+            "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
             "max_total_turns": self.config.max_total_turns,
