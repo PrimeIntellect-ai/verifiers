@@ -98,6 +98,8 @@ class DockerRuntime(ContainerRuntime):
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
+        # Helper containers carry the run label, including for borrowed containers.
+        self._label_args = ["--label", f"verifiers.run={run_scope()}"]
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -226,7 +228,6 @@ class DockerRuntime(ContainerRuntime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
-        self._label_args = ["--label", f"verifiers.run={run_scope()}"]
         run = await cli(
             self.engine,
             "run",
