@@ -106,8 +106,13 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         if not solution.ok:
             return
         runtime = solution.agent.runtime
-        if task.data.verifier.fresh_copy and runtime is not None and runtime.borrowed:
-            # Compose resolves images and workdirs at startup, including local builds.
+        if (
+            task.data.verifier_image is None
+            and runtime is not None
+            and runtime.borrowed
+        ):
+            # The verifier inherits the solver's image, which Compose resolves at
+            # startup (including local builds), as it does the workdir.
             task = type(task)(
                 task.data.model_copy(
                     update=runtime.model_dump(include={"image", "workdir"})

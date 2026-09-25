@@ -746,11 +746,18 @@ def parse_verifier_extras(
             )
         )
     services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}
-    if services and not (task_dir / "environment/docker-compose.yaml").is_file():
-        raise ValueError(
-            f"{task_dir.name}: artifacts or collect hooks target services "
-            f"{sorted(services)}, which need environment/docker-compose.yaml"
-        )
+    if services:
+        compose = task_dir / "environment" / "docker-compose.yaml"
+        declared: set[str] = set()
+        if compose.is_file():
+            import yaml
+
+            declared = set(yaml.safe_load(compose.read_text())["services"])
+        if missing := services - declared:
+            raise ValueError(
+                f"{task_dir.name}: artifacts or collect hooks target services "
+                f"{sorted(missing)} that environment/docker-compose.yaml does not declare"
+            )
 
     return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
 

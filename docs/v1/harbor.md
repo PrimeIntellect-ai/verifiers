@@ -117,8 +117,9 @@ main's runtime service port through its encrypted tunnel, including when main sh
 another service's network namespace.
 
 The Harbor environment removes the entire project or remote sandbox before
-separate grading, which retains the ordinary fresh verifier runtime. A fresh-copy
-verifier inherits the resolved main image and working directory. Images built only
+separate grading, which retains the ordinary fresh verifier runtime. A verifier
+without its own image inherits the resolved main image; a fresh copy also inherits
+main's working directory. Images built only
 inside a cloud host must be published separately and declared in the verifier environment.
 
 Compose projects are owned by the Harbor environment; agents borrow the existing
