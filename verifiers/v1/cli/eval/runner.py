@@ -9,6 +9,7 @@ runs env servers); this CLI is the quick local path.
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import TypeVar, cast
@@ -136,6 +137,8 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", config.run.id)
     # Resumed rollouts are part of this run too.
     log_episodes(run, finished)
 

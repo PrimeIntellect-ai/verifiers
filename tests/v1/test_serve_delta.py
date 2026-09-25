@@ -73,7 +73,7 @@ def test_delta_fields_cover_every_serialized_trace_field():
     streamed = set(HEADER_FIELDS) | set(LIST_FIELDS) | set(SCALAR_FIELDS)
     serialized = {
         name for name, info in vf.Trace.model_fields.items() if not info.exclude
-    }
+    } | set(vf.Trace.model_computed_fields)
     assert streamed == serialized
 
 

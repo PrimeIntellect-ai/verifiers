@@ -3,10 +3,12 @@
 import asyncio
 import contextlib
 import logging
+import os
 import shlex
 import sys
 import time
 import traceback
+import uuid
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
@@ -317,6 +319,8 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = with_positional_taskset(
         list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
     )

@@ -65,6 +65,9 @@ SCALAR_FIELDS = (
     "ok",
     "stop_condition",
     "timing",
+    "num_input_tokens",
+    "num_output_tokens",
+    "num_total_tokens",
 )
 """Re-sent whole whenever their dumped value changes."""
 
