@@ -14,12 +14,14 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
+    SandboxError,
     TaskError,
     ToolsetError,
     boundary,
 )
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
+from verifiers.v1.interception.relay import serve_relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     ModalConfig,
@@ -257,7 +259,14 @@ class Rollout:
                     self._shared_tools,
                 )
             )
-            self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+            # A remote runtime reaches the host through a tunnel that goes briefly dark
+            # when the host's tunnel client reconnects; the harness talks to an
+            # in-runtime relay that rides that out (see `interception.relay`).
+            harness_base = base_url
+            if not runtime.is_local:
+                async with boundary(SandboxError, "starting the interception relay"):
+                    harness_base = await serve_relay(runtime, base_url)
+            self._endpoint = runtime.host_url(f"{harness_base.rstrip('/')}/v1")
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -271,7 +280,11 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            # Egress is decided by the host each route leaves the runtime for: the
+            # relay's loopback endpoint leaves for the tunnel's host.
+            await runtime.prepare_execution(
+                [runtime.host_url(f"{base_url.rstrip('/')}/v1"), *self._urls.values()]
+            )
             async with (
                 boundary(HarnessError, "opening harness session"),
                 asyncio.timeout_at(setup_deadline),
@@ -320,7 +333,7 @@ class Rollout:
                     session_kwargs = (
                         {
                             "tool_interception_url": runtime.host_url(
-                                f"{base_url.rstrip('/')}/tool"
+                                f"{harness_base.rstrip('/')}/tool"
                             )
                         }
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
