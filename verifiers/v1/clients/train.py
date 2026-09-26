@@ -28,6 +28,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolCall,
+    TopLogprobs,
     TurnTokens,
     Usage,
 )
@@ -169,6 +170,13 @@ def response_from_generate(
             sampling_mask=SamplingMask.from_sampling_mask(mask)
             if (mask := result.get("sampling_mask"))
             else None,
+            top_logprobs=(
+                TopLogprobs.from_top_logprobs(
+                    result["completion_top_ids"], result["completion_top_logprobs"]
+                )
+                if result.get("completion_top_ids")
+                else None
+            ),
         ),
     )
 

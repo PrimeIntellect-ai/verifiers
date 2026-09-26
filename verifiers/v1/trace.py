@@ -32,6 +32,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolMessage,
+    TopLogprobs,
     Usage,
     content_text,
 )
@@ -46,6 +47,7 @@ EXCLUDE_FIELDS: dict = {
             "multi_modal_data",
             "routed_experts",
             "sampling_mask",
+            "top_logprobs",
         }
     }
 }
@@ -365,6 +367,36 @@ class Branch(BaseModel):
             else np.zeros(0, dtype=np.int32)
         )
         return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
+
+    @property
+    def top_logprobs(self) -> TopLogprobs | None:
+        """Top-k sampling heads aligned to this branch's token ids."""
+        if all(n.top_logprobs is None for n in self.nodes):
+            return None
+        # Attribution validates each head against the node's sampled positions.
+        ids_parts: list[np.ndarray] = []
+        logprobs_parts: list[np.ndarray] = []
+        counts_parts: list[np.ndarray] = []
+        for node in self.nodes:
+            counts = np.zeros(len(node.mask), dtype=np.int32)
+            if node.top_logprobs is not None and len(node.top_logprobs.counts):
+                counts[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
+                ids_parts.append(node.top_logprobs.ids)
+                logprobs_parts.append(node.top_logprobs.logprobs)
+            counts_parts.append(counts)
+        ids = (
+            np.concatenate(ids_parts).astype(np.int32, copy=False)
+            if ids_parts
+            else np.zeros(0, dtype=np.int32)
+        )
+        logprobs = (
+            np.concatenate(logprobs_parts).astype(np.float32, copy=False)
+            if logprobs_parts
+            else np.zeros(0, dtype=np.float32)
+        )
+        return TopLogprobs(
+            ids=ids, logprobs=logprobs, counts=np.concatenate(counts_parts)
+        )
 
     @property
     def usage(self) -> Usage | None:

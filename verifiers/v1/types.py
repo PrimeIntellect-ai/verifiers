@@ -217,6 +217,46 @@ class SamplingMask:
         return cls(ids=ids, counts=counts)
 
 
+@dataclass
+class TopLogprobs:
+    """Top-k sampling head stored as flat `ids`, `logprobs` and `counts` arrays.
+
+    Each row holds one completion token's top-k sampler candidates (sampled token
+    first, then descending probability). Row boundaries are recovered from
+    `counts`; `ids` and `logprobs` share the same flat layout.
+    """
+
+    ids: Any
+    logprobs: Any
+    counts: Any
+
+    @classmethod
+    def from_top_logprobs(
+        cls, ids: list[list[int]], logprobs: list[list[float]]
+    ) -> "TopLogprobs":
+        if len(ids) != len(logprobs):
+            raise ValueError("top ids and logprobs must have one row per token")
+        counts = np.fromiter(
+            (len(row) for row in ids),
+            dtype=np.int32,
+            count=len(ids),
+        )
+        if any(len(ids[i]) != len(logprobs[i]) for i in range(len(ids))):
+            raise ValueError("top ids and logprobs rows must be the same length")
+        flat = int(counts.sum())
+        ids_flat = (
+            np.concatenate([np.asarray(row, dtype=np.int32) for row in ids])
+            if flat
+            else np.empty(0, dtype=np.int32)
+        )
+        logprobs_flat = (
+            np.concatenate([np.asarray(row, dtype=np.float32) for row in logprobs])
+            if flat
+            else np.empty(0, dtype=np.float32)
+        )
+        return cls(ids=ids_flat, logprobs=logprobs_flat, counts=counts)
+
+
 class TurnTokens(BaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
@@ -246,6 +286,9 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): per-completion-token top-k sampling heads,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
