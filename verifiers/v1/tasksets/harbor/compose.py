@@ -224,6 +224,7 @@ async def compose_services(
                 "env.json",
             ):
                 compose_argv += ["-f", f"{root}/{file}"]
+            compose_env.update(task.runtime_env())
             compose_env.update(
                 ComposeInfraEnvVars(
                     main_image_name=project[-1],
