@@ -225,6 +225,11 @@ async def compose_services(
             ):
                 compose_argv += ["-f", f"{root}/{file}"]
             compose_env.update(
+                (key, value)
+                for key, value in task.runtime_env().items()
+                if key not in DOCKER_ENV
+            )
+            compose_env.update(
                 ComposeInfraEnvVars(
                     main_image_name=project[-1],
                     context_dir=project_dir,
