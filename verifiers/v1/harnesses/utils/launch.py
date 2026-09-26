@@ -21,13 +21,12 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
     return f"{metadata}{PEP_723_END}{sources}\n{body}"
 
 
-# The shared Null/Bash chat program is the utils modules themselves: `core` ends with
-# the `__main__` entry point, so the program text is only the script metadata. Secrets
-# use argv so tools do not inherit them.
+# Secrets use argv so tools do not inherit them. The entry point follows the bundled
+# modules so other chat programs can reuse the loop with their own startup code.
 CHAT_PROGRAM = (
     '# /// script\n# requires-python = ">=3.10"\n'
     '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]\n'
-    "# ///\n"
+    '# ///\nif __name__ == "__main__":\n    asyncio.run(main())\n'
 )
 CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
 

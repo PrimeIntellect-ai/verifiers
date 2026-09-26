@@ -198,6 +198,8 @@ copy_failed=$(
         The default adapts the existing launch/resume contract. Stateful harness
         transports override this factory so one handle can own their live process,
         connection, or native session for the rollout's full interaction.
+        The tool gate URL is host-facing; programs launched in the runtime need
+        its translated URL.
         """
         return HarnessSession(
             self,
@@ -208,7 +210,7 @@ copy_failed=$(
             secret,
             mcp_urls,
             data,
-            tool_interception_url,
+            runtime.host_url(tool_interception_url) if tool_interception_url else None,
         )
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:

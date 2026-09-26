@@ -53,7 +53,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             label="Hermes Agent",
             shell=("bash", "-o", "pipefail", "-c"),
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
