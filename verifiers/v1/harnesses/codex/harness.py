@@ -61,14 +61,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
-        # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
+        # codex-acp returns terminal failures in metadata with stop_reason=end_turn; a
+        # `warning` is a retry it already recovered from.
         failure = (
             result.response_metadata.get("jetbrains", {})
             .get("air", {})
             .get("sessionFailure")
         )
-        if failure and failure["phase"] == "active":
-            raise RuntimeError(f"Codex {failure['category']}: {failure['safeMessage']}")
+        if failure and failure["severity"] == "error":
+            raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
