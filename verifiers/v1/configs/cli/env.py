@@ -10,7 +10,7 @@ single_agent_env_config)`. The `SerializeAsAny` is load-bearing: pydantic serial
 by declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
 and knobs from `model_dump()` — the env-server wire's payload."""
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig
@@ -50,7 +50,25 @@ def merge_env_defaults(defaults: SharedEnvConfig, env: dict | None) -> dict:
     (e.g. the retries of every eval source). Only the fields set in `defaults` apply,
     and the env's own values win. A subtree whose `id`/`type` differs from the
     default's is the env's alone, so one plugin's knobs never leak into another's."""
-    return deep_merge(defaults.model_dump(exclude_unset=True), env or {})
+    return deep_merge(_dump_set(defaults), env or {})
+
+
+def _dump_set(config: BaseModel) -> dict:
+    """`config`'s set fields. Each dumped subtree keeps its `id`/`type` even when left
+    at the default: `deep_merge` detects a plugin switch only when both sides name it."""
+    dump = config.model_dump(exclude_unset=True)
+    for name, value in dump.items():
+        field = getattr(config, name)
+        if isinstance(field, BaseModel) and isinstance(value, dict):
+            dump[name] = {
+                **{
+                    k: getattr(field, k)
+                    for k in ("id", "type")
+                    if k in type(field).model_fields
+                },
+                **_dump_set(field),
+            }
+    return dump
 
 
 def narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
