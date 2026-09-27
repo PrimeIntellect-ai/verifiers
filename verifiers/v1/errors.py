@@ -23,12 +23,16 @@ the boundary isn't already clear from it.
 
 import contextlib
 from collections.abc import AsyncIterator
+from typing import ClassVar
 
 from openai import OpenAIError
 
 
 class RolloutError(Exception):
-    """Base for a failure recorded onto the trace rather than crashing the rollout."""
+    """Base for a failure recorded onto the trace rather than crashing the rollout.
+    `boundary` names the boundary the failure crossed; the trace stops as `<boundary>_error`."""
+
+    boundary: ClassVar[str | None] = None
 
 
 class ProviderError(RolloutError):
@@ -36,6 +40,8 @@ class ProviderError(RolloutError):
     `status_code` is the HTTP status surfaced to the harness so its SDK retries transient faults
     (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
     transport fault."""
+
+    boundary = "provider"
 
     def __init__(self, message: str = "", *, status_code: int = 502) -> None:
         super().__init__(message)
@@ -45,9 +51,13 @@ class ProviderError(RolloutError):
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
+    boundary = "harness"
+
 
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
+
+    boundary = "toolset"
 
 
 class EnvError(RolloutError):
@@ -55,21 +65,31 @@ class EnvError(RolloutError):
     ran no agent at all). Episode-level: per-agent failures stay typed on their
     traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
 
+    boundary = "env"
+
 
 class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
+
+    boundary = "sandbox"
 
 
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
+    boundary = "task"
+
 
 class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 
+    boundary = "interception"
+
 
 class TunnelError(InterceptionError):
     """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
+
+    boundary = "tunnel"
 
 
 @contextlib.asynccontextmanager
@@ -88,14 +108,6 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what} timed out") from e
     except Exception as e:
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
-
-
-def stop_condition(error: BaseException) -> str:
-    """The stop condition a recorded error leaves on the trace: `<boundary>_error` for
-    a typed rollout error (`SandboxError` -> `sandbox_error`), `error` for any other."""
-    if isinstance(error, RolloutError):
-        return f"{type(error).__name__.removesuffix('Error').lower()}_error"
-    return "error"
 
 
 def _provider_status(e: OpenAIError | str) -> int:

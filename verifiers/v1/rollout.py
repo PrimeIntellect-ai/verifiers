@@ -172,7 +172,9 @@ class Rollout:
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
         self._failure = error
-        self.trace.record_error(error)
+        self.trace.record_error(
+            error, boundary=error.boundary if isinstance(error, RolloutError) else None
+        )
 
     def timeout(self, stage: str) -> None:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
