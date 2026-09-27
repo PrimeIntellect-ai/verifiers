@@ -14,7 +14,11 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.configs.cli.env import (
+    merge_env_defaults,
+    narrowed_env_annotation,
+    resolve_env_field,
+)
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
@@ -311,6 +315,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EnvConfig",
     "ServeConfig",
     "resolve_env_field",
+    "merge_env_defaults",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",
     "AgentConfig",

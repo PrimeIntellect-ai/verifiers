@@ -1,5 +1,5 @@
 """Run-config plumbing around the `[env]` block: narrowing the `env` field of
-every config that owns one.
+every config that owns one, and layering shared env defaults under it.
 
 A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
 `[serve]` (how it's hosted, `configs/serve.py`) — plus its own fields. Nothing here is a base class: the eval
@@ -10,11 +10,13 @@ single_agent_env_config)`. The `SerializeAsAny` is load-bearing: pydantic serial
 by declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
 and knobs from `model_dump()` — the env-server wire's payload."""
 
+import copy
+
 from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.utils.generic import prefix_validation_error
+from verifiers.v1.utils.generic import deep_merge, prefix_validation_error
 
 
 def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
@@ -43,6 +45,14 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
         # `--agent.model` for the `--env.agent.model` the user typed.
         raise prefix_validation_error(e, ("env",)) from None
     return data
+
+
+def merge_env_defaults(defaults: dict, env: dict | None) -> dict:
+    """A raw `env` block over `defaults`, a partial `env` block that several envs of
+    one run share (e.g. the retries and timeouts of every eval source). The env's own
+    values win. A subtree whose `id`/`type` differs from the default's is the env's
+    alone, so one plugin's knobs never leak into another plugin's config."""
+    return deep_merge(copy.deepcopy(defaults), env or {})
 
 
 def narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
