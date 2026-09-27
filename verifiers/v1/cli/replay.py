@@ -12,21 +12,17 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
-from verifiers.v1.cli.output import (
-    append_trace,
-    read_episodes,
-    save_config,
-    saved_config_path,
-    write_config,
-)
+from verifiers.v1.cli.output import save_config, saved_config_path, write_config
 from verifiers.v1.cli.resolve import narrow_taskset_config
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
@@ -35,6 +31,7 @@ from verifiers.v1.task import Task, WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.trace_store import append_trace, read_episodes
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +194,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
 
 def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     if not argv or any(a in ("-h", "--help") for a in argv):
         print(USAGE)

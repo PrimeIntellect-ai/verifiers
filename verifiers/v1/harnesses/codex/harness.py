@@ -4,7 +4,11 @@ import hashlib
 import json
 import logging
 import re
+import tomllib
 from collections import Counter
+from pathlib import Path
+
+import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -34,6 +38,15 @@ touch {ready}
 """
 
 
+GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
+GATE_HANDLER = {
+    "type": "command",
+    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+    "timeout": 120,
+    "async": False,
+}
+
+
 class CodexHarnessConfig(HarnessConfig):
     version: PinnedVersion = "0.155.1"
     """Codex release to install, pinned for reproducibility."""
@@ -45,6 +58,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         # codex-acp returns terminal failures in metadata with stop_reason=end_turn.
@@ -117,6 +131,38 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 }
             },
         )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        # Codex asks its ACP client only when a command escapes the sandbox, and never in
+        # full access, so the gate is a PreToolUse hook instead.
+        await runtime.write(
+            f"{config.env['CODEX_HOME']}/vf-gate.mjs",
+            GATE_HOOK.replace("__URL__", json.dumps(url))
+            .replace("__SECRET__", json.dumps(secret))
+            .encode(),
+        )
+        # Codex keys hook trust by the config's canonical path, resolving symlinks.
+        home = await runtime.run(
+            ["sh", "-c", 'cd "$1" && pwd -P', "vf-gate", config.env["CODEX_HOME"]],
+            {},
+        )
+        if home.exit_code:
+            raise RuntimeError(f"could not resolve Codex home: {home.stderr}")
+        path = f"{home.stdout.strip()}/config.toml"
+        settings = tomllib.loads((await runtime.read(path)).decode())
+        # User hooks require a hash of Codex's normalized definition. Keeping the
+        # definition and its trust entry in this rollout's home avoids shared state.
+        identity = {"event_name": "pre_tool_use", "hooks": [GATE_HANDLER]}
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        settings["hooks"] = {
+            "PreToolUse": [{"hooks": [GATE_HANDLER]}],
+            "state": {f"{path}:pre_tool_use:0:0": {"trusted_hash": f"sha256:{digest}"}},
+        }
+        await runtime.write(path, tomli_w.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, self.trace_home(trace), "Codex home")

@@ -340,6 +340,7 @@ def message_hash(message: Message) -> str:
             add(tc.type)
             add(tc.id)
             add(tc.name)
+            add(tc.namespace or "")
             add(
                 tc.arguments
                 if tc.type == "custom"
@@ -547,7 +548,13 @@ class PendingTurn:
     def commit(self, response: Response) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
-        self.trace.tools = self.tools
+        if self.tools:
+            self.trace.tools = list(
+                {
+                    (tool.namespace, tool.name, tool.type): tool
+                    for tool in [*self.trace.tools, *self.tools]
+                }.values()
+            )
         self.trace.clear_preview(self)
         return assistant_id
 
@@ -574,7 +581,13 @@ class PendingTurn:
             )
             parent = len(self.trace.nodes) - 1
             index[_node_key(previous, message, self.tools)] = parent
-        self.trace.tools = self.tools
+        if self.tools:
+            self.trace.tools = list(
+                {
+                    (tool.namespace, tool.name, tool.type): tool
+                    for tool in [*self.trace.tools, *self.tools]
+                }.values()
+            )
         self.trace.clear_preview(self)
 
 
@@ -930,3 +943,14 @@ def leaves(trace: Trace) -> list[int]:
     `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
     has_child = {n.parent for n in trace.nodes if n.parent is not None}
     return [i for i in range(len(trace.nodes)) if i not in has_child]
+
+
+def path(trace: Trace, node: int) -> list[Message]:
+    """The conversation ending at `node`: its root-to-node messages."""
+    messages: list[Message] = []
+    current: int | None = node
+    while current is not None:
+        messages.append(trace.nodes[current].message)
+        current = trace.nodes[current].parent
+    messages.reverse()
+    return messages

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -10,8 +11,21 @@ from typing import TYPE_CHECKING
 
 import certifi
 import httpx
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncOpenAI,
+    DefaultAsyncHttpxClient,
+    omit,
+)
 from openai.lib.streaming.chat import AsyncChatCompletionStream
+from tenacity import (
+    AsyncRetrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
@@ -233,22 +247,6 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
-# Widely spaced retries for transient failures the SDK's own short retries do not ride
-# out: dropped connections, tunnel resets mid-stream, 429/5xx bursts. Same schedule as
-# nano-rlm's client, so the two harnesses fail an episode under the same conditions.
-_RETRY_DELAYS = (15.0, 30.0, 60.0, 90.0, 120.0)
-# 404 included: the interception tunnel/proxy returns intermittent 404s under load.
-_RETRYABLE_STATUS = {404, 408, 409, 429, 500, 502, 503, 504}
-
-
-def _retryable(error: BaseException) -> bool:
-    if isinstance(error, APIConnectionError | httpx.TransportError):
-        return True
-    if isinstance(error, APIStatusError):
-        return error.status_code in _RETRYABLE_STATUS
-    return isinstance(error, RuntimeError) and "stream ended" in str(error)
-
-
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -257,32 +255,33 @@ async def chat(
     *,
     tool_choice: str | None = None,
 ):
-    for attempt in range(len(_RETRY_DELAYS) + 1):
-        if attempt:
-            await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
-        try:
-            return await _chat_once(
-                client, model, messages, tools, tool_choice=tool_choice
-            )
-        except Exception as error:
-            if attempt == len(_RETRY_DELAYS) or not _retryable(error):
-                raise
-
-
-async def _chat_once(
-    client: AsyncOpenAI,
-    model: str,
-    messages: list[dict],
-    tools: list[dict],
-    *,
-    tool_choice: str | None = None,
-):
-    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    kwargs = {"model": model, "messages": messages}
+    if tools:
+        kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    raw_stream = await client.chat.completions.create(
-        **kwargs, stream=True, stream_options={"include_usage": True}
-    )
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+        stop=stop_after_attempt(client.max_retries + 1),
+        wait=wait_random_exponential(multiplier=0.5, max=8.0),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+        reraise=True,
+    ):
+        # Reuse the interception server's body-digest replay guard on stream retries.
+        retry_count = attempt.retry_state.attempt_number - 1
+        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
+        raw_stream = await client.chat.completions.create(
+            **kwargs,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_headers=headers,
+        )
+        # The SDK retries request setup; only stream consumption is retried here.
+        with attempt:
+            return await _read_chat_completion(raw_stream)
+
+
+async def _read_chat_completion(raw_stream):
     # Accumulate native deltas without auto-parsing tool arguments or treating
     # finish_reason="length" as an exception: compaction owns that decision.
     async with AsyncChatCompletionStream(
@@ -306,7 +305,10 @@ async def _chat_once(
             or not completion.choices
             or any(choice.finish_reason is None for choice in completion.choices)
         ):
-            raise RuntimeError("model stream ended before a completion finished")
+            raise APIConnectionError(
+                message="Model stream ended before a completion finished",
+                request=raw_stream.response.request,
+            )
         for choice in completion.choices:
             overrides = message_overrides.setdefault(choice.index, {})
             overrides.setdefault("role", "assistant")
@@ -315,17 +317,23 @@ async def _chat_once(
         return completion
 
 
-async def run_tool_hook(
-    client: httpx.AsyncClient,
-    url: str,
-    api_key: str,
-    phase: str,
-    message: dict,
+async def gate_tool_call(
+    client: httpx.AsyncClient, url: str, api_key: str, call
 ) -> dict:
+    """Ask the rollout's gate before running `call`. A denial carries the result to record
+    in place of executing; a stopped rollout ends the program."""
+    try:
+        arguments = json.loads(call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        arguments = call.function.arguments
     response = await client.post(
         url,
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"phase": phase, "message": message},
+        json={
+            "tool_call_id": call.id,
+            "name": call.function.name,
+            "arguments": arguments,
+        },
     )
     response.raise_for_status()
     decision = response.json()
@@ -370,18 +378,14 @@ async def run_chat_loop(
             }
             if args.tool_interception_url:
                 assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "before",
-                    tool_message,
+                decision = await gate_tool_call(
+                    tool_client, args.tool_interception_url, args.api_key, call
                 )
-                if decision["action"] == "rewrite":
-                    rewritten = bound_tool_message(decision["message"])
-                    messages.append(rewritten)
+                if decision["action"] == "deny":
+                    denied = bound_tool_message(decision["message"])
+                    messages.append(denied)
                     tool_result_tokens += estimated_tokens(
-                        str(rewritten.get("content", ""))
+                        str(denied.get("content", ""))
                     )
                     continue
             try:
@@ -415,18 +419,8 @@ async def run_chat_loop(
                 else:
                     content = f"error: unknown tool {name!r}"
             tool_message["content"] = content
+            # Results are rewritten at the model boundary, not here.
             tool_message = bound_tool_message(tool_message)
-            if args.tool_interception_url:
-                assert tool_client is not None
-                decision = await run_tool_hook(
-                    tool_client,
-                    args.tool_interception_url,
-                    args.api_key,
-                    "after",
-                    tool_message,
-                )
-                if decision["action"] == "rewrite":
-                    tool_message = bound_tool_message(decision["message"])
             messages.append(tool_message)
             tool_result_tokens += estimated_tokens(str(tool_message["content"]))
         if compactor.reached(completion, tool_result_tokens) and compactable(messages):
@@ -460,15 +454,12 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    timeout = httpx.Timeout(600.0 if args.bash else None, connect=5.0)
-    # Verify TLS against certifi's bundle, not the image's trust store: minimal images
-    # (e.g. plain ubuntu) ship no ca-certificates, and the client then reports the
-    # failed handshake with the interception tunnel as a bare "Connection error".
+    # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
-        timeout=timeout,
-        http_client=httpx.AsyncClient(timeout=timeout, verify=certifi.where()),
+        timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        http_client=DefaultAsyncHttpxClient(verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
