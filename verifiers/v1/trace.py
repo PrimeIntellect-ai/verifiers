@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError
+from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -781,7 +781,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.stop(f"{stage}_timeout", override=True)
 
     def record_error(self, error: Exception) -> None:
-        """Record an error, and stop the trace as failed."""
+        """Record an error, and stop the trace as failed: `<boundary>_error` for a
+        typed rollout error (`errors.stop_condition`), `error` for any other."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
@@ -795,7 +796,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         )
         self.ok = False
-        self.stop("error")
+        self.stop(stop_condition(error))
 
     def to_record(
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
