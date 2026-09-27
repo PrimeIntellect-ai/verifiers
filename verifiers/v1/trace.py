@@ -773,9 +773,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span.harness.duration = span.duration - span.model.duration
 
     def record_timeout(self, stage: str) -> None:
-        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`."""
+        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
+        The deadline is what ended the trace, so it replaces any earlier stop
+        condition (a finalize deadline can expire after `agent_completed`)."""
         self.is_timeout = True
-        self.stop(f"{stage}_timeout")
+        self.is_completed = True
+        self.stop_condition = f"{stage}_timeout"
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed."""
