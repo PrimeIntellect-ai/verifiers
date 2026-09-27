@@ -90,6 +90,14 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
 
 
+def stop_condition(error: BaseException) -> str:
+    """The stop condition a recorded error leaves on the trace: `<boundary>_error` for
+    a typed rollout error (`SandboxError` -> `sandbox_error`), `error` for any other."""
+    if isinstance(error, RolloutError):
+        return f"{type(error).__name__.removesuffix('Error').lower()}_error"
+    return "error"
+
+
 def _provider_status(e: OpenAIError | str) -> int:
     """The HTTP status to surface for an SDK error: the provider's own for an HTTP status error, a
     retryable 5xx for a transport/timeout fault, else 502."""
