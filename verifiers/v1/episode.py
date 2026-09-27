@@ -99,6 +99,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The run this episode belongs to, consumer-stamped."""
     ok: bool = False
     """Whether the episode completed successfully."""
+    is_timeout: bool = False
+    """Whether the env's own `run()`/`finalize()` deadline expired; a per-agent
+    stage deadline flags its trace (`Trace.is_timeout`)."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)

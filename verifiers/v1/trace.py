@@ -444,6 +444,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    is_timeout: bool = False
+    """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
@@ -755,10 +757,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def stop(self, condition: str) -> None:
-        """Stop the trace, optionally with a stop condition."""
+    def stop(self, condition: str, override: bool = False) -> None:
+        """Stop the trace with a stop condition. The first condition wins unless
+        `override` replaces it."""
         self.is_completed = True
-        if self.stop_condition is None:
+        if override or self.stop_condition is None:
             self.stop_condition = condition
 
     def split_agent_time(self) -> None:
@@ -769,6 +772,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         model = sum(call.time.duration for call in self.calls)
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
+
+    def record_timeout(self, stage: str) -> None:
+        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
+        The deadline is what ended the trace, so it replaces any earlier stop
+        condition (a finalize deadline can expire after `agent_completed`)."""
+        self.is_timeout = True
+        self.stop(f"{stage}_timeout", override=True)
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed."""
