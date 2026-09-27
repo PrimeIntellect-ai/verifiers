@@ -19,7 +19,7 @@ from verifiers.v1.configs.cli.env import (
     narrowed_env_annotation,
     resolve_env_field,
 )
-from verifiers.v1.configs.env import EnvConfig, default_agent_harness
+from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.configs.retries import RetryConfig
@@ -34,7 +34,7 @@ from verifiers.v1.configs.task import (
     RewardFunctionConfig,
     TaskConfig,
 )
-from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import (
@@ -290,6 +290,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Taskset",
     "TaskConfig",
     "TasksetConfig",
+    "SharedTasksetConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",
     "BaseConfig",
@@ -313,6 +314,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
+    "SharedEnvConfig",
     "ServeConfig",
     "resolve_env_field",
     "merge_env_defaults",
