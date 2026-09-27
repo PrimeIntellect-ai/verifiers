@@ -77,8 +77,9 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
     """Run a framework→code boundary, attributing any error escaping it to `error_cls`. An
     already-typed `RolloutError` passes through unchanged — it crossed a more specific boundary
     first (e.g. a `SandboxError` from `runtime.run` inside a reward stays a `SandboxError`). A
-    `TimeoutError` (the stage exceeded its budget) becomes `error_cls` too. `what` names the
-    boundary in the error message."""
+    `TimeoutError` the code raises itself (its own I/O) becomes `error_cls` too; a stage
+    deadline wraps the boundary from outside, so its expiry is a timeout, not an error.
+    `what` names the boundary in the error message."""
     try:
         yield
     except RolloutError:
