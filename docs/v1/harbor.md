@@ -98,7 +98,7 @@ evaluator's full environment. Task-local `.env` files and declared task env rema
 
 Compose preserves service entrypoints, commands, dependencies, health checks,
 networking, and volumes; the agent executes in a single `main` container.
-Host networking is unsupported. Runtime defaults preserve the authored image and
+Local host networking is unsupported. Runtime defaults preserve the authored image and
 working directory; task settings and non-default runtime overrides take precedence.
 
 For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
@@ -117,8 +117,8 @@ main's runtime service port through its encrypted tunnel, including when main sh
 another service's network namespace.
 
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
-daemon instead of the stock one. Docker is installed only when the image lacks it, and
-`docker save` archives shipped in `/opt/verifiers/compose-images/` load before the
+daemon instead of the stock one. For Prime, Docker is installed when the image lacks it, and
+`docker save` archives shipped in `/opt/harbor/compose-images/` load before the
 services start, so services referencing their tags pull nothing from a registry.
 
 The Harbor task attempt removes the entire project or remote sandbox before
@@ -128,7 +128,8 @@ main's working directory. Images built only
 inside a cloud host must be published separately and declared in the verifier environment.
 
 Compose projects are owned by the Harbor task attempt; agents borrow the existing
-Docker main container. Failures retry with a fresh project through
+main service through a borrowed runtime. Harbor owns provisioning, Compose startup,
+service operations, and cleanup; Verifiers owns agent execution, traces, and grading. Failures retry with a fresh project through
 `--env.retries`, rather than retrying an agent inside the same project.
 
 ## Network policies

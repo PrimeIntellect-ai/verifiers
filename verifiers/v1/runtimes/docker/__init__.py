@@ -13,7 +13,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -21,7 +21,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
-    Runtime,
     parse_gpu,
 )
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
@@ -33,10 +32,6 @@ from verifiers.v1.runtimes.docker.egress import (
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from verifiers.v1.runtimes.modal import ModalConfig
-    from verifiers.v1.runtimes.prime import PrimeConfig
 
 
 class DockerConfig(ContainerConfig, NetworkPolicyConfig):
@@ -72,26 +67,18 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 class DockerRuntime(ContainerRuntime):
     engine: ClassVar[str] = "docker"
     """The CLI binary for the shared OCI container operations."""
-    info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
+    info_cls: ClassVar[type[DockerRuntimeInfo] | type[PodmanRuntimeInfo]] = (
+        DockerRuntimeInfo
+    )
 
     def __init__(
         self,
-        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        config: DockerConfig | PodmanConfig,
         name: str | None = None,
-        *,
-        host: Runtime | None = None,
     ) -> None:
         super().__init__(name)
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
-        self._host = host
-        self.is_local = host is None or host.is_local
-        self.info = (
-            host.info.model_copy(
-                update={"image": self.config.image, "workdir": self.config.workdir}
-            )
-            if host
-            else self.info_cls(**self.config.model_dump())
-        )
+        self.info = self.info_cls(**self.config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
         self._proxy: EgressProxy | None = None
@@ -105,14 +92,13 @@ class DockerRuntime(ContainerRuntime):
     @contextlib.asynccontextmanager
     async def attach(
         cls,
-        config: "DockerConfig | PrimeConfig | ModalConfig",
+        config: DockerConfig,
         container: str,
         *,
         service_url: str | None = None,
-        host: Runtime | None = None,
     ) -> AsyncIterator["DockerRuntime"]:
         """Borrow an existing container; its caller owns creation and removal."""
-        runtime = cls(config, host=host)
+        runtime = cls(config)
         runtime._container = container
         runtime.info.borrowed = True  # cleanup never removes a borrowed container
         try:
@@ -130,12 +116,11 @@ class DockerRuntime(ContainerRuntime):
             runtime.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
-            if host is None:
-                runtime.info.id = container
+            runtime.info.id = container
             runtime.info.image = runtime.config.image
             runtime.info.workdir = runtime.config.workdir
             runtime._service_url = service_url
-            if host is None and service_url is not None:
+            if service_url is not None:
                 runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
                 if sys.platform == "linux":
                     await runtime._proxy.start(
@@ -327,8 +312,6 @@ class DockerRuntime(ContainerRuntime):
         )
 
     def host_url(self, url: str) -> str:
-        if self._host is not None:
-            return self._host.host_url(url)
         parts = urlsplit(url)
         if not is_loopback_host(parts.hostname or ""):
             return url
@@ -337,8 +320,6 @@ class DockerRuntime(ContainerRuntime):
         return self._proxy.callback_url(url, host)
 
     async def expose(self, port: int) -> str:
-        if self._host is not None:
-            return await self._host.expose(port)
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(
                 f"{self.engine} publishes only port {SERVICE_PORT}, not {port}"
@@ -409,9 +390,6 @@ class DockerRuntime(ContainerRuntime):
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
-        if self._host is not None:
-            await self._host.prepare_execution(routes)
-            return
         if not self.network_restricted:
             return
         assert self._proxy is not None

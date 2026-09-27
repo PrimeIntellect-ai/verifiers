@@ -119,7 +119,7 @@ class TaskAttempt:
         # already executing agent in the same restricted runtime (with_env views
         # share the runtime's storage). Distinct runtimes can run concurrently.
         if runtime.network_restricted and any(
-            box.__dict__ is runtime.__dict__ for box in self._running.values()
+            box.network_scope is runtime.network_scope for box in self._running.values()
         ):
             raise ValueError("overlapping agents need distinct restricted runtimes")
         self._running[trace.id] = runtime

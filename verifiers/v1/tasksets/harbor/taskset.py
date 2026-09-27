@@ -4,7 +4,7 @@ The Harbor CLI downloads and caches each task directory. Its verifier runs in th
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
 touched, carrying only what the task declared — the task attempt provisions and
-grades that box (see ``env.py``). Either way the score lands in
+grades that box (see ``attempt.py``). Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -168,7 +168,7 @@ class HarborData(TaskData):
     compose_host_image: str | None = None
     """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
     when the image lacks it, and `docker save` archives it ships in
-    /opt/verifiers/compose-images/ load before the services start. None uses a
+    /opt/harbor/compose-images/ load before the services start. None uses a
     stock image."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.

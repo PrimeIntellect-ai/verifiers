@@ -115,8 +115,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-# Prime support is on main, pending the next Harbor release.
-harbor = { git = "https://github.com/harbor-framework/harbor.git", rev = "3c82380859d187957cfd5cd64802b076d9779550" }
+# Experimental Prime Compose provider and live service API.
+harbor = { git = "https://github.com/hallerite/harbor.git", rev = "253691cab711c38de0a70b0d99296a617e03c135" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }

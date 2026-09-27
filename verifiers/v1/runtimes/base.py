@@ -170,6 +170,11 @@ class Runtime(ABC):
         borrowing program, caught up front instead of failing opaquely mid-harness."""
 
     @property
+    def network_scope(self) -> object:
+        """Identity of the shared network policy, including borrowed runtime views."""
+        return self.__dict__
+
+    @property
     def type(self) -> str:
         return self.config.type
 
