@@ -54,20 +54,20 @@ def merge_env_defaults(defaults: SharedEnvConfig, env: dict | None) -> dict:
 
 
 def _dump_set(config: BaseModel) -> dict:
-    """`config`'s set fields. Each dumped subtree keeps its `id`/`type` even when left
-    at the default: `deep_merge` detects a plugin switch only when both sides name it."""
-    dump = config.model_dump(exclude_unset=True)
-    for name, value in dump.items():
-        field = getattr(config, name)
-        if isinstance(field, BaseModel) and isinstance(value, dict):
-            dump[name] = {
-                **{
-                    k: getattr(field, k)
-                    for k in ("id", "type")
-                    if k in type(field).model_fields
-                },
-                **_dump_set(field),
-            }
+    """`config`'s set fields, including those set on a sub-config after construction
+    (which leaves the parent's field unmarked). Each dumped sub-config keeps its
+    `id`/`type` even at the default: `deep_merge` detects a plugin switch only when
+    both sides name it."""
+    dump = {}
+    for name in type(config).model_fields:
+        value = getattr(config, name)
+        if isinstance(value, BaseModel):
+            nested = _dump_set(value)
+            if nested or name in config.model_fields_set:
+                keys = [k for k in ("id", "type") if k in type(value).model_fields]
+                dump[name] = {**{k: getattr(value, k) for k in keys}, **nested}
+        elif name in config.model_fields_set:
+            dump[name] = config.model_dump(include={name})[name]
     return dump
 
 
