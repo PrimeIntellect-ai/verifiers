@@ -59,14 +59,11 @@ logger = logging.getLogger(__name__)
 
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
     """Apply an agent's stage-timeout precedence to one task."""
-    agent_timeout = (
-        timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
-    )
-    if agent_timeout == 0:
-        agent_timeout = None  # explicit: unbounded
     return RolloutTimeouts(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
-        agent=agent_timeout,
+        agent=(
+            timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
+        ),
         finalize=(
             timeout.finalize
             if timeout.finalize is not None
