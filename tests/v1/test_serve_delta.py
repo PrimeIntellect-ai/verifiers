@@ -28,11 +28,6 @@ class MyTask(vf.TaskData):
     answer: str
 
 
-class Slot:
-    def __init__(self) -> None:
-        self.traces: list[vf.Trace] = []
-
-
 async def settle() -> None:
     """Let a notified change reach the wire: the flush is a callback that starts a task."""
     for _ in range(3):
@@ -86,18 +81,18 @@ def test_delta_fields_cover_every_serialized_trace_field():
 async def test_failed_send_is_diffed_again():
     """A delta the wire refused is not lost: its cursor stays and the next flush
     carries the same content, so the client still assembles the whole trace."""
-    slot = Slot()
+    traces: list[vf.Trace] = []
     frames: list[bytes] = []
     fail = {"on": False}
 
-    async def send(data: bytes) -> None:
+    async def send(data: dict) -> None:
         if fail["on"]:
             raise OSError("host unreachable")
-        frames.append(data)
+        frames.append(pack(data))
 
-    async with DeltaStreamer(slot, send) as streamer:
+    async with DeltaStreamer(lambda: traces, send) as streamer:
         trace = make_trace()
-        slot.traces.append(trace)
+        traces.append(trace)
         streamer.watch(trace)
         await settle()
         fail["on"] = True
@@ -106,7 +101,7 @@ async def test_failed_send_is_diffed_again():
         fail["on"] = False
         add_turn(trace, "a2")
         await settle()
-        slot.traces = [trace]
+        traces = [trace]
     assembly = EpisodeAssembly()
     for frame in frames:
         assembly.apply(unpack(frame))
@@ -116,15 +111,15 @@ async def test_failed_send_is_diffed_again():
 
 @pytest.mark.asyncio
 async def test_pending_preview_streams_and_clears_on_commit():
-    slot = Slot()
+    traces: list[vf.Trace] = []
     frames: list[bytes] = []
 
-    async def send(data: bytes) -> None:
-        frames.append(data)
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
 
-    async with DeltaStreamer(slot, send) as streamer:
+    async with DeltaStreamer(lambda: traces, send) as streamer:
         trace = make_trace()
-        slot.traces.append(trace)
+        traces.append(trace)
         streamer.watch(trace)
         add_turn(trace, "a1")
         await settle()
@@ -161,7 +156,7 @@ async def test_pending_preview_streams_and_clears_on_commit():
         episode = Episode(
             env=EnvInfo(id="my-env"), task=trace.task, ok=True, traces=[trace]
         )
-        slot.traces = list(episode.traces)
+        traces = list(episode.traces)
     assembly = EpisodeAssembly()
     for frame in frames:
         assembly.apply(unpack(frame))
@@ -179,15 +174,15 @@ async def test_pending_preview_streams_and_clears_on_commit():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("routing_dtype", [np.uint8, np.uint16])
 async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
-    slot = Slot()
+    traces: list[vf.Trace] = []
     frames: list[bytes] = []
 
-    async def send(data: bytes) -> None:
-        frames.append(data)
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
 
-    async with DeltaStreamer(slot, send) as streamer:
+    async with DeltaStreamer(lambda: traces, send) as streamer:
         trace = make_trace()
-        slot.traces.append(trace)
+        traces.append(trace)
         streamer.watch(trace)
         trace.timing.boot.start = 1.0
         trace.notify()
@@ -211,7 +206,7 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
         episode = Episode(
             env=EnvInfo(id="my-env"), task=trace.task, ok=True, traces=[trace]
         )
-        slot.traces = list(episode.traces)
+        traces = list(episode.traces)
     # The exit flushed the tail (reward, stop, ok) without re-sending any node.
     deltas = [unpack(frame) for frame in frames]
     sent_nodes = sum(len(delta.get("nodes", [])) for delta in deltas)
@@ -247,21 +242,21 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
 
 @pytest.mark.asyncio
 async def test_discarded_attempt_drops_its_trace():
-    slot = Slot()
+    traces: list[vf.Trace] = []
     frames: list[bytes] = []
 
-    async def send(data: bytes) -> None:
-        frames.append(data)
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
 
-    async with DeltaStreamer(slot, send) as streamer:
+    async with DeltaStreamer(lambda: traces, send) as streamer:
         first = make_trace()
-        slot.traces.append(first)
+        traces.append(first)
         streamer.watch(first)
         add_turn(first, "a1")
         await settle()
-        slot.traces = []  # the attempt is retried
+        traces = []  # the attempt is retried
         second = make_trace()
-        slot.traces.append(second)
+        traces.append(second)
         streamer.watch(second)
         await settle()
     deltas = [unpack(frame) for frame in frames]

@@ -6,13 +6,16 @@ from typing import get_args
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    agent_config_fields,
+    merge_agent_defaults,
+)
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
-from verifiers.v1.utils.generic import deep_merge
 
 
 class TimeoutConfig(BaseConfig):
@@ -73,7 +76,7 @@ class EnvConfig(BaseConfig):
         default = default_agent_harness(self.taskset.id)
         return {
             name: cfg.harness if cfg.harness is not None else default
-            for name, cfg in _declared_agent_configs(self).items()
+            for name, cfg in agent_config_fields(self).items()
         }
 
     @model_validator(mode="before")
@@ -110,17 +113,7 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default — plain
-        validation would replace the instance wholesale, resetting its other pins."""
-        if isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if isinstance(field.default, AgentConfig) and isinstance(
-                    data.get(name), dict
-                ):
-                    data[name] = deep_merge(
-                        field.default.model_dump(exclude_none=True), data[name]
-                    )
-        return data
+        return merge_agent_defaults(cls, data)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
@@ -144,16 +137,6 @@ class EnvConfig(BaseConfig):
                     "instance is the role's author default (CLI overrides "
                     "deep-merge onto it, and the seat plays under the field's name)"
                 )
-
-
-def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
-    """The `AgentConfig` fields declared on an env's config, in declaration order —
-    the env's roles, each seat keyed by its field name (the only naming site)."""
-    return {
-        name: getattr(config, name)
-        for name, field in type(config).model_fields.items()
-        if isinstance(field.default, AgentConfig)
-    }
 
 
 def default_agent_harness(taskset_id: str) -> HarnessConfig:

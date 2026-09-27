@@ -73,6 +73,10 @@ class RuntimeProcess(ABC):
         pass
 
     @abstractmethod
+    async def poll(self) -> int | None:
+        """Return the underlying process's exit code without waiting for it to exit."""
+
+    @abstractmethod
     async def terminate(self) -> None:
         pass
 
@@ -134,7 +138,7 @@ class BaseRuntimeInfo(BaseConfig):
 class Runtime(ABC):
     __slots__ = ("env",)
 
-    is_local: ClassVar[bool] = True
+    is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
     subprocess and the local container runtimes; remote runtimes override to False and
     use a host `Tunnel` inward plus `expose` outward."""
