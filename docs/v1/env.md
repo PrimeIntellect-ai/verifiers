@@ -20,10 +20,40 @@ verifiers comes with different pre-built `Env`s to use:
 - The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
 - The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
 
+## Task attempts
+
+`agent.run(task)` opens a task attempt, runs the agent, grades the result, and
+closes the attempt. To control the world lifetime yourself, pass an entered
+attempt to `run()` or `interaction()`:
+
+```python
+async with task.open(placement=agents.solver.runtime_config) as attempt:
+    solution = await agents.solver.run(attempt)
+    await attempt.grade(solution)
+```
+
+An attempt owns its services (`attempt.runtime` is `attempt.services["main"]`).
+Several agents may use the same attempt, each with an independent trace and
+`trace.state`. `runtime=` can place an agent in another live runtime; that runtime
+remains owned by its caller. Close every agent session before grading the selected
+trace. Grading finalizes the world once and records task scores on that trace;
+the environment decides how to assign credit to the other agents. Overlapping
+agent sessions need distinct runtimes when networking is restricted: trusted setup
+must not reopen egress underneath another running agent.
+
+`Task.prepare(runtime)` prepares the world once on entry, before any agent trace
+exists. `Task.setup(trace, runtime)` initializes each agent session. Harness metrics
+and cleanup run when that agent closes; task `finalize` and scoring run when the
+attempt is graded. Exiting an attempt always frees its owned services, including
+after an exception or cancellation. An entered attempt is not retried by an agent:
+its caller controls retries of the whole shared world.
+
 ## Isolated deterministic verification
 
-Select `--env.id isolated-verifier` when the task's score must not run in the
-solver's sandbox. It is still a one-agent run: the environment records one solver
+Set `TaskConfig.verifier = vf.VerifierConfig()` to grade in a fresh runtime under
+any environment strategy, including best-of-N. An explicit `task.open()` can also
+take `verifier=vf.VerifierConfig(...)`. The `--env.id isolated-verifier` preset
+configures this for a single solver. It is still a one-agent run: the environment records one solver
 trace and starts no verifier agent, model, or harness.
 
 ```bash
@@ -63,13 +93,12 @@ task = CodeTask(
 
 The lifecycle is fixed:
 
-1. The task and harness run normally, including task `finalize` and harness metrics,
-   but task metrics and rewards are deferred.
-2. The environment collects the declared paths and `/logs/artifacts`, then destroys
-   the solver runtime.
+1. The agent runs, records harness metrics, and closes its harness session.
+2. The task attempt runs task `finalize`, collects the declared paths and
+   `/logs/artifacts`, then releases its owned solver services.
 3. It creates a fresh task controller and provisions either the same resolved
    container/runtime policy or the independently configured verifier runtime, runs
-   task `setup`, restores the artifacts at their original paths, runs task
+   task `prepare` and session `setup`, restores the artifacts at their original paths, runs task
    `stage_verifier`, reapplies the execution network policy, and runs task metrics
    and rewards onto the solver trace.
 
@@ -82,5 +111,5 @@ Relative artifacts require matching solver and verifier workdirs because artifac
 restored without path translation; absolute artifacts permit different workdirs.
 Configured model-backed task judges are rejected: use deterministic metrics/rewards
 here, or an agentic/judge environment when a model must judge the result.
-`--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
+`--env.verifier.retries` in the preset (or `TaskConfig.verifier.retries`) retries fresh verifier attempts after setup, restoration,
 staging, or scoring failures (default: 2).

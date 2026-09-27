@@ -1,4 +1,4 @@
-"""Harbor owns one Compose project per rollout, on local Docker or inside a provider VM."""
+"""A Harbor task attempt owns one Compose project, locally or inside a provider VM."""
 
 import asyncio
 import atexit
@@ -77,7 +77,7 @@ async def compose_services(
     if local and not trust_compose:
         raise ValueError(
             "Local Compose tasks can access host files and Docker privileges; "
-            "only run trusted tasks with --env.trust-compose"
+            "only run trusted tasks with --env.taskset.task.trust-compose"
         )
     if config.gpu:
         raise ValueError("Harbor Compose currently supports CPU tasks")

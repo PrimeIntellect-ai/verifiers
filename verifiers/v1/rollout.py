@@ -25,15 +25,14 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
     RuntimeConfig,
-    make_runtime,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
+from verifiers.v1.task_attempt import TaskAttempt
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
-from verifiers.v1.utils.artifacts import collect
-from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.decorators import discover_decorated
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +57,12 @@ class Rollout:
     def __init__(
         self,
         *,
-        task: Task,
+        task: Task | TaskAttempt,
         agent_config: AgentConfig,
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
+        placement: RuntimeConfig | None = None,
         has_user: bool = False,
         timeouts: RolloutTimeouts,
         limits: RolloutLimits,
@@ -72,6 +72,18 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
     ) -> None:
+        self._owns_attempt = not isinstance(task, TaskAttempt)
+        self.attempt = (
+            task
+            if isinstance(task, TaskAttempt)
+            else task.open(
+                placement=placement or runtime_config,
+                runtime=runtime,
+                timeouts=timeouts,
+                collect_artifacts=collect_artifacts,
+            )
+        )
+        task = self.attempt.task
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -83,7 +95,7 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
-        self._collect_artifacts = collect_artifacts
+        self._harness_cleaned = False
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -175,49 +187,36 @@ class Rollout:
         self.trace.record_error(error)
 
     async def open(self) -> bool:
-        """Boot the rollout's world up to the point where segments can run: start
-        (or borrow) the runtime, run task + harness setup, bring up the
-        interception slot and tool servers. Returns whether the exchange can
+        """Open or borrow a task attempt, attach this agent's session, and bring up
+        the harness, interception slot and tool servers. Returns whether the exchange can
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
-        if self._borrowed_runtime is None:
-            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
-        elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
-            # A lifetime bug in the borrowing program: raise to the caller instead
-            # of capturing onto the trace.
-            raise ValueError(
-                f"borrowed runtime {self.runtime.name!r} was already torn "
-                "down by its owner; keep the provisioning context open for every run "
-                "placed into the box"
-            )
-        runtime = self.runtime
-        assert self.trace.agent is not None  # minted with the trace
-        self.trace.agent.runtime = runtime.info
-        logger.info(
-            "rollout start: id=%s task=%s harness=%s runtime=%s",
-            self.trace.id,
-            self.task.data.idx,
-            self.harness.config.name,
-            self.runtime_config.type,
-        )
         try:
-            runtime_env = dict(self.task.runtime_env())
-            if self._borrowed_runtime is None:
-                runtime.env = runtime_env
+            if self._owns_attempt:
+                await self.attempt.__aenter__()
             else:
-                runtime = runtime.with_env(runtime_env)
-                self.runtime = runtime
+                self.attempt.check_open()
+            runtime = self.runtime or self.attempt.runtime
+            if runtime.stopped:
+                raise ValueError("cannot run an agent in a stopped runtime")
+            self.runtime = runtime = runtime.with_env(self.task.runtime_env())
+            assert self.trace.agent is not None
+            self.trace.agent.runtime = runtime.info
+            logger.info(
+                "rollout start: id=%s task=%s harness=%s runtime=%s",
+                self.trace.id,
+                self.task.data.idx,
+                self.harness.config.name,
+                runtime.config.type,
+            )
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
-            if self._borrowed_runtime is None:
-                await runtime.start()
-            await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -232,7 +231,7 @@ class Rollout:
                 boundary(TaskError, "task setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+                await self.attempt.attach(self.trace, runtime)
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
@@ -441,23 +440,31 @@ class Rollout:
                 await self._harness_session.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
-        if self.runtime is not None:
-            with contextlib.suppress(Exception):
+        await self._cleanup_harness()
+        self.attempt.release(self.trace)
+        if self._owns_attempt:
+            await self.attempt.close()
+
+    async def _cleanup_harness(self) -> None:
+        if self.runtime is not None and not self._harness_cleaned:
+            self._harness_cleaned = True
+            try:
                 await self.harness.cleanup(self.trace, self.runtime)
-        if self._borrowed_runtime is None and self.runtime is not None:
-            with contextlib.suppress(Exception):
-                await self.runtime.stop()
+            except Exception:
+                logger.warning(
+                    "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
+                )
 
     async def close(self) -> Trace:
-        """Finish the rollout: tool servers and interception down, task `finalize`
-        and per-rollout scoring (skipped when the run already failed — but a stopped
-        run is complete and scores its partial trajectory), then runtime teardown.
-        Idempotent; always returns the trace."""
+        """Close agent resources and score harness metrics. An owned attempt also
+        finalizes and grades the task, then closes its world. Borrowed attempts stay
+        with their caller. Idempotent; always returns the trace."""
         if self._closed:
             return self.trace
         self._closed = True
         trace = self.trace
         runtime = self.runtime
+        grading = False
         try:
             if self._harness_session is not None:
                 try:
@@ -478,35 +485,24 @@ class Rollout:
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
-                trace.timing.finalize.start = time.time()
-                async with boundary(TaskError, "task finalize"):
-                    async with asyncio.timeout(self._timeouts.finalize):
-                        await invoke(
-                            self.task.finalize, {"trace": trace, "runtime": runtime}
-                        )
-                        if self._collect_artifacts and not trace.state.artifacts:
-                            trace.state.artifacts = await collect(
-                                runtime,
-                                self.task.data.artifacts,
-                                max_bytes=self.task.data.artifact_max_bytes,
-                            )
-                now = time.time()
-                trace.timing.finalize.end = now
-                trace.timing.scoring.start = now
-                trace.notify()
-                async with boundary(TaskError, "scoring"):
-                    # Cross-trace judgement runs later, after the runtime is gone.
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            self.task.score(trace, runtime),
-                            self.harness.score(trace, runtime),
-                        ),
-                        self._timeouts.scoring,
-                    )
-                trace.timing.scoring.end = time.time()
-                trace.notify()
+                async with boundary(HarnessError, "harness scoring"):
+                    async with asyncio.timeout(self._timeouts.scoring):
+                        await self.harness.score(trace, runtime)
+                await self._cleanup_harness()
+                self.attempt.release(trace)
+                trace.ok = True
+                if self._owns_attempt:
+                    grading = True
+                    await self.attempt.grade(trace)
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
-            self.fail(e)
+            if grading:
+                self._failed = True
+                self._failure = e
+            else:
+                self.fail(e)
+        except BaseException:
+            self._failed = True
+            raise
         finally:
             if self._harness_session is not None:
                 with contextlib.suppress(Exception):
@@ -526,22 +522,14 @@ class Rollout:
                 if span.start and not span.end:
                     span.end = now
             trace.split_agent_time()
-            if runtime is not None:
+            await self._cleanup_harness()
+            self.attempt.release(trace)
+            if self._owns_attempt:
                 try:
-                    await self.harness.cleanup(trace, runtime)
+                    await self.attempt.close()
                 except Exception:
                     logger.warning(
-                        "harness cleanup failed (rollout %s)", trace.id, exc_info=True
-                    )
-            # Tear down here — the env's `score()` (later) needs only the traces,
-            # not a live runtime. A borrowed runtime is its creator's to tear down,
-            # not this rollout's.
-            if self._borrowed_runtime is None and runtime is not None:
-                try:
-                    await runtime.stop()
-                except Exception:
-                    logger.warning(
-                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                        "task teardown failed (rollout %s)", trace.id, exc_info=True
                     )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",

@@ -31,6 +31,7 @@ from verifiers.v1.configs.task import (
     TaskConfig,
 )
 from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.configs.verifier import VerifierConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import (
@@ -93,6 +94,7 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
+from verifiers.v1.task_attempt import TaskAttempt
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
     TRACE_VERSION,
@@ -217,6 +219,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "UserMessage",
     # task / trace / state
     "Task",
+    "TaskAttempt",
     "TaskData",
     "WireTaskData",
     "TaskResources",
@@ -285,6 +288,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # taskset / harness / runtime / environment
     "Taskset",
     "TaskConfig",
+    "VerifierConfig",
     "TasksetConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",

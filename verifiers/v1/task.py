@@ -35,9 +35,12 @@ from verifiers.v1.utils.decorators import (
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
+    from verifiers.v1.configs.verifier import VerifierConfig
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.rollout import RolloutTimeouts
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
+    from verifiers.v1.task_attempt import TaskAttempt
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -168,12 +171,41 @@ class Task(Generic[DataT, StateT, ConfigT]):
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
         return clone
 
+    def attempt_type(self) -> type[TaskAttempt]:
+        from verifiers.v1.task_attempt import TaskAttempt
+
+        return TaskAttempt
+
+    def open(
+        self,
+        *,
+        placement: RuntimeConfig,
+        runtime: Runtime | None = None,
+        timeouts: RolloutTimeouts | None = None,
+        verifier: VerifierConfig | None = None,
+        collect_artifacts: bool = False,
+    ) -> TaskAttempt:
+        """Create an independent task world; agents run against the entered attempt."""
+        return self.attempt_type()(
+            copy.deepcopy(self),
+            placement=placement,
+            runtime=runtime,
+            timeouts=timeouts,
+            verifier=verifier,
+            collect_artifacts=collect_artifacts,
+        )
+
     def runtime_env(self) -> dict[str, str]:
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
+    async def prepare(self, runtime: Runtime) -> None:
+        """Prepare the task world once, before any agent is attached."""
+        return
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
-        return None
+        """Initialize one agent session, with its own trace and local state."""
+        return
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
