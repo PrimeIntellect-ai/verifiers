@@ -757,10 +757,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def stop(self, condition: str) -> None:
-        """Stop the trace, optionally with a stop condition."""
+    def stop(self, condition: str, override: bool = False) -> None:
+        """Stop the trace with a stop condition. The first condition wins unless
+        `override` replaces it."""
         self.is_completed = True
-        if self.stop_condition is None:
+        if override or self.stop_condition is None:
             self.stop_condition = condition
 
     def split_agent_time(self) -> None:
@@ -777,8 +778,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         The deadline is what ended the trace, so it replaces any earlier stop
         condition (a finalize deadline can expire after `agent_completed`)."""
         self.is_timeout = True
-        self.is_completed = True
-        self.stop_condition = f"{stage}_timeout"
+        self.stop(f"{stage}_timeout", override=True)
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed."""
