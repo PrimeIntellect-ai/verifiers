@@ -12,11 +12,15 @@ from verifiers.v1.configs.agent import (
     agent_config_fields,
     merge_agent_defaults,
 )
+from verifiers.v1.configs.agent import (
+    TimeoutConfig as AgentTimeoutConfig,
+)
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
+from verifiers.v1.utils.generic import deep_merge
 
 
 class TimeoutConfig(BaseConfig):
@@ -42,6 +46,10 @@ class SharedEnvConfig(BaseConfig):
     taskset: SharedTasksetConfig = SharedTasksetConfig()
     """The taskset knobs every taskset has."""
     timeout: TimeoutConfig = TimeoutConfig()
+    agent_timeout: AgentTimeoutConfig = Field(
+        default_factory=AgentTimeoutConfig, exclude=True
+    )
+    """Stage timeouts inherited by every role; resolved roles carry them on the wire."""
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""
@@ -122,6 +130,19 @@ class EnvConfig(SharedEnvConfig):
     @model_validator(mode="before")
     @classmethod
     def _merge_role_defaults(cls, data):
+        if isinstance(data, dict):
+            timeout = data.get("agent_timeout")
+            if isinstance(timeout, AgentTimeoutConfig):
+                timeout = timeout.model_dump(exclude_unset=True)
+            if isinstance(timeout, dict):
+                for name, field in cls.model_fields.items():
+                    if not isinstance(field.default, AgentConfig):
+                        continue
+                    role = data.get(name, {})
+                    if isinstance(role, AgentConfig):
+                        role = role.model_dump(exclude_unset=True)
+                    if isinstance(role, dict):
+                        data[name] = deep_merge({"timeout": timeout}, role)
         return merge_agent_defaults(cls, data)
 
     @classmethod
