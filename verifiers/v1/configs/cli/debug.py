@@ -7,7 +7,7 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.validate import CheckTimeoutConfig
-from verifiers.v1.configs.select import SelectConfig
+from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
@@ -16,7 +16,7 @@ class DebugConfig(BaseConfig):
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id, used as the default output directory leaf."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    select: SelectConfig = SelectConfig()
+    select: SelectCLIConfig = SelectCLIConfig()
     """Which of the taskset's tasks to debug, under `--select.*` (`-n` sets
     `select.limit`, `-s` sets `select.shuffle`)."""
     runtime: RuntimeConfig = PrimeConfig()

@@ -146,8 +146,10 @@ def test_select_config_defaults_and_short_aliases() -> None:
         0,
         None,
     )
-    aliased = vf.SelectConfig.model_validate({"n": 3, "s": True})
+    aliased = vf.SelectCLIConfig.model_validate({"n": 3, "s": True})
     assert (aliased.limit, aliased.shuffle) == (3, True)
+    with pytest.raises(ValidationError):
+        vf.SelectConfig.model_validate({"n": 3})
     with pytest.raises(ValidationError):
         vf.SelectConfig(limit=0)
 

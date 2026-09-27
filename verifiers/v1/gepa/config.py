@@ -17,7 +17,7 @@ from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.select import SelectConfig
+from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -50,7 +50,7 @@ class GEPAConfig(BaseConfig):
     reflection_client: EvalClientConfig | None = None
     """Endpoint for `reflection_model`. None = reuse `client`."""
 
-    select: SelectConfig = SelectConfig()
+    select: SelectCLIConfig = SelectCLIConfig()
     """Which of the taskset's tasks GEPA splits into train/val, under `--select.*`
     (`-n` sets `select.limit`, `-s` sets `select.shuffle`)."""
     num_train: int = Field(100, ge=1)

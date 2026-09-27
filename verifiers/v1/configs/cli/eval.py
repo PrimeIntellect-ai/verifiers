@@ -9,7 +9,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.select import SelectConfig
+from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -85,7 +85,7 @@ class EvalConfig(BaseConfig):
     """Model id."""
     client: ClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()
-    select: SelectConfig = SelectConfig()
+    select: SelectCLIConfig = SelectCLIConfig()
     """Which of the taskset's tasks to evaluate, under `--select.*` (`-n` sets
     `select.limit`, `-s` sets `select.shuffle`)."""
     num_rollouts: int = Field(

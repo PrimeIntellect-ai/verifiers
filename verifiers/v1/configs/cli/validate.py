@@ -7,7 +7,7 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.eval import RunConfig
-from verifiers.v1.configs.select import SelectConfig
+from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
@@ -25,7 +25,7 @@ class ValidateConfig(BaseConfig):
     """Run identity: `run.name` auto-generates as `<taskset>--validate--<short-id>` and
     names the run directory under `output_dir`."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    select: SelectConfig = SelectConfig()
+    select: SelectCLIConfig = SelectCLIConfig()
     """Which of the taskset's tasks to validate, under `--select.*` (`-n` sets
     `select.limit`, `-s` sets `select.shuffle`)."""
     runtime: RuntimeConfig = PrimeConfig()

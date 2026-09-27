@@ -1,5 +1,5 @@
 """Which of a taskset's tasks a run uses: `Taskset.select(SelectConfig)`, under
-`--select.*` on the eval, debug, validate and GEPA CLIs."""
+`--select.*` on the eval, debug, validate and GEPA CLIs (`SelectCLIConfig`)."""
 
 import re
 
@@ -86,12 +86,23 @@ class SelectConfig(BaseConfig):
     """Keep only the tasks this names. Empty keeps all."""
     exclude: TaskMatchConfig = TaskMatchConfig()
     """Drop the tasks this names."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
+    shuffle: bool = False
     """Shuffle the kept tasks under `seed`. Needs a finite stream: an infinite taskset
     must be bounded by closed `include.idx` ranges first."""
     seed: int = 0
     """Seed for `shuffle`, fixed so runs select the same tasks."""
     skip: int = Field(0, ge=0)
     """Drop this many tasks after the shuffle."""
-    limit: int | None = Field(None, ge=1, validation_alias=AliasChoices("limit", "n"))
+    limit: int | None = Field(None, ge=1)
     """Take at most this many tasks after `skip` (None = all)."""
+
+
+class SelectCLIConfig(SelectConfig):
+    """`SelectConfig` with CLI short flags, for the one `select` block of an entrypoint:
+    `-n` sets `limit` and `-s` sets `shuffle`."""
+
+    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
+    """Shuffle the kept tasks under `seed` (`-s`). Needs a finite stream: an infinite
+    taskset must be bounded by closed `include.idx` ranges first."""
+    limit: int | None = Field(None, ge=1, validation_alias=AliasChoices("limit", "n"))
+    """Take at most this many tasks after `skip` (`-n`; None = all)."""

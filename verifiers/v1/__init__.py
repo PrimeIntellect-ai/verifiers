@@ -23,7 +23,7 @@ from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig, default_agent_h
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
+from verifiers.v1.configs.select import SelectCLIConfig, SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.serve import (
     ElasticPoolConfig,
     ServeConfig,
@@ -291,6 +291,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Taskset",
     "TaskConfig",
     "SelectConfig",
+    "SelectCLIConfig",
     "TaskMatchConfig",
     "TasksetConfig",
     "SharedTasksetConfig",
