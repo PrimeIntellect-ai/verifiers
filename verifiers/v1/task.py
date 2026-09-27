@@ -82,8 +82,7 @@ class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     idx: int | None = None
-    """Position in the taskset's `load()` stream, set by `Taskset` on iteration. A
-    value the taskset sets itself is overwritten."""
+    """Task index in the taskset's `load()` stream - automatically set."""
     id: str | None = None
     """Optional durable id from the task's source, e.g. a dataset's instance id."""
     name: str | None = None

@@ -192,11 +192,7 @@ def _match(
         idx = task.data.idx
         if stop is not None and idx >= stop:
             break
-        in_ranges = {
-            i
-            for i, (start, end) in enumerate(ranges)
-            if start <= idx and (end is None or idx < end)
-        }
+        in_ranges = {i for i, r in enumerate(ranges) if _in_slice(idx, r)}
         hit_ranges |= in_ranges
         values = {
             "ids": task.data.id,
@@ -217,3 +213,10 @@ def _match(
         missing["idx"] = unmatched
     if missing:
         logger.warning("%s matched no task for %s", label, missing)
+
+
+def _in_slice(idx: int, r: range | tuple[int, None, int]) -> bool:
+    if isinstance(r, range):
+        return idx in r
+    start, _, step = r
+    return idx >= start and (idx - start) % step == 0

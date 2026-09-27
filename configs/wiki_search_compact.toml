@@ -2,7 +2,9 @@
 # so the model always sees a compacted context instead of the full history.
 #
 #   uv run vf-eval @ configs/wiki_search_compact.toml
-select.limit = 1
+
+[select]
+limit = 1
 
 [env.taskset]
 id = "wiki-search"

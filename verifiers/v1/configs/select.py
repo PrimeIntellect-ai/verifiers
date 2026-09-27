@@ -6,16 +6,17 @@ import re
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_config import BaseConfig
 
-IDX_RANGE = re.compile(r"(\d*):(\d*)")
+IDX_RANGE = re.compile(r"(\d*):(\d*)(?::(\d*))?")
 
 
 class TaskMatchConfig(BaseConfig):
     """Tasks named by position or identity; a task matches when any list names it."""
 
     idx: list[int | str] = Field(default_factory=list)
-    """Positions in the taskset's `load()` stream (`TaskData.idx`): ints and half-open
-    `start:stop` ranges with optional ends (`"100:"`, `":50"`). A comma-separated
-    string also works (`"0:10,17"`)."""
+    """Positions in the taskset's `load()` stream (`TaskData.idx`): ints and Python
+    slices `start:stop:step`, each part optional (`"100:"`, `":50"`, `"::2"`).
+    Negative positions are not supported. A comma-separated string also works
+    (`"0:10,17"`)."""
     ids: list[str] = Field(default_factory=list)
     """`TaskData.id` values."""
     keys: list[str] = Field(default_factory=list)
@@ -38,15 +39,18 @@ class TaskMatchConfig(BaseConfig):
     def empty(self) -> bool:
         return not (self.idx or self.ids or self.keys or self.names)
 
-    def idx_ranges(self) -> list[tuple[int, int | None]]:
-        """`idx` as half-open `(start, stop)` ranges; `stop` is None for an open end."""
-        ranges: list[tuple[int, int | None]] = []
+    def idx_ranges(self) -> list[range | tuple[int, None, int]]:
+        """`idx` as ranges; an open-ended slice is `(start, None, step)`."""
+        ranges: list[range | tuple[int, None, int]] = []
         for item in self.idx:
             if isinstance(item, int):
-                ranges.append((item, item + 1))
-            else:
-                start, stop = item.split(":")
-                ranges.append((int(start or 0), int(stop) if stop else None))
+                ranges.append(range(item, item + 1))
+                continue
+            start, stop, step = (item.split(":") + [""])[:3]
+            first, stride = int(start or 0), int(step or 1)
+            ranges.append(
+                range(first, int(stop), stride) if stop else (first, None, stride)
+            )
         return ranges
 
     @property
@@ -56,9 +60,9 @@ class TaskMatchConfig(BaseConfig):
         ranges = self.idx_ranges()
         if not ranges or self.ids or self.keys or self.names:
             return None
-        if any(stop is None for _, stop in ranges):
+        if not all(isinstance(r, range) for r in ranges):
             return None
-        return max(stop for _, stop in ranges if stop is not None)
+        return max(r.stop for r in ranges)
 
 
 def _parse_idx_item(item: int | str) -> int | str:
@@ -71,8 +75,10 @@ def _parse_idx_item(item: int | str) -> int | str:
         return int(text)
     match = IDX_RANGE.fullmatch(text)
     if match is None:
-        raise ValueError(f"idx {item!r} is not an int or a 'start:stop' range")
-    start, stop = match.groups()
+        raise ValueError(f"idx {item!r} is not an int or a 'start:stop:step' slice")
+    start, stop, step = match.groups()
+    if step == "0":
+        raise ValueError(f"idx slice {item!r} has step 0")
     if start and stop and int(start) >= int(stop):
         raise ValueError(f"idx range {item!r} is empty")
     return text

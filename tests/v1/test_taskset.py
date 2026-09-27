@@ -63,6 +63,7 @@ def test_iteration_sets_idx_to_the_load_position() -> None:
 def test_include_keeps_tasks_that_any_list_names() -> None:
     assert idxs(finite().include(idx=[3, "5:7", "8:"])) == [3, 5, 6, 8, 9]
     assert idxs(finite().include(idx=":2")) == [0, 1]
+    assert idxs(finite().include(idx=["1:8:3", "::4"])) == [0, 1, 4, 7, 8]
     assert idxs(finite().include(ids=["id-1"])) == [1]
     assert idxs(finite().include(names=["t2"])) == [2]
     key = list(finite())[4].key
@@ -119,6 +120,7 @@ def test_only_a_bounded_view_can_shuffle() -> None:
     assert finite().bounded and not infinite().bounded
     assert infinite().take(3).bounded
     assert infinite().include(idx=["0:4", 9]).bounded
+    assert not infinite().include(idx="::2").bounded
     assert not infinite().include(idx="5:").bounded
     assert not infinite().include(idx=["0:4"], names=["t9"]).bounded
     with pytest.raises(ValueError, match="infinite"):
@@ -132,7 +134,8 @@ def test_only_a_bounded_view_can_shuffle() -> None:
 def test_task_match_config_parses_idx() -> None:
     assert vf.TaskMatchConfig(idx=["3", "0:2,4", "8:"]).idx == [3, "0:2", 4, "8:"]
     assert vf.TaskMatchConfig(idx=5).idx == [5]
-    for bad in [-1, "a", "5:5", "7:3", "1:2:3"]:
+    assert vf.TaskMatchConfig(idx="0:9:3").idx_stop == 9
+    for bad in [-1, "a", "5:5", "7:3", "1:2:0", "1:2:3:4"]:
         with pytest.raises(ValidationError):
             vf.TaskMatchConfig(idx=[bad])
 

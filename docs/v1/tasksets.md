@@ -112,7 +112,7 @@ These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset
 
 ## Task identity
 
-A task's `idx` is its position in the `load()` stream. The taskset sets it on iteration, so don't set it in `load()`: any value you set is overwritten. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.
+A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.
 
 A task's `hash` identifies its exact serialized data. Its `key` provides stable identity across runs and defaults to the hash. Override `Task.key` with a durable source ID when task data contains run-local fields such as `idx`; keys must be unique within a taskset. Both values are recorded on traces.
 
@@ -124,7 +124,7 @@ Views on a taskset pick which tasks an iteration yields. They are lazy and chain
 taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 ```
 
-`include` keeps and `exclude` drops the tasks named by `idx` (positions: ints and half-open `start:stop` ranges with optional ends), `ids`, `keys` or `names`; a task matches when any list names it. An entry that matches no task logs a warning once the stream was read.
+`include` keeps and `exclude` drops the tasks named by `idx` (ints and Python slices `start:stop:step`, e.g. `"100:"`, `":50"`, `"::2"`; no negative positions), `ids`, `keys` or `names`; a task matches when any list names it. An entry that matches no task logs a warning once the stream was read.
 
 The eval, debug, validate and GEPA entrypoints take a `select` block and apply it with `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`. `-n` sets `select.limit` and `-s` sets `select.shuffle`:
 

@@ -2,7 +2,9 @@
 # The `bash` harness gives the agent the bash (+ edit) tools it drives the terminal with.
 #
 #   uv run vf-eval @ configs/harbor.toml
-select.limit = 10
+
+[select]
+limit = 10
 
 [env.taskset]
 id = "harbor"

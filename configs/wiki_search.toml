@@ -1,7 +1,9 @@
 # wiki-search — a shared MCP tool server (the corpus is built once, reused across rollouts).
 #
 #   uv run vf-eval @ configs/wiki_search.toml
-select.limit = 1
+
+[select]
+limit = 1
 
 [env.taskset]
 id = "wiki-search"
