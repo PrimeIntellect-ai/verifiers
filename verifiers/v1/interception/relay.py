@@ -22,7 +22,7 @@ import uuid
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import Runtime
 
-RELAY_RETRY_SECONDS = 180.0
+RELAY_RETRY_SECONDS = 1200.0
 """How long the relay retries one request while the tunnel is dark."""
 
 RELAY_PROGRAM = r'''# /// script
@@ -31,8 +31,10 @@ RELAY_PROGRAM = r'''# /// script
 # ///
 """Loopback relay to a tunneled interception server; see verifiers.v1.interception.relay."""
 import asyncio
+import gzip
 import sys
 import time
+import zlib
 
 from aiohttp import ClientConnectionError, ClientSession, ClientTimeout, web
 
@@ -47,9 +49,26 @@ def forwarded(headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP}
 
 
-def tunnel_dark(status: int, body: bytes) -> bool:
-    """The tunnel service's answer for a URL whose client is not connected."""
-    return status == 404 and b"Tunnel not found" in body
+def tunnel_dark(status: int, body: bytes, headers) -> bool:
+    """The tunnel service's answer for a URL whose client is not connected.
+
+    The relay does not decompress (it forwards bytes as-is), so the page may be gzip- or
+    deflate-encoded; decode it before looking for the marker. An encoding the relay cannot
+    decode (e.g. br) counts as dark when the 404 is an HTML page: the host's interception
+    server answers in JSON, so an HTML 404 can only come from the tunnel service."""
+    if status != 404:
+        return False
+    encoding = headers.get("Content-Encoding", "").lower()
+    try:
+        if "gzip" in encoding:
+            body = gzip.decompress(body)
+        elif "deflate" in encoding:
+            body = zlib.decompress(body)
+        elif encoding and encoding != "identity":
+            return "text/html" in headers.get("Content-Type", "")
+    except Exception:
+        return "text/html" in headers.get("Content-Type", "")
+    return b"Tunnel not found" in body
 
 
 async def relay(request: web.Request) -> web.StreamResponse:
@@ -71,7 +90,7 @@ async def relay(request: web.Request) -> web.StreamResponse:
                 break
             payload = await upstream.read()
             reply = web.Response(status=404, body=payload, headers=forwarded(upstream.headers))
-            if not tunnel_dark(404, payload):
+            if not tunnel_dark(404, payload, upstream.headers):
                 return reply
             failure = reply
         if time.monotonic() + delay > deadline:
