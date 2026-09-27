@@ -3,7 +3,7 @@
 # each other (shortest wins), so one rollout per task is a full comparison.
 #
 #   uv run vf-eval code-golf @ configs/code_golf.toml
-num_tasks = 1
+select.limit = 1
 num_rollouts = 1
 
 [env.taskset]

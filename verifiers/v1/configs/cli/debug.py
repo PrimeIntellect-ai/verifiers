@@ -7,6 +7,7 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.validate import CheckTimeoutConfig
+from verifiers.v1.configs.select import SelectConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
@@ -15,6 +16,9 @@ class DebugConfig(BaseConfig):
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id, used as the default output directory leaf."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    select: SelectConfig = SelectConfig()
+    """Which of the taskset's tasks to debug, under `--select.*` (`-n` sets
+    `select.limit`, `-s` sets `select.shuffle`)."""
     runtime: RuntimeConfig = PrimeConfig()
     """Where each task's setup hook and debug action run."""
     command: str | None = None
@@ -26,14 +30,6 @@ class DebugConfig(BaseConfig):
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
     for the debug command/script."""
-    num_tasks: int | None = Field(
-        None,
-        ge=1,
-        validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
-    )
-    """How many tasks to debug (None = all)."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
-    """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

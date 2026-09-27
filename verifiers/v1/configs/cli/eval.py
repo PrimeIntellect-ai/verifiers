@@ -9,6 +9,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.configs.select import SelectConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -84,12 +85,9 @@ class EvalConfig(BaseConfig):
     """Model id."""
     client: ClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()
-    num_tasks: int | None = Field(
-        None,
-        ge=1,
-        validation_alias=AliasChoices("batch_size", "num_examples", "num_tasks", "n"),
-    )
-    """How many tasks to evaluate (None = all)."""
+    select: SelectConfig = SelectConfig()
+    """Which of the taskset's tasks to evaluate, under `--select.*` (`-n` sets
+    `select.limit`, `-s` sets `select.shuffle`)."""
     num_rollouts: int = Field(
         1,
         ge=1,
@@ -98,8 +96,6 @@ class EvalConfig(BaseConfig):
         ),
     )
     """Independent episodes per task — the trainer's group size."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
-    """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
         128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )

@@ -27,7 +27,6 @@ class WebSearchInterceptionTaskset(vf.Taskset[WebSearchInterceptionTask]):
         return [
             WebSearchInterceptionTask(
                 vf.TaskData(
-                    idx=0,
                     prompt=(
                         "Use native web search to find the official OpenAI Responses "
                         "API documentation. Cite the source and include the query."

@@ -7,6 +7,7 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.eval import RunConfig
+from verifiers.v1.configs.select import SelectConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
@@ -24,6 +25,9 @@ class ValidateConfig(BaseConfig):
     """Run identity: `run.name` auto-generates as `<taskset>--validate--<short-id>` and
     names the run directory under `output_dir`."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    select: SelectConfig = SelectConfig()
+    """Which of the taskset's tasks to validate, under `--select.*` (`-n` sets
+    `select.limit`, `-s` sets `select.shuffle`)."""
     runtime: RuntimeConfig = PrimeConfig()
     """Where each task's validation hooks run."""
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
@@ -31,14 +35,6 @@ class ValidateConfig(BaseConfig):
     """Run only `Task.setup`."""
     only_gold: bool = False
     """Run only `Task.setup` and `Task.validate`."""
-    num_tasks: int | None = Field(
-        None,
-        ge=1,
-        validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
-    )
-    """How many tasks to validate (None = all)."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
-    """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

@@ -7,7 +7,7 @@
 # file fills the typed config, each side validated against its specific type (GSM8KConfig /
 # RLMHarnessConfig). prime-rl consumes the same [env] shape, reading the ids straight from
 # its config (TOML-driven there too).
-num_tasks = 1
+select.limit = 1
 
 [env.taskset]
 id = "gsm8k"

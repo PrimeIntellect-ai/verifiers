@@ -85,15 +85,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     from verifiers.v1.utils.loaders import load_environment
 
     env = load_environment(config.env)
-    taskset = env.taskset
-    if config.num_tasks is None and taskset.INFINITE:
+    taskset = env.taskset.select(config.select)
+    if not taskset.bounded:
         raise ValueError(
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
-    selected = taskset.shuffle() if config.shuffle else taskset
-    if config.num_tasks is not None:
-        selected = selected.head(config.num_tasks)
-    tasks = list(selected)
+    tasks = list(taskset)
     out = output_path(config)
     # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
     plan = [(task, config.num_rollouts) for task in tasks]

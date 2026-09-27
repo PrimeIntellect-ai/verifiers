@@ -66,8 +66,8 @@ class InterceptionTaskset(vf.Taskset[InterceptionTask, InterceptionConfig]):
         markers = ("DETERMINISTIC_BLOCK", "JUDGE_BLOCK", "STOP", "METRIC_ONLY")
         return [
             InterceptionTask(
-                vf.TaskData(idx=index, prompt=f"Reply with exactly {marker}."),
+                vf.TaskData(prompt=f"Reply with exactly {marker}."),
                 self.config.task,
             )
-            for index, marker in enumerate(markers)
+            for marker in markers
         ]

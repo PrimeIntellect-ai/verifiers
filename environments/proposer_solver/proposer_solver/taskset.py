@@ -182,12 +182,11 @@ class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):
         return [
             ProposeTask(
                 SeedData(
-                    idx=i,
                     name=topic.replace(" ", "-"),
                     prompt=PROPOSE.format(topic=topic),
                     topic=topic,
                 ),
                 self.config.task,
             )
-            for i, topic in enumerate(self.TOPICS)
+            for topic in self.TOPICS
         ]
