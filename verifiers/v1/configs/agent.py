@@ -20,7 +20,7 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for task/harness setup through session preparation."""
     rollout: float | None = None
     """Timeout (in seconds) for the agent's solve attempt. Unset: the task's own
-    timeout, else 4 hours. `0` disables the timeout."""
+    timeout, else no limit. `0` disables the timeout a task sets."""
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
