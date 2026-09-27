@@ -444,6 +444,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    is_timeout: bool = False
+    """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
@@ -769,6 +771,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         model = sum(call.time.duration for call in self.calls)
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
+
+    def record_timeout(self, stage: str) -> None:
+        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`."""
+        self.is_timeout = True
+        self.stop(f"{stage}_timeout")
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed."""
