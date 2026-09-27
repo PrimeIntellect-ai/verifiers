@@ -21,7 +21,6 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-harbor = "2026-08-11T00:00:00Z"
 prime-pydantic-config = false
 prime-runs = false
 prime-sandboxes = false
@@ -1720,14 +1719,15 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.21.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.23.0"
+source = { git = "https://github.com/harbor-framework/harbor.git?rev=3c82380859d187957cfd5cd64802b076d9779550#3c82380859d187957cfd5cd64802b076d9779550" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "jsonschema" },
     { name = "litellm" },
     { name = "packaging" },
     { name = "pathspec" },
@@ -1738,16 +1738,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
+    { name = "semver" },
     { name = "shortuuid" },
     { name = "supabase" },
     { name = "tenacity" },
     { name = "toml" },
     { name = "typer" },
     { name = "uvicorn" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/30/c854dcf2b6cbc67f97265e1fd07de02b29419007d4258cded336c23d6356/harbor-0.21.0.tar.gz", hash = "sha256:93f7c2e4b150b2983a90b226c61daf071c35a9dd0f76e1053413d9ee0d738395", size = 1690211, upload-time = "2026-08-10T20:52:34.767Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/a4/b3e8aafbc0a002501c11c91958fc31a5098c2bd9376c46225af615373329/harbor-0.21.0-py3-none-any.whl", hash = "sha256:c77d779a03f1a9e8ecb3c449e17f39a9728b82238832f1fd28632eb9426c0a21", size = 1896665, upload-time = "2026-08-10T20:52:32.305Z" },
 ]
 
 [[package]]
@@ -4829,6 +4826,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7d/31/f2289ce78b9b473d582568c234e104d2a342fd658cc288a7553d83bb8595/semantic_version-2.10.0.tar.gz", hash = "sha256:bdabb6d336998cbb378d4b9db3a4b56a1e3235701dc05ea2690d9a997ed5041c", size = 52289, upload-time = "2022-05-26T13:35:23.454Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl", hash = "sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177", size = 15552, upload-time = "2022-05-26T13:35:21.206Z" },
+]
+
+[[package]]
+name = "semver"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/f5/e1dfe8e1d91c54ce212fd93916eb01fd1c590f413be0a0978c39a97aa1bb/semver-3.1.0.tar.gz", hash = "sha256:14bc073439513d7773662a338f4db9829cf16c12b74b9568e2d2689975fbd7fc", size = 304162, upload-time = "2026-09-12T18:38:14.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/be/02/bce7a1d70e9d0f6ea8623c16386138c251b5855af6cd3a11433d3fba4e66/semver-3.1.0-py3-none-any.whl", hash = "sha256:6e4998f8b4762acdfea85f9bfd5b4032e0bb50038dc04bf82011b42d5d1145c5", size = 18783, upload-time = "2026-09-12T18:38:12.457Z" },
 ]
 
 [[package]]

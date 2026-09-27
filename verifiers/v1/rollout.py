@@ -4,12 +4,10 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -24,13 +22,10 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
-    RuntimeConfig,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
-from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
 from verifiers.v1.task_attempt import TaskAttempt
-from verifiers.v1.trace import AgentInfo, Trace, TraceTask
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.decorators import discover_decorated
 
@@ -57,59 +52,31 @@ class Rollout:
     def __init__(
         self,
         *,
-        task: Task | TaskAttempt,
-        agent_config: AgentConfig,
+        attempt: TaskAttempt,
+        trace: Trace,
         harness: Harness,
         ctx: ModelContext,
-        runtime_config: RuntimeConfig,
-        placement: RuntimeConfig | None = None,
         has_user: bool = False,
         timeouts: RolloutTimeouts,
         limits: RolloutLimits,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
-        runtime: Runtime | None = None,
-        on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
+        runtime: Runtime,
     ) -> None:
-        self._owns_attempt = not isinstance(task, TaskAttempt)
-        self.attempt = (
-            task
-            if isinstance(task, TaskAttempt)
-            else task.open(
-                placement=placement or runtime_config,
-                runtime=runtime,
-                timeouts=timeouts,
-                collect_artifacts=collect_artifacts,
-            )
-        )
-        task = self.attempt.task
+        self.attempt = attempt
+        task = attempt.task
         self.task = task
         self.harness = harness
         self.ctx = ctx
-        self.runtime_config = runtime_config
+        runtime_config = runtime.config
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
-        self._borrowed_runtime = runtime
         self._harness_cleaned = False
-        self.trace: Trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
-            state=state_cls(type(task))(),
-            # The seat's resolved config, role overrides included — the agent
-            # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
-        )
-        if on_trace is not None:
-            on_trace(self.trace)
+        self.trace = trace
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
@@ -171,12 +138,12 @@ class Rollout:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
         itself couldn't see, e.g. its user raising between segments."""
-        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
+        if self.runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
             # misattributed error onto the trace.
             raise ValueError(
-                f"borrowed runtime {self._borrowed_runtime.name!r} was torn down by its owner "
+                f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
                 "mid-run; keep the provisioning context open until every run "
                 "placed into the box has completed"
             ) from error
@@ -187,18 +154,15 @@ class Rollout:
         self.trace.record_error(error)
 
     async def open(self) -> bool:
-        """Open or borrow a task attempt, attach this agent's session, and bring up
+        """Attach this agent's session to the open task attempt and bring up
         the harness, interception slot and tool servers. Returns whether the exchange can
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
-        self.trace.timing.boot.start = time.time()
+        self.trace.timing.boot.start = self.trace.timing.boot.start or time.time()
         self.trace.notify()
         try:
-            if self._owns_attempt:
-                await self.attempt.__aenter__()
-            else:
-                self.attempt.check_open()
-            runtime = self.runtime or self.attempt.runtime
+            self.attempt.check_open()
+            runtime = self.runtime
             if runtime.stopped:
                 raise ValueError("cannot run an agent in a stopped runtime")
             self.runtime = runtime = runtime.with_env(self.task.runtime_env())
@@ -344,8 +308,8 @@ class Rollout:
             return False
         except BaseException:
             # A cancellation mid-setup kills the driver's await with it, so no
-            # caller reaches close() — free the started runtime and entered
-            # servers here rather than relying on the driver's own guard.
+            # caller reaches close() — free this agent's entered servers here
+            # and release its session from the task attempt.
             await self.abort()
             raise
         now = time.time()
@@ -430,8 +394,8 @@ class Rollout:
         return self.ok and trace.num_turns > turns_before
 
     async def abort(self) -> None:
-        """Free everything this run holds — the entered servers and an owned
-        runtime — without finalizing or scoring: the escape path when an exception
+        """Free this agent's servers and session without finalizing or scoring
+        the task world: the escape path when an exception
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
@@ -442,8 +406,6 @@ class Rollout:
             await self._stack.aclose()
         await self._cleanup_harness()
         self.attempt.release(self.trace)
-        if self._owns_attempt:
-            await self.attempt.close()
 
     async def _cleanup_harness(self) -> None:
         if self.runtime is not None and not self._harness_cleaned:
@@ -456,15 +418,13 @@ class Rollout:
                 )
 
     async def close(self) -> Trace:
-        """Close agent resources and score harness metrics. An owned attempt also
-        finalizes and grades the task, then closes its world. Borrowed attempts stay
-        with their caller. Idempotent; always returns the trace."""
+        """Close this agent's resources and score harness metrics. Task finalization,
+        grading, and world teardown belong to the attempt's owner."""
         if self._closed:
             return self.trace
         self._closed = True
         trace = self.trace
         runtime = self.runtime
-        grading = False
         try:
             if self._harness_session is not None:
                 try:
@@ -491,15 +451,8 @@ class Rollout:
                 await self._cleanup_harness()
                 self.attempt.release(trace)
                 trace.ok = True
-                if self._owns_attempt:
-                    grading = True
-                    await self.attempt.grade(trace)
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
-            if grading:
-                self._failed = True
-                self._failure = e
-            else:
-                self.fail(e)
+            self.fail(e)
         except BaseException:
             self._failed = True
             raise
@@ -524,13 +477,6 @@ class Rollout:
             trace.split_agent_time()
             await self._cleanup_harness()
             self.attempt.release(trace)
-            if self._owns_attempt:
-                try:
-                    await self.attempt.close()
-                except Exception:
-                    logger.warning(
-                        "task teardown failed (rollout %s)", trace.id, exc_info=True
-                    )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

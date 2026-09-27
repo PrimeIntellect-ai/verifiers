@@ -341,20 +341,28 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
+            async with task.open(
+                placement=agents.solver.runtime_config, runtime=box
+            ) as attempt:
+                solution = await agents.solver.run(attempt)
+                await attempt.grade(solution)
             if not solution.ok:
                 raise RuntimeError(
                     "the solver's rollout failed, so the judge never ran"
                 )
             judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+            async with judge_task.open(
+                placement=agents.judge.runtime_config, runtime=box
+            ) as attempt:
+                verdict = await agents.judge.run(attempt)
+                await attempt.grade(verdict)
 
 
 class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
     """Judge only collected artifacts in a fresh box with the solver's policy."""
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task, collect_artifacts=True)
+        solution = await agents.solver.run(task)
         if not solution.ok:
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(

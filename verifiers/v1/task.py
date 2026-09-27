@@ -35,7 +35,6 @@ from verifiers.v1.utils.decorators import (
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
-    from verifiers.v1.configs.verifier import VerifierConfig
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.rollout import RolloutTimeouts
@@ -182,8 +181,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
         placement: RuntimeConfig,
         runtime: Runtime | None = None,
         timeouts: RolloutTimeouts | None = None,
-        verifier: VerifierConfig | None = None,
-        collect_artifacts: bool = False,
     ) -> TaskAttempt:
         """Create an independent task world; agents run against the entered attempt."""
         return self.attempt_type()(
@@ -191,8 +188,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
             placement=placement,
             runtime=runtime,
             timeouts=timeouts,
-            verifier=verifier,
-            collect_artifacts=collect_artifacts,
         )
 
     def runtime_env(self) -> dict[str, str]:
@@ -218,28 +213,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
-    def defer_scoring(self) -> Self:
-        """An independent copy whose task signals are deferred.
-
-        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
-        state before declared artifacts are collected and the solver runtime is
-        destroyed. Only task metrics, rewards, and judges are skipped; harness
-        metrics remain attached to the solver trace.
-        """
-        clone = copy.deepcopy(self)
-        clone.scoring_deferred = True
-        return clone
-
-    scoring_deferred: bool = False
-
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
-        if self.scoring_deferred:
-            return
-
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
             # A defaulted runtime parameter can still be called offline with None.

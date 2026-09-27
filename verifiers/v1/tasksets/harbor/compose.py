@@ -67,14 +67,13 @@ async def compose_services(
     config: RuntimeConfig,
     task: HarborTask,
     *,
-    trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[tuple[dict[str, DockerRuntime], Callable[[], Awaitable[str]]]]:
     """Own one Compose attempt and lend its services until the context exits."""
     if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
         raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
     local = isinstance(config, DockerConfig)
-    if local and not trust_compose:
+    if local and not task.config.trust_compose:
         raise ValueError(
             "Local Compose tasks can access host files and Docker privileges; "
             "only run trusted tasks with --env.taskset.task.trust-compose"

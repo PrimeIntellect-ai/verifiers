@@ -1,6 +1,7 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable
-arrow — `agent.run(task) -> Trace`; `runtime=` borrows a live box,
-`provision(task)` hands you one. `agent.interaction(task)` holds the rollout open
+arrow — `agent.run(task) -> Trace`; `agent.run(attempt, runtime=...)` borrows
+a live box in an opened task world. `provision(task)` hands you a box.
+`agent.interaction(task)` holds the rollout open
 turn-by-turn, with the caller as the run's user — one `turn()` per harness segment;
 who computes the turns is control flow, not a framework concept.
 Inject a live `Interception` to share servers across agents (a pool belongs to
@@ -9,6 +10,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
@@ -35,9 +37,10 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
+from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.task_attempt import TaskAttempt
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -184,7 +187,8 @@ class Interaction:
     request/response alternation, not a mailbox. `interaction.trace` is live from
     the moment the interaction exists: watch tokens and turns mid-exchange, read
     rewards after close. Leaving the `interaction()` context closes the exchange
-    as `user_closed` and finishes the rollout — hooks and scoring included."""
+    as `user_closed`. A plain task is graded on context exit; an explicit
+    attempt is graded by its owner."""
 
     def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
         self._run = run
@@ -255,8 +259,11 @@ class Interaction:
         return Segment(messages=[], terminated=True)
 
     async def close(self) -> Trace:
-        """End the exchange and finish the rollout (idempotent): scoring and hooks
-        run, then the finished trace returns (also on `interaction.trace`)."""
+        """End the exchange and score harness metrics (idempotent).
+
+        A plain task is graded when the interaction context exits; an explicit
+        task attempt is graded by its owner. The trace remains available here.
+        """
         async with self._lock, self._gate or nullcontext():
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
@@ -269,9 +276,9 @@ class Agent:
     Built from an `AgentConfig` alone; `interception=` injects a live resource to
     borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
     builds and closes its own `Client`, so an agent holds no transport. The config's
-    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
-    per task; `run(runtime=...)` places the run into an existing box instead
-    (borrowed boxes are never started or torn down by the run)."""
+    `runtime` is a placement policy for automatic task attempts. With an opened
+    attempt, the agent borrows its main runtime, or another live `runtime=`
+    supplied by the caller. The task attempt owns world preparation and grading."""
 
     def __init__(
         self,
@@ -395,7 +402,6 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -405,9 +411,8 @@ class Agent:
         `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
-        moment it's minted, before any I/O. `collect_artifacts` captures the task's
-        declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
+        moment it's minted, before any I/O. Task attempts collect artifacts after
+        their finalizer. Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors."""
         if self._closed:
@@ -415,9 +420,7 @@ class Agent:
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
-            )
+            trace = await self._run_once(task, runtime, tools, on_trace)
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None or isinstance(task, TaskAttempt):
@@ -442,44 +445,83 @@ class Agent:
             trace.errors = history + trace.errors
         return trace
 
+    def _trace(
+        self, task: Task | TaskAttempt, on_trace: Callable[[Trace], None] | None
+    ) -> Trace:
+        task = task.task if isinstance(task, TaskAttempt) else task
+        trace = Trace(
+            task=TraceTask(
+                type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+            ),
+            state=state_cls(type(task))(),
+            agent=AgentInfo(config=self.config),
+        )
+        if on_trace is not None:
+            on_trace(trace)
+        return trace
+
+    @asynccontextmanager
+    async def _attempt(
+        self, task: Task | TaskAttempt, trace: Trace
+    ) -> AsyncIterator[TaskAttempt]:
+        """The convenience boundary: explicit attempts retain their own owner."""
+        owned = isinstance(task, Task)
+        attempt = (
+            task.open(
+                placement=self.runtime_config,
+                timeouts=resolve_rollout_timeouts(self.timeout, task),
+            )
+            if owned
+            else task
+        )
+        trace.timing.boot.start = time.time()
+        trace.notify()
+        try:
+            async with attempt if owned else nullcontext(attempt):
+                yield attempt
+                if owned:
+                    await attempt.grade(trace)
+        except Exception as error:
+            if not trace.errors:
+                trace.record_error(error)
+            trace.ok = False
+            raise
+        finally:
+            trace.is_completed = True
+            trace.notify()
+
     async def _run_once(
         self,
         task: Task | TaskAttempt,
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
-        collect_artifacts: bool,
     ) -> Trace:
-        if isinstance(task, TaskAttempt) and collect_artifacts:
-            raise ValueError(
-                "set collect_artifacts on task.open(), which owns artifact collection"
-            )
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+        if isinstance(task, Task) and runtime is not None:
             raise TypeError(
-                "artifact collection requires a container runtime; subprocess "
-                "artifacts live in a host-only temporary working directory"
+                "runtime= requires an opened task attempt; use task.open(runtime=...)"
             )
-        run = Rollout(
-            task=task,
-            on_trace=on_trace,
-            collect_artifacts=collect_artifacts,
-            **params,
-        )
+        trace = self._trace(task, on_trace)
         try:
-            if await run.open():
-                await run.step()
-                if run.ok:
-                    run.trace.stop("agent_completed")
-            trace = await run.close()
-        except BaseException:
-            # Finish cleanup even if another cancellation arrives during abort().
-            await run_shielded(run.abort())
-            raise
+            async with self._attempt(task, trace) as attempt:
+                params = self._rollout_params(
+                    attempt, runtime, dict(shared_tools or {})
+                )
+                run = Rollout(attempt=attempt, trace=trace, **params)
+                try:
+                    if await run.open():
+                        await run.step()
+                        if run.ok:
+                            trace.stop("agent_completed")
+                    await run.close()
+                except BaseException:
+                    await run_shielded(run.abort())
+                    raise
+        except Exception:  # owned world setup/grading failures are rollout outcomes
+            if isinstance(task, TaskAttempt):
+                raise
         if trace.agent.runtime is not None:
-            trace.agent.runtime.borrowed = runtime is not None or isinstance(
-                task, TaskAttempt
-            )
+            trace.agent.runtime.borrowed = isinstance(task, TaskAttempt)
         return trace
 
     @asynccontextmanager
@@ -514,55 +556,50 @@ class Agent:
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
-        exchange (`user_closed`) and finishes the rollout, hooks and scoring
-        included. A failure while opening the rollout raises before the context
+        exchange (`user_closed`). A plain task is then finalized and graded;
+        an explicit attempt leaves those steps to its owner. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
-        params = self._rollout_params(task, runtime, dict(tools or {}))
-        run = Rollout(
-            task=task,
-            has_user=True,
-            on_trace=on_trace,
-            **params,
-        )
-        interaction = Interaction(run, gate=self._gate)
-        async with self._gate or nullcontext():
-            opened = await run.open()
-            if not opened and (failure := run.failure) is not None:
-                trace = await run.close()
+        if isinstance(task, Task) and runtime is not None:
+            raise TypeError(
+                "runtime= requires an opened task attempt; use task.open(runtime=...)"
+            )
+        trace = self._trace(task, on_trace)
+        async with self._attempt(task, trace) as attempt:
+            params = self._rollout_params(attempt, runtime, dict(tools or {}))
+            run = Rollout(attempt=attempt, trace=trace, has_user=True, **params)
+            interaction = Interaction(run, gate=self._gate)
+            async with self._gate or nullcontext():
+                opened = await run.open()
+                if not opened and (failure := run.failure) is not None:
+                    await run.close()
+                    raise failure
+            try:
+                yield interaction
+            except Exception as error:
+                run.fail(error)
+                raise
+            except BaseException:
+                await run_shielded(run.abort())
+                raise
+            finally:
+                if not run.closed:
+                    await interaction.close()
                 if trace.agent.runtime is not None:
-                    trace.agent.runtime.borrowed = runtime is not None or isinstance(
-                        task, TaskAttempt
-                    )
-                raise failure
-        try:
-            yield interaction
-        except Exception as e:
-            run.fail(e)
-            raise
-        except BaseException:
-            await run.abort()
-            raise
-        finally:
-            trace = run.trace if run.closed else await interaction.close()
-            if trace.agent.runtime is not None:
-                trace.agent.runtime.borrowed = runtime is not None or isinstance(
-                    task, TaskAttempt
-                )
+                    trace.agent.runtime.borrowed = isinstance(task, TaskAttempt)
 
     def _rollout_params(
-        self, task: Task | TaskAttempt, runtime: Runtime | None, shared_tools: dict
+        self, attempt: TaskAttempt, runtime: Runtime | None, shared_tools: dict
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
-        if isinstance(task, TaskAttempt):
-            task.check_open()
-            runtime = runtime or task.runtime
-            task = task.task
+        attempt.check_open()
+        runtime = runtime or attempt.runtime
+        task = attempt.task
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
         if skills:
@@ -570,15 +607,9 @@ class Agent:
             harness = type(harness)(
                 harness.config.model_copy(update={"skills": skills})
             )
-        if runtime is not None:
-            _check_borrowed_placement(task, runtime, self.runtime_config)
-            runtime_config = runtime.config
-            run_is_local = runtime.is_local
-        else:
-            runtime_config = resolve_runtime_config(
-                self.runtime_config, task, self._warned_resources
-            )
-            run_is_local = runtime_is_local(runtime_config)
+        _check_borrowed_placement(task, runtime, self.runtime_config)
+        runtime_config = runtime.config
+        run_is_local = runtime.is_local
         validate_pairing(
             harness,
             type(task),
@@ -587,11 +618,8 @@ class Agent:
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
-            "agent_config": self.config,
             "harness": harness,
             "ctx": self.ctx,
-            "runtime_config": runtime_config,
-            "placement": self.runtime_config,
             "timeouts": replace(
                 timeouts,
                 agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
@@ -605,7 +633,7 @@ class Agent:
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
+        policy, resolved for `task` when given; use it with an opened task attempt."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
@@ -684,7 +712,6 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        collect_artifacts: bool = False,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -692,7 +719,6 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
-                collect_artifacts=collect_artifacts,
             )
         self._completed.append(trace)
         return trace

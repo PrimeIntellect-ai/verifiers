@@ -32,8 +32,6 @@ class HarborAttempt(TaskAttempt):
             compose_services(
                 resolve_runtime_config(self.placement, self.task),
                 self.task,
-                trust_compose=self.task.config.trust_compose,
-                setup_timeout=self.timeouts.setup,
             )
         )
         declared = {

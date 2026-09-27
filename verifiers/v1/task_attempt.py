@@ -10,7 +10,6 @@ from contextlib import AsyncExitStack
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
-from verifiers.v1.configs.verifier import VerifierConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
     Runtime,
@@ -48,8 +47,6 @@ class TaskAttempt:
         placement: RuntimeConfig,
         runtime: Runtime | None = None,
         timeouts: RolloutTimeouts | None = None,
-        verifier: VerifierConfig | None = None,
-        collect_artifacts: bool = False,
     ) -> None:
         from verifiers.v1.agent import resolve_rollout_timeouts
         from verifiers.v1.configs.agent import TimeoutConfig
@@ -57,10 +54,9 @@ class TaskAttempt:
         self.task = task
         self.placement = placement
         self.timeouts = timeouts or resolve_rollout_timeouts(TimeoutConfig(), task)
-        self.verifier = verifier if verifier is not None else task.config.verifier
+        self.verifier = task.config.verifier
         self.services: dict[str, Runtime] = {}
         self._borrowed = runtime
-        self._collect_artifacts = collect_artifacts
         self._resources = AsyncExitStack()
         self._entered = False
         self._closed = False
@@ -115,8 +111,6 @@ class TaskAttempt:
                 provision_runtime(config, env=self.task.runtime_env())
             )
         self.services["main"] = runtime
-        if self._collect_artifacts and isinstance(runtime.config, SubprocessConfig):
-            raise TypeError("artifact collection requires a container runtime")
 
     async def attach(self, trace: Trace, runtime: Runtime) -> None:
         """Initialize one agent session without sharing or replacing its trace state."""
@@ -140,8 +134,9 @@ class TaskAttempt:
     async def finalize(self, trace: Trace) -> None:
         await invoke(self.task.finalize, {"trace": trace, "runtime": self.runtime})
         if (
-            self._collect_artifacts or self.verifier is not None
-        ) and not trace.state.artifacts:
+            not isinstance(self.runtime.config, SubprocessConfig)
+            and not trace.state.artifacts
+        ):
             trace.state.artifacts = await collect(
                 self.runtime,
                 self.task.data.artifacts,
@@ -149,9 +144,7 @@ class TaskAttempt:
             )
 
     def verifier_task(self) -> Task:
-        task = copy.deepcopy(self.task)
-        task.scoring_deferred = False
-        return task
+        return copy.deepcopy(self.task)
 
     def verifier_config(self, task: Task) -> RuntimeConfig:
         assert self.verifier is not None
