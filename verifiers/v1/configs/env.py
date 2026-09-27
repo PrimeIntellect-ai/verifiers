@@ -1,5 +1,6 @@
 """An environment's config — the run's single `[env]` block: the seed taskset,
-each role as an `AgentConfig` field, and the env-level knobs."""
+each role as an `AgentConfig` field, and the env-level knobs. `SharedEnvConfig` is
+the part every env has."""
 
 from typing import get_args
 
@@ -13,7 +14,7 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
 
@@ -34,18 +35,12 @@ def _mentions_agent_config(annotation) -> bool:
     return any(_mentions_agent_config(arg) for arg in get_args(annotation))
 
 
-class EnvConfig(BaseConfig):
-    """An environment's config — the run's single `[env]` block, one subclass per
-    `Env` class (bound via `Env[YourConfig]`): each role is an
-    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
-    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
+class SharedEnvConfig(BaseConfig):
+    """The env knobs every env has, whatever its id and agents — what several envs of
+    one run can share. `EnvConfig` adds the env `id`, the taskset `id`, and the agents."""
 
-    id: ID = ""
-    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
-    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
-    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
-    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
+    taskset: SharedTasksetConfig = SharedTasksetConfig()
+    """The taskset knobs every taskset has."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
@@ -62,6 +57,20 @@ class EnvConfig(BaseConfig):
     in flight."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
+
+
+class EnvConfig(SharedEnvConfig):
+    """An environment's config — the run's single `[env]` block, one subclass per
+    `Env` class (bound via `Env[YourConfig]`): each role is an
+    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
+    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
+
+    id: ID = ""
+    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
+    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
+    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
+    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
 
     @property
     def env_id(self) -> str:
