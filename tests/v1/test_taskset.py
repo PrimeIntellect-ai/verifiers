@@ -72,6 +72,15 @@ def test_include_keeps_tasks_that_any_list_names() -> None:
     assert idxs(union) == [0, 1, 2, 4]
 
 
+def test_keys_match_the_keys_traces_record(tmp_path) -> None:
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("be brief")
+    taskset = FiniteTaskset(vf.TasksetConfig(system_prompt=prompt))
+    key = list(taskset)[4].key
+    assert idxs(taskset.include(keys=[key])) == [4]
+    assert 4 not in idxs(taskset.exclude(keys=[key]))
+
+
 def test_exclude_drops_tasks_that_any_list_names() -> None:
     assert idxs(finite().exclude(idx=":7", names=["t8"])) == [7, 9]
 
@@ -135,7 +144,7 @@ def test_task_match_config_parses_idx() -> None:
     assert vf.TaskMatchConfig(idx=["3", "0:2,4", "8:"]).idx == [3, "0:2", 4, "8:"]
     assert vf.TaskMatchConfig(idx=5).idx == [5]
     assert vf.TaskMatchConfig(idx="0:9:3").idx_stop == 9
-    for bad in [-1, "a", "5:5", "7:3", "1:2:0", "1:2:3:4"]:
+    for bad in [-1, "a", "5:5", "7:3", "1:2:0", "::00", "1:2:3:4"]:
         with pytest.raises(ValidationError):
             vf.TaskMatchConfig(idx=[bad])
 

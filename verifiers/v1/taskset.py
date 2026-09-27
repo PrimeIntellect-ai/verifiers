@@ -73,18 +73,17 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return not self.INFINITE if self._bounded is None else self._bounded
 
     def __iter__(self) -> Iterator[TaskT]:
-        """Lazily iterate `load()` with each task's `idx` set to its position, then
-        the views' transform, then the config-layer system prompt. This is the read
-        path; `load` is the subclass hook."""
-        tasks: Iterator[TaskT] = (
-            task.with_data(idx=idx) for idx, task in enumerate(self.load())
+        """Lazily iterate `load()` with each task's `idx` set to its position and the
+        config-layer system prompt applied, then the views' transform. The views see
+        the final task data, so a `keys` match compares the keys that traces record.
+        This is the read path; `load` is the subclass hook."""
+        update = (
+            {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
-        if self.transform is not None:
-            tasks = self.transform(tasks)
-        prompt = self.system_prompt
-        if prompt is not None:
-            tasks = (task.with_system_prompt(prompt) for task in tasks)
-        return tasks
+        tasks: Iterator[TaskT] = (
+            task.with_data(idx=idx, **update) for idx, task in enumerate(self.load())
+        )
+        return tasks if self.transform is None else self.transform(tasks)
 
     def include(self, **match: Any) -> Self:
         """A view keeping only the tasks `match` names by `idx`, `ids`, `keys` or
@@ -105,11 +104,14 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def shuffle(self, seed: int = 0) -> Self:
         """A shuffled view under `seed` (materializes on iteration); raises on an
-        unbounded view — bound it first with `take` or closed `include` idx ranges."""
+        unbounded view — bound it first with `take` or closed `include` idx ranges.
+        `select` applies `limit` after the shuffle, so there only closed
+        `include.idx` ranges can bound it."""
         if not self.bounded:
             raise ValueError(
                 f"{type(self).__name__} is infinite - cannot shuffle; bound it first "
-                "with take(n) or closed include idx ranges"
+                "with closed include idx ranges (e.g. --select.include.idx 0:1000), "
+                "or with take(n) before shuffle() in Python"
             )
 
         def shuffled(tasks: Iterator[TaskT]) -> Iterator[TaskT]:
@@ -192,7 +194,7 @@ def _match(
         idx = task.data.idx
         if stop is not None and idx >= stop:
             break
-        in_ranges = {i for i, r in enumerate(ranges) if _in_slice(idx, r)}
+        in_ranges = {i for i, r in enumerate(ranges) if idx in r}
         hit_ranges |= in_ranges
         values = {
             "ids": task.data.id,
@@ -213,10 +215,3 @@ def _match(
         missing["idx"] = unmatched
     if missing:
         logger.warning("%s matched no task for %s", label, missing)
-
-
-def _in_slice(idx: int, r: range | tuple[int, None, int]) -> bool:
-    if isinstance(r, range):
-        return idx in r
-    start, _, step = r
-    return idx >= start and (idx - start) % step == 0

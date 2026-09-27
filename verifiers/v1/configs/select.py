@@ -2,6 +2,7 @@
 `--select.*` on the eval, debug, validate and GEPA CLIs (`SelectCLIConfig`)."""
 
 import re
+import sys
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_config import BaseConfig
@@ -39,17 +40,16 @@ class TaskMatchConfig(BaseConfig):
     def empty(self) -> bool:
         return not (self.idx or self.ids or self.keys or self.names)
 
-    def idx_ranges(self) -> list[range | tuple[int, None, int]]:
-        """`idx` as ranges; an open-ended slice is `(start, None, step)`."""
-        ranges: list[range | tuple[int, None, int]] = []
+    def idx_ranges(self) -> list[range]:
+        """`idx` as ranges; an open-ended slice stops at `sys.maxsize`."""
+        ranges: list[range] = []
         for item in self.idx:
             if isinstance(item, int):
                 ranges.append(range(item, item + 1))
                 continue
             start, stop, step = (item.split(":") + [""])[:3]
-            first, stride = int(start or 0), int(step or 1)
             ranges.append(
-                range(first, int(stop), stride) if stop else (first, None, stride)
+                range(int(start or 0), int(stop or sys.maxsize), int(step or 1))
             )
         return ranges
 
@@ -60,9 +60,8 @@ class TaskMatchConfig(BaseConfig):
         ranges = self.idx_ranges()
         if not ranges or self.ids or self.keys or self.names:
             return None
-        if not all(isinstance(r, range) for r in ranges):
-            return None
-        return max(r.stop for r in ranges)
+        stop = max(r.stop for r in ranges)
+        return None if stop == sys.maxsize else stop
 
 
 def _parse_idx_item(item: int | str) -> int | str:
@@ -77,7 +76,7 @@ def _parse_idx_item(item: int | str) -> int | str:
     if match is None:
         raise ValueError(f"idx {item!r} is not an int or a 'start:stop:step' slice")
     start, stop, step = match.groups()
-    if step == "0":
+    if step and int(step) == 0:
         raise ValueError(f"idx slice {item!r} has step 0")
     if start and stop and int(start) >= int(stop):
         raise ValueError(f"idx range {item!r} is empty")

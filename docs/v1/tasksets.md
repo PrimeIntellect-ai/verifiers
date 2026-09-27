@@ -166,7 +166,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with `take` (`-n` on the CLI) or an `include` of only closed `idx` ranges — omitting both is an error — and `shuffle` needs such a bound before it: there is no whole set to sample from otherwise. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
+Two rules follow from infinity: a run over an infinite taskset must be bounded with `take` (`-n` on the CLI) or an `include` of only closed `idx` ranges — omitting both is an error — and `shuffle` needs a bound before it: there is no whole set to sample from otherwise. `select` applies `limit` after the shuffle, so on the CLI only closed `include.idx` ranges can bound it (`--select.include.idx 0:1000 -s -n 50`); in Python, `take(n).shuffle()` works too. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 
