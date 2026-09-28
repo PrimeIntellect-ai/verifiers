@@ -18,7 +18,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
-from verifiers.v1.utils.prime import load_prime_config
+from verifiers.v1.utils.prime import prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
 
@@ -38,10 +38,10 @@ class BaseClientConfig(BaseConfig):
     def apply_prime_config(self) -> "BaseClientConfig":
         if self.api_key_var != "PRIME_API_KEY":
             return self
-        prime_config = load_prime_config()
+        config = prime_config()
         prime_base_url = (
             os.environ.get("PRIME_INFERENCE_URL")
-            or prime_config.get("inference_url")
+            or config.config.get("inference_url")
             or DEFAULT_PRIME_INFERENCE_URL
         )
         if "base_url" not in self.model_fields_set:
@@ -51,7 +51,8 @@ class BaseClientConfig(BaseConfig):
             f".{PRIME_INFERENCE_HOST}"
         ):
             return self
-        team_id = os.environ.get("PRIME_TEAM_ID") or prime_config.get("team_id")
+        # `Config.team_id` honors $PRIME_TEAM_ID, where empty means the personal account.
+        team_id = config.team_id
         if team_id:
             self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
@@ -100,5 +101,5 @@ def resolve_api_key(config: BaseClientConfig) -> str:
         and config.api_key_var == "PRIME_API_KEY"
         and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
     ):
-        api_key = load_prime_config().get("api_key")
+        api_key = prime_config().api_key
     return api_key or "EMPTY"
