@@ -428,6 +428,9 @@ class TrainClient(Client):
                 multi_modal_data = rendered.multi_modal_data
                 prompt_attribution = rendered
 
+            generate_options: dict[str, bool] = {}
+            if not self.config.require_logprobs:
+                generate_options["require_logprobs"] = False
             try:
                 result = await generate(
                     client=self.client,
@@ -440,10 +443,10 @@ class TrainClient(Client):
                     tools=wire_tools,
                     sampling_params=sampling_params,
                     cache_salt=cache_salt,
-                    require_logprobs=self.config.require_logprobs,
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,
+                    **generate_options,
                 )
             except OverlongPromptError as e:
                 # The renderer's pre-flight overflow never reached the provider: a
