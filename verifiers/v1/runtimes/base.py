@@ -277,7 +277,11 @@ class Runtime(ABC):
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
-                    result = await self.run(["sh", "-c", command], env or {})
+                    # Bootstrap dependencies before task networking is restricted;
+                    # keep task offline settings on the returned program's processes.
+                    result = await self.run(
+                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
+                    )
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "
