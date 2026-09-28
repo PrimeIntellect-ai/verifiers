@@ -251,10 +251,6 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
-class ModelTransportError(Exception):
-    """A model request or stream failed after its transport retries were exhausted."""
-
-
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -291,7 +287,9 @@ async def chat(
             with attempt:
                 return await _read_chat_completion(raw_stream)
     except (APIConnectionError, httpx.TransportError) as error:
-        raise ModelTransportError(str(error)) from error
+        # Preserve the original transport error in stderr for the host's diagnostic.
+        traceback.print_exc()
+        raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error
 
 
 async def _read_chat_completion(raw_stream):
@@ -525,9 +523,4 @@ async def main() -> None:
 
 # Inert on package import; the entry point once this module ends the bundled script.
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except ModelTransportError as error:
-        # Preserve the original transport error in stderr for the host's diagnostic.
-        traceback.print_exc()
-        raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error
+    asyncio.run(main())
