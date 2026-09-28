@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import BindMount, NetworkPolicyConfig
 from verifiers.v1.runtimes.apptainer import (
     ApptainerBackend,
     ApptainerConfig,
@@ -122,6 +122,7 @@ __all__ = [
     "ApptainerConfig",
     "ApptainerRuntimeInfo",
     "BaseRuntimeInfo",
+    "BindMount",
     "DockerBackend",
     "DockerConfig",
     "DockerRuntimeInfo",
