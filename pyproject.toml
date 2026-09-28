@@ -95,7 +95,7 @@ ta = [
 ]
 harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
-    "harbor==0.21.0 ; python_full_version >= '3.12'",
+    "harbor==0.23.0 ; python_full_version >= '3.12'",
 ]
 modal = [
     "modal>=1.5.4",
@@ -115,6 +115,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# Experimental Prime Compose provider and live service API.
+harbor = { git = "https://github.com/harbor-framework/harbor.git", rev = "a38eb549b5f3c33d16ccd5c51734b0defff8399e" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }
@@ -138,7 +140,6 @@ web-search-interception = { path = "environments/web_search_interception", edita
 # Bounded cutoffs for the explicitly requested tool upgrades.
 # Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
 # lockfile across timezones.
-harbor = "2026-08-11T00:00:00Z"
 ruff = "2026-07-28T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)

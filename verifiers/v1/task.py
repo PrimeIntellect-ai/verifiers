@@ -37,7 +37,9 @@ from verifiers.v1.utils.generic import concrete_type
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.rollout import RolloutTimeouts
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
+    from verifiers.v1.task_session import TaskSession
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -168,12 +170,37 @@ class Task(Generic[DataT, StateT, ConfigT]):
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
         return clone
 
+    def session_type(self) -> type[TaskSession]:
+        from verifiers.v1.task_session import TaskSession
+
+        return TaskSession
+
+    def open(
+        self,
+        *,
+        placement: RuntimeConfig,
+        runtime: Runtime | None = None,
+        timeouts: RolloutTimeouts | None = None,
+    ) -> TaskSession:
+        """Create an independent task world; agents run against the entered session."""
+        return self.session_type()(
+            copy.deepcopy(self),
+            placement=placement,
+            runtime=runtime,
+            timeouts=timeouts,
+        )
+
     def runtime_env(self) -> dict[str, str]:
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
+    async def prepare(self, runtime: Runtime) -> None:
+        """Prepare the task world once, before any agent is attached."""
+        return
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
-        return None
+        """Initialize one agent session, with its own trace and local state."""
+        return
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
@@ -186,28 +213,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
-    def defer_scoring(self) -> Self:
-        """An independent copy whose task signals are deferred.
-
-        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
-        state before declared artifacts are collected and the solver runtime is
-        destroyed. Only task metrics, rewards, and judges are skipped; harness
-        metrics remain attached to the solver trace.
-        """
-        clone = copy.deepcopy(self)
-        clone.scoring_deferred = True
-        return clone
-
-    scoring_deferred: bool = False
-
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
-        if self.scoring_deferred:
-            return
-
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
             # A defaulted runtime parameter can still be called offline with None.

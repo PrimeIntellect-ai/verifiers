@@ -3,8 +3,8 @@
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
-touched, carrying only what the task declared — the harbor env provisions and
-grades that box (see ``env.py``). Either way the score lands in
+touched, carrying only what the task declared — the task session provisions and
+grades that box (see ``session.py``). Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -56,6 +56,9 @@ REWARD_JSON_ADAPTER = TypeAdapter(
 
 
 class HarborTaskConfig(TaskConfig):
+    trust_compose: bool = False
+    """Allow local Compose definitions to use host files and Docker privileges."""
+
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
 
@@ -164,9 +167,7 @@ class HarborData(TaskData):
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_host_image: str | None = None
     """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
-    when the image lacks it, and `docker save` archives it ships in
-    /opt/verifiers/compose-images/ load before the services start. None uses a
-    stock image."""
+    when the image lacks it. None uses Harbor's default host image."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
@@ -185,6 +186,11 @@ class HarborData(TaskData):
 
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
+
+    def session_type(self):
+        from verifiers.v1.tasksets.harbor.session import HarborSession
+
+        return HarborSession
 
     verifier_staged: bool = False
 
@@ -205,7 +211,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def prepare(self, runtime: Runtime) -> None:
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -268,7 +274,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         main or, when given, the named sidecars.
 
         Harbor runs main's after the agent phase, which is exactly what `finalize`
-        means. The Harbor env collects sidecars once main has stopped.
+        means. The Harbor session collects sidecars once main has stopped.
 
         Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
         output is observability, here it is a grading input, and a silently absent file
@@ -360,7 +366,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
                     '([verifier].environment_mode = "separate"); grade it through '
-                    "the harbor env (this taskset's default), or force shared "
+                    "its task session, or force shared "
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
@@ -413,7 +419,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
 
 def verifier_box_data(data: HarborData) -> HarborData:
-    """The verifier's box, declared as task data — the harbor env resolves the
+    """The verifier's box, declared as task data — the task session resolves the
     grading runtime from it (image, workdir, resources, network policy), exactly
     as the solver's box resolves from the solver task's.
 

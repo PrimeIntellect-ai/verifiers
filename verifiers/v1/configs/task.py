@@ -6,6 +6,7 @@ from pydantic import Field, FiniteFloat, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
+from verifiers.v1.configs.verifier import VerifierConfig
 
 
 class DecoratedFunctionConfig(BaseConfig):
@@ -35,6 +36,9 @@ class TaskConfig(BaseConfig):
     default because constructing a task without a config builds the declared config type.
     Load-time dataset settings belong on `TasksetConfig` instead.
     """
+
+    verifier: VerifierConfig | None = None
+    """Grade in a fresh runtime when set; independent of the environment strategy."""
 
     judges: Judges = Field(default_factory=list)
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""

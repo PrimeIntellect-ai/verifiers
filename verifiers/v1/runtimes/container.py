@@ -1,4 +1,4 @@
-"""Container operations through a CLI on the local machine or an owned runtime."""
+"""Container operations through a local CLI."""
 
 import asyncio
 import contextlib
@@ -7,7 +7,6 @@ import shlex
 import signal
 import uuid
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
 
 from pydantic_config import BaseConfig
 
@@ -15,10 +14,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.runtimes.subprocess import SubprocessProcess
 from verifiers.v1.utils.aio import run_shielded
-
-if TYPE_CHECKING:
-    from verifiers.v1.runtimes.modal import ModalConfig
-    from verifiers.v1.runtimes.prime import PrimeConfig
 
 
 class ContainerConfig(BaseConfig):
@@ -177,35 +172,10 @@ class ContainerRuntime(Runtime):
     """A container reached through its CLI: every operation is an `exec` into it.
     Subclasses provision the container (`start` / `cleanup`) and describe the exec."""
 
-    config: "ContainerConfig | PrimeConfig | ModalConfig"
-    _host: Runtime | None = None
+    config: ContainerConfig
 
-    async def _run_host(self, *argv: str) -> ProgramResult:
-        if self._host is None:
-            return await cli(*argv)
-        return await self._host.run(list(argv), {})
-
-    async def _communicate_host(
-        self, *argv: str, input: bytes | None = None
-    ) -> tuple[int, bytes, bytes]:
-        if self._host is None:
-            return await _communicate(*argv, input=input)
-        # Stage bytes through the provider filesystem, never its text command logs.
-        temporary = f"/tmp/vf-io-{uuid.uuid4().hex}"
-        command = f"{shlex.join(argv)} > {temporary}.out"
-        try:
-            if input is not None:
-                await self._host.write(f"{temporary}.in", input)
-                command += f" < {temporary}.in"
-            result = await self._run_host("sh", "-c", command)
-            data = await self._host.read(f"{temporary}.out")
-            return result.exit_code, data, result.stderr.encode()
-        finally:
-            # Temporary-file cleanup is best-effort after command completion/failure.
-            with contextlib.suppress(Exception):
-                await run_shielded(
-                    self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
-                )
+    _run_host = staticmethod(cli)
+    _communicate_host = staticmethod(_communicate)
 
     def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
         """Host argv that runs a command inside the container, in the workdir, with
@@ -238,20 +208,17 @@ class ContainerRuntime(Runtime):
             pidfile,
             *argv,
         ]
-        if self._host is None:
-            proc = SubprocessProcess(
-                await asyncio.create_subprocess_exec(
-                    *command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
+        proc = SubprocessProcess(
+            await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        else:
-            proc = await self._host.open_process(command, {})
+        )
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + (30 if self._host is not None else 5)
+        deadline = loop.time() + 5
         try:
             async with asyncio.timeout_at(deadline):
                 while True:

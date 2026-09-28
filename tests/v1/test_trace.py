@@ -108,8 +108,7 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     run._closed = False
     run._failed = False
     run._failure = None
-    run._borrowed_runtime = None
-    run.runtime = None
+    run.runtime = SimpleNamespace(stopped=False)
     run._agent_time_remaining = None
     run._timeouts = RolloutTimeouts()
     run._harness_session = FailingSession()
