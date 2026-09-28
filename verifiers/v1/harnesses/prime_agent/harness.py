@@ -11,6 +11,7 @@ from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import UV_ENV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -262,7 +263,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "/bin/sh",
                 "-eu",
                 "-c",
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                f'{UV_ENV}; export PATH="{NODE_BIN_DIR}:$PATH"; exec "$@"',
                 "prime-agent",
                 *args,
             ],
