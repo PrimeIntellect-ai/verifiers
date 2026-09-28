@@ -7,7 +7,7 @@ This AGENTS guide is intended for end users working in a `prime lab setup` works
 
 ## Shared Best Practices (All Contexts)
 
-- Create new environments with `prime env init <MY_ENV_NAME>`.
+- Create new environments with `uv run init <MY_ENV_NAME>`.
 - Use `prime <command> --plain` to get better formatted command outputs.
 - Use the bundled skills first for create, browse, review, eval, optimization, training, and brainstorming workflows.
 - Go through the verifiers code as the source of truth.

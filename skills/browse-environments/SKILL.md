@@ -10,7 +10,7 @@ description: Discover and inspect verifiers environments through the Prime ecosy
 ## Primary Discovery Workflow
 1. List candidate environments:
 ```bash
-prime env list --search "math" --owner primeintellect --show-actions
+prime env list --search "math" --owner primeintellect
 ```
 2. Narrow results with owner, tags, mine, or starred filters:
 ```bash
@@ -20,7 +20,6 @@ prime env list --starred
 ```
 3. Prioritize quality and freshness signals:
    - Prefer environments published by `primeintellect` first.
-   - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
    - Prefer candidates updated in roughly the last 2 months.
    - Prefer candidates on version `v0.2.0` or newer.
    - Prefer candidates with a published leaderboard.
@@ -55,7 +54,7 @@ Qualified Hub IDs install on demand.
 When the user is ready to test an environment, run a small scale evaluation first to validate that the package runs without problems:
 
 ```bash
-prime eval run owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1
+uv run eval owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 Use the runtime the package actually requires. While `subprocess` is useful for small runs, you should use `docker` or `prime` when scaling up or when the environment actually requires separated rollouts, e.g. when the environment is about coding.
@@ -66,6 +65,6 @@ Return:
 
 1. Ranked shortlist with one-line rationale.
 2. A compact comparison of task, reward, overall goal of the environment.
-3. Exact `prime eval run` commands to run the environment.
+3. Exact `uv run eval` commands to run the environment.
 4. For each environment, state which harnesses might be supported: A custom one, CLI-based harnesses such as Codex or the general / default harness.
 5. Recommended starting environments and why.

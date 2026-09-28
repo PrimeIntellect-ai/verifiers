@@ -11,30 +11,32 @@ Set up an evaluation for an environment in the correct way to reproduce results 
 
 ## Canonical path
 
-Use the prime CLI
+Use the verifiers eval CLI installed in the workspace. It uploads finished runs to the Prime platform; pass `--no-push` to keep a run local.
 
 ```bash
-prime eval run <MY_ENV>
+uv run eval <MY_ENV>
 ```
+
+To run the evaluation on Prime's hosted evaluations instead of locally, push the environment and use `uv run eval owner/name --hosted`. The hosted path takes `-m`, `-n`, `-r` and related flags, not the typed `--taskset.*` / `--harness.*` overrides below.
 
 ## Core workflow
 
 1. Resolve and validate config without model calls:
 
 ```bash
-prime eval run <MY_ENV> --dry-run
+uv run eval <MY_ENV> --dry-run
 ```
 
 2. Run model-free gold validation when the taskset implements `validate`:
 
 ```bash
-prime eval validate <MY_ENV> --runtime.type subprocess
+uv run validate <MY_ENV> --runtime.type subprocess
 ```
 
 3. Do a small run to see whether it works correctly:
 
 ```bash
-prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
+uv run eval <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 4. Inspect successful, zero-reward, and errored traces.
@@ -51,7 +53,7 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 The leading ID is shorthand for `--taskset.id`. Select a harness independently:
 
 ```bash
-prime eval run owner/name --harness.id codex --harness.runtime.type prime
+uv run eval owner/name --harness.id codex --harness.runtime.type prime
 ```
 
 When specifying environments, always include the owner to resolve it correctly.
@@ -72,13 +74,13 @@ The names of these tools are set by the respective harness. Research the relevan
 Taskset settings:
 
 ```bash
-prime eval run my-task-v1 --taskset.split test --taskset.difficulty hard
+uv run eval my-task-v1 --taskset.split test --taskset.difficulty hard
 ```
 
 Harness and runtime settings:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --harness.id rlm \
   --harness.runtime.type docker \
   --harness.runtime.cpu 4 \
@@ -88,7 +90,7 @@ prime eval run my-task-v1 \
 Sampling:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --sampling.temperature 0.7 \
   --sampling.top-p 0.95 \
   --sampling.max-tokens 2048 \
@@ -121,7 +123,7 @@ temperature = 0.7
 ```
 
 ```bash
-prime eval run @ configs/my-eval.toml
+uv run eval @ configs/my-eval.toml
 ```
 
 For all parameters, look up the [reference](references/REFERENCE.md). Leaving things out when the user does not want them is a sane default. However, you should always ask for the harness to use, the runtime to use, as well as the sampling parameters.
@@ -131,7 +133,7 @@ For all parameters, look up the [reference](references/REFERENCE.md). Leaving th
 Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --retries.rollout.max-retries 2 \
   --retries.rollout.include SandboxError ProviderError \
   --retries.rollout.exclude TaskError
@@ -153,7 +155,7 @@ Set an exact path with `-o`. Results append as each trace finishes.
 Resume in place:
 
 ```bash
-prime eval run --resume /path/to/run
+uv run eval --resume /path/to/run
 ```
 
 ## Trace inspection
@@ -191,7 +193,7 @@ Do not average these categories together without reporting failure rate.
 For a real v0 package only:
 
 ```bash
-prime eval run --id legacy-env --args.split test -n 5
+uv run eval --id legacy-env --args.split test -n 5
 ```
 
 Label the result as bridged v0. Do not present `args` as the v1 config contract.
