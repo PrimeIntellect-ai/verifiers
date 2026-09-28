@@ -87,8 +87,14 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def include(self, **match: Any) -> Self:
         """A view keeping only the tasks `match` names by `idx`, `ids`, `keys` or
-        `names` (see `TaskMatchConfig`)."""
+        `names` (see `TaskMatchConfig`). An identity match on an unbounded view could
+        read forever waiting for a match, so it raises there."""
         config = TaskMatchConfig(**match)
+        if not self.bounded and (config.ids or config.keys or config.names):
+            raise ValueError(
+                f"{type(self).__name__} is infinite - include by ids, keys or names "
+                "may never end; bound it first with closed include idx ranges"
+            )
         # Positions arrive in increasing order until a shuffle, so reading can stop
         # past the last closed idx range.
         stop = config.idx_stop if self._ordered else None

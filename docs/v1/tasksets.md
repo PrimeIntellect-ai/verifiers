@@ -126,12 +126,12 @@ taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
 `include` keeps and `exclude` drops the tasks named by `idx` (ints and Python slices `start:stop:step`, e.g. `"100:"`, `":50"`, `"::2"`; no negative positions), `ids`, `keys` or `names`; a task matches when any list names it. An entry that matches no task logs a warning once the stream was read.
 
-The eval, debug, validate and GEPA entrypoints take a `select` block and apply it with `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`. `-n` sets `select.limit` and `-s` sets `select.shuffle`:
+The eval, debug, validate and GEPA entrypoints take a `select` block and apply it with `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
 
 ```bash
-uv run vf-eval gsm8k -n 50 -s                                 # 50 random tasks
-uv run vf-eval gsm8k --select.include.idx 0:100               # the first 100 tasks
-uv run vf-eval gsm8k -s --select.skip 100 -n 100              # a random split disjoint from `-s -n 100`
+uv run vf-eval gsm8k --select.limit 50 --select.shuffle         # 50 random tasks (short: -n 50 -s)
+uv run vf-eval gsm8k --select.include.idx 0:100                 # the first 100 tasks
+uv run vf-eval gsm8k --select.shuffle --select.skip 100 --select.limit 100   # a random split disjoint from the first
 ```
 
 ```toml

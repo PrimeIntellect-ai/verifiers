@@ -131,7 +131,9 @@ def test_only_a_bounded_view_can_shuffle() -> None:
     assert infinite().include(idx=["0:4", 9]).bounded
     assert not infinite().include(idx="::2").bounded
     assert not infinite().include(idx="5:").bounded
-    assert not infinite().include(idx=["0:4"], names=["t9"]).bounded
+    with pytest.raises(ValueError, match="may never end"):
+        infinite().include(idx=["0:4"], names=["t9"])
+    assert idxs(infinite().include(idx=":20").include(names=["t3"])) == [3]
     with pytest.raises(ValueError, match="infinite"):
         infinite().shuffle()
     assert sorted(idxs(infinite().take(5).shuffle())) == [0, 1, 2, 3, 4]
@@ -144,7 +146,7 @@ def test_task_match_config_parses_idx() -> None:
     assert vf.TaskMatchConfig(idx=["3", "0:2,4", "8:"]).idx == [3, "0:2", 4, "8:"]
     assert vf.TaskMatchConfig(idx=5).idx == [5]
     assert vf.TaskMatchConfig(idx="0:9:3").idx_stop == 9
-    for bad in [-1, "a", "5:5", "7:3", "1:2:0", "::00", "1:2:3:4"]:
+    for bad in [-1, "a", "5:5", "7:3", ":0", "1:2:0", "::00", "1:2:3:4"]:
         with pytest.raises(ValidationError):
             vf.TaskMatchConfig(idx=[bad])
 

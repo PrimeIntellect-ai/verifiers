@@ -78,7 +78,7 @@ def _parse_idx_item(item: int | str) -> int | str:
     start, stop, step = match.groups()
     if step and int(step) == 0:
         raise ValueError(f"idx slice {item!r} has step 0")
-    if start and stop and int(start) >= int(stop):
+    if stop and int(start or 0) >= int(stop):
         raise ValueError(f"idx range {item!r} is empty")
     return text
 
