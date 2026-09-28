@@ -24,7 +24,7 @@ from verifiers.v1.runtimes import (
     Runtime,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
-from verifiers.v1.task_attempt import TaskAttempt
+from verifiers.v1.task_session import TaskSession
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.decorators import discover_decorated
@@ -52,7 +52,7 @@ class Rollout:
     def __init__(
         self,
         *,
-        attempt: TaskAttempt,
+        session: TaskSession,
         trace: Trace,
         harness: Harness,
         ctx: ModelContext,
@@ -63,8 +63,8 @@ class Rollout:
         interception: Interception | None = None,
         runtime: Runtime,
     ) -> None:
-        self.attempt = attempt
-        task = attempt.task
+        self.session = session
+        task = session.task
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -154,14 +154,14 @@ class Rollout:
         self.trace.record_error(error)
 
     async def open(self) -> bool:
-        """Attach this agent's session to the open task attempt and bring up
+        """Attach this agent's session to the open task session and bring up
         the harness, interception slot and tool servers. Returns whether the exchange can
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = self.trace.timing.boot.start or time.time()
         self.trace.notify()
         try:
-            self.attempt.check_open()
+            self.session.check_open()
             runtime = self.runtime
             if runtime.stopped:
                 raise ValueError("cannot run an agent in a stopped runtime")
@@ -195,7 +195,7 @@ class Rollout:
                 boundary(TaskError, "task setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                await self.attempt.attach(self.trace, runtime)
+                await self.session.attach(self.trace, runtime)
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
@@ -309,7 +309,7 @@ class Rollout:
         except BaseException:
             # A cancellation mid-setup kills the driver's await with it, so no
             # caller reaches close() — free this agent's entered servers here
-            # and release its session from the task attempt.
+            # and release its session from the task session.
             await self.abort()
             raise
         now = time.time()
@@ -405,7 +405,7 @@ class Rollout:
         with contextlib.suppress(Exception):
             await self._stack.aclose()
         await self._cleanup_harness()
-        self.attempt.release(self.trace)
+        self.session.release(self.trace)
 
     async def _cleanup_harness(self) -> None:
         if self.runtime is not None and not self._harness_cleaned:
@@ -419,7 +419,7 @@ class Rollout:
 
     async def close(self) -> Trace:
         """Close this agent's resources and score harness metrics. Task finalization,
-        grading, and world teardown belong to the attempt's owner."""
+        grading, and world teardown belong to the session's owner."""
         if self._closed:
             return self.trace
         self._closed = True
@@ -449,7 +449,7 @@ class Rollout:
                     async with asyncio.timeout(self._timeouts.scoring):
                         await self.harness.score(trace, runtime)
                 await self._cleanup_harness()
-                self.attempt.release(trace)
+                self.session.release(trace)
                 trace.ok = True
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
@@ -476,7 +476,7 @@ class Rollout:
                     span.end = now
             trace.split_agent_time()
             await self._cleanup_harness()
-            self.attempt.release(trace)
+            self.session.release(trace)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

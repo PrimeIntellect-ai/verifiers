@@ -3,14 +3,14 @@
 from pathlib import Path
 
 from verifiers.v1.configs.verifier import VerifierConfig
-from verifiers.v1.task_attempt import TaskAttempt
+from verifiers.v1.task_session import TaskSession
 from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import HarborTask, verifier_box_data
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.compile import resolve_runtime_config
 
 
-class HarborAttempt(TaskAttempt):
+class HarborSession(TaskSession):
     task: HarborTask
 
     def __init__(self, task: HarborTask, **kwargs) -> None:

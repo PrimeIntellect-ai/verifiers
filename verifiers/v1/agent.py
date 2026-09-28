@@ -1,5 +1,5 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable
-arrow — `agent.run(task) -> Trace`; `agent.run(attempt, runtime=...)` borrows
+arrow — `agent.run(task) -> Trace`; `agent.run(session, runtime=...)` borrows
 a live box in an opened task world. `provision(task)` hands you a box.
 `agent.interaction(task)` holds the rollout open
 turn-by-turn, with the caller as the run's user — one `turn()` per harness segment;
@@ -39,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.task_attempt import TaskAttempt
+from verifiers.v1.task_session import TaskSession
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
@@ -188,7 +188,7 @@ class Interaction:
     the moment the interaction exists: watch tokens and turns mid-exchange, read
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed`. A plain task is graded on context exit; an explicit
-    attempt is graded by its owner."""
+    session is graded by its owner."""
 
     def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
         self._run = run
@@ -262,7 +262,7 @@ class Interaction:
         """End the exchange and score harness metrics (idempotent).
 
         A plain task is graded when the interaction context exits; an explicit
-        task attempt is graded by its owner. The trace remains available here.
+        task session is graded by its owner. The trace remains available here.
         """
         async with self._lock, self._gate or nullcontext():
             if not self._run.closed and self._run.ok:
@@ -276,9 +276,9 @@ class Agent:
     Built from an `AgentConfig` alone; `interception=` injects a live resource to
     borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
     builds and closes its own `Client`, so an agent holds no transport. The config's
-    `runtime` is a placement policy for automatic task attempts. With an opened
-    attempt, the agent borrows its main runtime, or another live `runtime=`
-    supplied by the caller. The task attempt owns world preparation and grading."""
+    `runtime` is a placement policy for automatic task sessions. With an opened
+    session, the agent borrows its main runtime, or another live `runtime=`
+    supplied by the caller. The task session owns world preparation and grading."""
 
     def __init__(
         self,
@@ -397,7 +397,7 @@ class Agent:
 
     async def run(
         self,
-        task: Task | TaskAttempt,
+        task: Task | TaskSession,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
@@ -405,9 +405,9 @@ class Agent:
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
-        is `interaction()`). A Task opens and grades a fresh attempt automatically.
-        An entered TaskAttempt shares its world while keeping this run's trace and
-        state independent; its owner calls attempt.grade() and closes the attempt.
+        is `interaction()`). A Task opens and grades a fresh session automatically.
+        An entered TaskSession shares its world while keeping this run's trace and
+        state independent; its owner calls session.grade() and closes the session.
         `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
@@ -423,7 +423,7 @@ class Agent:
             trace = await self._run_once(task, runtime, tools, on_trace)
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
-            if runtime is not None or isinstance(task, TaskAttempt):
+            if runtime is not None or isinstance(task, TaskSession):
                 logger.warning(
                     "not retrying the rollout on a borrowed box (its state is no "
                     "longer the task's start state); the error stands"
@@ -446,9 +446,9 @@ class Agent:
         return trace
 
     def _trace(
-        self, task: Task | TaskAttempt, on_trace: Callable[[Trace], None] | None
+        self, task: Task | TaskSession, on_trace: Callable[[Trace], None] | None
     ) -> Trace:
-        task = task.task if isinstance(task, TaskAttempt) else task
+        task = task.task if isinstance(task, TaskSession) else task
         trace = Trace(
             task=TraceTask(
                 type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -461,12 +461,12 @@ class Agent:
         return trace
 
     @asynccontextmanager
-    async def _attempt(
-        self, task: Task | TaskAttempt, trace: Trace
-    ) -> AsyncIterator[TaskAttempt]:
-        """The convenience boundary: explicit attempts retain their own owner."""
+    async def _task_session(
+        self, task: Task | TaskSession, trace: Trace
+    ) -> AsyncIterator[TaskSession]:
+        """The convenience boundary: explicit sessions retain their own owner."""
         owned = isinstance(task, Task)
-        attempt = (
+        session = (
             task.open(
                 placement=self.runtime_config,
                 timeouts=resolve_rollout_timeouts(self.timeout, task),
@@ -477,10 +477,10 @@ class Agent:
         trace.timing.boot.start = time.time()
         trace.notify()
         try:
-            async with attempt if owned else nullcontext(attempt):
-                yield attempt
+            async with session if owned else nullcontext(session):
+                yield session
                 if owned:
-                    await attempt.grade(trace)
+                    await session.grade(trace)
         except Exception as error:
             if not trace.errors:
                 trace.record_error(error)
@@ -492,22 +492,22 @@ class Agent:
 
     async def _run_once(
         self,
-        task: Task | TaskAttempt,
+        task: Task | TaskSession,
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
     ) -> Trace:
         if isinstance(task, Task) and runtime is not None:
             raise TypeError(
-                "runtime= requires an opened task attempt; use task.open(runtime=...)"
+                "runtime= requires an opened task session; use task.open(runtime=...)"
             )
         trace = self._trace(task, on_trace)
         try:
-            async with self._attempt(task, trace) as attempt:
+            async with self._task_session(task, trace) as session:
                 params = self._rollout_params(
-                    attempt, runtime, dict(shared_tools or {})
+                    session, runtime, dict(shared_tools or {})
                 )
-                run = Rollout(attempt=attempt, trace=trace, **params)
+                run = Rollout(session=session, trace=trace, **params)
                 try:
                     if await run.open():
                         await run.step()
@@ -518,16 +518,16 @@ class Agent:
                     await run_shielded(run.abort())
                     raise
         except Exception:  # owned world setup/grading failures are rollout outcomes
-            if isinstance(task, TaskAttempt):
+            if isinstance(task, TaskSession):
                 raise
         if trace.agent.runtime is not None:
-            trace.agent.runtime.borrowed = isinstance(task, TaskAttempt)
+            trace.agent.runtime.borrowed = isinstance(task, TaskSession)
         return trace
 
     @asynccontextmanager
     async def interaction(
         self,
-        task: Task | TaskAttempt,
+        task: Task | TaskSession,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
@@ -551,13 +551,13 @@ class Agent:
         they do for `run()`; an env supplies its taskset's shared tools
         automatically for tasks loaded from that taskset.
 
-        Passing an entered TaskAttempt keeps world finalization and grading with
+        Passing an entered TaskSession keeps world finalization and grading with
         its owner; leaving this interaction closes only this agent's session.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
         exchange (`user_closed`). A plain task is then finalized and graded;
-        an explicit attempt leaves those steps to its owner. A failure while opening the rollout raises before the context
+        an explicit session leaves those steps to its owner. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
         apply here."""
@@ -566,12 +566,12 @@ class Agent:
         self._check_resume_support()
         if isinstance(task, Task) and runtime is not None:
             raise TypeError(
-                "runtime= requires an opened task attempt; use task.open(runtime=...)"
+                "runtime= requires an opened task session; use task.open(runtime=...)"
             )
         trace = self._trace(task, on_trace)
-        async with self._attempt(task, trace) as attempt:
-            params = self._rollout_params(attempt, runtime, dict(tools or {}))
-            run = Rollout(attempt=attempt, trace=trace, has_user=True, **params)
+        async with self._task_session(task, trace) as session:
+            params = self._rollout_params(session, runtime, dict(tools or {}))
+            run = Rollout(session=session, trace=trace, has_user=True, **params)
             interaction = Interaction(run, gate=self._gate)
             async with self._gate or nullcontext():
                 opened = await run.open()
@@ -590,16 +590,16 @@ class Agent:
                 if not run.closed:
                     await interaction.close()
                 if trace.agent.runtime is not None:
-                    trace.agent.runtime.borrowed = isinstance(task, TaskAttempt)
+                    trace.agent.runtime.borrowed = isinstance(task, TaskSession)
 
     def _rollout_params(
-        self, attempt: TaskAttempt, runtime: Runtime | None, shared_tools: dict
+        self, session: TaskSession, runtime: Runtime | None, shared_tools: dict
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
-        attempt.check_open()
-        runtime = runtime or attempt.runtime
-        task = attempt.task
+        session.check_open()
+        runtime = runtime or session.runtime
+        task = session.task
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
         if skills:
@@ -633,7 +633,7 @@ class Agent:
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; use it with an opened task attempt."""
+        policy, resolved for `task` when given; use it with an opened task session."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
@@ -679,8 +679,8 @@ class _EpisodeAgent(Agent):
         self._on_trace = on_trace
         self._on_discard = on_discard
 
-    def _shared_for(self, task: Task | TaskAttempt) -> Mapping[str, SharedToolServer]:
-        task = task.task if isinstance(task, TaskAttempt) else task
+    def _shared_for(self, task: Task | TaskSession) -> Mapping[str, SharedToolServer]:
+        task = task.task if isinstance(task, TaskSession) else task
         return self._shared_tools if isinstance(task, self._task_cls) else {}
 
     def _watch(
@@ -707,7 +707,7 @@ class _EpisodeAgent(Agent):
 
     async def run(
         self,
-        task: Task | TaskAttempt,
+        task: Task | TaskSession,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
@@ -726,7 +726,7 @@ class _EpisodeAgent(Agent):
     @asynccontextmanager
     async def interaction(
         self,
-        task: Task | TaskAttempt,
+        task: Task | TaskSession,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,

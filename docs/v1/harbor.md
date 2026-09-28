@@ -89,7 +89,7 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 
 Select `runtime.type = "docker"` to run Compose tasks locally.
 
-Harbor task attempts containing `environment/docker-compose.yaml`
+Harbor task sessions containing `environment/docker-compose.yaml`
 run their topology with Docker Compose on local Docker, Prime VMs, or Modal's VM runtime.
 Local Docker requires `--env.taskset.task.trust-compose`: task definitions can mount host files
 and request Docker privileges, so only enable it for trusted packages. Compose interpolation receives declared task variables and task-local `.env` files.
@@ -119,13 +119,13 @@ another service's network namespace.
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
 daemon instead of the stock one. For Prime, Docker is installed when the image lacks it.
 
-The Harbor task attempt removes the entire project or remote sandbox before
+The Harbor task session removes the entire project or remote sandbox before
 separate grading, which retains the ordinary fresh verifier runtime. A verifier
 without its own image inherits the resolved main image; a fresh copy also inherits
 main's working directory. Images built only
 inside a cloud host must be published separately and declared in the verifier environment.
 
-Compose projects are owned by the Harbor task attempt; agents borrow the existing
+Compose projects are owned by the Harbor task session; agents borrow the existing
 main service through a borrowed runtime. Harbor owns provisioning, Compose startup,
 service operations, and cleanup; Verifiers owns agent execution, traces, and grading. Failures retry with a fresh project through
 `--env.retries`, rather than retrying an agent inside the same project.
@@ -161,7 +161,7 @@ tool and provider-held resource remains disabled.
 
 Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the task attempt's Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the task attempt then stops main and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the task session's Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the task session then stops main and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
 
 Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
@@ -172,7 +172,7 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The task attempt grades such tasks independently of the selected environment strategy: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the attempt then provisions a fresh box, restores those artifacts, prepares the verifier tests, and grades there, running ordinary task scoring onto the solver's trace, including custom decorated rewards, weights, and metrics. The grading box derives from the solver's runtime policy unless the task's `verifier.runtime` names its own; setup, restoration, staging, and scoring failures retry per `verifier.retries` before the attempt fails. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The task session grades such tasks independently of the selected environment strategy: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the session then provisions a fresh box, restores those artifacts, prepares the verifier tests, and grades there, running ordinary task scoring onto the solver's trace, including custom decorated rewards, weights, and metrics. The grading box derives from the solver's runtime policy unless the task's `verifier.runtime` names its own; setup, restoration, staging, and scoring failures retry per `verifier.retries` before the session fails. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image. A dedicated `[verifier.environment].docker_image` must contain the complete `/tests` suite, including `/tests/test.sh` and its dependencies; that suite runs without uploading packaged tests, matching Harbor. When grading in a fresh copy of the solver image (including the `ignore_dockerfile` fallback), `/tests` is replaced with the task package's tests so stale image files cannot affect grading. Solver artifacts rooted under `/tests` are rejected before the tests run, and old reward files are cleared in either case.
 

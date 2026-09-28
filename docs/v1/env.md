@@ -18,20 +18,20 @@ verifiers comes with different pre-built `Env`s to use:
 - The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
 - The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
 
-## Task attempts
+## Task sessions
 
-`agent.run(task)` opens a task attempt, runs the agent, grades the result, and
-closes the attempt. To control the world lifetime yourself, pass an entered
-attempt to `run()` or `interaction()`:
+`agent.run(task)` opens a task session, runs the agent, grades the result, and
+closes the session. To control the world lifetime yourself, pass an entered
+session to `run()` or `interaction()`:
 
 ```python
-async with task.open(placement=agents.solver.runtime_config) as attempt:
-    solution = await agents.solver.run(attempt)
-    await attempt.grade(solution)
+async with task.open(placement=agents.solver.runtime_config) as session:
+    solution = await agents.solver.run(session)
+    await session.grade(solution)
 ```
 
-An attempt owns its services (`attempt.runtime` is `attempt.services["main"]`).
-Several agents may use the same attempt, each with an independent trace and
+A session owns its services (`session.runtime` is `session.services["main"]`).
+Several agents may use the same session, each with an independent trace and
 `trace.state`. `runtime=` can place an agent in another live runtime; that runtime
 remains owned by its caller. Close every agent session before grading the selected
 trace. Grading finalizes the world once and records task scores on that trace;
@@ -42,14 +42,14 @@ must not reopen egress underneath another running agent.
 `Task.prepare(runtime)` prepares the world once on entry, before any agent trace
 exists. `Task.setup(trace, runtime)` initializes each agent session. Harness metrics
 and cleanup run when that agent closes; task `finalize` and scoring run when the
-attempt is graded. Exiting an attempt always frees its owned services, including
-after an exception or cancellation. An entered attempt is not retried by an agent:
+session is graded. Exiting a session always frees its owned services, including
+after an exception or cancellation. An entered session is not retried by an agent:
 its caller controls retries of the whole shared world.
 
 ## Isolated deterministic verification
 
 Set `TaskConfig.verifier = vf.VerifierConfig()` to grade in a fresh runtime under
-any environment strategy, including best-of-N. The attempt records scores on the
+any environment strategy, including best-of-N. The session records scores on the
 solver trace and starts no verifier agent, model, or harness.
 
 Task authors use the existing task API. Declare every solver output the verifier
@@ -87,7 +87,7 @@ task = CodeTask(
 The lifecycle is fixed:
 
 1. The agent runs, records harness metrics, and closes its harness session.
-2. The task attempt runs task `finalize`, collects the declared paths and
+2. The task session runs task `finalize`, collects the declared paths and
    `/logs/artifacts`, then releases its owned solver services.
 3. It creates a fresh task controller and provisions either the same resolved
    container/runtime policy or the independently configured verifier runtime, runs

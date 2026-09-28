@@ -31,13 +31,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class TaskAttempt:
+class TaskSession:
     """A task's live services and grading lifecycle.
 
-    Enter to provision services, pass the attempt to agent.run/interaction, then
+    Enter to provision services, pass the session to agent.run/interaction, then
     grade the selected trace. World preparation runs once on entry; each agent
     keeps its own trace state and setup. Exiting always frees services.
-    An attempt is single-use and can be graded once, after all agents have closed.
+    A session is single-use and can be graded once, after all agents have closed.
     """
 
     def __init__(
@@ -68,16 +68,16 @@ class TaskAttempt:
     @property
     def runtime(self) -> Runtime:
         if not self._entered or self._closed:
-            raise RuntimeError("task attempt is not open")
+            raise RuntimeError("task session is not open")
         return self.services["main"]
 
     def check_open(self) -> None:
         if not self._entered or self._closed or self._graded or self._grading:
-            raise RuntimeError("task attempt is not open for agent execution")
+            raise RuntimeError("task session is not open for agent execution")
 
     async def __aenter__(self) -> Self:
         if self._entered or self._closed:
-            raise RuntimeError("task attempt is single-use")
+            raise RuntimeError("task session is single-use")
         self._entered = True
         try:
             if self.verifier is not None:
@@ -176,9 +176,9 @@ class TaskAttempt:
         """Finalize and score the chosen solution, updating that same trace in place."""
         self.check_open()
         if trace.id not in self._traces:
-            raise ValueError("trace does not belong to this task attempt")
+            raise ValueError("trace does not belong to this task session")
         if self._running:
-            raise RuntimeError("close every agent run before grading the task attempt")
+            raise RuntimeError("close every agent run before grading the task session")
         if not trace.ok:
             return trace
         self._grading = True

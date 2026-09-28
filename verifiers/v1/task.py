@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.rollout import RolloutTimeouts
     from verifiers.v1.runtimes import Runtime, RuntimeConfig
-    from verifiers.v1.task_attempt import TaskAttempt
+    from verifiers.v1.task_session import TaskSession
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -170,10 +170,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
         return clone
 
-    def attempt_type(self) -> type[TaskAttempt]:
-        from verifiers.v1.task_attempt import TaskAttempt
+    def session_type(self) -> type[TaskSession]:
+        from verifiers.v1.task_session import TaskSession
 
-        return TaskAttempt
+        return TaskSession
 
     def open(
         self,
@@ -181,9 +181,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         placement: RuntimeConfig,
         runtime: Runtime | None = None,
         timeouts: RolloutTimeouts | None = None,
-    ) -> TaskAttempt:
-        """Create an independent task world; agents run against the entered attempt."""
-        return self.attempt_type()(
+    ) -> TaskSession:
+        """Create an independent task world; agents run against the entered session."""
+        return self.session_type()(
             copy.deepcopy(self),
             placement=placement,
             runtime=runtime,
