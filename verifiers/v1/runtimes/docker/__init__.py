@@ -119,8 +119,8 @@ class DockerBackend(ContainerBackend):
         host_backend: RuntimeBackend | None = None,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow an existing container; its caller owns creation and removal."""
-        if isinstance(config, DockerConfig) and config.mounts:
-            raise ValueError("Docker bind mounts cannot be added to an existing container")
+        if isinstance(config, ContainerConfig) and config.mounts:
+            raise ValueError("Bind mounts cannot be added to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
