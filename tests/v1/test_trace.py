@@ -195,7 +195,7 @@ def test_wire_trace_round_trip(history_type):
         "strict": False,
     }
     stale = function | {"parameters": {"type": "object"}, "strict": True}
-    request = ResponsesDialect().parse_request(
+    native = ResponsesDialect().bind_request(
         {
             "input": [
                 {
@@ -218,7 +218,27 @@ def test_wire_trace_round_trip(history_type):
             ],
         }
     )
-    assert request.tools is not None and len(request.tools) == 7
+    request = native.view
+    assert request.tools is not None and len(request.tools) == 4
+    assert [tool["type"] for tool in native.provider_tools] == [
+        "web_search",
+        "mcp",
+        "mcp",
+    ]
+    assert "trace-test-" not in json.dumps(native.provider_tools)
+    # Replayed declarations may also live in assistant state, including namespaces.
+    history = {
+        "input": [
+            {
+                "type": history_type,
+                "tools": [{"type": "namespace", "name": "remote", "tools": [mcp]}],
+            }
+        ]
+    }
+    history_native = ResponsesDialect().bind_request(history)
+    assert "trace-test-" not in history_native.view.model_dump_json()
+    assert "trace-test-" not in json.dumps(history_native.provider_tools)
+    assert history["input"][0]["tools"][0]["tools"][0] == mcp
     assert all(tool.parameters == function["parameters"] for tool in request.tools[:3])
     assert all(tool.strict is False for tool in request.tools[:3])
     assistant = fold_assistant(
@@ -251,6 +271,7 @@ def test_wire_trace_round_trip(history_type):
     tr.root_reply = "root answer"
     tr.stop("done")
     prepare_turn(tr, [], request.tools).commit_prompt()
+    tr.calls.append(vf.ModelCall(provider_tools=native.provider_tools))
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))
@@ -259,16 +280,23 @@ def test_wire_trace_round_trip(history_type):
     assert mcp["headers"] == {"Authorization": "Bearer trace-test-header-token"}
     assert mcp["Authorization"] == "trace-test-case-oauth-token"
     assert mcp["Headers"] == {"X-Api-Key": "trace-test-case-header-token"}
-    chat_request = ChatDialect().parse_request(
+    chat_native = ChatDialect().bind_request(
         {"tools": [mcp, mcp | {"server_label": "beta"}]}
     )
     chat_trace = tr.model_copy(update={"tools": []})
-    prepare_turn(chat_trace, [], chat_request.tools).commit_prompt()
-    assert [tool.name for tool in chat_trace.tools] == ["alpha", "beta"]
+    prepare_turn(chat_trace, [], chat_native.view.tools).commit_prompt()
+    chat_trace.calls = [vf.ModelCall(provider_tools=chat_native.provider_tools)]
+    assert not chat_trace.tools
+    assert [tool["server_label"] for tool in chat_trace.calls[0].provider_tools] == [
+        "alpha",
+        "beta",
+    ]
     assert "trace-test-" not in chat_trace.model_dump_json()
     assert (
-        vf.WireTrace.model_validate_json(chat_trace.model_dump_json()).tools
-        == chat_request.tools
+        vf.WireTrace.model_validate_json(chat_trace.model_dump_json())
+        .calls[0]
+        .provider_tools
+        == chat_native.provider_tools
     )
     assert "reward" not in data and "is_truncated" not in data
     # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
@@ -297,9 +325,14 @@ def test_wire_trace_round_trip(history_type):
     assert all(tool.strict is False for tool in rt.tools[:3])
     assert rt.tools[3].type == "custom"
     assert rt.tools[3].model_extra == {"format": {"type": "text"}}
-    assert rt.tools[4].type == "web_search"
-    assert rt.tools[4].model_extra == {"search_context_size": "low"}
-    assert [tool.name for tool in rt.tools[5:]] == ["alpha", "beta"]
+    assert rt.calls[0].provider_tools[0] == {
+        "type": "web_search",
+        "search_context_size": "low",
+    }
+    assert [tool["server_label"] for tool in rt.calls[0].provider_tools[1:]] == [
+        "alpha",
+        "beta",
+    ]
     assert rt.nodes[1].message.tool_calls[0].namespace == "mcp__world"
     assert rt.task.data.model_extra == {
         "answer": "a"

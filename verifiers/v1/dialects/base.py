@@ -7,215 +7,32 @@ from the endpoint the program's SDK posts to — the harness declares nothing.
 
 The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
 dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
-A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
-exception is `apply_overrides` (impose the eval's model + sampling in this format's shape).
+Request bindings project native JSON into task messages and apply supported hook edits at
+their original locations. Network policy is checked separately by the gateway.
 """
 
 import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from glob import has_magic
 from typing import Any, ClassVar, Generic, TypeVar
 
-from pydantic import AnyHttpUrl, BaseModel, ValidationError
+from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.configs.runtime import (
-    NetworkPolicyConfig,
-    intersect_network_hosts,
-    parse_network_rule,
+from verifiers.v1.dialects.request import NativeRequest
+from verifiers.v1.types import (
+    AssistantMessage,
+    Request,
+    Response,
+    Sampling,
+    SamplingConfig,
 )
-from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]
 
 logger = logging.getLogger(__name__)
-
-PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
-CAPABILITY_NOTICE = (
-    "Some request content or provider-side capabilities were omitted because they are "
-    "blocked by the network policy or cannot enforce it."
-)
-
-
-class RequestFilter:
-    """One request's omissions and blocked URLs; subclasses define native wire rules."""
-
-    wrappers: tuple[str, ...] = ()
-
-    def __init__(self, policy: NetworkPolicyConfig):
-        self.policy = policy
-        self.blocked_urls: list[str] = []
-        self.capabilities: list[str] = []
-
-    def blocked_url(self, value: object) -> bool:
-        if not isinstance(value, str):
-            return True
-        if value.lower().startswith("data:"):
-            return False
-        try:
-            url = AnyHttpUrl(value)
-        except ValidationError:
-            return True
-        blocked = not self.policy.permits(url.scheme, url.host.strip("[]"), url.port)
-        if blocked:
-            self.blocked_urls.append(value)
-        return blocked
-
-    def blocked(self, value, path: str) -> str | None:
-        """Find the first forbidden part, treating nested content as one unit."""
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                if blocked := self.blocked(item, f"{path}[{index}]"):
-                    return blocked
-            return None
-        if not isinstance(value, dict):
-            return None
-        caller = value.get("caller")
-        if caller is not None and not (
-            isinstance(caller, dict) and caller.get("type") == "direct"
-        ):
-            return f"{path}.caller.type"
-        return self.blocked_part(value, path)
-
-    def blocked_part(self, value: dict, path: str) -> str | None:
-        raise NotImplementedError
-
-    def mediate(self, value, path: str):
-        """Remove forbidden parts while retaining supported wrapper blocks."""
-        if not isinstance(value, list):
-            if blocked := self.blocked(value, path):
-                self.capabilities.append(blocked)
-                return ""
-            return value
-        mediated = []
-        for index, block in enumerate(value):
-            item_path = f"{path}[{index}]"
-            wrapper = isinstance(block, dict) and block.get("type") in self.wrappers
-            scan = {**block, "content": []} if wrapper else block
-            if blocked := self.blocked(scan, item_path):
-                self.capabilities.append(blocked)
-                continue
-            if wrapper:
-                self.content(block, "content", f"{item_path}.content")
-            mediated.append(block)
-        return mediated
-
-    def content(self, parent: dict, key: str, path: str) -> bool:
-        """Rewrite a content field only when filtering removes something."""
-        before = len(self.capabilities)
-        content = self.mediate(parent.get(key), path)
-        changed = len(self.capabilities) != before
-        if changed:
-            parent[key] = content or ""
-        return changed
-
-    def tools(self, value, path: str = "tools") -> list[dict]:
-        if value is not None and not isinstance(value, list):
-            self.capabilities.append(path)
-            return []
-        tools = []
-        for index, tool in enumerate(value or []):
-            if (filtered := self.tool(tool, f"{path}[{index}]")) is not None:
-                tools.append(filtered)
-        return tools
-
-    def tool(self, value, path: str) -> dict | None:
-        raise NotImplementedError
-
-
-def provider_domains(
-    policy: NetworkPolicyConfig, requested: object = None
-) -> list[str]:
-    """Translate allow/block rules to provider filters without changing their scope.
-
-    Provider filters include subdomains, so exact hosts need a covering wildcard rule.
-    Empty results mean the policy cannot be represented; never send an empty filter.
-    """
-    rules = policy.block or policy.allow
-    if requested is not None and not isinstance(requested, list):
-        return []
-    hosts, requested_domains = [], []
-    for entries, output, is_filter in (
-        (rules, hosts, False),
-        (requested or [], requested_domains, True),
-    ):
-        for rule in entries:
-            if not isinstance(rule, str):
-                return []
-            try:
-                url, host, port = parse_network_rule(rule)
-            except ValueError:
-                return []
-            if is_filter and (
-                url.username is not None or url.path or url.query or url.fragment
-            ):
-                return []
-            domain = host if is_filter else host.removeprefix("*.")
-            if (
-                url.scheme
-                or port is not None
-                or not domain
-                or has_magic(domain)
-                or not domain.isascii()
-            ):
-                return []
-            output.append(host)
-    for host in hosts:
-        if not host.startswith("*.") and not (
-            policy.block
-            and any(
-                wildcard.startswith("*.")
-                and intersect_network_hosts(wildcard, host) == host
-                for wildcard in hosts
-            )
-        ):
-            return []
-    domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
-    if requested is None:
-        return domains
-    if policy.block:
-        return list(dict.fromkeys([*domains, *requested_domains]))
-    intersection = []
-    for allowed in domains:
-        for requested_domain in requested_domains:
-            if host := intersect_network_hosts(f"*.{allowed}", f"*.{requested_domain}"):
-                intersection.append(host.removeprefix("*."))
-    return list(dict.fromkeys(intersection))
-
-
-def append_user_notice(
-    messages: list,
-    *,
-    blocked_urls: list[str],
-    text_type: str = "text",
-    message_type: str | None = None,
-) -> None:
-    """Explain an actual policy-driven omission in the earliest user input."""
-    notice = CAPABILITY_NOTICE
-    if blocked_urls:
-        notice += "\nBlocked URLs: " + ", ".join(
-            json.dumps(url) for url in dict.fromkeys(blocked_urls)
-        )
-        notice += "\nCircumventing this block is forbidden."
-    part = {"type": text_type, "text": notice}
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, list):
-            message["content"] = [*content, part]
-        elif isinstance(content, str):
-            message["content"] = f"{content}\n\n{notice}" if content else notice
-        else:
-            message["content"] = [part]
-        return
-    message = {"role": "user", "content": [part]}
-    if message_type is not None:
-        message["type"] = message_type
-    messages.append(message)
 
 
 def is_sse_done_event(raw: bytes) -> bool:
@@ -265,8 +82,8 @@ class StreamParser(ABC):
 
 class Dialect(ABC, Generic[RespT]):
     """One native API's wire format, typed over its validated response (`RespT`). Requests stay
-    as mutable native JSON because the gateway preserves provider extensions while mediating and
-    rewriting them. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
+    as mutable native JSON because the gateway preserves provider extensions while applying
+    supported edits. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
     speaking that format works end-to-end."""
 
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
@@ -329,20 +146,16 @@ class Dialect(ABC, Generic[RespT]):
         OpenAI SDKs raise on any event carrying `error`."""
         return b"data: " + json.dumps(error).encode() + b"\n\n"
 
-    @abstractmethod
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        """Filter blocked content and constrain provider tools to the network policy.
-
-        Provider tools execute outside runtime egress controls; remove them when their
-        filters cannot express the policy. Add context only when something is removed.
-        Returned paths never contain request values.
-        """
-
-    @abstractmethod
     def parse_request(self, body: RawRequest) -> Request:
-        """The native request -> the typed model request."""
+        """The task-facing projection; gateway callers retain its native bindings."""
+        return self.bind_request(body).view
+
+    @abstractmethod
+    def bind_request(self, body: RawRequest) -> NativeRequest:
+        """Project native content and retain the locations of supported edits."""
+
+    def validate_training(self, body: RawRequest) -> None:
+        raise ValueError(f"Training does not support the {self.upstream_path} protocol")
 
     def parse_sampling(self, body: RawRequest) -> Sampling:
         """The native request's call settings -> the canonical `Sampling` (for the
@@ -360,11 +173,14 @@ class Dialect(ABC, Generic[RespT]):
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
 
-    @abstractmethod
-    def rewrite_request(
-        self, body: RawRequest, before: Request, after: Request
-    ) -> None:
-        """Patch rewritten user/tool messages into the native conversation."""
+    def replace_response(self, response: Response, text: str) -> Response:
+        """Apply a text replacement and regenerate the task view in one operation."""
+        if response.raw is None:
+            raise ValueError("response replacement requires a native response")
+        self.rewrite_response(response.raw, text)
+        rewritten = self.parse_response(self.validate_response(response.raw))
+        rewritten.raw = response.raw
+        return rewritten
 
     @abstractmethod
     def rewrite_response(self, raw: dict, text: str) -> None:
@@ -384,4 +200,41 @@ class Dialect(ABC, Generic[RespT]):
     ) -> RawRequest:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
         model overlays; sampling is authoritative (the program's sampling keys are dropped, the
-        eval's applied). Capability mediation may subsequently remove restricted fields."""
+        eval's applied)."""
+
+
+_PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "phase"})
+
+
+def with_provider_identity(message: AssistantMessage) -> AssistantMessage:
+    """Project native continuation identity before a message enters the shared graph."""
+    identity = []
+    for item in message.provider_state or []:
+        kind = item.get("type") or (
+            "message" if item.get("role") == "assistant" else ""
+        )
+        hashed_state = {
+            key: item[key]
+            for key in _PROVIDER_STATE_FIELDS
+            if item.get(key) is not None
+        }
+        if kind == "message" and isinstance(item.get("content"), list):
+            # Keep content parts the typed message does not expose, such as refusals.
+            unparsed_content = [
+                part
+                for part in item.get("content") or []
+                if part.get("type") not in ("input_text", "output_text")
+            ]
+            if unparsed_content:
+                hashed_state["content"] = unparsed_content
+        represented = kind in ("message", "reasoning") or (
+            kind in ("function_call", "custom_tool_call")
+            and any(call.id == item.get("call_id") for call in message.tool_calls or [])
+        )
+        if represented and not hashed_state:
+            continue
+        # Unknown provider items still distinguish built-in calls and actions.
+        state = hashed_state if represented else item
+        identity.append((kind, state))
+    message.provider_identity = identity if message.provider_state else None
+    return message

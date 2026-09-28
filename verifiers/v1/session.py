@@ -413,6 +413,7 @@ class RolloutSession:
                     result.message.reasoning_content
                     or result.message.tool_calls
                     or result.message.provider_state
+                    or result.message.provider_identity
                 ):
                     raise ValueError(
                         "response interceptors must return an inert text-only message"

@@ -12,19 +12,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
-from urllib.parse import urlsplit
 
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
-    RequestFilter,
     StreamParser,
-    append_user_notice,
     parse_sse_event,
+    with_provider_identity,
+)
+from verifiers.v1.dialects.request import (
+    ContentTarget,
+    NativeRequest,
+    provider_declaration,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -63,47 +65,6 @@ class ModdedChatCompletion(ChatCompletion):
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # Client tools return calls to the harness; every other type may execute at the provider.
 _CLIENT_TOOL_TYPES = ("function", "custom")
-_SAFE_CONTENT_TYPES = ("text", "refusal", "input_audio", "image_url", "file")
-
-
-class ChatRequestFilter(RequestFilter):
-    def tool(self, tool, path: str) -> dict | None:
-        if (
-            isinstance(tool, dict)
-            and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-        ):
-            return tool
-        self.capabilities.append(f"{path}.type")
-        return None
-
-    def blocked(self, value, path: str) -> str | None:
-        # Chat content parts are flat; nested lists and non-object parts are invalid.
-        kind = value.get("type") if isinstance(value, dict) else None
-        if kind not in _SAFE_CONTENT_TYPES:
-            return f"{path}.type"
-        if kind == "image_url":
-            image = value.get("image_url") or {}
-            url = image.get("url") if isinstance(image, dict) else image
-            if self.blocked_url(url):
-                return f"{path}.image_url.url"
-        if kind == "file":
-            file = value.get("file")
-            if not isinstance(file, dict):
-                return f"{path}.file"
-            if file.get("file_id"):
-                return f"{path}.file.file_id"
-            data = file.get("file_data")
-            if data is None:
-                return None
-            if not isinstance(data, str):
-                return f"{path}.file.file_data"
-            try:
-                parsed = urlsplit(data)
-            except ValueError:
-                return f"{path}.file.file_data"
-            if (parsed.scheme or parsed.netloc) and self.blocked_url(data):
-                return f"{path}.file.file_data"
-        return None
 
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
@@ -166,11 +127,15 @@ def parse_message(raw: dict) -> Message:
                     arguments=native["input" if kind == "custom" else "arguments"],
                 )
             )
-        return AssistantMessage(
-            content=text or None,
-            reasoning_content=reasoning_text(raw),
-            tool_calls=calls or None,
-            provider_state=details if isinstance(details, list) and details else None,
+        return with_provider_identity(
+            AssistantMessage(
+                content=text or None,
+                reasoning_content=reasoning_text(raw),
+                tool_calls=calls or None,
+                provider_state=details
+                if isinstance(details, list) and details
+                else None,
+            )
         )
     return UserMessage(content=content_to_parts(content))
 
@@ -180,12 +145,8 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
     for declaration in raw or []:
         kind = declaration.get("type", "function")
         tool = declaration.get(kind, declaration)
-        if kind == "mcp":
-            tool = {
-                key: value
-                for key, value in tool.items()
-                if key.lower() not in ("authorization", "headers")
-            }
+        if kind not in _CLIENT_TOOL_TYPES:
+            continue
         tools.append(
             Tool.model_validate(
                 tool
@@ -426,105 +387,45 @@ class ChatDialect(Dialect[ChatCompletion]):
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
-    def mediate_external_capabilities(
-        self, body: RawRequest, policy: NetworkPolicyConfig
-    ) -> tuple[RawRequest, list[str]]:
-        mediated = body
-        request_filter = ChatRequestFilter(policy)
-        capabilities = request_filter.capabilities
-
-        if mediated.pop("web_search_options", None) is not None:
-            capabilities.append("web_search_options")
-        if mediated.pop("plugins", None) is not None:
-            capabilities.append("plugins")
-
-        audio = mediated.get("audio")
-        voice = audio.get("voice") if isinstance(audio, dict) else None
-        if isinstance(voice, dict) and voice.get("id"):
-            capabilities.append("audio.voice.id")
-            mediated.pop("audio")
-            modalities = mediated.get("modalities")
-            if isinstance(modalities, list):
-                mediated["modalities"] = [
-                    item for item in modalities if item != "audio"
-                ] or ["text"]
-
-        raw_tools = mediated.get("tools")
-        tools = request_filter.tools(raw_tools)
-        if "tools" in mediated:
-            mediated["tools"] = tools
-
-        choice = mediated.get("tool_choice")
-        valid_choice = choice is None or (
-            isinstance(choice, str) and choice in ("none", "auto", "required")
-        )
-        if isinstance(choice, dict):
-            kind = choice.get("type", "function")
-            valid_choice = any(
-                kind == tool.get("type", "function")
-                and isinstance(tool.get(kind), dict)
-                and isinstance(choice.get(kind), dict)
-                and tool[kind].get("name") == choice[kind].get("name")
-                for tool in tools
-            )
-            if kind == "allowed_tools":
-                allowed = choice.get("allowed_tools")
-                allowed_tools = (
-                    allowed.get("tools") if isinstance(allowed, dict) else None
-                )
-                valid_choice = isinstance(allowed_tools, list) and all(
-                    isinstance(tool, dict)
-                    and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-                    for tool in allowed_tools
-                )
-        if raw_tools is not None and not tools and choice not in (None, "none"):
-            valid_choice = False
-        if not valid_choice:
-            capabilities.append(
-                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
-            )
-            mediated.pop("tool_choice", None)
-
-        for message_index, message in enumerate(mediated.get("messages") or []):
-            if not isinstance(message, dict):
-                continue
-            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
-                path = f"messages[{message_index}].audio.id"
-                capabilities.append(path)
-                message.pop("audio")
-                if message.get("content") is None:
-                    message["content"] = ""
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            safe_content = request_filter.mediate(
-                content, f"messages[{message_index}].content"
-            )
-            message["content"] = safe_content or ""
-
-        if capabilities:
-            append_user_notice(
-                mediated.setdefault("messages", []),
-                blocked_urls=request_filter.blocked_urls,
-            )
-        return mediated, capabilities
-
-    def parse_request(self, body: RawRequest) -> Request:
+    def bind_request(self, body: RawRequest) -> NativeRequest:
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
+        targets = {}
         tool_names: dict[str, str] = {}
-        for raw in body.get("messages", []):
+        for index, raw in enumerate(body.get("messages", [])):
             message = parse_message(raw)
             if isinstance(message, ToolMessage) and message.name is None:
-                name = tool_names.get(message.tool_call_id)
-                if name is not None:
-                    message = message.model_copy(update={"name": name})
+                message.name = tool_names.get(message.tool_call_id)
             messages.append(message)
+            if isinstance(message, (UserMessage, ToolMessage)):
+                targets[index] = ContentTarget(raw, "content", _content_to_wire)
             if isinstance(message, AssistantMessage):
                 for call in message.tool_calls or []:
                     tool_names[call.id] = call.name
-        return Request(messages=messages, tools=parse_tools(body.get("tools")))
+        declarations = body.get("tools") or []
+        tools = parse_tools(declarations)
+        provider_tools = [
+            provider_declaration(t)
+            for t in declarations
+            if t.get("type", "function") not in _CLIENT_TOOL_TYPES
+        ]
+        return NativeRequest(
+            body, Request(messages=messages, tools=tools), targets, provider_tools
+        )
+
+    def validate_training(self, body: RawRequest) -> None:
+        for tool in body.get("tools") or []:
+            if tool.get("type", "function") != "function":
+                raise ValueError("Training only supports function tool declarations")
+        for message in body.get("messages") or []:
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                part.get("type") not in ("text", "image_url") for part in content
+            ):
+                raise ValueError("Training only supports text and image content")
+            if message.get("audio"):
+                raise ValueError("Training does not support audio messages")
 
     def parse_sampling(self, body: RawRequest) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
@@ -536,18 +437,6 @@ class ChatDialect(Dialect[ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
-
-    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
-        for native, original, rewritten in zip(
-            body.get("messages", []), before.messages, after.messages, strict=True
-        ):
-            if rewritten != original:
-                native["content"] = _content_to_wire(rewritten.content)
-                if isinstance(rewritten, ToolMessage):
-                    if rewritten.name is None:
-                        native.pop("name", None)
-                    else:
-                        native["name"] = rewritten.name
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         for choice in raw.get("choices") or []:
