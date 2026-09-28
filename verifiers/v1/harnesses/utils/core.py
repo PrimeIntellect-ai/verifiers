@@ -40,10 +40,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
-# Mirror of verifiers.v1.errors.PROVIDER_ERROR_EXIT_CODE: this module is bundled and run
-# standalone in the sandbox, so it cannot import that one (a test asserts the two agree).
-# Exit with this when a model/provider call fails at the transport layer, so the host records
-# a ProviderError instead of a generic HarnessError.
+# Mirror of errors.PROVIDER_ERROR_EXIT_CODE; this bundled script cannot import verifiers.
 PROVIDER_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
@@ -531,7 +528,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except ModelTransportError as error:
-        # Only exhausted model transport failures use the reserved exit code. Keep
-        # the original cause in the traceback for the host's diagnostic tail.
+        # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
         raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error

@@ -185,8 +185,6 @@ copy_failed=$(
                 f"(exit {result.exit_code}): {detail}"
             )
         if result.exit_code == PROVIDER_ERROR_EXIT_CODE:
-            # The program relayed a model/provider transport failure of its own (see
-            # PROVIDER_ERROR_EXIT_CODE): the harness is fine, the endpoint faulted.
             raise ProviderError(
                 f"harness {self.config.id!r} model call failed: {detail}"
             )
