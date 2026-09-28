@@ -158,7 +158,12 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
     roots = " ".join(shlex.quote(root) for root in collected)
-    await _run(runtime, f"rm -rf -- {roots}", "clear artifact roots")
+    # Container exec requires its configured cwd to exist, including while a
+    # submission replaces the entire working directory (or one of its parents).
+    workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
+    await _run(
+        runtime, f"rm -rf -- {roots} && mkdir -p -- {workdir}", "clear artifact roots"
+    )
     for root, archive in collected.items():
         if archive is None:
             continue
