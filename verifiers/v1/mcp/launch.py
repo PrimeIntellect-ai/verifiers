@@ -33,6 +33,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     provision_runtime,
 )
+from verifiers.v1.runtimes.base import UV_ENV
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 
@@ -254,7 +255,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         setup = (
             f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
             f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
+            f"{UV_ENV}; "
         )
         if not runtime._mcp_sources:
             # Failed installs can leave the venv behind; retain it when retrying.
@@ -341,7 +342,7 @@ async def serve_in_runtime(
         command = [
             "sh",
             "-c",
-            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+            f"{UV_ENV}; exec {shlex.join(command)}",
         ]
     log = f"vf_tool_{server.server_name}.log"
     await runtime.run_background(command, env, log)

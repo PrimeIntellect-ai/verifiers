@@ -25,6 +25,9 @@ from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
+# Custom images can run numeric users without a HOME; keep uv's install and cache together.
+UV_ENV = 'export HOME="${HOME:-/var/tmp/vf-home}"; export PATH="$HOME/.local/bin:$PATH"'
+
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
 # modal/prime, a host loopback port on the local container engines. A server placed in such
 # a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
@@ -237,7 +240,7 @@ class Runtime(ABC):
             [
                 "sh",
                 "-c",
-                'export PATH="$HOME/.local/bin:$PATH"; command -v uv || { uname -sm; echo "$HOME"; exit 1; }',
+                f'{UV_ENV}; command -v uv || {{ uname -sm; echo "$HOME"; exit 1; }}',
             ],
             env or {},
         )
@@ -263,7 +266,8 @@ class Runtime(ABC):
             [
                 "sh",
                 "-ec",
-                f"""tmp={shlex.quote(temporary)}
+                f"""{UV_ENV}
+tmp={shlex.quote(temporary)}
 trap 'rm -rf "$tmp" "$tmp.tar.gz"' EXIT
 mkdir -p "$tmp" "$HOME/.local/bin"
 tar -xzf "$tmp.tar.gz" --strip-components=1 -C "$tmp"
@@ -298,7 +302,7 @@ mv -f "$tmp/uv" "$tmp/uvx" "$HOME/.local/bin/"
                     await self.write(tmp, data)
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        '&& export PATH="$HOME/.local/bin:$PATH" '
+                        f"&& {{ {UV_ENV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
@@ -320,6 +324,7 @@ mv -f "$tmp/uv" "$tmp/uvx" "$HOME/.local/bin/"
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
+            f"{UV_ENV}; "
             'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
             'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
             'shift; exec "$@"'

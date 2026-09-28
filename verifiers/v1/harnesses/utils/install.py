@@ -3,6 +3,7 @@
 import shlex
 
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import UV_ENV
 
 
 async def ensure_installed(
@@ -24,7 +25,9 @@ async def ensure_installed(
 
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
-    `pid:starttime` so a dead holder is reaped even if its pid was reused."""
+    `pid:starttime` so a dead holder is reaped even if its pid was reused.
+    The installer receives uv on PATH and a writable fallback HOME when unset."""
+    await runtime.ensure_uv(env)
     lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
@@ -47,7 +50,7 @@ async def ensure_installed(
         f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}\' EXIT; {run}'
     )
     guarded = (
-        f"mkdir -p {shlex.quote(directory)} && "
+        f"{UV_ENV}; mkdir -p {shlex.quote(directory)} && "
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
     result = await runtime.run(["sh", "-c", guarded], env)

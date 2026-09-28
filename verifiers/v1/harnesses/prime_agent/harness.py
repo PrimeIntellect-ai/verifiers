@@ -46,16 +46,8 @@ tui_tarball="prime-agent-tui-$PRIME_AGENT_RELEASE_VERSION.tgz"
 download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
 trap 'rm -rf "$download_dir"' EXIT
 for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
-    for attempt in 1 2 3 4 5 6; do
-        node --input-type=module - "$release_url/$tarball" "$download_dir/$tarball" <<'NODE' && break
-import { writeFile } from "node:fs/promises";
-const response = await fetch(process.argv[2]);
-if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.url}`);
-await writeFile(process.argv[3], Buffer.from(await response.arrayBuffer()));
-NODE
-        [ "$attempt" -lt 6 ] || exit 1
-        sleep "$attempt"
-    done
+    npm pack "$release_url/$tarball" --pack-destination "$download_dir" \
+        --ignore-scripts --fetch-retries=5 --silent >/dev/null
 done
 printf '%s  %s\n' \
     '349f1682c7909550842f1b04a71ba95814341b136474ade736df93f8ec006876' "$agent_tarball" \
