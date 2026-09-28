@@ -21,8 +21,33 @@ if [ -f /etc/alpine-release ]; then
     ln -sf "$(command -v node)" "$node/bin/node"
     ln -sf "$(command -v npm)" "$node/bin/npm"
 else
-    command -v curl >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    if ! command -v curl >/dev/null 2>&1; then
+        if ! (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null); then
+            (
+                # Task images may expose only offline repositories. Keep bootstrap
+                # sources and indexes temporary so the task retains its apt policy.
+                . /etc/os-release
+                case "$ID" in
+                    debian) mirror=http://deb.debian.org/debian ;;
+                    ubuntu)
+                        case "$(dpkg --print-architecture)" in
+                            amd64|i386) mirror=http://archive.ubuntu.com/ubuntu ;;
+                            *) mirror=http://ports.ubuntu.com/ubuntu-ports ;;
+                        esac ;;
+                    *) echo "cannot bootstrap curl on $ID" >&2; exit 1 ;;
+                esac
+                apt_dir=$(mktemp -d)
+                trap 'rm -rf "$apt_dir"' EXIT
+                chmod 755 "$apt_dir"
+                mkdir -p "$apt_dir/lists/partial"
+                printf 'deb %s %s main\n' "$mirror" "$VERSION_CODENAME" > "$apt_dir/sources.list"
+                set -- -o "Dir::Etc::sourcelist=$apt_dir/sources.list" -o Dir::Etc::sourceparts=- \
+                    -o "Dir::State::lists=$apt_dir/lists" -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache=
+                apt-get "$@" update -qq
+                apt-get "$@" install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+            )
+        fi
+    fi
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_NODE_VERSION" ]; then
         case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
