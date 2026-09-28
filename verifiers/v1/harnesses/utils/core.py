@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import subprocess
-import sys
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -15,18 +14,11 @@ import certifi
 import httpx
 from openai import (
     APIConnectionError,
-    APIError,
     APIStatusError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
     omit,
 )
-
-# Mirror of verifiers.v1.errors.PROVIDER_ERROR_EXIT_CODE: this module is bundled and run
-# standalone in the sandbox, so it cannot import that one (a test asserts the two agree).
-# Exit with this when a model/provider call fails at the transport layer, so the host records
-# a ProviderError instead of a generic HarnessError.
-PROVIDER_ERROR_EXIT_CODE = 97
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
@@ -47,6 +39,12 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+
+# Mirror of verifiers.v1.errors.PROVIDER_ERROR_EXIT_CODE: this module is bundled and run
+# standalone in the sandbox, so it cannot import that one (a test asserts the two agree).
+# Exit with this when a model/provider call fails at the transport layer, so the host records
+# a ProviderError instead of a generic HarnessError.
+PROVIDER_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
 
@@ -256,6 +254,10 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+class ModelTransportError(Exception):
+    """A model request or stream failed after its transport retries were exhausted."""
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -269,25 +271,30 @@ async def chat(
         kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    async for attempt in AsyncRetrying(
-        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
-        stop=stop_after_attempt(client.max_retries + 1),
-        wait=wait_random_exponential(multiplier=0.5, max=8.0),
-        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
-        reraise=True,
-    ):
-        # Reuse the interception server's body-digest replay guard on stream retries.
-        retry_count = attempt.retry_state.attempt_number - 1
-        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-        raw_stream = await client.chat.completions.create(
-            **kwargs,
-            stream=True,
-            stream_options={"include_usage": True},
-            extra_headers=headers,
-        )
-        # The SDK retries request setup; only stream consumption is retried here.
-        with attempt:
-            return await _read_chat_completion(raw_stream)
+    try:
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+            stop=stop_after_attempt(client.max_retries + 1),
+            wait=wait_random_exponential(multiplier=0.5, max=8.0),
+            before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+            reraise=True,
+        ):
+            # Reuse the interception server's body-digest replay guard on stream retries.
+            retry_count = attempt.retry_state.attempt_number - 1
+            headers = (
+                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
+            )
+            raw_stream = await client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_headers=headers,
+            )
+            # The SDK retries request setup; only stream consumption is retried here.
+            with attempt:
+                return await _read_chat_completion(raw_stream)
+    except (APIConnectionError, httpx.TransportError) as error:
+        raise ModelTransportError(str(error)) from error
 
 
 async def _read_chat_completion(raw_stream):
@@ -523,16 +530,8 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (APIError, httpx.TransportError) as error:
-        # A model/provider call the in-sandbox SDK already retried and still could not
-        # complete (connection, timeout, HTTP status, incomplete stream). Keep the
-        # traceback for the detail tail, then exit with the reserved code so the host
-        # records a ProviderError rather than attributing the endpoint fault to the harness.
+    except ModelTransportError as error:
+        # Only exhausted model transport failures use the reserved exit code. Keep
+        # the original cause in the traceback for the host's diagnostic tail.
         traceback.print_exc()
-        status = getattr(error, "status_code", None)
-        print(
-            f"provider call failed: {type(error).__name__}"
-            f"{f' (status {status})' if status else ''}",
-            file=sys.stderr,
-        )
         raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error
