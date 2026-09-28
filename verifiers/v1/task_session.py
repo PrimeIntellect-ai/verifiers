@@ -6,7 +6,8 @@ import asyncio
 import copy
 import logging
 import time
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
@@ -29,6 +30,26 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+
+class _StageTimeout(TimeoutError):
+    """A session stage exhausted its budget, distinct from a runtime I/O timeout."""
+
+    def __init__(self, stage: str) -> None:
+        super().__init__(f"{stage} timeout")
+        self.stage = stage
+
+
+@asynccontextmanager
+async def _stage_timeout(stage: str, seconds: float | None) -> AsyncIterator[None]:
+    deadline = asyncio.timeout(seconds)
+    try:
+        async with deadline:
+            yield
+    except TimeoutError as error:
+        if deadline.expired():
+            raise _StageTimeout(stage) from error
+        raise
 
 
 class TaskSession:
@@ -86,7 +107,7 @@ class TaskSession:
                         "isolated verification requires deterministic task scoring"
                     )
                 self.verifier_config(self.verifier_task())
-            async with asyncio.timeout(self.timeouts.setup):
+            async with _stage_timeout("setup", self.timeouts.setup):
                 await self.provision()
                 await self.runtime.prepare_setup()
                 async with boundary(TaskError, "task world preparation"):
@@ -184,23 +205,30 @@ class TaskSession:
         self._grading = True
         try:
             trace.timing.finalize.start = time.time()
-            async with (
-                boundary(TaskError, "task finalize"),
-                asyncio.timeout(self.timeouts.finalize),
-            ):
-                await self.finalize(trace)
+            try:
+                async with (
+                    _stage_timeout("finalize", self.timeouts.finalize),
+                    boundary(TaskError, "task finalize"),
+                ):
+                    await self.finalize(trace)
+            except _StageTimeout as error:
+                trace.record_timeout(error.stage)
             trace.timing.finalize.end = time.time()
             trace.timing.scoring.start = time.time()
-            async with boundary(TaskError, "task scoring"):
-                if self.verifier is None:
-                    async with asyncio.timeout(self.timeouts.scoring):
-                        await self.task.score(trace, self.runtime)
-                else:
-                    # Resolve inherited images while services are still inspectable.
-                    grader = self.verifier_task()
-                    config = self.verifier_config(grader)
-                    await self.stop_services()
-                    await self.grade_isolated(grader, config, trace)
+            if self.verifier is None:
+                async with (
+                    _stage_timeout("scoring", self.timeouts.scoring),
+                    boundary(TaskError, "task scoring"),
+                ):
+                    await self.task.score(trace, self.runtime)
+            else:
+                # Resolve inherited images while services are still inspectable.
+                grader = self.verifier_task()
+                config = self.verifier_config(grader)
+                await self.stop_services()
+                await self.grade_isolated(grader, config, trace)
+        except _StageTimeout as error:
+            trace.record_timeout(error.stage)
         except asyncio.CancelledError:
             trace.record_error(TaskError("task grading was cancelled"))
             trace.ok = False
@@ -241,9 +269,12 @@ class TaskSession:
                 solution = copy.deepcopy(trace)
                 async with (
                     AsyncExitStack() as boxes,
-                    asyncio.timeout(self.verifier_attempt_timeout),
+                    _stage_timeout("scoring", self.verifier_attempt_timeout),
                 ):
-                    async with asyncio.timeout(self.timeouts.setup):
+                    async with (
+                        _stage_timeout("setup", self.timeouts.setup),
+                        boundary(TaskError, "verifier setup"),
+                    ):
                         runtime = await boxes.enter_async_context(
                             provision_runtime(
                                 config,
@@ -264,7 +295,10 @@ class TaskSession:
                             {"trace": solution, "runtime": runtime},
                         )
                         await runtime.prepare_execution([])
-                    async with asyncio.timeout(self.timeouts.scoring):
+                    async with (
+                        _stage_timeout("scoring", self.timeouts.scoring),
+                        boundary(TaskError, "task scoring"),
+                    ):
                         await verifier_task.score(solution, runtime)
                 # Keep episode/live-view references to the original trace valid.
                 trace.state = solution.state
@@ -273,6 +307,8 @@ class TaskSession:
                 trace.info = solution.info
                 trace.extra_usage = solution.extra_usage
                 return
+            except _StageTimeout:
+                raise
             except Exception as error:  # noqa: BLE001 - retry the entire fresh verifier
                 last = error
         assert last is not None

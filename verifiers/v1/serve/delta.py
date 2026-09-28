@@ -64,6 +64,7 @@ SCALAR_FIELDS = (
     "is_completed",
     "ok",
     "stop_condition",
+    "is_timeout",
     "timing",
     "num_input_tokens",
     "num_output_tokens",

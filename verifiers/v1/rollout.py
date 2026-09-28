@@ -153,6 +153,12 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
+    def timeout(self, stage: str) -> None:
+        """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
+        a failure — no further segments run, but finalize and scoring still do."""
+        logger.info("rollout %s: %s timeout", self.trace.id, stage)
+        self.trace.record_timeout(stage)
+
     async def open(self) -> bool:
         """Attach this agent's session to the open task session and bring up
         the harness, interception slot and tool servers. Returns whether the exchange can
@@ -160,6 +166,8 @@ class Rollout:
         self._opened = True
         self.trace.timing.boot.start = self.trace.timing.boot.start or time.time()
         self.trace.notify()
+        loop = asyncio.get_running_loop()
+        setup_deadline: float | None = None
         try:
             self.session.check_open()
             runtime = self.runtime
@@ -189,16 +197,16 @@ class Rollout:
             setup_deadline = (
                 None
                 if self._timeouts.setup is None
-                else asyncio.get_running_loop().time() + self._timeouts.setup
+                else loop.time() + self._timeouts.setup
             )
             async with (
-                boundary(TaskError, "task setup"),
                 asyncio.timeout_at(setup_deadline),
+                boundary(TaskError, "task setup"),
             ):
                 await self.session.attach(self.trace, runtime)
             async with (
-                boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
+                boundary(HarnessError, "harness setup"),
             ):
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
@@ -236,8 +244,8 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
             async with (
-                boundary(HarnessError, "opening harness session"),
                 asyncio.timeout_at(setup_deadline),
+                boundary(HarnessError, "opening harness session"),
             ):
                 harness_data = self.trace.task.data
                 if (
@@ -303,6 +311,14 @@ class Rollout:
                         harness_data,
                         **session_kwargs,
                     )
+        except TimeoutError as e:
+            # The setup deadline's own expiry is a timeout; a TimeoutError with no
+            # expired deadline (a runtime's own I/O) stays the raw failure.
+            if setup_deadline is not None and loop.time() >= setup_deadline:
+                self.timeout("setup")
+            else:
+                self.fail(e)
+            return False
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -353,16 +369,11 @@ class Rollout:
                         return False
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
-            # An expired rollout deadline is the agent breaking its time budget —
-            # an agent failure, never a clean stop. A TimeoutError from the
-            # harness's own I/O with no expired deadline stays the raw failure.
+            # An expired rollout deadline is the agent breaking its time budget: a
+            # timeout stop. A TimeoutError from the harness's own I/O with no
+            # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.fail(
-                    HarnessError(
-                        f"agent timeout: rollout exceeded its "
-                        f"{self._timeouts.agent:g}s budget"
-                    )
-                )
+                self.timeout("agent")
             else:
                 self.fail(e)
             return False
@@ -445,9 +456,14 @@ class Rollout:
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
-                async with boundary(HarnessError, "harness scoring"):
-                    async with asyncio.timeout(self._timeouts.scoring):
+                try:
+                    async with (
+                        asyncio.timeout(self._timeouts.scoring),
+                        boundary(HarnessError, "harness scoring"),
+                    ):
                         await self.harness.score(trace, runtime)
+                except TimeoutError:
+                    self.timeout("scoring")
                 await self._cleanup_harness()
                 self.session.release(trace)
                 trace.ok = True

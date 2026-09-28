@@ -39,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.task_session import TaskSession
+from verifiers.v1.task_session import TaskSession, _StageTimeout
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
@@ -481,6 +481,10 @@ class Agent:
                 yield session
                 if owned:
                     await session.grade(trace)
+        except _StageTimeout as error:
+            trace.record_timeout(error.stage)
+            trace.ok = True
+            raise
         except Exception as error:
             if not trace.errors:
                 trace.record_error(error)

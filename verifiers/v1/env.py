@@ -272,6 +272,7 @@ class Env(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.run() exceeded its "
                     f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
                 )
+                episode.is_timeout = True
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return episode
@@ -286,6 +287,7 @@ class Env(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.finalize() exceeded its "
                     f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
                 )
+                episode.is_timeout = True
             episode.errors.append(_as_error(e))
             return episode
         # Both hooks and every trace concluded — stamp the attempt's verdict
