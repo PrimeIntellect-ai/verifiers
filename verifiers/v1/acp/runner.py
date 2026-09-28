@@ -46,6 +46,26 @@ class ACPTurn:
     update_metadata: list[dict[str, Any]]
 
 
+class SessionTurnError(RuntimeError):
+    """A turn failed; `kind` carries the agent's error classification (e.g. "provider") from
+    the ACP `RequestError.data` so the host can type the failure rather than assume the harness."""
+
+    def __init__(self, message: str, *, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def error_packet(operation: str, error: BaseException, turn_result: ACPTurn) -> dict:
+    """The `ok=False` packet for a failed operation, carrying `error_kind` when the error
+    classifies itself (see `SessionTurnError`)."""
+    packet: dict[str, Any] = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+    if kind := getattr(error, "kind", None):
+        packet["error_kind"] = kind
+    if operation == "prompt":
+        packet["result"] = asdict(turn_result)
+    return packet
+
+
 class ToolGate:
     """The rollout's `/tool` gate, asked before every tool call the agent wants to run."""
 
@@ -225,8 +245,10 @@ async def prompt(
             raise
         await connection.cancel(session_id=session_id)
     except RequestError as error:
-        detail = error.data.get("details") if isinstance(error.data, dict) else None
-        raise RuntimeError(detail or str(error)) from error
+        data = error.data if isinstance(error.data, dict) else {}
+        raise SessionTurnError(
+            data.get("details") or str(error), kind=data.get("kind")
+        ) from error
     finally:
         client.prompt_task = None
     return client.turn_result()
@@ -373,12 +395,7 @@ async def serve_stream() -> None:
                     raise ValueError(f"unknown ACP session operation: {operation!r}")
             except Exception as error:  # noqa: BLE001 - serialize protocol failures
                 traceback.print_exc()
-                response = {
-                    "ok": False,
-                    "error": f"{type(error).__name__}: {error}",
-                }
-                if operation == "prompt":
-                    response["result"] = asdict(session.client.turn_result())
+                response = error_packet(operation, error, session.client.turn_result())
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break

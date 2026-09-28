@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, ProviderError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
@@ -165,6 +165,18 @@ def _turn_result(response: JsonObject) -> ACPTurn:
     return ACPTurn.model_validate(value)
 
 
+def _turn_failure(harness_id: str, response: JsonObject, stderr: str) -> Exception:
+    """The exception for an `ok=False` turn: a `ProviderError` when the agent classified the
+    failure as a provider fault (`error_kind`, see runner.SessionTurnError), else a plain
+    `RuntimeError` the harness boundary records as a HarnessError."""
+    detail = response.get("error") or "ACP session request failed"
+    if stderr:
+        detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+    if response.get("error_kind") == "provider":
+        return ProviderError(f"harness {harness_id!r} model call failed: {detail}")
+    return RuntimeError(detail)
+
+
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
     if (
         result.exit_code
@@ -305,10 +317,7 @@ class ACPHarnessSession(HarnessSession):
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
         if not response.get("ok"):
-            detail = response.get("error") or "ACP session request failed"
-            if stderr := self._stderr():
-                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-            raise RuntimeError(detail)
+            raise _turn_failure(self.harness.config.id, response, self._stderr())
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
         harness.acp_turn_result(self.trace, turn)
