@@ -1720,7 +1720,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.23.0"
-source = { git = "https://github.com/hallerite/harbor.git?rev=253691cab711c38de0a70b0d99296a617e03c135#253691cab711c38de0a70b0d99296a617e03c135" }
+source = { git = "https://github.com/hallerite/harbor.git?rev=e62d6e58962d2f62c315f971503d1176a83b4515#e62d6e58962d2f62c315f971503d1176a83b4515" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },

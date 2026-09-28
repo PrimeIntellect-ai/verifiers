@@ -92,9 +92,9 @@ Select `runtime.type = "docker"` to run Compose tasks locally.
 Harbor task attempts containing `environment/docker-compose.yaml`
 run their topology with Docker Compose on local Docker, Prime VMs, or Modal's VM runtime.
 Local Docker requires `--env.taskset.task.trust-compose`: task definitions can mount host files
-and request Docker privileges, so only enable it for trusted packages. Local Compose
-receives Docker connection settings and infrastructure variables rather than the
-evaluator's full environment. Task-local `.env` files and declared task env remain available.
+and request Docker privileges, so only enable it for trusted packages. Compose interpolation receives declared task variables and task-local `.env` files.
+Local Docker also receives Docker connection settings; unrelated evaluator environment
+variables are not forwarded to task definitions.
 
 Compose preserves service entrypoints, commands, dependencies, health checks,
 networking, and volumes; the agent executes in a single `main` container.
@@ -117,9 +117,7 @@ main's runtime service port through its encrypted tunnel, including when main sh
 another service's network namespace.
 
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
-daemon instead of the stock one. For Prime, Docker is installed when the image lacks it, and
-`docker save` archives shipped in `/opt/harbor/compose-images/` load before the
-services start, so services referencing their tags pull nothing from a registry.
+daemon instead of the stock one. For Prime, Docker is installed when the image lacks it.
 
 The Harbor task attempt removes the entire project or remote sandbox before
 separate grading, which retains the ordinary fresh verifier runtime. A verifier

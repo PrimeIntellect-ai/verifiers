@@ -167,9 +167,7 @@ class HarborData(TaskData):
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_host_image: str | None = None
     """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
-    when the image lacks it, and `docker save` archives it ships in
-    /opt/harbor/compose-images/ load before the services start. None uses a
-    stock image."""
+    when the image lacks it. None uses Harbor's default host image."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
