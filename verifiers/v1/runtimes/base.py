@@ -12,6 +12,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
@@ -136,7 +137,7 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
-    __slots__ = ("env",)
+    __slots__ = ("_user", "env")
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -159,6 +160,7 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        self._user: str | None = None
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._mcp_sources: set[str] = set()
@@ -210,10 +212,31 @@ class Runtime(ABC):
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
         runtime = copy.copy(self)
-        # `env` is slotted, so every other runtime field stays physical and shared.
+        # Environment and execution identity belong to the view; physical state is shared.
         runtime.__dict__ = self.__dict__
         runtime.env = dict(env)
         return runtime
+
+    async def as_user(self, user: str) -> "Runtime":
+        """A view executing as an existing OS user, without privilege escalation.
+
+        The original runtime remains available for trusted task setup and scoring.
+        Unsupported runtimes must refuse rather than silently execute as root.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot select execution users"
+        )
+
+    @asynccontextmanager
+    async def snapshot(self) -> AsyncIterator[BaseConfig]:
+        """Yield a config for fresh runtimes with this filesystem, without processes.
+
+        The source is quiescent for the context's lifetime. All runtimes provisioned
+        from the snapshot must be stopped before leaving this context, which owns
+        snapshot cleanup. Unsupported runtimes fail explicitly.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot snapshot runtimes")
+        yield  # pragma: no cover
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when

@@ -134,6 +134,7 @@ class Rollout:
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
+        self._harness_runtime: Runtime | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -245,7 +246,12 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                await self.harness.setup(runtime)
+                self._harness_runtime = (
+                    await runtime.as_user(self.task.data.execution_user)
+                    if self.task.data.execution_user is not None
+                    else runtime
+                )
+                await self.harness.setup(self._harness_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -341,7 +347,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        runtime,
+                        self._harness_runtime,
                         self._endpoint,
                         self._secret,
                         self._urls,
@@ -454,7 +460,9 @@ class Rollout:
             await self._stack.aclose()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self.harness.cleanup(self.trace, self.runtime)
+                await self.harness.cleanup(
+                    self.trace, self._harness_runtime or self.runtime
+                )
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -547,7 +555,7 @@ class Rollout:
             trace.split_agent_time()
             if runtime is not None:
                 try:
-                    await self.harness.cleanup(trace, runtime)
+                    await self.harness.cleanup(trace, self._harness_runtime or runtime)
                 except Exception:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True

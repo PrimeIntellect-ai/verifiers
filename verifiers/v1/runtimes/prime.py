@@ -241,26 +241,32 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
+    async def prepare_execution(
+        self,
+        routes: list[str] | None,
+        *,
+        policy: NetworkPolicyConfig | None = None,
+    ) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
-        if not self.network_restricted:
+        if policy is None and not self.network_restricted:
             return
+        config = policy if policy is not None else self.config
         try:
             if routes is None:
-                policy = {"allow": ["*"]}
+                rules = {"allow": ["*"]}
             else:
                 hosts = list(
                     dict.fromkeys(
                         h for h in (urlsplit(route).hostname for route in routes) if h
                     )
                 )
-                if self.config.allow == ["*"]:
-                    policy = {"deny": self.config.block}
+                if config.allow == ["*"]:
+                    rules = {"deny": config.block} if config.block else {"allow": ["*"]}
                 else:
-                    entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                    entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
-                    policy = {"allow": entries} if entries else {"deny": ["*"]}
-            status = await self._client.set_network(self.info.id, **policy)
+                    rules = {"allow": entries} if entries else {"deny": ["*"]}
+            status = await self._client.set_network(self.info.id, **rules)
             try:
                 async with asyncio.timeout(60):
                     delay = 0.1
@@ -280,8 +286,8 @@ class PrimeRuntime(Runtime):
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
-            policy.get("allow"),
-            policy.get("deny"),
+            rules.get("allow"),
+            rules.get("deny"),
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:

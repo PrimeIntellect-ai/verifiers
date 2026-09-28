@@ -22,10 +22,10 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     PrimeConfig,
     RuntimeConfig,
-    provision_runtime,
 )
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
 from verifiers.v1.runtimes.container import cli
+from verifiers.v1.runtimes.docker.host import docker_host
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
 from verifiers.v1.utils.aio import run_shielded
 
@@ -41,17 +41,6 @@ DOCKER_ENV = (
     "DOCKER_CONFIG",
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
-)
-# One provider VM hosts the Docker daemon and every service.
-VM_HOST = {
-    PrimeConfig: {"image": "python:3.11-slim-trixie", "workdir": "/"},
-    ModalConfig: {"image": "docker:28.3.3-dind", "workdir": "/", "vm": True},
-}
-INSTALL_DOCKER = (
-    "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
-    "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io "
-    "docker-cli docker-compose iptables > /tmp/docker-install.log 2>&1 "
-    "|| { tail -40 /tmp/docker-install.log; exit 1; }; }"
 )
 # A host image can ship `docker save` archives here so services need no registry.
 # Each archive is removed once loaded, returning its disk space to the services.
@@ -179,26 +168,9 @@ async def compose_services(
 
             root = str(directory)
             if not local:
-                host_config = VM_HOST[type(config)]
-                if task.data.compose_host_image is not None:
-                    host_config = {**host_config, "image": task.data.compose_host_image}
                 host = await stack.enter_async_context(
-                    provision_runtime(config.model_copy(update=host_config))
+                    docker_host(config, image=task.data.compose_host_image)
                 )
-                if isinstance(config, PrimeConfig):
-                    install = await host.run(["sh", "-c", INSTALL_DOCKER], {})
-                    if install.exit_code:
-                        raise SandboxError(
-                            f"Docker bootstrap failed: {install.stderr} {install.stdout}"
-                        )
-                await host.run_background(
-                    ["dockerd", "--host=unix:///var/run/docker.sock"],
-                    {},
-                    "/tmp/dockerd.log",
-                )
-                async with asyncio.timeout(60):
-                    while (await run_host("docker", "info")).exit_code:
-                        await asyncio.sleep(1)
                 loaded = await run_host("sh", "-c", LOAD_IMAGES)
                 if loaded.exit_code:
                     raise SandboxError(

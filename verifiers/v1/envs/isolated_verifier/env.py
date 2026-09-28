@@ -9,7 +9,7 @@ are restored, and its ordinary metrics and rewards run there onto the solver's t
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -121,6 +121,12 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
         await task.score(solution, runtime)
 
+    def provision_verifier(
+        self, config: RuntimeConfig, env: dict[str, str]
+    ) -> AbstractAsyncContextManager[Runtime]:
+        """Own a fresh verifier runtime for one grading attempt."""
+        return provision_runtime(config, env=env)
+
     async def grade(
         self,
         config: RuntimeConfig,
@@ -157,7 +163,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                         verifier_task = copy.deepcopy(task)
                         verifier_solution = copy.deepcopy(solution)
                         runtime = await boxes.enter_async_context(
-                            provision_runtime(
+                            self.provision_verifier(
                                 config,
                                 env=(
                                     verifier_task.runtime_env()

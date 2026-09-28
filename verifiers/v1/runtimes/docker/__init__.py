@@ -30,6 +30,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,13 @@ class DockerRuntime(ContainerRuntime):
             else self.info_cls(**self.config.model_dump())
         )
         self._container: str | None = None  # our `--name` (used for exec/rm)
+        self._owns_container = True
         self._service_url: str | None = None
         self._proxy: EgressProxy | None = None
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
+        self._snapshot_images: set[str] = set()
         # Helper containers carry the run label, including for borrowed containers.
         self._label_args = ["--label", f"verifiers.run={run_scope()}"]
 
@@ -114,6 +117,7 @@ class DockerRuntime(ContainerRuntime):
         """Borrow an existing container; its caller owns creation and removal."""
         runtime = cls(config, host=host)
         runtime._container = container
+        runtime._owns_container = False
         runtime.info.borrowed = True  # cleanup never removes a borrowed container
         try:
             code, data, stderr = await runtime._communicate_host(
@@ -147,11 +151,128 @@ class DockerRuntime(ContainerRuntime):
         finally:
             await runtime.stop()
 
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def provision(
+        cls,
+        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        *,
+        host: Runtime | None = None,
+        env: dict[str, str] | None = None,
+    ) -> AsyncIterator["DockerRuntime"]:
+        """Own a container on the local engine or an already provisioned VM."""
+        from verifiers.v1.runtimes.base import register
+
+        runtime = cls(config, host=host)
+        register(runtime)
+        runtime.env = dict(env or {})
+        try:
+            await runtime.start()
+            yield runtime
+        finally:
+            await runtime.stop()
+
+    def provision_sibling(
+        self,
+        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        *,
+        env: dict[str, str] | None = None,
+    ) -> contextlib.AbstractAsyncContextManager["DockerRuntime"]:
+        """Create a fresh container on this engine, including from a local snapshot.
+
+        Remote siblings share their VM's network policy; run them sequentially
+        when their policies differ. The caller keeps the host alive.
+        """
+        return type(self).provision(config, host=self._host, env=env)
+
+    async def _start_remote(self) -> None:
+        assert self._host is not None
+        if self.config.gpu:
+            raise SandboxError("Nested Docker currently supports CPU tasks")
+        # Pulls and trusted setup precede the VM-wide execution policy.
+        await self.prepare_execution(None)
+        self._container = f"vf-{uuid.uuid4().hex}"
+        run = await self._run_host(
+            self.engine,
+            "run",
+            *self._label_args,
+            "--detach",
+            "--network",
+            "bridge",
+            "--cap-drop",
+            "NET_ADMIN",
+            "--cap-drop",
+            "NET_RAW",
+            "--security-opt",
+            "no-new-privileges",
+            *(
+                arg
+                for key, value in self.env.items()
+                for arg in ("--env", f"{key}={value}")
+            ),
+            "--entrypoint",
+            "sleep",
+            "--name",
+            self._container,
+            self.config.image,
+            "infinity",
+        )
+        if run.exit_code:
+            raise SandboxError(f"remote Docker run failed: {run.stderr.strip()}")
+        inspected = await self._run_host(self.engine, "inspect", self._container)
+        if inspected.exit_code:
+            raise SandboxError(
+                f"remote Docker inspection failed: {inspected.stderr.strip()}"
+            )
+        container = json.loads(inspected.stdout)[0]
+        self._image_env = dict(
+            entry.split("=", 1) for entry in container["Config"]["Env"] or []
+        )
+        # A registry digest can be pulled on the fresh verifier VM. Image IDs and
+        # committed snapshot tags only resolve on the daemon that created them.
+        inspected_image = await self._run_host(
+            self.engine,
+            "image",
+            "inspect",
+            container["Image"],
+            "--format",
+            "{{json .RepoDigests}}",
+        )
+        if inspected_image.exit_code:
+            raise SandboxError(
+                f"remote Docker image inspection failed: {inspected_image.stderr.strip()}"
+            )
+        digests = json.loads(inspected_image.stdout) or []
+        self.config = self.config.model_copy(
+            update={"image": digests[0] if digests else container["Image"]}
+        )
+        self.info.image = self.config.image
+        made = await self._run_host(
+            self.engine,
+            "exec",
+            "--user",
+            "0",
+            self._container,
+            "sh",
+            "-c",
+            'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
+            "vf-workdir",
+            self.config.workdir,
+            container["Config"]["User"] or "0",
+        )
+        if made.exit_code:
+            raise SandboxError(
+                f"remote Docker workdir setup failed: {made.stderr.strip()}"
+            )
+
     @property
     def published_port(self) -> int:
         return SERVICE_PORT
 
     async def start(self) -> None:
+        if self._host is not None:
+            await self._start_remote()
+            return
         try:
             version = await cli(self.engine, "version")
         except FileNotFoundError as e:
@@ -277,6 +398,15 @@ class DockerRuntime(ContainerRuntime):
                 f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
             )
         container = json.loads(inspected.stdout)
+        image_id = await cli(
+            self.engine, "inspect", "--format", "{{.Image}}", self._container
+        )
+        if image_id.exit_code or not image_id.stdout.strip():
+            raise SandboxError(
+                f"{self.engine} image inspection failed: {image_id.stderr.strip()}"
+            )
+        self.config = self.config.model_copy(update={"image": image_id.stdout.strip()})
+        self.info.image = self.config.image
         self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
         # Create missing workdirs for either engine, owned by the image's execution user.
         made = await cli(
@@ -410,7 +540,14 @@ class DockerRuntime(ContainerRuntime):
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
         if self._host is not None:
-            await self._host.prepare_execution(routes)
+            # The VM enforces egress for every nested container. Sibling snapshots
+            # can use a different test policy from their offline build parent.
+            from verifiers.v1.runtimes.prime import PrimeRuntime
+
+            if isinstance(self._host, PrimeRuntime):
+                await self._host.prepare_execution(routes, policy=self.config)
+            else:
+                await self._host.prepare_execution(routes)
             return
         if not self.network_restricted:
             return
@@ -504,7 +641,82 @@ class DockerRuntime(ContainerRuntime):
     async def teardown(self) -> None:
         if self._proxy is not None:
             await self._proxy.stop()
+        if self._host is not None:
+            if (
+                self._owns_container
+                and self._container is not None
+                and not self._stopped
+            ):
+                await self._run_host(self.engine, "rm", "--force", self._container)
+                for image in self._snapshot_images:
+                    await self._run_host(self.engine, "image", "rm", "--force", image)
+                self._stopped = True
+            return
         await super().teardown()
+
+    async def as_user(self, user: str) -> Runtime:
+        result = await self.run(["getent", "passwd", user], {})
+        fields = result.stdout.strip().split(":")
+        if result.exit_code or len(fields) != 7:
+            raise SandboxError(f"container execution user {user!r} does not exist")
+        check = await self.run(["setpriv", "--no-new-privs", "true"], {})
+        if check.exit_code:
+            raise SandboxError(
+                "container execution users require setpriv --no-new-privs"
+            )
+        runtime = self.with_env(
+            {**self.env, "HOME": fields[5], "USER": fields[0], "LOGNAME": fields[0]}
+        )
+        runtime._user = f"{fields[2]}:{fields[3]}"
+        return runtime
+
+    @contextlib.asynccontextmanager
+    async def snapshot(
+        self,
+    ) -> AsyncIterator["DockerConfig | PodmanConfig | PrimeConfig | ModalConfig"]:
+        if not self._owns_container:
+            raise SandboxError("snapshot requires an owned Docker or Podman runtime")
+        assert self._container is not None
+        mounts = await self._run_host(
+            self.engine, "inspect", "--format", "{{json .Mounts}}", self._container
+        )
+        if mounts.exit_code:
+            raise SandboxError(
+                f"snapshot mount inspection failed: {mounts.stderr.strip()}"
+            )
+        if json.loads(mounts.stdout):
+            raise SandboxError(
+                "snapshot cannot preserve mounted volumes; use a container without mounts"
+            )
+        image = f"localhost/verifiers-snapshot:{uuid.uuid4().hex}"
+        self._snapshot_images.add(image)
+
+        # Keep build-time processes frozen until every branch is finished. A fresh
+        # container restores only the filesystem, never those processes.
+        async def release() -> None:
+            try:
+                removed = await self._run_host(
+                    self.engine, "image", "rm", "--force", image
+                )
+                if removed.exit_code == 0:
+                    self._snapshot_images.discard(image)
+            finally:
+                await self._run_host(self.engine, "unpause", self._container)
+
+        try:
+            paused = await self._run_host(self.engine, "pause", self._container)
+            if paused.exit_code:
+                raise SandboxError(f"snapshot pause failed: {paused.stderr.strip()}")
+            committed = await self._run_host(
+                self.engine, "commit", "--pause=false", self._container, image
+            )
+            if committed.exit_code:
+                raise SandboxError(
+                    f"snapshot commit failed: {committed.stderr.strip()}"
+                )
+            yield self.config.model_copy(update={"image": image})
+        finally:
+            await run_shielded(release())
 
     def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
         assert self._container is not None
@@ -528,10 +740,12 @@ class DockerRuntime(ContainerRuntime):
             self.engine,
             "exec",
             *(("-i",) if stdin else ()),
+            *(("--user", self._user) if self._user is not None else ()),
             *(arg for key, value in env.items() for arg in ("--env", f"{key}={value}")),
             "--workdir",
             self.config.workdir,
             self._container,
+            *(("setpriv", "--no-new-privs", "--") if self._user is not None else ()),
         ]
 
     async def run_background(
@@ -551,7 +765,10 @@ class DockerRuntime(ContainerRuntime):
             )
 
     def cleanup(self) -> None:
-        if self.info.borrowed or self._container is None or self._stopped:
+        # The owning provider runtime deletes remote containers with its VM.
+        if self._host is not None:
+            return
+        if not self._owns_container or self._container is None or self._stopped:
             return
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows
@@ -565,6 +782,15 @@ class DockerRuntime(ContainerRuntime):
                 timeout=30,
                 check=False,
             )
+        for image in self._snapshot_images:
+            with contextlib.suppress(Exception):
+                subprocess.run(
+                    [self.engine, "image", "rm", "--force", image],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
 
 
 class PodmanRuntime(DockerRuntime):
