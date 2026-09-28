@@ -2,7 +2,7 @@
 
 from typing import TypeVar, get_args, get_origin
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T")
 
@@ -37,6 +37,38 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+def merge_defaults(defaults: BaseModel, raw: dict | None) -> dict:
+    """A raw config block over `defaults`, e.g. a group's shared knobs under each of its
+    members. Only the fields set in `defaults` apply, and `raw`'s values win. A block
+    whose `id`/`type` differs from the default's is `raw`'s alone, so one plugin's knobs
+    never leak into another's."""
+    keys = {
+        k: getattr(defaults, k)
+        for k in ("id", "type")
+        if k in type(defaults).model_fields
+    }
+    block = {**keys, **_dump_set(defaults)}
+    return deep_merge({"block": block}, {"block": raw or {}})["block"]
+
+
+def _dump_set(config: BaseModel) -> dict:
+    """`config`'s set fields, including those set on a sub-config after construction
+    (which leaves the parent's field unmarked). Each dumped sub-config keeps its
+    `id`/`type` even at the default: `deep_merge` detects a plugin switch only when
+    both sides name it."""
+    dump = {}
+    for name in type(config).model_fields:
+        value = getattr(config, name)
+        if isinstance(value, BaseModel):
+            nested = _dump_set(value)
+            if nested or name in config.model_fields_set:
+                keys = [k for k in ("id", "type") if k in type(value).model_fields]
+                dump[name] = {**{k: getattr(value, k) for k in keys}, **nested}
+        elif name in config.model_fields_set:
+            dump[name] = config.model_dump(include={name})[name]
+    return dump
 
 
 def concrete_type(
