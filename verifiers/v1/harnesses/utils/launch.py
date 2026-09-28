@@ -26,7 +26,7 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
 # use argv so tools do not inherit them.
 CHAT_PROGRAM = (
     '# /// script\n# requires-python = ">=3.10"\n'
-    '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity"]\n'
+    '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
     "# ///\n"
 )
 CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)

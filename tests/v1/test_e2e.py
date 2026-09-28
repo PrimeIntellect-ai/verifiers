@@ -740,8 +740,8 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
-    from verifiers.v1.cli.output import read_episodes
     from verifiers.v1.trace import WireTrace
+    from verifiers.v1.utils.trace_store import read_episodes
 
     (record,) = read_episodes(tmp_path, WireTrace)
     assert {t.agent.name for t in record.traces} == {"assistant", "user"}

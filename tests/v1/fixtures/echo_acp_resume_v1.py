@@ -52,9 +52,12 @@ class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
 class ACPResumeEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
+            # Stated as a fact, not a "do not" instruction: OpenAI's content filter
+            # refuses "remember ... do not call tools or store it" as an injection.
             first = await interaction.turn(
-                f"Remember the codeword {CODEWORD} for this conversation only. "
-                "Do not call tools or store it in persistent memory. Reply with exactly READY."
+                f"The codeword for this conversation is {CODEWORD}. Keep it in the "
+                "conversation context only, without tools or persistent memory. "
+                "Reply with exactly READY."
             )
             segments = [first]
             if not first.terminated:

@@ -9,8 +9,15 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import certifi
 import httpx
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncOpenAI,
+    DefaultAsyncHttpxClient,
+    omit,
+)
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
@@ -447,10 +454,12 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
+    # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
         timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        http_client=DefaultAsyncHttpxClient(verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))

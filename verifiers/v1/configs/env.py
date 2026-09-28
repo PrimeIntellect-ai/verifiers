@@ -1,18 +1,22 @@
 """An environment's config — the run's single `[env]` block: the seed taskset,
-each role as an `AgentConfig` field, and the env-level knobs."""
+each role as an `AgentConfig` field, and the env-level knobs. `SharedEnvConfig` is
+the part every env has."""
 
 from typing import get_args
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    agent_config_fields,
+    merge_agent_defaults,
+)
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
-from verifiers.v1.utils.generic import deep_merge
 
 
 class TimeoutConfig(BaseConfig):
@@ -31,18 +35,12 @@ def _mentions_agent_config(annotation) -> bool:
     return any(_mentions_agent_config(arg) for arg in get_args(annotation))
 
 
-class EnvConfig(BaseConfig):
-    """An environment's config — the run's single `[env]` block, one subclass per
-    `Env` class (bound via `Env[YourConfig]`): each role is an
-    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
-    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
+class SharedEnvConfig(BaseConfig):
+    """The env knobs every env has, whatever its id and agents — what several envs of
+    one run can share. `EnvConfig` adds the env `id`, the taskset `id`, and the agents."""
 
-    id: ID = ""
-    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
-    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
-    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
-    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
+    taskset: SharedTasksetConfig = SharedTasksetConfig()
+    """The taskset knobs every taskset has."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
@@ -60,6 +58,20 @@ class EnvConfig(BaseConfig):
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
 
+
+class EnvConfig(SharedEnvConfig):
+    """An environment's config — the run's single `[env]` block, one subclass per
+    `Env` class (bound via `Env[YourConfig]`): each role is an
+    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
+    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
+
+    id: ID = ""
+    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
+    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
+    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
+    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
+
     @property
     def env_id(self) -> str:
         """The taskset id, prefixed by the paired env id (`best-of-n+gsm8k-v1`)."""
@@ -73,7 +85,7 @@ class EnvConfig(BaseConfig):
         default = default_agent_harness(self.taskset.id)
         return {
             name: cfg.harness if cfg.harness is not None else default
-            for name, cfg in _declared_agent_configs(self).items()
+            for name, cfg in agent_config_fields(self).items()
         }
 
     @model_validator(mode="before")
@@ -110,17 +122,7 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default — plain
-        validation would replace the instance wholesale, resetting its other pins."""
-        if isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if isinstance(field.default, AgentConfig) and isinstance(
-                    data.get(name), dict
-                ):
-                    data[name] = deep_merge(
-                        field.default.model_dump(exclude_none=True), data[name]
-                    )
-        return data
+        return merge_agent_defaults(cls, data)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
@@ -144,16 +146,6 @@ class EnvConfig(BaseConfig):
                     "instance is the role's author default (CLI overrides "
                     "deep-merge onto it, and the seat plays under the field's name)"
                 )
-
-
-def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
-    """The `AgentConfig` fields declared on an env's config, in declaration order —
-    the env's roles, each seat keyed by its field name (the only naming site)."""
-    return {
-        name: getattr(config, name)
-        for name, field in type(config).model_fields.items()
-        if isinstance(field.default, AgentConfig)
-    }
 
 
 def default_agent_harness(taskset_id: str) -> HarnessConfig:
