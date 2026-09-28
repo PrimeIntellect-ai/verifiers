@@ -2,13 +2,7 @@ from prime_sandboxes import Config
 
 
 def prime_config() -> Config:
-    """The active Prime CLI config, resolved by the prime SDK exactly as `prime` does.
-
-    `PRIME_*` env vars, then `--context`/`$PRIME_CONTEXT`, then the directory's
-    `.prime/context.json` (e.g. `prime switch --local`), then `~/.prime/config.json`.
-    Raises `ValueError` when a selected context is missing or invalid: falling back
-    to the global config would bill the wrong account.
-    """
+    """The active Prime CLI config, resolved by the prime SDK as `prime` does."""
     return Config()
 
 
