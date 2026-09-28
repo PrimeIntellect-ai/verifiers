@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 
+import httpx
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -23,27 +24,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
-
-# Ensure `uv` is available for our PEP 723 scripts: keep one already on PATH (an image that
-# pre-installs it, or an earlier rollout's install on the same box); otherwise prefer pip on
-# Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
-# certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
-# prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
-_INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
-    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
-    "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
-    "|| apk add --no-cache curl ca-certificates"
-)
-_DOWNLOAD_UV = (
-    "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
-)
-_ENSURE_UV = (
-    'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "command -v uv >/dev/null 2>&1 "
-    "|| pip install -q -U --user uv 2>/dev/null "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
-)
 
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
 # modal/prime, a host loopback port on the local container engines. A server placed in such
@@ -251,6 +231,50 @@ class Runtime(ABC):
             f"{type(self).__name__} does not support run_background"
         )
 
+    async def ensure_uv(self, env: dict[str, str] | None = None) -> None:
+        """Bootstrap uv without requiring a downloader or package manager in the image."""
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                'export PATH="$HOME/.local/bin:$PATH"; command -v uv || { uname -sm; echo "$HOME"; exit 1; }',
+            ],
+            env or {},
+        )
+        if result.exit_code == 0:
+            return
+        platform, home = result.stdout.strip().splitlines()
+        system, arch = platform.split()
+        arch = {"arm64": "aarch64"}.get(arch, arch)
+        # Static musl uv runs on both glibc and musl images.
+        target = {"Linux": "unknown-linux-musl", "Darwin": "apple-darwin"}[system]
+        url = f"https://github.com/astral-sh/uv/releases/latest/download/uv-{arch}-{target}.tar.gz"
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
+            archive = await client.get(url)
+            archive.raise_for_status()
+            checksum = await client.get(f"{url}.sha256")
+            checksum.raise_for_status()
+        if hashlib.sha256(archive.content).hexdigest() != checksum.text.split()[0]:
+            raise RuntimeError("uv download checksum mismatch")
+        temporary = f"{home}/.local/bin/.uv-{uuid.uuid4().hex}"
+        await self.write(f"{temporary}.tar.gz", archive.content)
+        # Extract separately and rename: concurrent bootstraps never overwrite a running uv.
+        result = await self.run(
+            [
+                "sh",
+                "-ec",
+                f"""tmp={shlex.quote(temporary)}
+trap 'rm -rf "$tmp" "$tmp.tar.gz"' EXIT
+mkdir -p "$tmp" "$HOME/.local/bin"
+tar -xzf "$tmp.tar.gz" --strip-components=1 -C "$tmp"
+mv -f "$tmp/uv" "$tmp/uvx" "$HOME/.local/bin/"
+""",
+            ],
+            env or {},
+        )
+        if result.exit_code:
+            raise RuntimeError(f"uv install failed: {result.stderr.strip()[-500:]}")
+
     async def prepare_uv_script(
         self,
         script: str | bytes,
@@ -269,11 +293,12 @@ class Runtime(ABC):
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:
+                    await self.ensure_uv(env)
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
+                        '&& export PATH="$HOME/.local/bin:$PATH" '
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )

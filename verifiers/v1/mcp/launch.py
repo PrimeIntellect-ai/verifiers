@@ -33,7 +33,6 @@ from verifiers.v1.runtimes import (
     Runtime,
     provision_runtime,
 )
-from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 
@@ -259,7 +258,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         )
         if not runtime._mcp_sources:
             # Failed installs can leave the venv behind; retain it when retrying.
-            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+            await runtime.ensure_uv()
+            setup += f"uv venv --allow-existing {venv_q}; "
         # Drain remote writes and installs before cancellation releases the lock.
         for source in pending:
             name, data = await _cached_package(Path(source))

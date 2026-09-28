@@ -8,15 +8,14 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
-INSTALL = f"""
+INSTALL = """
 set -e
-{_ENSURE_UV}
+export PATH="$HOME/.local/bin:$PATH"
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$VF_HERMES_VERSION.tar.gz" \\
     | tar -xz --strip-components=1 -C "$VF_HERMES_DIR"
@@ -38,6 +37,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await runtime.ensure_uv(self.config.resolved_env)
         # Hermes needs its source-tree assets and supports editable installs only.
         directory = HERMES_DIR.format(version=self.config.version)
         await ensure_installed(
