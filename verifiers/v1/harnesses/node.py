@@ -28,11 +28,17 @@ else
                 # sources and indexes temporary so the task retains its apt policy.
                 . /etc/os-release
                 case "$ID" in
-                    debian) mirror=http://deb.debian.org/debian ;;
+                    debian)
+                        mirror=http://deb.debian.org/debian
+                        security_mirror=http://security.debian.org/debian-security ;;
                     ubuntu)
                         case "$(dpkg --print-architecture)" in
-                            amd64|i386) mirror=http://archive.ubuntu.com/ubuntu ;;
-                            *) mirror=http://ports.ubuntu.com/ubuntu-ports ;;
+                            amd64|i386)
+                                mirror=http://archive.ubuntu.com/ubuntu
+                                security_mirror=http://security.ubuntu.com/ubuntu ;;
+                            *)
+                                mirror=http://ports.ubuntu.com/ubuntu-ports
+                                security_mirror=$mirror ;;
                         esac ;;
                     *) echo "cannot bootstrap curl on $ID" >&2; exit 1 ;;
                 esac
@@ -40,7 +46,11 @@ else
                 trap 'rm -rf "$apt_dir"' EXIT
                 chmod 755 "$apt_dir"
                 mkdir -p "$apt_dir/lists/partial"
-                printf 'deb %s %s main\n' "$mirror" "$VERSION_CODENAME" > "$apt_dir/sources.list"
+                # curl must match libcurl already installed from updates/security.
+                printf 'deb %s %s main\n' \
+                    "$mirror" "$VERSION_CODENAME" \
+                    "$mirror" "$VERSION_CODENAME-updates" \
+                    "$security_mirror" "$VERSION_CODENAME-security" > "$apt_dir/sources.list"
                 set -- -o "Dir::Etc::sourcelist=$apt_dir/sources.list" -o Dir::Etc::sourceparts=- \
                     -o "Dir::State::lists=$apt_dir/lists" -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache=
                 apt-get "$@" update -qq
