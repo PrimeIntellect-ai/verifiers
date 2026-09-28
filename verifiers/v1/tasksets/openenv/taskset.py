@@ -141,7 +141,6 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
         for idx, reset in enumerate(config.resets):
             yield OpenEnvTask(
                 OpenEnvData(
-                    idx=idx,
                     name=f"{source}#{idx}",
                     prompt=None,
                     env=config.env,

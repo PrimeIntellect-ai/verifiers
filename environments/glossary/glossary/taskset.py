@@ -39,7 +39,6 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
         return [
             GlossaryTask(
                 GlossaryTaskData(
-                    idx=i,
                     name=entity.title(),
                     prompt=(
                         f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
@@ -49,5 +48,5 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
                 ),
                 self.config.task,
             )
-            for i, (entity, fact) in enumerate(FACTS.items())
+            for entity, fact in FACTS.items()
         ]

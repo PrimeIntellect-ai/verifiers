@@ -177,7 +177,7 @@ def _eval_config(
             "taskset": taskset_cfg,
             **env_cfg,
         },
-        num_tasks=num_tasks,
+        select={"limit": num_tasks},
         num_rollouts=n,
         sampling={
             "max_tokens": max_tokens,
@@ -218,7 +218,7 @@ def run_v1_server():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        tasks = list(load_taskset(config.env.taskset).head(config.num_tasks))
+        tasks = list(load_taskset(config.env.taskset).select(config.select))
         mpctx = mp.get_context("spawn")
         address_queue: mp.Queue = mpctx.Queue()
         proc = mpctx.Process(

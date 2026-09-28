@@ -37,11 +37,11 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
-- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
-  infinite taskset (a procedural generator, e.g. `wordle`) requires it
+- `select` — which tasks to evaluate (see [Selecting tasks](tasksets.md#selecting-tasks)).
+  `-n` sets `select.limit`: not setting it means all tasks, and an infinite taskset (a
+  procedural generator, e.g. `wordle`) requires it. `-s` sets `select.shuffle` (fixed seed)
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
-- `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
 - `rich` — the live dashboard (default); `--no-rich` streams logs to the console and
   prints each trace as JSON at the end
 - `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the

@@ -9,7 +9,6 @@ the final codeword; a partial-match metric tracks per-position accuracy. Images 
 the v1 message graph as `mm_kwargs` for training.
 """
 
-import itertools
 import random
 import re
 from collections.abc import Iterator
@@ -158,7 +157,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
             for color in colors
         }
         length = c.images_per_turn * MAX_TURNS
-        for idx in itertools.count():
+        while True:
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
@@ -173,7 +172,6 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
             ] + [vf.TextContentPart(text=text)]
             yield ColorCodewordTask(
                 ColorCodewordTaskData(
-                    idx=idx,
                     prompt=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,

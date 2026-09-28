@@ -56,11 +56,10 @@ class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
         return [
             ScratchpadTask(
                 ScratchpadTaskData(
-                    idx=i,
                     word=w,
                     prompt=INSTRUCTION.format(word=w),
                 ),
                 self.config.task,
             )
-            for i, w in enumerate(WORDS)
+            for w in WORDS
         ]
