@@ -54,6 +54,11 @@ class TaskMatchConfig(BaseConfig):
         return ranges
 
     @property
+    def idx_tail(self) -> bool:
+        """Whether an `idx` slice names every position from some start on."""
+        return any(r.stop == sys.maxsize and r.step == 1 for r in self.idx_ranges())
+
+    @property
     def idx_stop(self) -> int | None:
         """One past the last position this can match, when it names only closed `idx`
         ranges; None when a match could lie anywhere in the stream."""

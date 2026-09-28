@@ -133,6 +133,9 @@ def test_only_a_bounded_view_can_shuffle() -> None:
     assert not infinite().include(idx="5:").bounded
     with pytest.raises(ValueError, match="may never end"):
         infinite().include(idx=["0:4"], names=["t9"])
+    with pytest.raises(ValueError, match="open idx range"):
+        infinite().exclude(idx="5:")
+    assert idxs(infinite().exclude(idx="::2").take(2)) == [1, 3]
     assert idxs(infinite().include(idx=":20").include(names=["t3"])) == [3]
     with pytest.raises(ValueError, match="infinite"):
         infinite().shuffle()

@@ -104,8 +104,15 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return view
 
     def exclude(self, **match: Any) -> Self:
-        """A view dropping the tasks `match` names (see `include`)."""
+        """A view dropping the tasks `match` names (see `include`). Dropping every
+        position from some start on leaves an unbounded view nothing to yield past
+        it, so that raises there."""
         config = TaskMatchConfig(**match)
+        if not self.bounded and config.idx_tail:
+            raise ValueError(
+                f"{type(self).__name__} is infinite - excluding an open idx range "
+                "drops every task after its start; exclude a closed range instead"
+            )
         return self._view(lambda tasks: _match(tasks, config, False, "exclude", None))
 
     def shuffle(self, seed: int = 0) -> Self:
