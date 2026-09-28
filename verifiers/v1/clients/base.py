@@ -19,13 +19,15 @@ being silently reattempted."""
 VERSION_SEGMENT = re.compile(r"v\d+")
 
 
-def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+def build_async_openai(
+    config: BaseClientConfig, *, max_retries: int = MAX_RETRIES
+) -> AsyncOpenAI:
     return AsyncOpenAI(
         base_url=config.base_url,
         api_key=resolve_api_key(config),
         default_headers=config.headers or None,
         timeout=DEFAULT_TIMEOUT,
-        max_retries=MAX_RETRIES,
+        max_retries=max_retries,
         http_client=httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS),
     )
 

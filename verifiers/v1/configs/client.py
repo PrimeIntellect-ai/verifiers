@@ -61,11 +61,18 @@ class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
+    stream_retries: int = Field(default=0, ge=0, le=7)
+    """Retry a streamed provider response that fails before its terminal event. The
+    default leaves the relay's existing behavior unchanged."""
+    connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    read_timeout_seconds: float | None = Field(default=None, gt=0)
+    """Optional upstream connection and per-read timeouts in seconds."""
 
 
 class TrainClientConfig(BaseClientConfig):
     """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
-    `TrainClient`), so responses carry token ids + logprobs. Needs a running vLLM engine."""
+    `TrainClient`), so responses carry token IDs and, by default, logprobs. Needs a running
+    compatible token-in/token-out engine."""
 
     type: Literal["train"] = "train"
     renderer: RendererConfig | None = None
@@ -77,6 +84,15 @@ class TrainClientConfig(BaseClientConfig):
     """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
+    require_logprobs: bool = True
+    """Require sampled logprobs for every completion token. Disable only when
+    capturing token IDs from an endpoint that omits logprobs."""
+    send_routed_experts_prompt_start: bool = True
+    """Send the bridge offset used by prime-rl's routed-expert capture. Disable
+    for token endpoints that reject this sampling parameter."""
+    upstream_max_retries: int = Field(default=0, ge=0, le=7)
+    """Retry transient hosted token-generation failures before returning a model error.
+    The default keeps the training client's existing no-retry behavior."""
     multiplex: int = Field(256, ge=1)
     """Rollouts that share one renderer (~75-95 MB each): the pool warms one and grows on
     demand, so N concurrent rollouts hold ~N/multiplex tokenizers. A renderer is only busy

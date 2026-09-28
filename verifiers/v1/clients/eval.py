@@ -1,5 +1,7 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import asyncio
+import logging
 import re
 from collections.abc import Mapping
 
@@ -9,9 +11,13 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    EvalClientConfig,
+    resolve_api_key,
+)
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import model_error
+from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
@@ -57,6 +63,7 @@ _BLOCKED_REQUEST_HEADERS = (
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
+logger = logging.getLogger(__name__)
 
 
 class EvalClient(Client):
@@ -68,7 +75,23 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
+        self.stream_retries = (
+            config.stream_retries if isinstance(config, EvalClientConfig) else 0
+        )
+        timeout = DEFAULT_TIMEOUT
+        if isinstance(config, EvalClientConfig) and (
+            config.connect_timeout_seconds is not None
+            or config.read_timeout_seconds is not None
+        ):
+            timeout = httpx.Timeout(
+                connect=config.connect_timeout_seconds
+                if config.connect_timeout_seconds is not None
+                else DEFAULT_TIMEOUT.connect,
+                read=config.read_timeout_seconds,
+                write=DEFAULT_TIMEOUT.write,
+                pool=DEFAULT_TIMEOUT.pool,
+            )
+        self.client = httpx.AsyncClient(timeout=timeout, limits=DEFAULT_LIMITS)
 
     async def get_response(
         self,
@@ -170,34 +193,77 @@ class EvalClient(Client):
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        # Relay complete SSE events so the interception server can safely insert keepalives
-        # between them. Error responses are mapped before any event is handed back.
-        resp = await self._request(
-            join_url(self.base_url, dialect.upstream_path),
-            body,
-            self._headers(dialect, headers, session_id),
-            stream=True,
-        )
+        url = join_url(self.base_url, dialect.upstream_path)
+        upstream_headers = self._headers(dialect, headers, session_id)
+        if self.stream_retries == 0:
+            resp = await self._request(url, body, upstream_headers, stream=True)
+            return RelayReply(
+                content_type=resp.headers.get("content-type", "text/event-stream"),
+                chunks=self._sse_events(resp),
+                close=resp.aclose,
+            )
 
-        async def chunks():
-            buffer = bytearray()
-            search_from = 0
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer, search_from):
-                    yield bytes(buffer[: match.end()])
-                    del buffer[: match.end()]
-                    search_from = 0
-                # A delimiter is at most four bytes and can straddle chunks.
-                search_from = max(0, len(buffer) - 3)
-            if buffer:
-                yield bytes(buffer)
+        for attempt in range(self.stream_retries + 1):
+            try:
+                resp = await self._request(url, body, upstream_headers, stream=True)
+                try:
+                    events = [event async for event in self._sse_events(resp)]
+                    if not any(dialect.is_terminal_event(event) for event in events):
+                        raise ProviderError(
+                            "upstream stream ended before its terminal event"
+                        )
+                    content_type = resp.headers.get("content-type", "text/event-stream")
+                finally:
+                    await resp.aclose()
+            except ProviderError as error:
+                if attempt == self.stream_retries or error.status_code not in {
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }:
+                    raise
+                failure = f"ProviderError({error.status_code})"
+            except (httpx.HTTPError, ConnectionResetError) as error:
+                if attempt == self.stream_retries:
+                    raise model_error(str(error), status_code=503) from error
+                failure = type(error).__name__
+            else:
 
-        return RelayReply(
-            content_type=resp.headers.get("content-type", "text/event-stream"),
-            chunks=chunks(),
-            close=resp.aclose,
-        )
+                async def chunks():
+                    for event in events:
+                        yield event
+
+                async def close():
+                    return None
+
+                return RelayReply(
+                    content_type=content_type, chunks=chunks(), close=close
+                )
+            logger.warning(
+                "retrying incomplete upstream stream: attempt=%d/%d failure=%s",
+                attempt + 1,
+                self.stream_retries,
+                failure,
+            )
+            await asyncio.sleep(min(2**attempt, 8))
+        raise AssertionError("stream retry loop exhausted")
+
+    @staticmethod
+    async def _sse_events(resp: httpx.Response):
+        # Relay complete SSE events so the interception server can insert keepalives.
+        buffer = bytearray()
+        search_from = 0
+        async for chunk in resp.aiter_bytes():
+            buffer += chunk
+            while match := _SSE_EVENT_END.search(buffer, search_from):
+                yield bytes(buffer[: match.end()])
+                del buffer[: match.end()]
+                search_from = 0
+            search_from = max(0, len(buffer) - 3)
+        if buffer:
+            yield bytes(buffer)
 
     async def relay_aux(
         self,
