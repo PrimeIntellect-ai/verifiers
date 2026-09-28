@@ -40,8 +40,8 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
-# Mirror of errors.PROVIDER_ERROR_EXIT_CODE; this bundled script cannot import verifiers.
-PROVIDER_ERROR_EXIT_CODE = 97
+# Mirror of errors.MODEL_TRANSPORT_ERROR_EXIT_CODE; this bundled script cannot import verifiers.
+MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
 
@@ -289,7 +289,7 @@ async def chat(
     except (APIConnectionError, httpx.TransportError) as error:
         # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
-        raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error
+        raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
 
 
 async def _read_chat_completion(raw_stream):

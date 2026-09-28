@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.errors import (
-    PROVIDER_ERROR_EXIT_CODE,
+    MODEL_TRANSPORT_ERROR_EXIT_CODE,
     HarnessError,
-    ProviderError,
+    InterceptionError,
     SandboxError,
     boundary,
 )
@@ -184,9 +184,9 @@ copy_failed=$(
                 f"runtime died under harness {self.config.id!r} "
                 f"(exit {result.exit_code}): {detail}"
             )
-        if result.exit_code == PROVIDER_ERROR_EXIT_CODE:
-            raise ProviderError(
-                f"harness {self.config.id!r} model call failed: {detail}"
+        if result.exit_code == MODEL_TRANSPORT_ERROR_EXIT_CODE:
+            raise InterceptionError(
+                f"harness {self.config.id!r} model connection to interception failed: {detail}"
             )
         raise HarnessError(
             f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
