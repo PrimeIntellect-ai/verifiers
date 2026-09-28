@@ -5,6 +5,7 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import asyncio
 import shutil
 import subprocess
 import sys
@@ -20,14 +21,21 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("interruption", [None, "disconnect", "timeout", "eof"])
-async def test_chat_harness_preserves_streamed_reasoning(interruption):
+@pytest.mark.parametrize(
+    "interruption",
+    [None, "disconnect", "timeout", "eof", "tunnel_404", "real_404", "late_disconnect"],
+)
+async def test_chat_harness_preserves_streamed_reasoning(interruption, monkeypatch):
     import json
 
     import httpx
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, NotFoundError
 
+    from verifiers.v1.harnesses.utils import core
     from verifiers.v1.harnesses.utils.core import chat
+
+    # A tiny budget: the late disconnect streams past it, yet must still be retried.
+    monkeypatch.setattr(core, "STREAM_RETRY_SECONDS", 0.1)
 
     def chunk(text: str, finish_reason: str | None = None) -> dict:
         return {
@@ -75,7 +83,10 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
         async def __aiter__(self):
             if self.interrupted:
                 yield f"data: {json.dumps(chunk('discard this attempt'))}\n\n".encode()
-                if interruption == "disconnect":
+                if interruption == "late_disconnect":
+                    # A stream that ran longer than the retry budget before breaking.
+                    await asyncio.sleep(0.2)
+                if interruption in ("disconnect", "late_disconnect"):
                     raise httpx.ReadError("connection reset", request=self.request)
                 if interruption == "timeout":
                     raise httpx.ReadTimeout("read timed out", request=self.request)
@@ -87,7 +98,21 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
 
     async def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        stream = CompletionStream(request, interruption and len(requests) == 1)
+        # The Prime tunnel's transient "route missing" page, vs. a genuine 404.
+        if interruption == "tunnel_404" and len(requests) == 1:
+            page = (
+                "<html><h1>404</h1><p>Tunnel not found or no longer active.</p></html>"
+            )
+            return httpx.Response(404, text=page, request=request)
+        if interruption == "real_404":
+            return httpx.Response(
+                404, json={"error": {"message": "no"}}, request=request
+            )
+        stream = CompletionStream(
+            request,
+            interruption in ("disconnect", "late_disconnect", "timeout", "eof")
+            and len(requests) == 1,
+        )
         streams.append(stream)
         return httpx.Response(
             200,
@@ -102,6 +127,11 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
             base_url="https://example.test/v1",
             http_client=http_client,
         )
+        if interruption == "real_404":
+            with pytest.raises(NotFoundError):
+                await chat(client, "test-model", [], [])
+            assert len(requests) == 1
+            return
         completion = await chat(client, "test-model", [], [])
 
     assert len(requests) == (2 if interruption else 1)
