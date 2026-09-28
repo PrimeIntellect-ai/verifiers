@@ -209,7 +209,7 @@ class Rollout:
             self.runtime_config.type,
         )
         loop = asyncio.get_running_loop()
-        setup_deadline: float | None = None
+        setup_timeout: asyncio.Timeout | None = None
         try:
             runtime_env = dict(self.task.runtime_env())
             if self._borrowed_runtime is None:
@@ -237,12 +237,12 @@ class Rollout:
                 else loop.time() + self._timeouts.setup
             )
             async with (
-                asyncio.timeout_at(setup_deadline),
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(TaskError, "task setup"),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
             async with (
-                asyncio.timeout_at(setup_deadline),
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
                 await self.harness.setup(runtime)
@@ -281,7 +281,7 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
             async with (
-                asyncio.timeout_at(setup_deadline),
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
             ):
                 harness_data = self.trace.task.data
@@ -349,9 +349,9 @@ class Rollout:
                         **session_kwargs,
                     )
         except TimeoutError as e:
-            # The setup deadline's own expiry is a timeout; a TimeoutError with no
-            # expired deadline (a runtime's own I/O) stays the raw failure.
-            if setup_deadline is not None and loop.time() >= setup_deadline:
+            # Only an expired setup context owns the timeout; I/O between these
+            # contexts can time out independently after the deadline passes.
+            if setup_timeout is not None and setup_timeout.expired():
                 self.timeout("setup")
             else:
                 self.fail(e)
