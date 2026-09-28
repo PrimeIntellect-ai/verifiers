@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import posixpath
+import re
 import shlex
 import tarfile
 import uuid
-from pathlib import PurePosixPath
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,8 @@ MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
 
+MOUNT_ARCHIVE_SCRIPT = Path(__file__).with_name("mount_archive.py").read_bytes()
+
 
 class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
@@ -32,6 +38,72 @@ class Artifact(BaseModel):
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
     required: bool = True
+
+
+def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
+    """Keep external datasets out of artifact copies and destructive restoration."""
+    mounts = getattr(config, "mounts", {})
+    if not mounts:
+        return
+    workdir = getattr(config, "workdir", None) or "/app"
+    for source in [ARTIFACTS_DIR, *sources]:
+        path = posixpath.join(workdir, source)
+        path = posixpath.normpath("/" + path.lstrip("/"))
+        for target in mounts:
+            if posixpath.commonpath((path, target)) in (path, target):
+                raise ValueError(
+                    f"artifact root {path!r} overlaps mount {target!r}; "
+                    "keep mounted data separate from output artifacts"
+                )
+
+
+async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> set[int]:
+    """Reject relocated mounts and aliases that bypass lexical overlap checks."""
+    mounts = getattr(runtime.config, "mounts", {})
+    if not mounts:
+        return set()
+    sources = list(sources)
+    validate_artifact_mounts(runtime.config, sources)
+    workdir = PurePosixPath(getattr(runtime.config, "workdir", None) or "/")
+    paths: set[str] = set()
+    for source in [*mounts, ARTIFACTS_DIR, *sources]:
+        path = workdir / source
+        # Keep '..' until after checking its preceding components for symlinks.
+        paths.update(str(parent) for parent in (path, *path.parents))
+    await _run(
+        runtime,
+        f"for mount_path in {shlex.join(sorted(paths))}; do "
+        'if [ -L "$mount_path" ]; then '
+        "printf 'mount or artifact path traverses symlink: %s\\n' "
+        '"$mount_path" >&2; exit 1; fi; done',
+        "validate mount and artifact paths",
+    )
+    # Renaming a parent relocates a bind mount without introducing any symlinks.
+    mountinfo = (await runtime.read("/proc/self/mountinfo")).decode(
+        errors="surrogateescape"
+    )
+    records = [line.split() for line in mountinfo.splitlines()]
+    mounted = {record[4]: int(record[0]) for record in records}
+    blocked = set()
+    for target in mounts:
+        escaped = re.sub(r"[ \t\n\\]", lambda m: f"\\{ord(m[0]):03o}", target)
+        if escaped not in mounted:
+            raise RuntimeError(
+                f"mount target {target!r} is no longer mounted; "
+                "do not move mount targets or their parent directories"
+            )
+        blocked.add(mounted[escaped])
+    # The mount-tree root can name itself as its parent; it has no ancestor edge.
+    parents = {
+        int(record[0]): int(record[1]) for record in records if record[0] != record[1]
+    }
+    for mount in parents:
+        ancestor = mount
+        while ancestor in parents and ancestor not in blocked:
+            ancestor = parents[ancestor]
+        if ancestor in blocked:
+            blocked.add(mount)
+    return blocked
 
 
 async def collect(
@@ -109,6 +181,7 @@ async def collect(
 
     existence: list[str] = []
     for sources in batches:
+        await validate_runtime_mounts(runtime, sources)
         output = await _run(
             runtime,
             f"for source in {shlex.join(sources)}; do "
@@ -146,6 +219,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     """
     if not collected:
         return
+    await validate_runtime_mounts(runtime, collected)
     # Restoring into the subprocess runtime would extract absolute paths onto the
     # developer's filesystem, so refuse it before any archive reaches the host.
     if getattr(runtime.config, "type", None) == "subprocess":
@@ -181,6 +255,20 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
+        if blocked := await validate_runtime_mounts(runtime, [artifact.source]):
+            result = await runtime.run_uv_script(
+                MOUNT_ARCHIVE_SCRIPT,
+                [
+                    json.dumps(
+                        [artifact.source, path, sorted(blocked), artifact.exclude]
+                    )
+                ],
+            )
+            if result.exit_code:
+                raise RuntimeError(
+                    f"collect artifact {artifact.source!r}: {result.stderr.strip()[-1000:]}"
+                )
+            return await runtime.read(path, max_bytes=budget)
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
             runtime,
