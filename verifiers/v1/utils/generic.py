@@ -40,24 +40,34 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 def merge_defaults(defaults: BaseModel, raw: dict | None) -> dict:
-    """A raw config block over `defaults`, e.g. a group's shared knobs under each of its
-    members. Only the fields set in `defaults` apply, and `raw`'s values win. A block
-    whose `id`/`type` differs from the default's is `raw`'s alone, so one plugin's knobs
-    never leak into another's."""
-    keys = {
+    """Fill in a raw config block with the values that `defaults` sets, e.g. a
+    group's shared knobs under each member's own block.
+
+    - Only fields that were set on `defaults` are filled in; its plain defaults are not.
+    - Nested blocks are filled in key by key; a value already in `raw` is kept.
+    - If `raw` names a different `id`/`type` for a block (at any depth), that block is
+      taken from `raw` alone, so one plugin's fields never leak into another's.
+
+    For example, with `defaults` set to `algo = {type = "grpo", kl = 0.1}`:
+    `{}` becomes `{type = "grpo", kl = 0.1}`, `{kl = 0.5}` becomes
+    `{type = "grpo", kl = 0.5}`, and `{type = "max_rl"}` stays `{type = "max_rl"}`.
+    """
+    # `deep_merge` detects an `id`/`type` switch only on nested blocks, so wrap the
+    # block once to detect a switch of the block itself too.
+    identity = {
         k: getattr(defaults, k)
         for k in ("id", "type")
         if k in type(defaults).model_fields
     }
-    block = {**keys, **_dump_set(defaults)}
+    block = {**identity, **_dump_set(defaults)}
     return deep_merge({"block": block}, {"block": raw or {}})["block"]
 
 
 def _dump_set(config: BaseModel) -> dict:
-    """`config`'s set fields, including those set on a sub-config after construction
-    (which leaves the parent's field unmarked). Each dumped sub-config keeps its
-    `id`/`type` even at the default: `deep_merge` detects a plugin switch only when
-    both sides name it."""
+    """The fields set on `config`, as a nested dict. A sub-config counts as set when any
+    of its own fields is set, even if it was set after construction (pydantic then
+    leaves the parent's field unmarked). A dumped sub-config always includes its
+    `id`/`type`, because `deep_merge` detects a switch only when both sides name it."""
     dump = {}
     for name in type(config).model_fields:
         value = getattr(config, name)

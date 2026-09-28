@@ -15,7 +15,6 @@ from verifiers.v1.clients import (
 )
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.cli.env import (
-    merge_env_defaults,
     narrowed_env_annotation,
     resolve_env_field,
 )
@@ -323,7 +322,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ServeConfig",
     "resolve_env_field",
     "merge_defaults",
-    "merge_env_defaults",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",
     "AgentConfig",
