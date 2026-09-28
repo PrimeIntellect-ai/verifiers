@@ -90,7 +90,7 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 Select `runtime.type = "docker"` to run Compose tasks locally.
 
 Harbor task sessions containing `environment/docker-compose.yaml`
-run their topology with Docker Compose on local Docker, Prime VMs, or Modal's VM runtime.
+run their topology with Docker Compose on local Docker or Prime VMs.
 Local Docker requires `--env.taskset.task.trust-compose`: task definitions can mount host files
 and request Docker privileges, so only enable it for trusted packages. Compose interpolation receives declared task variables and task-local `.env` files.
 Local Docker also receives Docker connection settings; unrelated evaluator environment
@@ -103,18 +103,20 @@ working directory; task settings and non-default runtime overrides take preceden
 
 For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
 services, and its network policy applies to every service after trusted setup.
-For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
-backend with Docker support and requires `network_access = true` and access to that
-backend. Local Docker Compose also requires unrestricted networking. GPU Compose
-tasks are unsupported.
+Local Docker Compose requires unrestricted networking. GPU Compose tasks and Modal
+Compose are unsupported.
 
-The runtime's CPU and memory settings size the entire remote sandbox, so allow room
-for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
+The runtime's CPU and memory settings size the entire Prime VM, so allow room for
+sidecars. Prime also applies the disk request. Upstream Harbor requires whole CPU
+cores on Prime; local Docker supports fractional CPU limits. Compose VMs use Harbor's
+provider defaults for labels and idle timeout, with Harbor's 24-hour lifetime limit;
+Verifiers' automatic run labels are not attached. Custom `runtime.labels` and
+non-default `runtime.idle_timeout` values are rejected. The session still deletes
+its VM on exit.
+
 Prebuilt service images must be Docker-pullable inside the sandbox; services with a
 `build` stanza are built there. Prime-only VM image references cannot serve as inner
-container images. Prime VM ports cannot be published externally. Modal publishes
-main's runtime service port through its encrypted tunnel, including when main shares
-another service's network namespace.
+container images. Prime VM ports cannot be published externally.
 
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
 daemon instead of the stock one. For Prime, Docker is installed when the image lacks it.
@@ -127,7 +129,9 @@ inside a cloud host must be published separately and declared in the verifier en
 
 Compose projects are owned by the Harbor task session; agents borrow the existing
 main service through a borrowed runtime. Harbor owns provisioning, Compose startup,
-service operations, and cleanup; Verifiers owns agent execution, traces, and grading. Failures retry with a fresh project through
+service operations, and cleanup; Verifiers owns agent execution, traces, and grading.
+The adapter uses private provider hooks for service discovery and interactive process
+transport, so its upstream Harbor dependency is pinned to a tested commit. Failures retry with a fresh project through
 `--env.retries`, rather than retrying an agent inside the same project.
 
 ## Network policies

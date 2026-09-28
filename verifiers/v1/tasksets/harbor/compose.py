@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import math
 import os
 import shutil
 import sys
@@ -18,7 +17,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerConfig,
     DockerRuntime,
-    ModalConfig,
     PrimeConfig,
     Runtime,
     RuntimeConfig,
@@ -31,58 +29,33 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import load_prime_config
 from verifiers.v1.utils.scope import run_scope
 
-DOCKER_ENV = (
-    "PATH",
-    "HOME",
-    "DOCKER_HOST",
-    "DOCKER_CONTEXT",
-    "DOCKER_CONFIG",
-    "DOCKER_TLS_VERIFY",
-    "DOCKER_CERT_PATH",
-)
-
 
 def _provider(config, task):
-    options = {"compose_env": {}}
-    if isinstance(config, DockerConfig):
-        from harbor.environments.docker.docker import DockerEnvironment
+    from verifiers.v1.tasksets.harbor.providers import docker_provider, prime_provider
 
+    if isinstance(config, DockerConfig):
         if not task.config.trust_compose:
             raise ValueError(
                 "Local Compose tasks require --env.taskset.task.trust-compose"
             )
         if config.network_restricted:
             raise ValueError("Local Harbor Compose requires public networking")
-        options["compose_env"] = {
-            key: os.environ[key] for key in DOCKER_ENV if key in os.environ
-        }
-        return DockerEnvironment, options
-    options["region"] = config.region
-    if isinstance(config, PrimeConfig):
-        from harbor.environments.prime import PrimeEnvironment
-
-        from verifiers.v1.runtimes.prime import BASE_LABELS
-
-        options.update(
-            timeout_minutes=-1,
-            idle_timeout_minutes=max(1, math.ceil(config.idle_timeout / 60))
-            if config.idle_timeout is not None
-            else None,
-            labels=list(dict.fromkeys([*BASE_LABELS, *config.labels, run_scope()])),
-            team_id=os.environ.get("PRIME_TEAM_ID")
-            or load_prime_config().get("team_id"),
+        return docker_provider(), {}
+    if config.labels or config.idle_timeout != PrimeConfig().idle_timeout:
+        raise ValueError(
+            "Upstream Harbor Compose uses provider defaults for Prime labels and "
+            "idle timeout; custom runtime.labels and runtime.idle_timeout are unsupported"
         )
-        if task.data.compose_host_image:
-            options["compose_host_image"] = task.data.compose_host_image
-        return PrimeEnvironment, options
-    from harbor.environments.modal import ModalEnvironment
-
-    if not config.network_access:
-        raise ValueError("Harbor Compose on Modal requires network_access=True")
-    options.update(modal_vm_runtime=True, encrypted_ports=[SERVICE_PORT])
+    if not float(config.cpu).is_integer():
+        raise ValueError("Upstream Harbor Compose requires whole CPU cores on Prime")
+    options = {
+        "region": config.region,
+        "team_id": os.environ.get("PRIME_TEAM_ID")
+        or load_prime_config().get("team_id"),
+    }
     if task.data.compose_host_image:
-        options["dind_image"] = task.data.compose_host_image
-    return ModalEnvironment, options
+        options["compose_host_image"] = task.data.compose_host_image
+    return prime_provider(), options
 
 
 def _validate_local(document):
@@ -107,12 +80,15 @@ async def compose_services(
     config: RuntimeConfig, task: HarborTask, *, setup_timeout: float | None = None
 ) -> AsyncIterator[tuple[dict[str, Runtime], Callable[[], Awaitable[None]]]]:
     import yaml
-    from harbor.environments.docker.compose_env import network_service
     from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPolicy
     from harbor.models.trial.paths import TrialPaths
 
-    if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
-        raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
+    from verifiers.v1.tasksets.harbor.providers import network_service
+
+    if not isinstance(config, (DockerConfig, PrimeConfig)):
+        raise TypeError(
+            "Harbor Compose supports Docker and Prime VMs; Modal Compose is unsupported"
+        )
     if config.gpu:
         raise ValueError("Harbor Compose currently supports CPU tasks")
     provider, options = _provider(config, task)
@@ -154,7 +130,8 @@ async def compose_services(
                 else None,
                 storage_mb=int(config.disk * 1024) if config.disk is not None else None,
             ),
-            override_cpus=config.cpu,
+            # Local fractional limits are carried by the Compose overlay.
+            override_cpus=None if local else int(config.cpu),
             persistent_env=task.runtime_env(),
             mounts=[],
             network_policy=NetworkPolicy(network_mode=NetworkMode.PUBLIC),
@@ -169,32 +146,24 @@ async def compose_services(
         runtimes: dict[str, Runtime] = {}
         try:
             async with asyncio.timeout(setup_timeout):
-                if local or isinstance(config, ModalConfig):
+                if local:
                     authored = yaml.safe_load(
                         (task_dir / "environment/docker-compose.yaml").read_text()
                     )
-                    if local:
-                        # Authored names are distinguished from Compose's generated names.
-                        for kind in ("volumes", "networks"):
-                            if any(
-                                v and (v.get("name") or v.get("external"))
-                                for v in authored.get(kind, {}).values()
-                            ):
-                                raise SandboxError(
-                                    f"Compose {kind} must use project-scoped names"
-                                )
-                        resolved = await environment.compose_config()
-                        _validate_local({"services": resolved["services"]})
-                    else:
-                        resolved = authored
+                    for kind in ("volumes", "networks"):
+                        if any(
+                            v and (v.get("name") or v.get("external"))
+                            for v in authored.get(kind, {}).values()
+                        ):
+                            raise SandboxError(
+                                f"Compose {kind} must use project-scoped names"
+                            )
+                    resolved = await environment.compose_config()
+                    _validate_local(resolved)
                     owner = network_service(resolved["services"], "main")
                     publish = overlay["services"].setdefault(owner, {})
-                    publish["ports"] = [
-                        f"127.0.0.1::{SERVICE_PORT}"
-                        if local
-                        else f"{SERVICE_PORT}:{SERVICE_PORT}"
-                    ]
-                    if local and sys.platform != "linux":
+                    publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
+                    if sys.platform != "linux":
                         publish["extra_hosts"] = {
                             "host.docker.internal": "host-gateway"
                         }
@@ -202,8 +171,6 @@ async def compose_services(
                 rate = (
                     (config.creates_per_min or 0) / 60
                     if isinstance(config, PrimeConfig)
-                    else config.creates_per_sec
-                    if isinstance(config, ModalConfig)
                     else None
                 )
                 async with (

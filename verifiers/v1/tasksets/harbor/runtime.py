@@ -6,9 +6,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import ModalConfig, PrimeConfig, Runtime
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
-from verifiers.v1.runtimes.modal import ModalRuntimeInfo, _egress_domain
+from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.runtimes.prime import PrimeRuntimeInfo, validate_egress_lists
 
 
@@ -21,25 +20,15 @@ class HarborRuntime(Runtime):
         self.config = config.model_copy(
             update={k: info[k] for k in ("image", "workdir")}
         )
-        info_cls = (
-            PrimeRuntimeInfo if isinstance(config, PrimeConfig) else ModalRuntimeInfo
+        self.info = PrimeRuntimeInfo(
+            **self.config.model_dump(), id=info["id"], borrowed=True
         )
-        self.info = info_cls(**self.config.model_dump(), id=info["id"], borrowed=True)
 
     @property
     def network_scope(self) -> object:
         return self.environment
 
-    @property
-    def published_port(self) -> int | None:
-        return SERVICE_PORT if isinstance(self.config, ModalConfig) else None
-
     async def expose(self, port: int) -> str:
-        if isinstance(self.config, ModalConfig):
-            url = await self.environment.expose(port)
-            if url is None:
-                raise SandboxError(f"Harbor did not expose port {port}")
-            return url
         raise SandboxError("Prime VMs do not publish server ports; use a stdio server")
 
     async def start(self) -> None:
@@ -108,29 +97,13 @@ class HarborRuntime(Runtime):
     async def prepare_execution(self, routes: list[str] | None) -> None:
         if not self.network_restricted:
             return
-        from harbor.models.task.config import NetworkMode, NetworkPolicy
-
-        if isinstance(self.config, PrimeConfig):
-            if routes is None:
-                rules = {"allow": ["*"]}
-            elif self.config.allow == ["*"]:
-                rules = {"deny": self.config.block}
-            else:
-                hosts = [urlsplit(route).hostname for route in routes]
-                allow = list(
-                    dict.fromkeys([*self.config.allow, *(h for h in hosts if h)])
-                )
-                validate_egress_lists(allow, None)
-                rules = {"allow": allow} if allow else {"deny": ["*"]}
-            await self.environment.set_network_rules(**rules)
+        if routes is None:
+            rules = {"allow": ["*"]}
+        elif self.config.allow == ["*"]:
+            rules = {"deny": self.config.block}
         else:
-            if routes is None:
-                policy = NetworkPolicy(network_mode=NetworkMode.PUBLIC)
-            else:
-                domains = [_egress_domain(route, framework=True) for route in routes]
-                domains.extend(_egress_domain(rule) for rule in self.config.allow)
-                policy = NetworkPolicy(
-                    network_mode=NetworkMode.ALLOWLIST,
-                    allowed_hosts=list(dict.fromkeys(d for d in domains if d)),
-                )
-            await self.environment.set_network_policy(policy)
+            hosts = [urlsplit(route).hostname for route in routes]
+            allow = list(dict.fromkeys([*self.config.allow, *(h for h in hosts if h)]))
+            validate_egress_lists(allow, None)
+            rules = {"allow": allow} if allow else {"deny": ["*"]}
+        await self.environment.set_network_rules(**rules)
