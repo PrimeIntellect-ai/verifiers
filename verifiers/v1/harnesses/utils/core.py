@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import subprocess
+import sys
+import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,11 +15,18 @@ import certifi
 import httpx
 from openai import (
     APIConnectionError,
+    APIError,
     APIStatusError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
     omit,
 )
+
+# Mirror of verifiers.v1.errors.PROVIDER_ERROR_EXIT_CODE: this module is bundled and run
+# standalone in the sandbox, so it cannot import that one (a test asserts the two agree).
+# Exit with this when a model/provider call fails at the transport layer, so the host records
+# a ProviderError instead of a generic HarnessError.
+PROVIDER_ERROR_EXIT_CODE = 97
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
@@ -512,4 +521,18 @@ async def main() -> None:
 
 # Inert on package import; the entry point once this module ends the bundled script.
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (APIError, httpx.TransportError) as error:
+        # A model/provider call the in-sandbox SDK already retried and still could not
+        # complete (connection, timeout, HTTP status, incomplete stream). Keep the
+        # traceback for the detail tail, then exit with the reserved code so the host
+        # records a ProviderError rather than attributing the endpoint fault to the harness.
+        traceback.print_exc()
+        status = getattr(error, "status_code", None)
+        print(
+            f"provider call failed: {type(error).__name__}"
+            f"{f' (status {status})' if status else ''}",
+            file=sys.stderr,
+        )
+        raise SystemExit(PROVIDER_ERROR_EXIT_CODE) from error

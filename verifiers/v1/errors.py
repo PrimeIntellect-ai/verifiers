@@ -42,6 +42,15 @@ class ProviderError(RolloutError):
         self.status_code = status_code
 
 
+PROVIDER_ERROR_EXIT_CODE = 97
+"""Exit code a bundled harness program uses to say its own model/provider call failed at the
+transport layer (a connection/timeout/incomplete-read the in-sandbox SDK could not retry away),
+so `Harness._check_result` records a `ProviderError` instead of a generic `HarnessError`. The
+program runs standalone in the sandbox and cannot import this module, so the value is mirrored as
+a literal in `harnesses/utils/core.py` (a test asserts they agree). Chosen to avoid the common
+0/1/2 exits and the 126-165 shell/signal range."""
+
+
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
