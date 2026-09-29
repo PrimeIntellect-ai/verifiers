@@ -1,7 +1,6 @@
 """Docker and Podman share engine-managed bridges, port publication, and the
 Verifiers proxy for host callbacks and optional execution-time URL filtering."""
 
-import array
 import contextlib
 import json
 import logging
@@ -24,8 +23,13 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     parse_gpu,
 )
-from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
-from verifiers.v1.runtimes.docker.egress import (
+from verifiers.v1.runtimes.container import (
+    ContainerConfig,
+    ContainerRuntime,
+    cli,
+    container_listener,
+)
+from verifiers.v1.runtimes.egress import (
     EgressProxy,
     NetworkPolicy,
     is_loopback_host,
@@ -58,15 +62,6 @@ class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
 
 _PROXY_HOST = "host.docker.internal"
 _NETWORK_IMAGE = "localhost/verifiers-network:1"
-_PASS_LISTENER = r"""
-import array, socket
-control = socket.socket(socket.AF_UNIX)
-control.connect("/run/vf/control.sock")
-listener = socket.socket()
-listener.bind(("127.0.0.1", 0))
-listener.listen()
-control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [listener.fileno()]))])
-"""
 
 
 class DockerRuntime(ContainerRuntime):
@@ -356,56 +351,38 @@ class DockerRuntime(ContainerRuntime):
             "-I",
             "-S",
             "-c",
-            "import array, socket",
+            "import socket; socket.send_fds",
         )
         image = (
             self.config.image
             if python.exit_code == 0
             else "docker.io/library/python:3.11-alpine"
         )
-        with (
-            tempfile.TemporaryDirectory(prefix="vf-proxy-") as directory,
-            socket.socket(socket.AF_UNIX) as control,
-        ):
-            control.bind(f"{directory}/control.sock")
-            control.listen(1)
-            helper = await cli(
-                self.engine,
-                "run",
-                *self._label_args,
-                "--rm",
-                "--user",
-                "0",
-                "--network",
-                f"container:{self._container}",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "DAC_OVERRIDE",
-                "--security-opt",
-                "no-new-privileges",
-                "--volume",
-                f"{directory}:/run/vf:Z",
-                "--entrypoint",
-                "python3",
-                image,
-                "-I",
-                "-S",
-                "-c",
-                _PASS_LISTENER,
+        with tempfile.TemporaryDirectory(prefix="vf-proxy-") as directory:
+            return await container_listener(
+                [
+                    self.engine,
+                    "run",
+                    *self._label_args,
+                    "--rm",
+                    "--user",
+                    "0",
+                    "--network",
+                    f"container:{self._container}",
+                    "--cap-drop",
+                    "ALL",
+                    "--cap-add",
+                    "DAC_OVERRIDE",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--volume",
+                    f"{directory}:/run/vf:Z",
+                    "--entrypoint",
+                    "python3",
+                    image,
+                ],
+                directory,
             )
-            if helper.exit_code != 0:
-                raise SandboxError(
-                    f"{self.engine} proxy listener failed: {helper.stderr.strip()}"
-                )
-            connection, _ = control.accept()
-            with connection:
-                _, ancillary, *_ = connection.recvmsg(
-                    64, socket.CMSG_SPACE(array.array("i").itemsize)
-                )
-        descriptors = array.array("i")
-        descriptors.frombytes(ancillary[0][2][: descriptors.itemsize])
-        return socket.socket(fileno=descriptors[0])
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
@@ -415,18 +392,9 @@ class DockerRuntime(ContainerRuntime):
         if not self.network_restricted:
             return
         assert self._proxy is not None
-        if routes is None:
-            self._proxy.policy = NetworkPolicy(
-                NetworkPolicyConfig(), [], allow_non_global=True
-            )
-            return
-        framework = [
-            urlsplit(url)._replace(path="", query="", fragment="").geturl()
-            for url in routes
-        ]
         assert isinstance(self.config, NetworkPolicyConfig)
-        self._proxy.policy = NetworkPolicy(self.config, framework)
-        if self._cut:
+        await self._proxy.prepare_execution(self.config, routes)
+        if routes is None or self._cut:
             return
         # Off Linux the host proxy has a real address; allow only its listening port.
         host = ""
@@ -488,19 +456,6 @@ class DockerRuntime(ContainerRuntime):
             )
         self._cut = True
 
-    def _proxy_env(self) -> dict[str, str]:
-        assert self._proxy is not None
-        host = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
-        proxy = f"http://verifiers:{self._proxy.token}@{host}:{self._proxy.port}"
-        return {
-            "HTTP_PROXY": proxy,
-            "HTTPS_PROXY": proxy,
-            "http_proxy": proxy,
-            "https_proxy": proxy,
-            "NO_PROXY": f"localhost,127.0.0.1,{_PROXY_HOST}",
-            "no_proxy": f"localhost,127.0.0.1,{_PROXY_HOST}",
-        }
-
     async def teardown(self) -> None:
         if self._proxy is not None:
             await self._proxy.stop()
@@ -509,7 +464,13 @@ class DockerRuntime(ContainerRuntime):
     def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
         assert self._container is not None
         if self.network_restricted and self._cut:
-            env = {**env, **self._proxy_env()}
+            assert self._proxy is not None
+            env = {
+                **env,
+                **self._proxy.environment(
+                    "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
+                ),
+            }
         else:
             values = {**self._image_env, **env}
             exclusions = dict.fromkeys(
@@ -539,7 +500,12 @@ class DockerRuntime(ContainerRuntime):
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
         if self.network_restricted and self._proxy is not None:
-            env = {**env, **self._proxy_env()}
+            env = {
+                **env,
+                **self._proxy.environment(
+                    "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
+                ),
+            }
         # The engine owns the background server as a detached exec process.
         command = self._exec(self.process_env(env))
         command.insert(2, "--detach")

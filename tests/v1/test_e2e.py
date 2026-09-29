@@ -149,6 +149,16 @@ CHAT_PLACEMENTS = [
 # remote row per provider.
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
+    pytest.param(
+        "bash",
+        {"type": "apptainer", "allow": []},
+        marks=[
+            mark.bash,
+            mark.apptainer,
+            mark.skipif(shutil.which("apptainer") is None, reason="needs apptainer"),
+        ],
+        id="bash-harness-in-apptainer-framework-only",
+    ),
     *[
         pair(
             "bash",
