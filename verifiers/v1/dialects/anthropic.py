@@ -512,6 +512,11 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
+    def context_overflow_body(self, message: str) -> dict:
+        # Anthropic reports an overflow as "prompt is too long: N tokens > M maximum", and
+        # Claude Code starts its reactive compaction on that phrase.
+        return self.error_body(f"prompt is too long: {message}")
+
     def stream_keepalive(self, first: bool) -> bytes:
         # Anthropic's own keepalive; its SDKs skip it anywhere in the stream.
         return b'event: ping\ndata: {"type": "ping"}\n\n'

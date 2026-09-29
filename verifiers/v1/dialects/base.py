@@ -311,6 +311,11 @@ class Dialect(ABC, Generic[RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
+    def context_overflow_body(self, message: str) -> dict:
+        """An `error_body` for a prompt beyond the model's context window, worded the way
+        this format's clients recognize an overflow, so a harness can compact and retry."""
+        return self.error_body(message)
+
     def stream_keepalive(self, first: bool) -> bytes:
         """A keepalive for a committed SSE stream whose turn is still being produced (`first`
         on the stream's first one). A comment line by default: these clients count any bytes
