@@ -16,6 +16,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from glob import has_magic
+from ipaddress import ip_address
 from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
@@ -160,7 +161,12 @@ def provider_domains(
                 or not domain.isascii()
             ):
                 return []
-            output.append(host)
+            try:
+                ip_address(domain)
+            except ValueError:
+                output.append(host)
+            else:
+                return []
     domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
     if requested is None:
         return domains
