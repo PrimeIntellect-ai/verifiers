@@ -40,7 +40,8 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
 
-# Mirror of errors.MODEL_TRANSPORT_ERROR_EXIT_CODE; this bundled script cannot import verifiers.
+# Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
+# this bundled script cannot import verifiers.
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
