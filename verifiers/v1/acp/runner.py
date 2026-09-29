@@ -224,9 +224,6 @@ async def prompt(
         if client.stop_reason != "cancelled":
             raise
         await connection.cancel(session_id=session_id)
-    except RequestError as error:
-        detail = error.data.get("details") if isinstance(error.data, dict) else None
-        raise RuntimeError(detail or str(error)) from error
     finally:
         client.prompt_task = None
     return client.turn_result()
@@ -377,6 +374,9 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+                if isinstance(error, RequestError) and isinstance(error.data, dict):
+                    response["error"] = error.data.get("details") or str(error)
+                    response["error_data"] = error.data
                 if operation == "prompt":
                     response["result"] = asdict(session.client.turn_result())
             write_packet(sys.stdout.buffer, response)
