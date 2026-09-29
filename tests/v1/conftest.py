@@ -155,7 +155,10 @@ def _eval_config(
         runtime_cfg = dict(runtime)
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
-    retries = {"max_retries": 2, "include": ["ProviderError", "HarnessError"]}
+    retries = {
+        "max_retries": 2,
+        "include": ["ProviderError", "InterceptionError", "HarnessError"],
+    }
     env_cfg.setdefault("retries", retries)
     # Per-run caps live on the seats: resolve the env's declared roles and cap
     # each one (a test's own seat dict wins over the shared defaults).

@@ -42,6 +42,11 @@ class ProviderError(RolloutError):
         self.status_code = status_code
 
 
+MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
+"""Reserved harness exit code for an exhausted model transport failure.
+`Harness._check_result` maps it to `InterceptionError`."""
+
+
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
@@ -65,7 +70,7 @@ class TaskError(RolloutError):
 
 
 class InterceptionError(RolloutError):
-    """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
+    """Communication with the host interception server failed."""
 
 
 class TunnelError(InterceptionError):
