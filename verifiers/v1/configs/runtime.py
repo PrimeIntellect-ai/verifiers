@@ -19,7 +19,9 @@ def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:
     return parsed, (parsed.hostname or "").lower().rstrip("."), port
 
 
-def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
+def network_rule_matches(
+    rule: str, scheme: str, host: str, port: int, *, subdomains: bool = False
+) -> bool:
     """Match a network-policy host pattern or URL origin. Paths are ignored."""
     try:
         parsed, pattern, rule_port = parse_network_rule(rule)
@@ -30,9 +32,7 @@ def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
     if rule_port is not None and rule_port != port:
         return False
     host = host.lower().rstrip(".")
-    return fnmatchcase(host, pattern) or (
-        pattern.startswith("*.") and host == pattern[2:]
-    )
+    return fnmatchcase(host, pattern) or (subdomains and host.endswith(f".{pattern}"))
 
 
 def intersect_network_hosts(left: str, right: str) -> str:
@@ -45,7 +45,7 @@ def intersect_network_hosts(left: str, right: str) -> str:
             parent.startswith("*.") and not has_magic(parent[2:])
         ):
             continue
-        if fnmatchcase(child, parent) or child == parent.removeprefix("*."):
+        if fnmatchcase(child, parent):
             return child
     if all(has_magic(host) for host in (left, right)) and any(
         has_magic(host.removeprefix("*.")) for host in (left, right)
@@ -61,7 +61,8 @@ class NetworkPolicyConfig(BaseConfig):
     """Destinations allowed during execution; `*` is unrestricted and `[]` is
     framework-only."""
     block: list[str] = Field(default_factory=list)
-    """Destinations denied during execution; any `*` makes the policy framework-only."""
+    """Denied destinations; bare domains include subdomains, `*.` excludes the base
+    domain, and any `*` makes the policy framework-only."""
 
     @model_validator(mode="after")
     def validate_network_policy(self) -> Self:
@@ -82,7 +83,8 @@ class NetworkPolicyConfig(BaseConfig):
     def permits(self, scheme: str, host: str, port: int) -> bool:
         """Whether the destination is allowed by the configured egress rules."""
         return not any(
-            network_rule_matches(rule, scheme, host, port) for rule in self.block
+            network_rule_matches(rule, scheme, host, port, subdomains=True)
+            for rule in self.block
         ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
