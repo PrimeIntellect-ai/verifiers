@@ -141,7 +141,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
-    before the grading runtime is changed. Only regular files and directories travel.
+    before the grading runtime is changed. Regular files, directories, and hard links
+    to earlier regular files in the same archive can travel; symlinks cannot.
     """
     if not collected:
         return
@@ -214,6 +215,7 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
 
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            regular_files: set[PurePosixPath] = set()
             for member in tar:
                 member_path = PurePosixPath(member.name)
                 destination = PurePosixPath("/") / member_path
@@ -227,10 +229,29 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                         f"artifact member {member.name!r} is outside declared root "
                         f"{root!r}"
                     )
-                if not (member.isfile() or member.isdir()):
+                if member.islnk():
+                    # Tar deduplicates hard-linked build outputs (e.g. Cargo's build
+                    # scripts). A target must already be a regular member of this
+                    # archive, never a path supplied by the verifier image.
+                    target = PurePosixPath(member.linkname)
+                    if (
+                        not member.linkname
+                        or target.is_absolute()
+                        or ".." in target.parts
+                        or target not in regular_files
+                        or target == member_path
+                    ):
+                        raise RuntimeError(
+                            f"artifact hard link {member.name!r} has unsafe target "
+                            f"{member.linkname!r}"
+                        )
+                elif not (member.isfile() or member.isdir()):
                     raise RuntimeError(
                         f"artifact member {member.name!r} is a link or special file"
                     )
+                regular_files.discard(member_path)
+                if member.isfile():
+                    regular_files.add(member_path)
     except tarfile.TarError as exc:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
 
