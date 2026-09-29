@@ -64,19 +64,21 @@ def merge_defaults(defaults: BaseModel, raw: dict | None) -> dict:
 
 
 def _dump_set(config: BaseModel) -> dict:
-    """The fields set on `config`, as a nested dict. A sub-config the parent did not
-    set still counts when its own fields changed after construction (pydantic then
-    leaves the parent's field unmarked), but not when it only matches the field's
-    default, which may itself be built with arguments. A dumped sub-config always
-    includes its `id`/`type`, because `deep_merge` detects a switch only when both
-    sides name it."""
+    """The fields set on `config`, including extra fields, as a nested dict. A
+    sub-config the parent did not set still counts when its own fields changed after
+    construction (pydantic then leaves the parent's field unmarked), but not when it
+    only matches the field's default, which may itself be built with arguments. A
+    dumped sub-config always includes its `id`/`type`, because `deep_merge` detects a
+    switch only when both sides name it."""
     dump = {}
     for name, field in type(config).model_fields.items():
         value = getattr(config, name)
         if isinstance(value, BaseModel):
             nested = _dump_set(value)
             if name not in config.model_fields_set:
-                default = field.get_default(call_default_factory=True)
+                default = field.get_default(
+                    call_default_factory=True, validated_data=config.__dict__
+                )
                 if isinstance(default, BaseModel) and nested == _dump_set(default):
                     continue
             if nested or name in config.model_fields_set:
@@ -84,6 +86,8 @@ def _dump_set(config: BaseModel) -> dict:
                 dump[name] = {**{k: getattr(value, k) for k in keys}, **nested}
         elif name in config.model_fields_set:
             dump[name] = config.model_dump(include={name})[name]
+    # Extra fields of an `extra="allow"` model exist only because they were set.
+    dump.update(config.model_dump(include=set(config.model_extra or {})))
     return dump
 
 
