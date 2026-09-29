@@ -64,15 +64,21 @@ def merge_defaults(defaults: BaseModel, raw: dict | None) -> dict:
 
 
 def _dump_set(config: BaseModel) -> dict:
-    """The fields set on `config`, as a nested dict. A sub-config counts as set when any
-    of its own fields is set, even if it was set after construction (pydantic then
-    leaves the parent's field unmarked). A dumped sub-config always includes its
-    `id`/`type`, because `deep_merge` detects a switch only when both sides name it."""
+    """The fields set on `config`, as a nested dict. A sub-config the parent did not
+    set still counts when its own fields changed after construction (pydantic then
+    leaves the parent's field unmarked), but not when it only matches the field's
+    default, which may itself be built with arguments. A dumped sub-config always
+    includes its `id`/`type`, because `deep_merge` detects a switch only when both
+    sides name it."""
     dump = {}
-    for name in type(config).model_fields:
+    for name, field in type(config).model_fields.items():
         value = getattr(config, name)
         if isinstance(value, BaseModel):
             nested = _dump_set(value)
+            if name not in config.model_fields_set:
+                default = field.get_default(call_default_factory=True)
+                if isinstance(default, BaseModel) and nested == _dump_set(default):
+                    continue
             if nested or name in config.model_fields_set:
                 keys = [k for k in ("id", "type") if k in type(value).model_fields]
                 dump[name] = {**{k: getattr(value, k) for k in keys}, **nested}
