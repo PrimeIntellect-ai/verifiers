@@ -36,6 +36,40 @@ Keep dataset choices on `TasksetConfig`, task settings on `TaskConfig`, and save
 per-task values on `TaskData`. Implement `Taskset.load()`, not `__init__`. See
 [tasksets](tasksets.md) for dataset loading, judges, images, and custom tools.
 
+## Load an existing benchmark
+
+Load datasets in `Taskset.load()` on the evaluator. For Hugging Face datasets,
+pass the package's dataset, split, and revision settings to `load_dataset`.
+Apply benchmark-specific filters before yielding tasks; use the evaluation's
+`select` config for sampling. Preserve the source prompts, reference answers,
+image order, and scoring rules. Put extra reference fields on a `TaskData`
+subclass; they are not automatically added to the agent's messages.
+
+Set `TaskData.id` from a stable source identifier. Let Verifiers assign `idx`,
+which is the position in the loaded task stream. Pin the dataset revision and
+image reference when results must be reproducible. See
+[task identity](tasksets.md#task-identity) for stable keys across reordered data.
+
+Dataset caches and package files live on the evaluator. They do not appear in a
+remote sandbox automatically. Copy agent-visible inputs with `runtime.write`
+during `setup`, or include large assets in the task image. Copy private grader
+files only during `stage_verifier`. Include those files in the installed package,
+and read them with `importlib.resources` instead of relying on the current directory.
+The [dependency guide](runtimes.md#packaged-grader-scripts) explains which Python
+environment needs each dependency.
+
+These `prime-envs` packages show common patterns. Check their declared Verifiers
+version before adapting them; use the APIs documented here for this version.
+
+| Pattern | Example | Guide |
+| --- | --- | --- |
+| Large context files and answer files | [GraphWalks](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/long_context/graphwalks) | [File answers](tasksets.md#file-answers-and-shared-scoring-inputs) |
+| Read an answer once for several scores | [LongBench-Pro](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/long_context/longbenchpro) | [Shared scoring inputs](tasksets.md#file-answers-and-shared-scoring-inputs) |
+| Packaged Python grader | [HumanEval](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/humaneval) | [Grader dependencies](runtimes.md#packaged-grader-scripts) |
+| Tool state used by task scoring | [Wikispeedia](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/reasoning/wikispeedia) | [Stateful tools](tasksets.md#stateful-tools) |
+| Harness defaults selected by task settings | [HLE-Diamond](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/knowledge/hle_diamond) | [Role defaults](env.md#role-defaults) |
+| Scripted user messages in one rollout | [BFCL v3](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/tool_use/bfcl_v3), [SciCode](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/scicode) | [Scripted conversations](env.md#scripted-conversations) |
+
 ## Separate agent and grading sandboxes
 
 Use `IsolatedVerifierEnv` for deterministic grading in a fresh runtime. It runs

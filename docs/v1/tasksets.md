@@ -169,6 +169,48 @@ Implement `async def validate(self, runtime) -> bool | None` when a gold answer 
 can be checked without a model. See [validation and replay](debugging.md) for the
 commands and their limits.
 
+### File answers and shared scoring inputs
+
+For long inputs, write the context into the sandbox and point the prompt at its
+path. Read the answer once in `finalize` when several scores need it:
+
+```python
+class ContextData(vf.TaskData):
+    context: str
+    answer: str
+
+
+class ContextTask(vf.Task[ContextData]):
+    NEEDS_CONTAINER = True
+
+    async def setup(self, runtime: vf.Runtime) -> None:
+        await runtime.write("/workspace/context.txt", self.data.context.encode())
+
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        trace.info["answer"] = await vf.read_answer_file_or_last_reply(
+            runtime, "/workspace/answer.txt", trace
+        )
+
+    @vf.metric
+    async def answered(self, trace: vf.Trace) -> float:
+        return float(bool(trace.info["answer"]))
+
+    @vf.reward
+    async def correct(self, trace: vf.Trace) -> float:
+        return float(trace.info["answer"] == self.data.answer)
+```
+
+This task's prompt should name both paths and say that either the answer file or
+the final reply is accepted. Use `runtime.read` directly when the benchmark
+requires a file; a fallback would change its scoring rules. Save small parsed
+results or judge verdicts in `trace.info` for reuse, with distinct keys for your
+own values. Custom judge calls already write request records under `info["judge"]`.
+
+With isolated verification, `finalize` still runs in the solver sandbox. Use it
+to capture evidence; keep checks that need private tests or a clean filesystem
+in scoring methods, which receive the verifier runtime. Transfer their input
+files through `TaskData.artifacts`.
+
 ## Multimodal prompts
 
 `TaskData.prompt` accepts text, typed messages, or `None` if the caller will send
@@ -325,6 +367,52 @@ the server and `setup_task(task)` to receive task data in a server created per t
 Each update replaces the whole state, so concurrent writes can overwrite each
 other. Coordinate them when needed. To share the agent's files, set
 `colocated = true`; connecting through MCP alone does not share files.
+
+### Stateful tools
+
+Use the same state class on the task and its toolset. Decorated tool calls read
+and update that rollout's state; task scoring reads it through `trace.state`:
+
+```python
+class CounterState(vf.State):
+    calls: int = 0
+
+
+class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
+    @vf.tool
+    def count(self) -> int:
+        """Count this tool call and return the total."""
+        self.state.calls += 1
+        return self.state.calls
+
+
+class CounterTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
+    @classmethod
+    def toolsets(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
+        return [CounterToolset(config.tools)]
+
+    @vf.metric
+    async def tool_calls(self, trace: vf.Trace) -> float:
+        return float(trace.state.calls)
+```
+
+Put the toolset and its `run()` entry point in the scaffold's server module.
+Initialize per-rollout values in the task's `setup` through `trace.state`.
+Server `setup_task(task)` receives `TaskData`, not a `Task` or `Trace`; use it
+for fixed inputs such as a source page or service address. State synchronization
+wraps tool calls, so changing `self.state` in server setup does not initialize
+the rollout's state.
+
+Server startup runs `setup()`, then `setup_task(task)` for per-task servers,
+then `register(mcp)`. Shared servers skip `setup_task`; keep shared indexes and
+clients on the server, and per-rollout progress in `self.state`. If a task needs
+a service, start it and wait for readiness in task `setup` before tools use it.
+Override `register(mcp)` only for dynamic tool schemas that `@vf.tool` cannot
+describe; the default implementation registers and synchronizes decorated tools.
 
 ## Using Judges
 

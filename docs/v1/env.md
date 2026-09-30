@@ -49,10 +49,62 @@ client and the taskset's default harness. Read the role from `trace.agent.name`.
 Use `finalize(task, episode)` for scores that compare several traces. The agents'
 runtimes have already been released, so save any needed evidence in the traces.
 
-For scripted user messages, call `turn()` on `agents.solver.interaction(task)`
-inside `run`; see [Agent](agent.md). For a model playing the user, use `user-sim`.
 To exclude a role from training, set it in `setup(agents)`, for example
 `agents.judge.trainable = False`.
+
+### Role defaults
+
+Set a role's default harness on its `AgentConfig`. For example, an answer-only
+environment can use the `null` harness by default:
+
+```python
+class AnswerConfig(vf.EnvConfig):
+    agent: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"})
+
+
+class AnswerEnv(vf.Env[AnswerConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        await agents.agent.run(task)
+```
+
+Export `AnswerEnv` alongside the taskset. Declare roles with default instances,
+as above. CLI and TOML overrides merge into those defaults; a user can select
+another harness with `--env.agent.harness.id bash`. If the default depends on a
+task setting, type the config's `taskset` field with that taskset's config class
+and choose a harness in an `after` model validator only when `agent.harness`
+is unset. An explicit selection should remain under the user's control.
+
+### Scripted conversations
+
+Keep all messages in one interaction when a task has a fixed sequence of user
+turns. Store the first message in `prompt` and the rest in a task data field:
+
+```python
+class ConversationData(vf.TaskData):
+    followups: list[str] = []
+
+
+class ConversationEnv(vf.SingleAgentEnv):
+    async def run(self, task: vf.Task[ConversationData], agents: vf.Agents) -> None:
+        async with agents.agent.interaction(task) as interaction:
+            segment = await interaction.turn()
+            for message in task.data.followups:
+                if segment.terminated:
+                    break
+                segment = await interaction.turn(message)
+```
+
+Use a harness that supports conversation resume. The initial bare `turn()` uses
+the task prompt; for `prompt=None`, supply the first message yourself. Each call
+runs one harness segment, which can include several model and tool calls. A
+later call can report termination without consuming its message. Leaving the
+context ends this rollout and runs finalization and scoring, even when the
+script ends before the agent's limits. All segments share one trace and the
+same token and turn budgets.
+
+Record any results needed by task hooks in `interaction.trace.state` or
+`interaction.trace.info` before leaving the context. Use `user-sim` when a model
+should generate the user messages. See [Agent](agent.md) for interaction details.
 
 ## Isolated deterministic verification
 

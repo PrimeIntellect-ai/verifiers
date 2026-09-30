@@ -116,6 +116,53 @@ task data. For harness credentials, use `harness.forward_env = ["TOKEN_NAME"]`
 so the config stores the variable's name, not its secret value. Programs in the
 runtime can read these variables. Keep judge-only credentials on the evaluator.
 
+### Packaged grader scripts
+
+Dependencies belong where the code runs:
+
+| Code | Install dependencies in |
+| --- | --- |
+| Dataset loaders, task hooks, and scoring helpers imported by the evaluator | The environment package's `pyproject.toml`, using `uv add --project environments/<package> ...` |
+| Agent programs and commands | The agent image or task/harness setup |
+| A sandboxed Python grader | The grader image or a script with PEP 723 inline metadata |
+
+Installing a package on the evaluator does not install it in a runtime. Package
+grader source alongside the taskset and load it with `importlib.resources`.
+For isolated verification, these methods on the task prepare and run a private
+`check.py` that accepts an output path and prints JSON such as `{"score": 1.0}`:
+
+```python
+import json
+from importlib.resources import files
+
+GRADER = files("my_task").joinpath("check.py").read_bytes()
+
+
+async def stage_verifier(self, runtime: vf.Runtime) -> None:
+    await runtime.prepare_uv_script(GRADER)
+
+
+@vf.reward
+async def correct(self, runtime: vf.Runtime) -> float:
+    result = await runtime.run_uv_script(GRADER, args=["/workspace/answer.py"])
+    if result.exit_code:
+        raise RuntimeError(result.stderr)
+    return float(json.loads(result.stdout)["score"])
+```
+
+Put the grader's dependencies in its inline metadata. `prepare_uv_script`
+installs them before execution-time network restrictions start. Passing the
+same script bytes to `run_uv_script` reuses the prepared interpreter. For a
+public checker used in the solver's runtime, prepare it in task `setup` instead.
+Do not stage private tests there. If grading executes agent-written code, set
+`NEEDS_CONTAINER = True`; a Python hook or thread on the evaluator provides no
+isolation.
+
+Have the grader return a zero score for incorrect submissions, including
+candidate failures the benchmark treats as wrong answers. Reserve a nonzero
+grader exit for failures that prevent a valid grade, and raise for those so
+they remain visible as scoring errors.
+
 ## Network policies
 
 Task `network_allow` / `network_block` combine with runtime `allow` / `block`:
