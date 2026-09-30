@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self
 
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
@@ -61,6 +62,14 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.config = config
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
+        self.network_policy = (
+            None
+            if config.network_allow is None and config.network_block is None
+            else NetworkPolicyConfig(
+                allow=["*"] if config.network_allow is None else config.network_allow,
+                block=config.network_block or [],
+            )
+        )
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
@@ -74,15 +83,27 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def __iter__(self) -> Iterator[TaskT]:
         """Lazily iterate `load()` with each task's `idx` set to its position and the
-        config-layer system prompt applied, then the views' transform. The views see
-        the final task data, so a `keys` match compares the keys that traces record.
-        This is the read path; `load` is the subclass hook."""
+        config-layer system prompt and network policy applied, then the views'
+        transform. The views see the final task data, so a `keys` match compares the
+        keys that traces record. This is the read path; `load` is the subclass hook."""
         update = (
             {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
         tasks: Iterator[TaskT] = (
             task.with_data(idx=idx, **update) for idx, task in enumerate(self.load())
         )
+        if self.network_policy is not None:
+            base = self.network_policy
+
+            def restrict(task: TaskT) -> TaskT:
+                policy = base.with_task_network_policy(
+                    task.data.network_allow, task.data.network_block
+                )
+                return task.with_data(
+                    network_allow=policy.allow, network_block=policy.block
+                )
+
+            tasks = map(restrict, tasks)
         return tasks if self.transform is None else self.transform(tasks)
 
     def include(self, **match: Any) -> Self:

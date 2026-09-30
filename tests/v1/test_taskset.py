@@ -199,3 +199,23 @@ def test_select_bounds_an_infinite_taskset() -> None:
     # The shuffle comes before the limit, so the limit cannot bound it.
     with pytest.raises(ValueError, match="infinite"):
         infinite().select(vf.SelectConfig(shuffle=True, limit=5))
+
+
+# Network policy
+
+
+def policy(task) -> tuple[list[str], list[str]]:
+    return task.data.network_allow, task.data.network_block
+
+
+def test_taskset_network_policy_composes_with_each_task() -> None:
+    assert policy(next(iter(finite()))) == (["*"], [])
+    blocked = FiniteTaskset(vf.TasksetConfig(network_allow=[]))
+    assert policy(next(iter(blocked))) == ([], ["*"])
+    denied = FiniteTaskset(vf.TasksetConfig(network_block=["example.com"]))
+    assert policy(next(iter(denied))) == (["*"], ["example.com"])
+    # `["*"]` adds no restriction, so a task's own allowlist stands.
+    open_ = FiniteTaskset(vf.TasksetConfig(network_allow=["*"]))
+    task = next(iter(open_)).with_data(network_allow=["pypi.org"])
+    assert policy(next(iter(open_.include(idx=[0])))) == (["*"], [])
+    assert policy(task) == (["pypi.org"], [])

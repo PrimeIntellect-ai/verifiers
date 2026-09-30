@@ -51,6 +51,19 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
   created instead of opening a new one — this is how a hosted evaluation's sandbox runs
   the same command; it is not something a local run sets by hand
 
+## Network access
+
+An eval gives its boxes no internet: unless the config says otherwise, every task runs with `env.taskset.network_allow = []`, so only the framework's own routes (the model endpoint, tool servers) are reachable. The default applies when every seat's runtime can enforce a policy (`prime`, `docker`, `modal`) and none of them already restricts one; the host `subprocess` runtime has no policy and runs unrestricted. Set the taskset's policy to change it:
+
+```toml
+[env.taskset]
+network_allow = ["*"]
+```
+
+`network_allow = ["pypi.org"]` limits the boxes to an allowlist, and `network_block = ["example.com"]` denies a list instead; a task's own policy composes with these (restrictions intersect). Tasksets whose tasks need the internet declare `network_allow = ["*"]` on their config class themselves (see [Data and configuration](tasksets.md#data-and-configuration)).
+
+Whenever the resolved policy restricts egress, the model's system prompt ends with a note that says so — that internet access is disabled or limited to which destinations, that this is intentional, and that it must not try to work around it. Turn the note off per seat with `--env.agent.no-network-notice` (`network_notice = false` under `[env.agent]`).
+
 ## Resuming evaluations
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.

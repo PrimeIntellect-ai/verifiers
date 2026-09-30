@@ -110,6 +110,13 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
+Every taskset also takes `network_allow` and `network_block`, the execution-time egress every task of the taskset gets. They compose with each task's own `TaskData.network_allow`/`network_block` the way a task's policy composes with the runtime's: restrictions intersect, so `network_allow = []` allows no destination, `network_allow = ["*"]` adds no restriction, and both left unset keep each task's own policy. A taskset whose tasks depend on the internet (for example, one that asks the model to research a question with web search) declares that on its config class, so an eval's block-by-default (see [Evaluation](evaluation.md#network-access)) does not apply to it:
+
+```python
+class ResearchConfig(vf.TasksetConfig):
+    network_allow: list[str] | None = ["*"]
+```
+
 ## Task identity
 
 A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.
