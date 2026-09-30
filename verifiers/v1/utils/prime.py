@@ -7,8 +7,9 @@ def prime_config() -> Config:
 
 
 def load_prime_config() -> dict:
-    """The active Prime CLI config values without `PRIME_*` env overrides."""
-    return prime_config().config
+    """The active Prime CLI config values without `PRIME_*` env overrides. Unset
+    values are dropped, so `.get(key, default)` falls back to the default."""
+    return {k: v for k, v in prime_config().config.items() if v is not None}
 
 
 def ensure_prime_auth() -> None:

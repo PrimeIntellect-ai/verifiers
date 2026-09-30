@@ -38,21 +38,18 @@ class BaseClientConfig(BaseConfig):
     def apply_prime_config(self) -> "BaseClientConfig":
         if self.api_key_var != "PRIME_API_KEY":
             return self
-        config = prime_config()
-        prime_base_url = (
-            os.environ.get("PRIME_INFERENCE_URL")
-            or config.config.get("inference_url")
-            or DEFAULT_PRIME_INFERENCE_URL
-        )
+        # Read the Prime config only when a value comes from it, so a broken
+        # directory pin cannot fail a config that points somewhere else.
         if "base_url" not in self.model_fields_set:
-            self.base_url = prime_base_url
-        host = urlparse(self.base_url).hostname or ""
-        if host != PRIME_INFERENCE_HOST and not host.endswith(
-            f".{PRIME_INFERENCE_HOST}"
-        ):
+            self.base_url = (
+                os.environ.get("PRIME_INFERENCE_URL")
+                or prime_config().config.get("inference_url")
+                or DEFAULT_PRIME_INFERENCE_URL
+            )
+        if not _is_prime_inference(self.base_url):
             return self
         # `Config.team_id` honors $PRIME_TEAM_ID, where empty means the personal account.
-        team_id = config.team_id
+        team_id = prime_config().team_id
         if team_id:
             self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
@@ -95,11 +92,15 @@ def resolve_api_key(config: BaseClientConfig) -> str:
     """The API key for `config`: its env var, falling back to the Prime CLI config for a
     `PRIME_API_KEY`-keyed pinference endpoint. `"EMPTY"` when unset."""
     api_key = os.environ.get(config.api_key_var)
-    host = urlparse(config.base_url).hostname or ""
     if (
         not api_key
         and config.api_key_var == "PRIME_API_KEY"
-        and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
+        and _is_prime_inference(config.base_url)
     ):
         api_key = prime_config().api_key
     return api_key or "EMPTY"
+
+
+def _is_prime_inference(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}")
