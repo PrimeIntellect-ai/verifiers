@@ -2,6 +2,9 @@
 
 A taskset loads tasks and defines how to score them.
 
+For a complete package with separate agent and grading sandboxes, start with
+[building environments](building-environments.md).
+
 Create a package with:
 
 ```bash

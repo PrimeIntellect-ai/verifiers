@@ -131,8 +131,10 @@ Python hooks on the evaluator or tools in separate runtimes.
 
 For grading in a fresh container, use `isolated-verifier`, list outputs in
 `TaskData.artifacts`, and prepare private tests in `stage_verifier`. Do not create
-a second sandbox manager inside a reward. See [runtimes](../../docs/v1/runtimes.md)
-and [isolated verification](../../docs/v1/env.md#isolated-deterministic-verification).
+a second sandbox manager inside a reward. See the
+[building guide](../../docs/v1/building-environments.md) for a complete example,
+artifact transfer, independent grader settings, and validation limits. Check the
+[runtime matrix](../../docs/v1/runtimes.md#capability-matrix) before choosing a backend.
 
 ## Add tools only when needed
 

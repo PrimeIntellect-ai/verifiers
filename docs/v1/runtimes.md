@@ -7,13 +7,47 @@ Python hooks such as task `setup` run on the evaluator. Use their `runtime`
 parameter to read files or run commands in the sandbox. A plain
 `Path(...).read_text()` reads a file on the evaluator's machine.
 
-| Runtime | Use | Network restrictions |
-| --- | --- | --- |
-| `subprocess` | Local development with `bash` or `null`; commands can access the host | None |
-| `docker` / `podman` | Local containers | `allow` and `block` |
-| `prime` | Remote sandboxes | `allow` and `block` by host |
-| `modal` | Remote sandboxes; needs the `modal` extra and Modal credentials | Domain allowlists or `allow = []`; no deny lists |
-| `apptainer` | Unprivileged containers on an HPC host | None; shares the host network |
+## Capability matrix
+
+These are the features exposed by the Verifiers runtime adapters. All runtimes
+support commands, file reads and writes, background services, and live processes.
+
+| Capability | `subprocess` | `docker` | `podman` | `apptainer` | `prime` | `modal` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Runs on | Evaluator host | Local container engine | Local container engine | Apptainer host | Remote sandbox | Remote sandbox |
+| Task image and container-required tasks | No | Yes | Yes | Yes | Yes | Yes |
+| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes |
+| Enforced `disk` size | No | No | No | No | Yes | No |
+| GPU selection | No setting | Count; checks requested type | NVIDIA CDI device count | All accessible NVIDIA GPUs | Type and count | Type and count; no GPUs with `vm = true` |
+| Execution-time allowlist | No | Yes | Yes | No | Hosts | HTTPS domains on port 443 |
+| Execution-time deny list | No | Yes | Yes | No | Hosts | No |
+| Framework-only networking (`allow = []`) | No | Yes | Yes | No | Yes | Yes |
+| Artifact transfer and isolated grading | No | Yes | Yes | Yes | Yes | Yes |
+| Harbor Docker Compose | No | Yes, with conditions below | No | No | Yes, in a VM | Yes, in an experimental VM |
+
+Local CPU, memory, and GPU settings require support from the host and container
+engine. Docker GPU selection needs the NVIDIA container toolkit; Podman needs
+NVIDIA CDI devices. Apptainer passes CPU and memory flags to its CLI, and `gpu`
+enables `--nv`; its GPU count and type are not enforced. Local containers and
+Modal accept `disk` as an advisory request.
+
+`subprocess` can access the evaluator's files, processes, devices, and network.
+Apptainer also shares the host network. Tasks that require network restrictions
+are rejected on these two runtimes. Use `subprocess` for trusted local development
+with a compatible harness, such as `bash` or `null`.
+
+Modal requires the `modal` extra and Modal credentials. Its ordinary sandboxes
+support GPU requests; its VM backend is CPU-only. Prime uses Prime credentials.
+GPU availability depends on the provider or host.
+
+[Harbor Compose](harbor.md#docker-compose) supports CPU tasks on Docker, Prime,
+and Modal. Local Docker requires unrestricted networking and `--env.trust-compose`.
+Modal requires access to its experimental VM backend and `network_access = true`.
+Ordinary runtime networking support does not imply the same support for Compose.
+
+Harness capabilities such as MCP, image input, and conversation resume are
+separate; see [harnesses](harnesses.md). For separate agent and grading sandboxes,
+see [building environments](building-environments.md#separate-agent-and-grading-sandboxes).
 
 Set `Task.NEEDS_CONTAINER = True` when a task needs its own filesystem or runs
 untrusted code. Setting `TaskData.image` also requires a container. Most
@@ -41,7 +75,7 @@ Non-default runtime settings win for those fields.
 CPU is in cores, memory and disk in GB, and timeouts in seconds. Prime enforces
 disk limits; local containers and Modal treat them as requests only.
 
-Limits under `env.agent` apply to the whole agent run: `max_turns`,
+Limits under `env.agent` apply to each agent rollout: `max_turns`,
 `max_input_tokens`, `max_output_tokens`, and `max_total_tokens`.
 `sampling.max_tokens` limits each model response. Token limits are checked
 between turns, so the turn that exceeds a limit can finish.
