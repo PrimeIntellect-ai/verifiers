@@ -211,16 +211,15 @@ def mcp_servers(config: dict, capabilities: Any) -> list:
                 f"ACP agent does not support MCP transport {kind!r} for {name!r}"
             )
         cls = SseMcpServer if kind == "sse" else HttpMcpServer
-        headers = {
-            **spec.get("headers", {}),
-            **config.get("mcp_headers", {}).get(name, {}),
-        }
         servers.append(
             cls(
                 type=capability,
                 name=name,
                 url=spec["url"],
-                headers=[HttpHeader(name=k, value=v) for k, v in headers.items()],
+                headers=[
+                    HttpHeader(name=k, value=v)
+                    for k, v in spec.get("headers", {}).items()
+                ],
             )
         )
     return servers

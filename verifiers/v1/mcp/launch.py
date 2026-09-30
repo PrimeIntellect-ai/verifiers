@@ -41,11 +41,19 @@ logger = logging.getLogger(__name__)
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
 import sys, time, urllib.error, urllib.request
+from pathlib import Path
 for _ in range(180):
     try:
-        urllib.request.urlopen(sys.argv[1], timeout=2); sys.exit(0)
+        port = int(Path(sys.argv[1]).read_text()); break
+    except (OSError, ValueError):
+        time.sleep(1)
+else:
+    sys.exit(1)
+for _ in range(180):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/mcp", timeout=2); print(port); sys.exit(0)
     except urllib.error.HTTPError:
-        sys.exit(0)
+        print(port); sys.exit(0)
     except Exception:
         time.sleep(1)
 sys.exit(1)
@@ -129,17 +137,6 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     return ""
 
 
-async def _read_back_port(runtime: Runtime, path: str) -> int:
-    """Poll the server's port file until the server writes it."""
-    for _ in range(180):
-        with contextlib.suppress(Exception):
-            data = (await runtime.read(path)).decode().strip()
-            if data.isdigit():
-                return int(data)
-        await asyncio.sleep(1)
-    raise ToolsetError(f"server did not report its port at {path} in its runtime")
-
-
 async def serve_in_runtime(
     server: ServerBase,
     runtime: Runtime,
@@ -151,8 +148,8 @@ async def serve_in_runtime(
 ) -> int:
     """Start a server and return its bound port.
 
-    Exposed remote servers must use the runtime's forwarded port. Local or colocated servers let
-    the OS choose and report the result through a file. With a state channel, the server fetches
+    Exposed remote servers use the runtime's forwarded port; otherwise the OS chooses.
+    Both report their port through a file. With a state channel, the server fetches
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
     # A shared server has a private service secret but no fixed state URL. Set
@@ -169,12 +166,9 @@ async def serve_in_runtime(
     if exposed and runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
-    port_file = None
+    env["MCP_PORT_FILE"] = f"/tmp/vf-port-{uuid.uuid4().hex}"
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
-    else:
-        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
-        env["MCP_PORT_FILE"] = port_file
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
@@ -185,21 +179,12 @@ async def serve_in_runtime(
         ]
     log = f"vf_tool_{server.server_name}.log"
     await runtime.run_background(command, env, log)
-    if fixed is not None:
-        port = fixed
-    else:
-        try:
-            port = await _read_back_port(runtime, port_file)
-        except ToolsetError as e:
-            raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
-    probe = await runtime.run(
-        [python, "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
-    )
+    probe = await runtime.run([python, "-c", _PROBE, env["MCP_PORT_FILE"]], {})
     if probe.exit_code != 0:
         raise ToolsetError(
             f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
         )
-    return port
+    return int(probe.stdout.strip())
 
 
 @contextlib.asynccontextmanager

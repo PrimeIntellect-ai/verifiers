@@ -86,12 +86,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         }
         if ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
-        servers = {name: dict(server) for name, server in data.mcp_servers.items()}
-        for name, headers in self.config.resolve_mcp_headers(servers).items():
-            servers[name]["headers"] = {**servers[name].get("headers", {}), **headers}
         config = {
             "model": model,
-            "mcp_servers": servers,
+            "mcp_servers": data.mcp_servers,
             # Allow the tool timeout for discovery before Hermes snapshots tools.
             "mcp_discovery_timeout": self.config.tool_timeout,
             # The ACP client already approves tool requests. Avoid routing Hermes'

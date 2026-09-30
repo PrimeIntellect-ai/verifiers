@@ -281,16 +281,13 @@ class Rollout:
             )
             if duplicates := urls.keys() & self.task.data.mcp_servers.keys():
                 raise ToolsetError(f"duplicate MCP server names: {sorted(duplicates)}")
-            mcp_servers = {
-                **{
+            mcp_servers = self.harness.config.resolve_mcp_servers(
+                {
                     name: {"transport": "streamable-http", "url": url}
                     for name, url in urls.items()
-                },
-                **{
-                    name: dict(server)
-                    for name, server in self.task.data.mcp_servers.items()
-                },
-            }
+                }
+                | self.task.data.mcp_servers
+            )
             for server in mcp_servers.values():
                 if server.get("command"):
                     server["env"] = {**runtime.env, **server.get("env", {})}
