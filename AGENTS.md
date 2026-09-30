@@ -20,7 +20,15 @@
 
 ## Skills
 
-- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), `release` (publish stable versions), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
+Use the bundled skills in `skills/` before doing the work by hand:
+
+- `create-environments`: build tasksets, environments, and harnesses.
+- `evaluate-environments`: configure and run evaluations.
+- `debug-environments`: diagnose setup, execution, and scoring failures.
+- `audit-envs`: check task quality, grading, and reward shortcuts.
+- `gepa`: optimize system prompts and compare them with a baseline.
+- `release`: publish stable versions.
+- `brainstorm`: plan ideas and experiments.
 
 ## Testing
 

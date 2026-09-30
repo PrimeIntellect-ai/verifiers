@@ -1,36 +1,36 @@
 # Overview
 
-verifiers is a framework for defining tasks, running agents and harnesses, scoring them on set tasks, and using those for evaluations and reinforcement learning.
+verifiers runs agents on tasks and scores their work. Use it to evaluate models or train them with reinforcement learning.
 
-The following concepts are important when creating or running tasksets, be it for evals or training:
+These are the main pieces:
 
 ## Environment Hub
 
-The [Environment Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) is Prime Intellect's collection of user-created tasksets which are installable and ready to use with verifiers.
+The [Environment Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) is a collection of tasksets you can install and run with verifiers.
 
 ## Taskset
 
-A taskset is the collection and loader for the work to evaluate or train on. Each task combines a serializable `TaskData` row (prompt, files, references, resource requirements) with its task class's behavior (lifecycle hooks, tools, metrics, and rewards). The taskset's `load()` method constructs those objects and declares their task/config types through `Taskset[TaskT, ConfigT]`.
+A taskset loads tasks with its `load()` method. Each task has data, such as a prompt and reference answer, and code to set it up and score the result. `TaskData` holds the data; `Task` holds the code.
 
 ## Harness
 
-A harness is the program the model is run in, e.g. Claude Code, Codex or mini-swe-agent.
+A harness runs the model and its tools. Examples include Claude Code, Codex, and mini-swe-agent.
 
 ## Agent
 
-An Agent is the combination of harness × model × runtime policy which produces a `Trace`.
+An agent combines a model, a harness, and a runtime. The runtime is where the program runs, such as a local container or a remote sandbox. One agent run is called a **rollout** and produces a trace.
 
 ## Environment
 
-An environment has one or multiple agents and defines the control flow among them.
+An environment decides which agents run and in what order. Their traces form one **episode**. The default environment runs one agent; others can run several attempts, a judge, or a simulated user.
 
 ## Toolset
 
-A set of tools defined by the taskset that are installed as MCP servers into the harnesses that support them.
+A toolset adds task-specific tools to the harness through MCP. The harness must support MCP to use them.
 
 ## Trace
 
-A trace records the message graph, rewards, metrics, errors, and one per-call record (`ModelCall`) per provider exchange (its model, sampling, finish reason, usage, timing, and any error), etc. When using verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers).
+A trace records the agent's messages, tool calls, scores, and errors. It also records each model call's settings, token usage, and timing. Training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) adds tokens and log probabilities using [renderers](https://github.com/PrimeIntellect-ai/renderers).
 
 ## Documentation
 
@@ -39,6 +39,9 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
+- [Runtimes](runtimes.md) — Containers, files, resources, and network access
+- [Validation and trace inspection](debugging.md) — Check setup, diagnose failures, and re-score saved runs
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
 - [Env](env.md) — How to build multi-agent environments
+- [GEPA](gepa.md) — Optimize a taskset's system prompt

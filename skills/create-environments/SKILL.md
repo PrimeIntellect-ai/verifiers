@@ -1,252 +1,219 @@
 ---
 name: create-environments
-description: Create or migrate native verifiers.v1 taskset, environment, and harness packages. Use to build a taskset, port a benchmark, add task tools, script or model a user, build a multi-agent environment, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
+description: Build verifiers.v1 tasksets, environments, and harnesses. Use to add a benchmark, task tools, a simulated user, several cooperating agents, or a custom agent program.
 ---
 
-# Create Tasksets
+# Create Environments
 
-## Goal
+Build an installable package that runs with verifiers. Read the current code
+before copying an external example: a `prime-envs` package may use a different
+Verifiers version.
 
-Create native v1 tasksets that are installable and runnable with verifiers.
+## Choose what to build
 
-To start, ALWAYS use the CLI to create a package with the correct files:
+Use the user's requirements and the source benchmark to establish:
+
+- Which dataset, split, prompts, and reference answers to use.
+- How to score answers, including partial credit and failures.
+- Which tools the task needs beyond those already in the harness.
+- Whether the task needs a container, files, services, or network restrictions.
+- Whether it needs several agents or follow-up user messages.
+
+For a benchmark port, preserve the source prompts, task selection, allowed tools,
+and scoring behavior. Ask about missing choices that would change the benchmark;
+link the source that explains the choice.
+
+Use built-in tasksets, judges, environments, and harnesses where possible.
+`HarborTaskset` handles Harbor datasets with a small wrapper. It also needs
+`HarborEnv` exported from the package for Compose and separate verification.
+See [Harbor](../../docs/v1/harbor.md).
+
+## Create the package
+
+Always start with the CLI:
 
 ```bash
 uv run vf-init my-task-v1
 ```
 
-Add only the components the contract needs:
+Add `-T` for custom MCP tools or `-H` for a custom harness. Prefer a built-in
+harness unless the task needs a different agent program.
 
-```bash
-uv run vf-init my-task-v1 -T      # task toolset
-uv run vf-init my-agent-v1 -H     # custom reusable harness
-```
+Export one `vf.Taskset` class through the package's `__all__`. Also export a
+`vf.Env` or `vf.Harness` class if needed. The loader reads these classes and their
+config types; do not add `load_environment()`, `load_taskset()`, or
+`load_harness()` functions.
 
-Often, the user does not want nor need a custom reusable harness, as verifiers offer a lot of built-in ones.
+## Write the taskset
 
-## Re-use existing abstractions first
-
-For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allows the creation of Harbor-based tasksets within a few LoC (also see docs/v1/harbor.md).
-
-## Custom task images
-
-When a task needs a custom container image (e.g. a Harbor task whose `task.toml` does not have `docker_image`), you can build and publish it with `prime images push` from the Prime CLI ([Documentation](https://docs.primeintellect.ai/sandboxes/images)). This builds in the cloud — no local Docker needed — and prints the full image reference to use as the task's `image` field.
-
-Use the naming convention `<env>.x86.<task>:latest` for the image name (e.g. `abc.x86.xyz:latest`), where `<env>` is the taskset name and `<task>` is the individual task.
-
-## Define the needed values first
-
-Before starting with the implementation, think about the following things:
-
-- What is the dataset about, which fields does it have?
-- Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
-- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (an interaction loop in `run()`), not a server.
-- Does one rollout involve more than one agent run (attempts, a judge, game players)? Then the package also exports an `Env` subclass — or an existing bundled env (`--env.id best-of-n|agentic-judge|user-sim`) already covers it.
-- Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
-- How should the tasks be scored, is a judge needed?
-
-For a port, map source behavior one-to-one: rows, the exact prompts verbatim, harness restrictions, score extraction and exceptions.
-
-Ask the user about unresolved semantic choices instead of inventing them. Present your evidence (both in code and in your questions) by commenting and linking to the exact source in the paper, the GitHub repo etc.
-
-## Native package contract
-
-A package exports one `vf.Taskset` subclass — and optionally one `vf.Env` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run vf-init`.
-
-Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader resolves classes and their config types from `__all__` and generic bases.
-
-Use:
-
-```python
-import verifiers.v1 as vf
-```
-
-Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`, or `ToolEnv` objects into a v1 taskset. Exclusively use functions, classes and objects from `verifiers.v1`.
-
-## Minimal implementation
+Use `import verifiers.v1 as vf` and its typed interfaces:
 
 ```python
 import verifiers.v1 as vf
 
 
-# One row's serializable data. Add references or other task-specific fields here.
 class AdditionData(vf.TaskData):
     answer: int
 
 
-# The behavior for that row. Decorated methods may request only the values they need;
-# `trace` contains the full message graph and `self.data` is this task's row.
 class AdditionTask(vf.Task[AdditionData]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
         return float(trace.last_reply == str(self.data.answer))
 
 
-# The taskset is the loader. Its config can be the empty base config.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
     def load(self) -> list[AdditionTask]:
-        # Construct one behavior object around each data row and the shared task config.
         return [
             AdditionTask(
-                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                AdditionData(prompt=f"What is {i} + {i}?", answer=2 * i),
                 self.config.task,
             )
             for i in range(100)
         ]
 
 
-# Export the taskset class so the v1 loader can discover it.
 __all__ = ["AdditionTaskset"]
 ```
 
-Do not override `Taskset.__init__`. Implement `load()` on the taskset and put hooks and scoring on the task.
+Keep each part small:
 
-## Ownership rules
+| Part | What belongs there |
+| --- | --- |
+| `TaskData` | One task's prompt, answers, image, workdir, resource requests, and other saved data. No live clients or runtime objects. |
+| `Task` | Setup, finalization, validation, tools, stop conditions, and scoring. |
+| `TaskConfig` | Settings used during a task, accessed through `self.config`. |
+| `Taskset` | `load()` and tools shared by a worker. Implement `load()`, not `__init__`. |
+| `TasksetConfig` | Dataset, split, seed, and selection settings. Store task settings under `task`. |
+| `Harness` | Installing and running the agent program. Use `setup()`, not `__init__`. |
+| `Env` | Which agents run, their interactions, and scores that compare several traces. |
 
-`TaskData` owns the immutable, serializable values for one row:
+See [tasksets](../../docs/v1/tasksets.md) for config, generators, image prompts,
+scoring helpers, and hooks. Preserve source image order and use typed message
+content; converting images to text loses them. Check the model and harness
+support image input.
 
-- prompts and optional system prompts;
-- reference answers or other ground truth;
-- container image, workdir, resources, and timeout requests;
-- any additional typed fields scoring or a user/tool server needs.
+## Set up and score the task
 
-Only `TaskData` is stored on the trace. Do not put live clients, runtime handles etc. here.
+The usual order is task `setup`, harness setup, agent execution, task `finalize`,
+then scoring. Use `finalize` to save outputs before the runtime is removed.
 
-`Task` owns the behavior applied to that row:
+- Prefer checks against the actual answer or output files.
+- Reuse the built-in scoring helpers. For coding tasks, capture the patch before tests change the repository.
+- Use a model judge only when code cannot decide correctness. Start with `ReferenceJudgeConfig` or `RubricJudgeConfig`; subclass `Judge` for a custom prompt or response format.
+- Judge settings are separate from the evaluated model's settings. Pass `trace=trace` to custom judge calls to save their requests, verdicts, and usage.
+- Rewards sum `score * weight`. Metrics record measurements without adding to reward. A scoring method can return a dictionary of named scores.
+- Metrics run first, then rewards, then configured judges. Methods in each group run concurrently. Prepare shared inputs in `finalize`.
+- Raise an exception when setup or scoring fails. Do not turn a failed check into a zero reward.
 
-- `setup`, `finalize`, and model-free `validate` hooks;
-- stop conditions, metrics, and rewards;
-- task-scoped tool declarations;
-- task-facing configuration read from `self.config`.
+Store evidence needed after the run in `trace.info`, using JSON-compatible
+values. Use a typed `vf.State` subclass for temporary state. It is not saved.
+Implement `Task.validate(runtime)` when a known answer or solution can be checked
+without a model.
 
-`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.toolsets` may construct task-agnostic servers shared by one environment worker's rollouts.
+`vf-validate` also checks the untouched task: setup, finalization, then scoring
+without an agent. Make sure correct work passes and an untouched task does not.
+This check can call configured judges.
 
-The harness owns:
+## Use the runtime
 
-- the reusable agent or chat program;
-- how that program is provisioned and launched;
-- wiring model requests to the supplied interception endpoint and secret;
-- harness-generic execution metrics.
+Set `TaskData.image` to a pullable image with the task's dependencies. Ordinary
+runtimes do not build task Dockerfiles; Prime prepares and caches pullable images
+on first use. Set `Task.NEEDS_CONTAINER = True` for tasks that need isolated files
+or run untrusted code.
 
-Runtime config chooses where code executes. Task hooks should use the `vf.Runtime` interface they receive instead of assuming Docker-, Prime-, Modal-, or host-specific implementation details.
+Use `runtime.run`, `read`, and `write` to work inside the sandbox. Plain Python
+file operations run on the evaluator. Check command exit codes.
 
-## Scoring rules
+Set `network_allow` and `network_block` when the task restricts network access.
+Restrictions start after setup and apply inside the runtime. They do not cover
+Python hooks on the evaluator or tools in separate runtimes.
 
-- Prefer deterministic verification grounded in the task's actual artifact or answer.
-- Use an LLM judge only when semantic judgment is unavoidable.
-- Metrics are for observability and do not contribute to reward, but are useful. Use them deliberately and appropriately!
-- Judgement that compares the sibling traces of one episode (best-of-n selection, zero-sum payoffs) lives on `Env.finalize(task, episode)` — attach via `trace.record_reward`/`record_metric`, in program order; no live runtime there.
-- Raise ordinary Python exceptions from rollout hooks and scoring. The rollout records them as `TaskError`.
+For grading in a fresh container, use `isolated-verifier`, list outputs in
+`TaskData.artifacts`, and prepare private tests in `stage_verifier`. Do not create
+a second sandbox manager inside a reward. See [runtimes](../../docs/v1/runtimes.md)
+and [isolated verification](../../docs/v1/env.md#isolated-deterministic-verification).
 
-## Validation and lifecycle
+## Add tools only when needed
 
-Implement `Task.validate(self, runtime)` whenever ground truth can be checked without a model. `vf-validate` also runs a noop check that scores each task untouched (`setup`, `finalize`, then rewards, with no agent) and flags any that already pass, so scoring must hold up on unmodified state. Keep rollout work on the task:
+Use `vf.Toolset` and `@vf.tool` for task-specific MCP tools. The harness must
+support MCP. Start with `vf-init -T` and keep its module entry point:
+`if __name__ == "__main__": YourToolset.run()`.
 
-- `setup(self, trace, runtime)` — prepare files or services.
-- harness execution — let the agent act.
-- `finalize(self, trace, runtime)` — capture artifacts needed for scoring.
-- `@vf.reward` / `@vf.metric` — evaluate while the runtime is still live.
+Choose where the tool runs and how long it lives:
 
-Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters and live coordination in a typed `vf.State` subclass.
+- `Task.toolsets` with `ToolsetConfig`: one server per rollout. By default it runs in a host subprocess.
+- `colocated = true`: run that task server inside the agent's runtime to share files and processes.
+- `Taskset.toolsets` with `SharedToolsetConfig`: share a server across a worker's rollouts.
+- `url`: connect to an existing streamable-HTTP MCP service.
 
-## Tools
+Use `setup()` to prepare the server and `setup_task(task)` to receive task data
+in a server created per task. See [tools](../../docs/v1/tasksets.md#adding-tools).
 
-Some tasksets require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
+## Add agents or user messages
 
-```python
-class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "search"
+Check `best-of-n`, `agentic-judge`, and `user-sim` before writing a custom `Env`.
+For a custom environment:
 
-    @vf.tool
-    async def query(self, text: str) -> list[str]:
-        # Tool docstrings are exposed to the model as the MCP tool description.
-        """Search the task corpus."""
-        return []
+1. Add an `AgentConfig` field for each role on `EnvConfig`.
+2. Implement `run(task, agents)`. Completed agent runs join the episode automatically; return nothing.
+3. Use `setup(agents)` to set role properties, such as `agents.judge.trainable = False`.
+4. Use `finalize(task, episode)` to compare traces and record scores. Agent runtimes are already gone, so use saved evidence and identify roles with `trace.agent.name`.
 
+Role settings use `env.<role>.*`. Unset models and clients use the evaluation's
+settings; unset harnesses use the taskset's default.
 
-class SearchTaskConfig(vf.TaskConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+For scripted users or games, call `agents.solver.interaction(task)` inside
+`run()` and send messages with `turn()`. A task with a prompt starts with bare
+`turn()`; a task with `prompt=None` starts with `turn(message)`. One turn can
+include several model and tool calls. To keep a scenario hidden from the
+assistant, pass a task copy with `prompt=None` and keep scoring data in other
+fields. For a model playing the user, prefer `user-sim`.
 
-
-class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
-    # Constructing on Task.toolsets gives it one-server-per-rollout scope.
-    @classmethod
-    def toolsets(cls, config: SearchTaskConfig) -> list[vf.Toolset]:
-        return [SearchToolset(config.tools)]
-
-
-if __name__ == "__main__":
-    SearchToolset.run()
-```
-
-Choose placement from the tool's lifetime and filesystem needs:
-
-- **Task-scoped, own runtime:** construct the server in `Task.toolsets` with a `vf.ToolsetConfig` field. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.
-- **Task-scoped, colocated:** set `colocated = true` on its `ToolsetConfig` when the tool must see the harness's filesystem or processes. It still launches once per rollout.
-- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put its config field directly on `TasksetConfig`, and construct the server in `Taskset.toolsets`.
-- **Existing remote service:** set `url` on the toolset's config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
-
-## User simulation
-
-There is one mechanism: the interaction — `agents.<name>.interaction(task)` in the env's `run()`; whoever calls `turn()` is the run's user, one harness segment per turn (the program yields, the caller answers, the next segment resumes the exchange with the answer). A prompt-less task is opened by the first `turn(message)`; a prompted task speaks first (bare `turn()`); to hide a scenario prompt from the wire, hand the interaction a task copy with `prompt=None` and keep scoring on non-prompt fields (the user-sim shape). There is no user server to declare or place; who computes the turns is env control flow:
-
-- **Scripted user** (replay pre-generated turns, step a game engine): a plain loop inside an `Env.run()` override — see `environments/alphabet_sort` or the bundled `textarena` taskset.
-- **Modeled user** (an LLM playing the user): another agent role, driven live via `agents.user.interaction(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
-
-The harness running the *assistant* must be able to resume an exchange: transcript-backed resume (`SUPPORTS_RESUME`) covers the default relaunch-on-the-conversation (`bash`, `null`), and a harness with its own session state overrides `resume()` natively (`codex`).
-
-## Multi-agent environments
-
-When a desired interaction pattern is more than one agent run, export an `Environment` subclass along with the taskset: declare each agent as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `Environment[YourConfig]`, read as `self.config`, addressed as `--env.<agent>.*`) — the field name is the agent's name, the only naming site, and per-run caps (turns, tokens, stage timeouts, retries) are agent fields. A declared pin is its author default; an unpinned agent runs the taskset's default harness, and its model context defaults to the run's own. Task x agent fit validates per run, on the task each agent actually receives (an env-minted task carries its own `tools`/`NEEDS_CONTAINER`, so a bare verdict task pairs with any taskset). Then write `run(task, agents)` (imperative control flow, returning nothing — every finished run joins the episode automatically, stamped with its standing), and optionally `setup(agents)` (env-hardcoded standing, e.g. `agents.judge.trainable = False`) and `finalize(task, episode)` (sibling-dependent judgement over `episode.traces`, via `record_reward`/`record_metric`; `trace.agent_name` names each agent). Before writing one, check the bundled envs (`--env.id best-of-n | agentic-judge`) and the reference implementation (`environments/code_golf`). See docs/v1/env.md.
+The assistant's harness must support resuming the conversation. `bash` and
+`null` can restart from the transcript; programs with saved sessions can resume
+those instead. See [Agent](../../docs/v1/agent.md) and [Env](../../docs/v1/env.md).
 
 ## Custom harnesses
 
-Choose a built-in first (which you can find under `verifiers.v1.harnesses`). Add a custom harness only when desired or not currently implemented.
+Every model request must use the supplied `endpoint` and `secret`, so verifiers
+can record it. Reuse `vf.ACPHarness` for programs that use ACP.
 
-Its `launch()` **must** point every model request at the provided `endpoint` with `secret` (to work with the InterceptionServer); direct provider calls bypass trace capture and thus would break downstream usage.
+Set capability flags only for behavior the harness implements:
+`SUPPORTS_MCP`, `SUPPORTS_RESUME`, `APPENDS_SYSTEM_PROMPT`, `SUPPORTS_SKILLS`, and
+`SUPPORTS_TOOL_INTERCEPTION`. Flags alone do not implement these features.
 
-Advertise capabilities accurately:
-
-- `SUPPORTS_MCP`
-- `SUPPORTS_RESUME`
-- `APPENDS_SYSTEM_PROMPT`
-
-Return the `vf.ProgramResult` from `runtime.run_program()` or `runtime.run_uv_script()`. Do not manually build trace nodes in the harness.
-
-If the harness creates per-rollout state outside the runtime's disposable workspace,
-remove it in an idempotent `cleanup(trace, runtime)` override. Cleanup runs after
-scoring and before the runtime is released, including for borrowed runtimes.
+Return the main program's `ProgramResult` from `runtime.run_program()` or
+`runtime.run_uv_script()`. Do not create trace nodes manually. If the harness
+creates files or sessions outside its temporary runtime, remove them in
+`cleanup(trace, runtime)`. Cleanup runs after scoring and must be safe to repeat,
+including when the environment owns the runtime. See [harnesses](../../docs/v1/harnesses.md).
 
 ## Dependencies and credentials
 
-- Add package import-time dependencies to the taskset's own `pyproject.toml`.
-- Never edit the repository root `pyproject.toml` or `uv.lock` for a taskset dependency.
-- Read required external credentials at the earliest owning boundary so missing values fail clearly.
-- Do not require a user-managed background server unless the contract explicitly uses a remote URL.
+Add dependencies to the package's own `pyproject.toml` using `uv`; do not change
+the repository's root dependencies or lockfile for a taskset. Check required
+credentials where they are first needed and report missing values clearly.
 
-## Migration from v0
+Task data and config are saved. Use `Task.runtime_env()` or harness `forward_env`
+for credentials needed in the runtime. Keep judge-only credentials on the
+evaluator. Require a separately managed server only when the task explicitly
+uses a remote URL.
 
-Map concepts directly:
+## Check the result
 
-| V0 | Native v1 |
-| --- | --- |
-| Dataset row | Typed `vf.TaskData` subclass |
-| `load_environment(**kwargs)` | Exported `vf.Taskset` class + typed config |
-| `Rubric` reward function | Task `@vf.reward` method |
-| Parser object | Ordinary parsing inside task scoring |
-| `ToolEnv` tools | `vf.Toolset` constructed in `Task.toolsets` or `Taskset.toolsets` |
-| `MultiTurnEnv.env_response` | an interaction loop in the env's `run()` |
-| Dict state | Typed `vf.State` |
-| Sandbox subclass | Runtime config + task hooks |
+1. Install with `uv pip install -e environments/<package_dir>` in the CLI's Python environment.
+2. Run `uv run vf-eval <id> --dry-run` to check config and imports.
+3. Run `vf-validate` on the intended runtime. `unchecked` means no gold check exists, not that it passed.
+4. Run the agreed small evaluation. Inspect a success, wrong answer, and failure. For a benchmark port, compare prompts, tools, and scores with the source, including partial credit.
 
-Preserve prompt, tool, and scoring equivalence before improving design. Compare representative v0 and v1 traces where feasible.
+Keep dataset revision, split, filters, and image references explicit. Use
+[debug-environments](../debug-environments/SKILL.md) for failures and
+[evaluate-environments](../evaluate-environments/SKILL.md) for evaluation runs.
 
-## Publish gate
-
-After package installability, validation, and representative eval behavior are stable, ask the user whether Hub visibility should be `PUBLIC` or `PRIVATE`. Only then run:
+Publish only when requested, after the package works. Use the requested Hub
+owner and visibility; ask only if a required choice is missing. For example:
 
 ```bash
 prime env push my-task-v1 --visibility PRIVATE
 ```
-
-Publishing is an external state change and requires the user's requested visibility. Do not publish merely because local verification passed.

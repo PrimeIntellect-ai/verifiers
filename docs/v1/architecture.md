@@ -1,27 +1,41 @@
 # Architecture
 
-verifiers is built out of the following parts:
+A run follows these steps:
 
-A server-backed evaluation or prime-rl **orchestrator** creates worker processes and distributes rollout requests among them. The client owns the taskset. It loads the tasks once and ships each task to the workers, which owns the runtime containing the agent(s) to produce a trace out of the data.
+1. The client loads tasks from the taskset and sends them to workers.
+2. Each worker starts the runtime and harness for an agent run.
+3. The harness sends model requests through verifiers, which records the conversation.
+4. The task scores the result, and verifiers saves the episode and its traces.
 
-The orchestrator and workers are managed by verifiers and prime-rl themselves and thus offer few configurable knobs.
+verifiers manages the workers for evaluations; prime-rl manages them for training.
+Tasks are loaded once on the client, rather than separately in every worker.
 
-The **rollout** is the executable combination of one loaded task, the harness, and any tools. Each rollout has an independent trace and runtime state. verifiers has several runtimes which you can use for most tasksets:
+## Where programs run
 
-- The `subprocess` runtime runs the rollouts in Python subprocesses locally. Thus, it is meant for debugging purposes, as there might be side effects during runtime, such as one subprocess altering the config files of the harness, which then affects the other subprocesses.
-- The `docker` runtime runs the rollouts in docker containers on your local machine.
-- The `podman` runtime is the same implementation driving the Podman CLI, for hosts without Docker.
-- The `apptainer` runtime runs the rollouts in unprivileged Apptainer instances on the host network, as on HPC clusters. It has no egress policy.
-- Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
+Each agent runs in a runtime:
 
-For offline Docker/Podman use on Linux, cache the task image and, if it lacks Python 3, `docker.io/library/python:3.11-alpine` for host callbacks. Restricted execution also needs the cached `localhost/verifiers-network:1` image, built during the first online startup.
+| Runtime | Where it runs |
+| --- | --- |
+| `subprocess` | Processes on your machine; files and settings can affect other runs |
+| `docker` / `podman` | Local containers |
+| `apptainer` | Unprivileged containers, often on a cluster; shares the host network |
+| `prime` / `modal` | Remote sandboxes, suited to many concurrent runs |
 
-The harness runs inside the rollout runtime to interact with the taskset. The harness does _not_ call the provider endpoint directly. Instead, model traffic goes through an **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
+See [runtimes](runtimes.md) for images, resources, files, and network restrictions.
 
-The interception server receives all these requests and then sends them over to the actual API, e.g. the OpenAI responses endpoint. It uses the endpoint that the harness expects, so Codex will use OpenAI Responses, while Claude Code will use the Anthropic Messages API.
+For offline Docker/Podman on Linux, cache the task image first. If it lacks
+Python 3, also cache `docker.io/library/python:3.11-alpine` for calls back to the
+host. Network restrictions need `localhost/verifiers-network:1`, which is built
+during the first online startup.
 
-The interception server, however, allows several things beyond just replaying the correct API response:
+## How model calls are recorded
 
-- Traces are built live, thus allowing the collection of the trajectories as they happen
-- Setting sampling parameters in harnesses that don't necessarily expose those settings
-- Intercepting and rewriting tool responses or server-side web search results to block reward hacks
+The harness sends model requests to verifiers' **interception server**, which
+forwards them to the model provider. The connection uses a local address or
+[Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
+
+The server accepts the API the harness expects: for example, OpenAI Responses
+for Codex or Anthropic Messages for Claude Code. It records requests and
+responses as they happen, applies sampling settings, and runs the task's stop
+and interception hooks. Those hooks can inspect or change supported messages,
+such as tool responses; see [tasksets](tasksets.md#stops-and-interception).

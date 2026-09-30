@@ -13,7 +13,10 @@
             "v1/architecture",
             "v1/tasksets",
             "v1/evaluation",
+            "v1/runtimes",
+            "v1/debugging",
             "v1/harnesses",
+            "v1/agent",
             "v1/env",
             "v1/harbor",
             "v1/gepa"
