@@ -182,7 +182,7 @@ class Interaction:
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
-        self._steering_lock = asyncio.Lock()
+        self._steering_locks: dict[str, asyncio.Lock] = {}
         self._steering_receipts: dict[str, tuple[str, dict]] = {}
 
     @property
@@ -201,7 +201,14 @@ class Interaction:
         """
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
-        async with self._steering_lock:
+        # Only retries of the same message share a lock. A wake-up can run a
+        # full turn; unrelated messages must still reach that turn through ACP.
+        lock = (
+            self._steering_locks.setdefault(message_id, asyncio.Lock())
+            if message_id is not None
+            else nullcontext()
+        )
+        async with lock:
             if self._run.closed:
                 raise RuntimeError("this interaction is closed")
             if message_id is not None and message_id in self._steering_receipts:
