@@ -227,7 +227,7 @@ async def compose_services(
             compose_env.update(
                 (key, value)
                 for key, value in task.runtime_env().items()
-                if key not in DOCKER_ENV
+                if key not in DOCKER_ENV and not key.startswith(("DOCKER_", "COMPOSE_"))
             )
             compose_env.update(
                 ComposeInfraEnvVars(
