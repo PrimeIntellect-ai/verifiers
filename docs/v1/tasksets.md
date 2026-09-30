@@ -162,7 +162,7 @@ committed. To exclude untracked files already in the image, record them with
 `verifiers.v1.utils.git.snapshot_untracked` and pass the result as `ignore`.
 The patch is saved in `trace.info["patch"]`.
 
-Implement `validate(self, runtime) -> bool | None` when a gold answer or solution
+Implement `async def validate(self, runtime) -> bool | None` when a gold answer or solution
 can be checked without a model. See [validation and replay](debugging.md) for the
 commands and their limits.
 

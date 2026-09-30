@@ -21,8 +21,11 @@ that would affect the result.
 3. Check a known solution and the untouched task on the intended runtime:
 
    ```bash
-   uv run vf-validate <MY_ENV> --runtime.type docker -n 1
+   uv run vf-validate <MY_ENV> -n 1
    ```
+
+   Validation defaults to Prime and does not inherit evaluation settings. Pass
+   the intended agent's runtime settings as `--runtime.*` flags when needed.
 
 4. Run a small sample with the requested settings:
 
@@ -115,8 +118,9 @@ optional settings unset unless needed. Do not impose token or turn limits that
 cut short the requested evaluation.
 
 The default runtime is Prime; default concurrency is 128. Set `-c` deliberately
-for a small check or limited sandbox capacity. Agent token and turn limits cover
-the whole run; `sampling.max_tokens` limits each response. See
+for a small check or limited sandbox capacity. Agent token and turn limits apply
+to each agent rollout; they reset for each new rollout. `sampling.max_tokens`
+limits each response. See
 [runtimes](../../docs/v1/runtimes.md).
 
 ## Endpoints, credentials, and tools
