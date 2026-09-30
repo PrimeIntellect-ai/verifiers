@@ -170,8 +170,8 @@ class Interaction:
     program, resumed onto the conversation, until it yields — returning the
     resulting `Segment`. A prompt-less (or masked) task is opened by the first
     `turn(message)`; a prompted task speaks first — a bare `turn()` takes its
-    opening reply. One consumer at a time — `turn()` is a strict
-    request/response alternation, not a mailbox. `interaction.trace` is live from
+    opening reply. Turns are serialized; `steer(..., wake=True)` can run a
+    background turn when idle. `interaction.trace` is live from
     the moment the interaction exists: watch tokens and turns mid-exchange, read
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
@@ -182,23 +182,57 @@ class Interaction:
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
+        self._steering_lock = asyncio.Lock()
+        self._steering_receipts: dict[str, tuple[str, dict]] = {}
 
     @property
     def trace(self) -> Trace:
         return self._run.trace
 
-    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
-        """Inject a user message into the running turn without acquiring its lock.
+    async def steer(
+        self, message: str, *, message_id: str | None = None, wake: bool = False
+    ) -> dict:
+        """Inject a user message, optionally resuming an idle interaction.
 
-        Returns the ACP steering receipt. ``promptRequired`` leaves the message
-        unconsumed; the caller can retry during a later turn. A stable message ID
-        permits deduplication by agents that support it.
+        With ``wake=True``, an idle session runs another turn on this message.
+        The interaction must remain open, and a prompted task must have started
+        its opening turn. Wake-up uses the normal turn budget and lifecycle.
+        Successful deliveries with a stable ID are deduplicated in this interaction.
         """
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
-        if self._over:
-            raise RuntimeError("the exchange is over")
-        return await self._run.steer(message, message_id=message_id)
+        async with self._steering_lock:
+            if self._run.closed:
+                raise RuntimeError("this interaction is closed")
+            if message_id is not None and message_id in self._steering_receipts:
+                previous, receipt = self._steering_receipts[message_id]
+                if previous != message:
+                    raise ValueError(
+                        "steering message ID reused with different content"
+                    )
+                return dict(receipt)
+            if self._over or not self._run.ok:
+                return {"outcome": "promptRequired", "reason": "interactionStopped"}
+            receipt = await self._run.steer(message, message_id=message_id)
+            if wake and receipt.get("outcome") == "promptRequired":
+                # A finishing prompt may still hold the turn lock. Wait for it,
+                # then resume through the same path as an ordinary user turn.
+                async with self._lock, self._gate or nullcontext():
+                    if self._run.closed:
+                        raise RuntimeError("this interaction is closed")
+                    if self._over or not self._run.ok:
+                        return {
+                            "outcome": "promptRequired",
+                            "reason": "interactionStopped",
+                        }
+                    if not self._started and self.trace.task.data.prompt is not None:
+                        return receipt
+                    segment = await self._turn(message)
+                    if not segment.terminated:
+                        receipt = {"outcome": "injected"}
+            if receipt.get("outcome") == "injected" and message_id is not None:
+                self._steering_receipts[message_id] = (message, dict(receipt))
+            return receipt
 
     async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
