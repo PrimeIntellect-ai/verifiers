@@ -64,6 +64,7 @@ class PodmanRuntimeInfo(PodmanConfig, BaseRuntimeInfo):
 
 
 _PROXY_HOST = "host.docker.internal"
+_PROXY_ADDRESS = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
 _NETWORK_IMAGE = "localhost/verifiers-network:1"
 
 
@@ -93,7 +94,6 @@ class DockerBackend(ContainerBackend):
         )
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
-        self._proxy: EgressProxy | None = None
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
@@ -337,8 +337,7 @@ class DockerBackend(ContainerBackend):
         if not is_loopback_host(parts.hostname or ""):
             return url
         assert self._proxy is not None
-        host_backend = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
-        return self._proxy.callback_url(url, host_backend)
+        return self._proxy.callback_url(url, _PROXY_ADDRESS)
 
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
@@ -465,23 +464,13 @@ class DockerBackend(ContainerBackend):
             )
         self._cut = True
 
-    async def teardown(self) -> None:
-        if self._proxy is not None:
-            await self._proxy.stop()
-        await super().teardown()
-
     def _exec(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
         assert self._container is not None
         if self.network_restricted and self._cut:
             assert self._proxy is not None
-            env = {
-                **env,
-                **self._proxy.environment(
-                    "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
-                ),
-            }
+            env = {**env, **self._proxy.environment(_PROXY_ADDRESS)}
         else:
             values = {**self._image_env, **env}
             exclusions = dict.fromkeys(
@@ -512,12 +501,7 @@ class DockerBackend(ContainerBackend):
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
         if self.network_restricted and self._proxy is not None:
-            env = {
-                **env,
-                **self._proxy.environment(
-                    "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
-                ),
-            }
+            env = {**env, **self._proxy.environment(_PROXY_ADDRESS)}
         # The engine owns the background server as a detached exec process.
         command = self._exec(runtime.process_env(env), user=runtime.user)
         command.insert(2, "--detach")

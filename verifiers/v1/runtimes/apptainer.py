@@ -69,7 +69,6 @@ class ApptainerBackend(ContainerBackend):
         self._instance = f"vf-{uuid.uuid4().hex}"
         self._dir: Path | None = None  # host backing for the workspace, /tmp and $HOME
         self._stopped = False
-        self._proxy: EgressProxy | None = None
 
     def _exec(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
@@ -152,28 +151,25 @@ class ApptainerBackend(ContainerBackend):
             raise SandboxError(
                 f"apptainer workdir copy failed: {copied.stderr.strip()}"
             )
-        network: list[str] = []
+        options: list[str] = []
         if self.network_restricted:
-            (self._dir / "proxy").mkdir()
-            network = [
+            directory = self._dir / "proxy"
+            directory.mkdir()
+            options += [
                 "--net",
-                "--network",
-                "none",
-                "--drop-caps",
-                "ALL",
+                "--network=none",
+                "--drop-caps=ALL",
                 # An explicit resolver avoids binding host resolver sockets from /run.
-                "--dns",
-                "127.0.0.1",
+                "--dns=127.0.0.1",
                 "--bind",
-                f"{self._dir / 'proxy'}:/run/vf",
+                f"{directory}:/run/vf",
             ]
-        limits: list[str] = []
         if self.config.cpu is not None:
-            limits += ["--cpus", str(self.config.cpu)]
+            options += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
-            limits += ["--memory", f"{self.config.memory}g"]
+            options += ["--memory", f"{self.config.memory}g"]
         if parse_gpu(self.config.gpu)[1]:
-            limits += ["--nv"]
+            options += ["--nv"]
         started = await cli(
             "apptainer",
             "instance",
@@ -185,8 +181,7 @@ class ApptainerBackend(ContainerBackend):
             "--writable-tmpfs",
             "--bind",
             f"{self._dir / 'workspace'}:{self.config.workdir}",
-            *limits,
-            *network,
+            *options,
             image,
             self._instance,
         )
@@ -196,13 +191,9 @@ class ApptainerBackend(ContainerBackend):
             )
         self.info.id = self._instance
         if self.network_restricted:
-            directory = self._dir / "proxy"
-            try:
-                listener = await container_listener(
-                    [*self._exec({}), "python3"], str(directory)
-                )
-            finally:
-                (directory / "control.sock").unlink(missing_ok=True)
+            listener = await container_listener(
+                [*self._exec({}), "python3"], str(directory)
+            )
             self._proxy = EgressProxy(
                 NetworkPolicy(NetworkPolicyConfig(), [], allow_non_global=True)
             )
@@ -227,11 +218,6 @@ class ApptainerBackend(ContainerBackend):
                 "restricted Apptainer instances cannot expose ports; colocate tool servers"
             )
         return await super().expose(port)
-
-    async def teardown(self) -> None:
-        if self._proxy is not None:
-            await self._proxy.stop()
-        await super().teardown()
 
     async def _image(self) -> str:
         """The SIF to run: a local file as is, else the reference pulled once into the

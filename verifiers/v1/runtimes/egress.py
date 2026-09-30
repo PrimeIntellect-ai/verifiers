@@ -160,15 +160,9 @@ class EgressProxy:
     def environment(self, host: str = "127.0.0.1") -> dict[str, str]:
         """Proxy all external HTTP(S), leaving instance-local services reachable."""
         proxy = f"http://verifiers:{self.token}@{host}:{self.port}"
-        exclusions = ",".join(dict.fromkeys(("localhost", "127.0.0.1", host)))
-        return {
-            "HTTP_PROXY": proxy,
-            "HTTPS_PROXY": proxy,
-            "http_proxy": proxy,
-            "https_proxy": proxy,
-            "NO_PROXY": exclusions,
-            "no_proxy": exclusions,
-        }
+        exclusions = ",".join(dict.fromkeys(("localhost", "127.0.0.1", "::1", host)))
+        env = {"http_proxy": proxy, "https_proxy": proxy, "no_proxy": exclusions}
+        return env | {key.upper(): value for key, value in env.items()}
 
     async def prepare_execution(
         self, config: NetworkPolicyConfig, routes: list[str] | None
@@ -176,10 +170,7 @@ class EgressProxy:
         """Change policy and revoke existing egress streams before execution starts."""
         self.policy = NetworkPolicy(
             NetworkPolicyConfig() if routes is None else config,
-            [
-                urlsplit(url)._replace(path="", query="", fragment="").geturl()
-                for url in routes or []
-            ],
+            list(routes or []),
             allow_non_global=routes is None,
         )
         if routes is not None:
