@@ -185,12 +185,17 @@ class EnvServerPool:
             while True:
                 events = dict(await self._poller.poll())
                 if self.frontend in events:
-                    (
-                        client_id,
-                        request_id,
-                        method,
-                        payload,
-                    ) = await self.frontend.recv_multipart()
+                    frames = await self.frontend.recv_multipart()
+                    # A truncated/malformed client send must not tear down the broker
+                    # (and with it every in-flight rollout) — drop it and carry on,
+                    # mirroring the bad-frame handling in the cancel path below.
+                    if len(frames) != 4:
+                        logger.warning(
+                            "frontend: dropping malformed request (%d frames, expected 4)",
+                            len(frames),
+                        )
+                        continue
+                    client_id, request_id, method, payload = frames
                     if method == b"health":
                         await self.frontend.send_multipart(
                             [client_id, request_id, b"reply", _HEALTH]
