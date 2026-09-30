@@ -393,8 +393,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 .decode()
                 .strip()
             )
+            if self.data.verifier is not None:
+                # A fresh grader must produce a finite reward; failures retry.
+                return REWARD_JSON_ADAPTER.validate_python(float(reward))
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
+            if self.data.verifier is not None:
+                raise
             return 0.0
 
     async def read_reward_json(
