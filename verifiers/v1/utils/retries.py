@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
 from tenacity import (
@@ -85,10 +85,10 @@ def _retryable(error: Error | None, retry: RetryConfig) -> bool:
     return True
 
 
-def trace_should_retry(trace, retry: RetryConfig) -> bool:
-    """Whether a finished agent rollout should be retried: any captured error on
-    its trace is retryable (all captures count, not just the most recent)."""
-    return any(_retryable(e, retry) for e in trace.errors)
+def errors_should_retry(errors: Iterable[Error], retry: RetryConfig) -> bool:
+    """Whether a finished agent rollout should be retried: any error its attempt
+    captured is retryable (all captures count, not just the most recent)."""
+    return any(_retryable(e, retry) for e in errors)
 
 
 def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:

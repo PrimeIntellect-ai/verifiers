@@ -186,6 +186,9 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+    checkpointer: Callable[[graph.PendingTurn], Awaitable[None]] | None = None
+    """Snapshots the rollout's box right before a turn goes upstream (`Rollout` sets it
+    when its runtime supports checkpoints and a retry may resume from one)."""
 
     @property
     def stopped(self) -> bool:

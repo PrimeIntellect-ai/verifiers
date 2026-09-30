@@ -36,7 +36,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Checkpoint, Error, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -50,7 +50,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
-from verifiers.v1.utils.retries import backoff, trace_should_retry
+from verifiers.v1.utils.retries import backoff, errors_should_retry
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
@@ -361,15 +361,19 @@ class Agent:
             return self._server
         return None
 
-    def _check_resume_support(self) -> None:
-        # Multi-turn capability is derived: a harness needs transcript replay, a
-        # native resume implementation, or a rollout-scoped session implementation.
+    def _supports_resume(self) -> bool:
+        """Whether the harness can continue a conversation it is handed: transcript
+        replay, a native resume implementation, or a rollout-scoped session."""
         harness = self.harness
-        if (
-            type(harness).session is Harness.session
-            and type(harness).resume is Harness.resume
-            and not harness.SUPPORTS_RESUME
-        ):
+        return (
+            type(harness).session is not Harness.session
+            or type(harness).resume is not Harness.resume
+            or harness.SUPPORTS_RESUME
+        )
+
+    def _check_resume_support(self) -> None:
+        if not self._supports_resume():
+            harness = self.harness
             raise ValueError(
                 f"Harness {harness.config.id!r} cannot host a user: resuming an "
                 "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
@@ -394,18 +398,42 @@ class Agent:
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
-        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        alive. Retries while the trace ends with a retryable error (`config.retries`)
+        — never into a borrowed box. A retry resumes from the failed attempt's newest
+        checkpoint when it has one (`retries.checkpoint`, a runtime that supports
+        them, a harness that can continue a conversation), keeping that trace and its
+        turns up to there; otherwise it starts over. The final trace keeps every
+        attempt's errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
-        history: list = []
+        can_resume = retry.checkpoint and runtime is None and self._supports_resume()
+        history: list[Error] = []  # errors of the attempts started over from
+        trace: Trace | None = None
+        resume: Checkpoint | None = None
         for attempt in range(retry.max_retries + 1):
+            resumed = trace if resume is not None else None
+            seen = len(resumed.errors) if resumed is not None else 0
+
+            def should_retry(
+                current: Trace, *, attempt: int = attempt, seen: int = seen
+            ) -> bool:
+                # This attempt's own errors decide — a resumed trace still carries
+                # the earlier attempts'.
+                return attempt < retry.max_retries and errors_should_retry(
+                    current.errors[seen:], retry
+                )
+
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task,
+                runtime,
+                tools,
+                on_trace,
+                collect_artifacts,
+                resume=(resumed, resume) if resumed is not None else None,
+                retry=should_retry if can_resume and retry.max_retries else None,
             )
-            if attempt == retry.max_retries or not trace_should_retry(trace, retry):
+            if not should_retry(trace):
                 break
             if runtime is not None:
                 logger.warning(
@@ -413,16 +441,22 @@ class Agent:
                     "longer the task's start state); the error stands"
                 )
                 break
-            history.extend(trace.errors)
+            resume = trace.checkpoints[-1] if can_resume and trace.checkpoints else None
+            if resume is None:
+                history.extend(trace.errors)
             delay = backoff(attempt)
             logger.warning(
-                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
+                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s (%s)",
                 attempt + 1,
                 retry.max_retries,
                 delay,
                 trace.last_error.type if trace.last_error else "?",
+                f"resuming from checkpoint {resume.id}"
+                if resume is not None
+                else "from scratch",
             )
             await asyncio.sleep(delay)
+        assert trace is not None
         if history:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
@@ -436,6 +470,9 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
+        *,
+        resume: tuple[Trace, Checkpoint] | None = None,
+        retry: Callable[[Trace], bool] | None = None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
@@ -447,11 +484,16 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            resume=resume,
+            retry=retry,
             **params,
         )
         try:
             if await run.open():
-                await run.step()
+                if resume is not None:
+                    await run.resume()
+                else:
+                    await run.step()
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()

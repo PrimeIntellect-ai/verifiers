@@ -50,6 +50,7 @@ LIST_FIELDS = (
     "extra_usage",
     "request_rewrites",
     "response_rewrites",
+    "checkpoints",
 )
 """Append-only on the worker: each delta carries the items past the sent count."""
 
@@ -91,7 +92,9 @@ def dump(model: BaseModel, **kwargs: Any) -> dict:
 class TraceCursor:
     """What of one trace has been sent."""
 
-    def __init__(self) -> None:
+    def __init__(self, generation: int = 0) -> None:
+        self.generation = generation
+        """The `Trace.generation` the sent items belong to."""
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
@@ -206,7 +209,16 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor()
+            if sent is not None and sent.generation != trace.generation:
+                # A rewound trace (a retry resumed from a checkpoint) no longer extends
+                # what went out: the client drops its copy and receives it anew.
+                deltas.append((trace.id, {"trace": trace.id, "discard": True}, None))
+                sent = None
+            cursor = (
+                copy.deepcopy(sent)
+                if sent is not None
+                else TraceCursor(generation=trace.generation)
+            )
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links: dict[int, list[dict]] = {}

@@ -3485,8 +3485,8 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.2"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=c10a621#c10a621a82b7212432f15a3627265d662caa71a7" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -3496,10 +3496,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyqwest" },
     { name = "tenacity" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/46/2d118d8bbb901b729f3bc0678725eb28088d757a872db04cffa1492d0208/prime_sandboxes-0.3.0.tar.gz", hash = "sha256:c99075ed82a9bbfe5a453cee84b9f09565a7f6b07fd5ace072401cce59a1fe08", size = 132759, upload-time = "2026-09-18T01:32:31.263Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/04/c77c7f260babf93978f912b85511e76f63a3cfa5bb11a8c34108177d5825/prime_sandboxes-0.3.0-py3-none-any.whl", hash = "sha256:19078ff508fa72de8f565422918faf367e2831ed8a2f26a5a6a98110e4062941", size = 71441, upload-time = "2026-09-18T01:32:30.062Z" },
 ]
 
 [[package]]

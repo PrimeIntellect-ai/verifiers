@@ -576,6 +576,73 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     assert trace.reward == 1.0
 
 
+# Runtimes whose box can be checkpointed and restored: docker commits the container to
+# an image, prime snapshots the sandbox filesystem (needs the platform's checkpoint API).
+CHECKPOINT_RUNTIMES = [
+    pytest.param("docker", marks=[mark.bash, mark.docker], id="bash-harness-in-docker"),
+    pytest.param("prime", marks=[mark.bash, mark.prime], id="bash-harness-in-prime"),
+]
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness_runtime", CHECKPOINT_RUNTIMES, indirect=True)
+async def test_retry_resumes_from_checkpoint(run_v1, harness_runtime, tmp_path):
+    """A retry resumes the failed attempt's trace from its newest checkpoint: the box
+    restores to the state before the turn that failed, the turns up to there stay,
+    and the task's `setup` (a nonce the prompt never reveals) is not rerun."""
+    (trace,) = await run_v1(
+        "checkpoint-resume-v1",
+        harness="bash",
+        runtime={"type": harness_runtime},
+        env={"agent": {"retries": {"max_retries": 1, "include": ["ProviderError"]}}},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=4096,
+    )
+    assert_resumed_from_checkpoint(trace)
+
+
+@pytest.mark.e2e
+@pytest.mark.bash
+@pytest.mark.docker
+async def test_retry_resumes_from_checkpoint_server(run_v1_server, tmp_path):
+    """The same resume through the env-server pool: the worker's retry rewinds the
+    trace it is streaming, and the client still assembles the trace the worker
+    finished with."""
+    (trace,) = await run_v1_server(
+        "checkpoint-resume-v1",
+        harness="bash",
+        runtime={"type": "docker"},
+        env={"agent": {"retries": {"max_retries": 1, "include": ["ProviderError"]}}},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=4096,
+    )
+    assert_resumed_from_checkpoint(trace)
+
+
+def assert_resumed_from_checkpoint(trace) -> None:
+    from checkpoint_resume_v1 import FAIL_AFTER_TURNS
+
+    assert trace.ok
+    assert trace.reward == 1.0
+    assert [error.type for error in trace.errors] == ["ProviderError"]
+    # The failure hit as turn FAIL_AFTER_TURNS + 1 went upstream, so the newest
+    # checkpoint is the one taken as turn FAIL_AFTER_TURNS was asked for: the box then
+    # held the earlier turns' effects, and the trace kept those turns.
+    assert trace.agent.runtime is not None
+    restored_from = trace.agent.runtime.restored_from
+    assert restored_from is not None
+    assert restored_from in [checkpoint.id for checkpoint in trace.checkpoints]
+    assert trace.num_turns >= FAIL_AFTER_TURNS
+    assert len(trace.checkpoints) >= trace.num_turns
+    # Every turn kept has its call; the failure never went upstream, so no call
+    # records it.
+    assert [call.node for call in trace.calls] == [
+        i for i, node in enumerate(trace.nodes) if node.sampled
+    ]
+
+
 @pytest.mark.e2e
 async def test_multi_agent_env(run_v1, tmp_path):
     """An `Env` subclass shipped with its taskset (duet-v1): two roles run the

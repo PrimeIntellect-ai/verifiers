@@ -779,6 +779,10 @@ class InterceptionServer(Interception):
             started = time.time()
             try:
                 try:
+                    # The box is idle while the harness awaits this turn: the snapshot
+                    # matches the prompt exactly (tool results in, this reply not yet).
+                    if session.checkpointer is not None:
+                        await session.checkpointer(turn)
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:

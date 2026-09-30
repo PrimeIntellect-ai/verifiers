@@ -15,3 +15,10 @@ class RetryConfig(BaseConfig):
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = Field(default_factory=list)
     """Never retry errors whose type is listed (wins over `include`)."""
+    checkpoint: bool = True
+    """Checkpoint the runtime's filesystem before every model turn (on runtimes that
+    support it, e.g. prime and docker) and resume a retry from the newest checkpoint:
+    the trace keeps its turns up to there and the harness continues the conversation
+    in a box restored to that state. False retries from scratch. Only the box is
+    restored — state kept outside it (a tool server's typed rollout state) stays as
+    the failed attempt left it."""

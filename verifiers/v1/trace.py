@@ -189,6 +189,22 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
         prev_total = call.usage.total_tokens
 
 
+class Checkpoint(BaseModel):
+    """A snapshot of the rollout's box taken as a model turn went upstream: the box holds
+    the effects of every message in `node`'s conversation plus `tail`, and nothing of the
+    turn that followed. A retry resumes there (`Trace.rewind`)."""
+
+    id: str
+    """The runtime's checkpoint id (`Runtime.checkpoint`)."""
+    node: int | None = None
+    """The last committed node whose conversation the box's state follows; None when
+    the snapshot preceded the first turn."""
+    tail: Messages = Field(default_factory=list, exclude=True)
+    """The turn's prompt messages after `node` that had no node yet (tool results, user
+    turns): with `node`'s conversation, the prompt a resumed harness continues from.
+    Live-only — a retry resumes in the process that took the snapshot."""
+
+
 class Branch(BaseModel):
     """A root-to-leaf message-graph path; each branch becomes one training sample."""
 
@@ -403,6 +419,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    """Snapshots of the run's box, oldest first — one per model turn on a runtime that
+    supports them; a retry resumes from the newest."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -437,6 +456,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+    _generation: int = PrivateAttr(default=0)
+    """Bumped by `rewind`: the graph is no longer an extension of what it was, so a
+    consumer streaming it incrementally starts over."""
+
+    @property
+    def generation(self) -> int:
+        """How many times the trace was rewound (`rewind`)."""
+        return self._generation
 
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
@@ -760,6 +787,32 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         condition (a finalize deadline can expire after `agent_completed`)."""
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
+
+    def rewind(self, checkpoint: Checkpoint) -> list[str]:
+        """Roll the graph back to `checkpoint` — the nodes committed after it go, its own
+        conversation stays sampled — and reopen the trace for another attempt: the outcome
+        stamps reset, while `errors` and the calls that committed no node stay as the
+        attempts' history. Returns the ids of the later checkpoints this drops."""
+        keep = 0 if checkpoint.node is None else checkpoint.node + 1
+        if keep > len(self.nodes):
+            raise ValueError(f"checkpoint {checkpoint.id!r} is past this trace's graph")
+        del self.nodes[keep:]
+        self._head_index = {}
+        self._pending = {}
+        self._generation += 1
+        self.calls = [c for c in self.calls if c.node is None or c.node < keep]
+        dropped = [
+            c.id for c in self.checkpoints if c.node is not None and c.node >= keep
+        ]
+        self.checkpoints = [c for c in self.checkpoints if c.id not in dropped]
+        self.rewards = {}
+        self.metrics = {}
+        self.root_reply = None
+        self.is_completed = False
+        self.ok = False
+        self.stop_condition = None
+        self.is_timeout = False
+        return dropped
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
