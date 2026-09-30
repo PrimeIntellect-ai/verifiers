@@ -199,6 +199,8 @@ class Interaction:
         self._steering_tasks: dict[str, tuple[str, asyncio.Task[dict]]] = {}
         self._pending_messages: list[_PendingMessage] = []
         self._pending_by_id: dict[str, _PendingMessage] = {}
+        self._message_drain: asyncio.Task[None] | None = None
+        self._closing = False
 
     @property
     def trace(self) -> Trace:
@@ -221,8 +223,10 @@ class Interaction:
         Both resume an idle session. Queue mode also works without ACP steering.
         Queued sends and idle wake-ups return after their turn finishes; active
         steering returns when the harness accepts it. Cancellation withdraws a
-        queued message that has not started. The caller must await or schedule
-        this coroutine; it does not create a background delivery task.
+        queued message that has not started. After a batch starts, cancelling
+        a sender does not cancel the shared turn. Callers must await or schedule
+        this coroutine to submit input; closing the interaction cancels any
+        outstanding delivery tasks.
         The receipt confirms delivery, not that the interaction is finished;
         keep its context open
         while more messages may arrive. A prompted task must start its opening
@@ -262,7 +266,7 @@ class Interaction:
             else nullcontext()
         )
         async with lock:
-            if self._run.closed:
+            if self._closing or self._run.closed:
                 raise RuntimeError("this interaction is closed")
             if message_id is not None and message_id in self._steering_receipts:
                 previous, receipt = self._steering_receipts[message_id]
@@ -282,13 +286,14 @@ class Interaction:
                     raise pending.error
                 assert pending.receipt is not None
                 return dict(pending.receipt)
-            if self._over or not self._run.ok:
+            if message_id in self._steering_tasks:
+                receipt = await self._deliver_steer(message, message_id)
+            elif self._over or not self._run.ok:
                 return {"outcome": "promptRequired", "reason": "interactionStopped"}
-            receipt = (
-                await self._deliver_steer(message, message_id)
-                if mode == "steer" or message_id in self._steering_tasks
-                else {"outcome": "promptRequired", "reason": "noRunningTurn"}
-            )
+            elif mode == "steer":
+                receipt = await self._deliver_steer(message, message_id)
+            else:
+                receipt = {"outcome": "promptRequired", "reason": "noRunningTurn"}
             if wake and receipt.get("outcome") == "promptRequired":
                 receipt = await self._resume_messages(message, message_id)
             if receipt.get("outcome") == "injected" and message_id is not None:
@@ -322,79 +327,46 @@ class Interaction:
             )
         return await asyncio.shield(task)
 
-    async def _cancel_steering(self) -> None:
-        pending = dict(self._steering_tasks)
-        for _, task in pending.values():
+    async def _cancel_deliveries(self) -> None:
+        self._closing = True
+        tasks = [task for _, task in self._steering_tasks.values()]
+        if self._message_drain is not None:
+            tasks.append(self._message_drain)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(
-            *(task for _, task in pending.values()), return_exceptions=True
-        )
-        # A task cancelled before its coroutine starts never enters its finally.
-        for message_id, entry in pending.items():
-            if self._steering_tasks.get(message_id) == entry:
-                self._steering_tasks.pop(message_id, None)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._steering_tasks.clear()
+        # A task cancelled before it starts never enters its finally block.
+        self._finish_pending(asyncio.CancelledError())
+
+    def _finish_pending(self, error: BaseException) -> None:
+        for item in self._pending_messages:
+            item.error = error
+            item.done.set()
+            if item.message_id is not None:
+                self._pending_by_id.pop(item.message_id, None)
+        self._pending_messages.clear()
 
     async def _resume_messages(self, message: str, message_id: str | None) -> dict:
+        if self._closing:
+            raise RuntimeError("this interaction is closed")
         pending = _PendingMessage(message, message_id)
         self._pending_messages.append(pending)
         if message_id is not None:
             self._pending_by_id[message_id] = pending
+        if self._message_drain is None or self._message_drain.done():
+            self._message_drain = asyncio.create_task(self._drain_messages())
+            self._message_drain.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
         try:
-            # The first sender to obtain the turn slot drains everything that
-            # arrived while the previous turn or agent permit was busy.
-            async with self._lock, self._gate or nullcontext():
-                if pending.error is not None:
-                    raise pending.error
-                if pending.receipt is not None:
-                    return dict(pending.receipt)
-                batch, self._pending_messages = self._pending_messages, []
-                try:
-                    if self._run.closed:
-                        raise RuntimeError("this interaction is closed")
-                    if self._over or not self._run.ok:
-                        receipt = {
-                            "outcome": "promptRequired",
-                            "reason": "interactionStopped",
-                        }
-                    elif not self._started and self.trace.task.data.prompt is not None:
-                        receipt = {
-                            "outcome": "promptRequired",
-                            "reason": "noRunningTurn",
-                        }
-                    else:
-                        segment = await self._turn(
-                            [UserMessage(content=item.text) for item in batch]
-                        )
-                        receipt = (
-                            {
-                                "outcome": "promptRequired",
-                                "reason": "interactionStopped",
-                            }
-                            if segment.terminated
-                            else {"outcome": "injected"}
-                        )
-                    for item in batch:
-                        item.receipt = receipt
-                        if (
-                            receipt.get("outcome") == "injected"
-                            and item.message_id is not None
-                        ):
-                            self._steering_receipts[item.message_id] = (
-                                item.text,
-                                dict(receipt),
-                            )
-                    return dict(receipt)
-                except BaseException as error:
-                    for item in batch:
-                        item.error = error
-                    raise
-                finally:
-                    for item in batch:
-                        if item.message_id is not None:
-                            self._pending_by_id.pop(item.message_id, None)
-                        item.done.set()
+            await pending.done.wait()
+            if pending.error is not None:
+                raise pending.error
+            assert pending.receipt is not None
+            return dict(pending.receipt)
         finally:
-            # A cancelled sender withdraws only input that has not been drained.
+            # Cancellation withdraws only input the worker has not drained.
             if message_id is not None and any(
                 item is pending for item in self._pending_messages
             ):
@@ -402,6 +374,64 @@ class Interaction:
             self._pending_messages = [
                 item for item in self._pending_messages if item is not pending
             ]
+
+    async def _drain_messages(self) -> None:
+        try:
+            while self._pending_messages:
+                async with self._lock, self._gate or nullcontext():
+                    batch, self._pending_messages = self._pending_messages, []
+                    if not batch:
+                        continue
+                    try:
+                        if self._closing or self._run.closed:
+                            raise RuntimeError("this interaction is closed")
+                        if self._over or not self._run.ok:
+                            receipt = {
+                                "outcome": "promptRequired",
+                                "reason": "interactionStopped",
+                            }
+                        elif (
+                            not self._started
+                            and self.trace.task.data.prompt is not None
+                        ):
+                            receipt = {
+                                "outcome": "promptRequired",
+                                "reason": "noRunningTurn",
+                            }
+                        else:
+                            segment = await self._turn(
+                                [UserMessage(content=item.text) for item in batch]
+                            )
+                            receipt = (
+                                {
+                                    "outcome": "promptRequired",
+                                    "reason": "interactionStopped",
+                                }
+                                if segment.terminated
+                                else {"outcome": "injected"}
+                            )
+                        for item in batch:
+                            item.receipt = receipt
+                            if (
+                                receipt.get("outcome") == "injected"
+                                and item.message_id is not None
+                            ):
+                                self._steering_receipts[item.message_id] = (
+                                    item.text,
+                                    dict(receipt),
+                                )
+                    except BaseException as error:
+                        for item in batch:
+                            item.error = error
+                        raise
+                    finally:
+                        for item in batch:
+                            if item.message_id is not None:
+                                self._pending_by_id.pop(item.message_id, None)
+                            item.done.set()
+        except BaseException as error:
+            self._finish_pending(error)
+            raise
 
     async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
@@ -413,7 +443,7 @@ class Interaction:
             return await self._turn(message)
 
     async def _turn(self, message: str | Messages | None) -> Segment:
-        if self._run.closed:
+        if self._closing or self._run.closed:
             raise RuntimeError("this interaction is closed")
         if self._over:
             raise RuntimeError(
@@ -463,8 +493,8 @@ class Interaction:
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
+        await self._cancel_deliveries()
         async with self._lock, self._gate or nullcontext():
-            await self._cancel_steering()
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
             return await self._run.close()
@@ -738,10 +768,11 @@ class Agent:
             run.fail(e)
             raise
         except BaseException:
+            await interaction._cancel_deliveries()
             await run.abort()
             raise
         finally:
-            await interaction._cancel_steering()
+            await interaction._cancel_deliveries()
             trace = run.trace if run.closed else await interaction.close()
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None
