@@ -38,7 +38,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
-from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1.configs.client import BaseClientConfig, TrainClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -80,6 +80,8 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+AUXILIARY_PURPOSE_HEADER = "X-Verifiers-Auxiliary-Purpose"
+"""A harness marks a non-agent model call explicitly; the host still authorizes its model."""
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -326,6 +328,7 @@ class InterceptionServer(Interception):
         usage: "Usage | None" = None,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
+        purpose: Literal["agent", "compaction"] = "agent",
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -349,6 +352,7 @@ class InterceptionServer(Interception):
             ModelCall(
                 node=node,
                 model=request.get("model") if request is not None else None,
+                purpose=purpose,
                 sampling=sampling,
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,
@@ -376,6 +380,126 @@ class InterceptionServer(Interception):
             )
         )
 
+    async def handle_auxiliary_compaction(
+        self,
+        request: web.Request,
+        session: RolloutSession,
+        dialect: Dialect,
+        body: dict,
+    ) -> web.Response:
+        """Relay an authorized compaction without making its text a solver turn.
+
+        The requested model is honored only for this explicit purpose and only when
+        the host's resolved agent config allowlists it. The native request's sampling
+        belongs to the compactor, rather than inheriting the evaluated model's sampling.
+        Its provider exchange is still recorded in `Trace.calls` with the actual model,
+        usage, timing, and error; `node=None` keeps the auxiliary output out of scoring,
+        final-answer lookup, and solver turn/token limits.
+        """
+        model = body.get("model")
+        if not isinstance(model, str) or model not in session.auxiliary_models:
+            return web.json_response(
+                dialect.error_body("auxiliary compaction model is not authorized"),
+                status=403,
+            )
+        if isinstance(session.ctx.client, TrainClientConfig):
+            return web.json_response(
+                dialect.error_body("auxiliary compaction requires an eval client"),
+                status=400,
+            )
+        if dialect.streaming(body):
+            return web.json_response(
+                dialect.error_body("auxiliary compaction must be non-streaming"),
+                status=400,
+            )
+        if body.get("tool_choice") not in ("none", {"type": "none"}):
+            return web.json_response(
+                dialect.error_body("auxiliary compaction must disable tool calls"),
+                status=400,
+            )
+        if session.released:
+            return web.json_response(
+                dialect.error_body("rollout concluded"), status=409
+            )
+        if session.stopped:
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
+                status=400,
+            )
+        try:
+            refused = await session.refused()
+            if refused is not None:
+                return web.json_response(
+                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                )
+            body, policy_paths = self.mediate_capabilities(session, dialect, body)
+            dialect.parse_request(body)
+        except ValueError as error:
+            return web.json_response(dialect.error_body(str(error)), status=400)
+        except RolloutError as error:
+            return self._fail(session, dialect, error)
+
+        # The purpose marker is a local authorization signal, not a provider header.
+        headers = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() != AUXILIARY_PURPOSE_HEADER.lower()
+        }
+        response: Response | None = None
+        error: BaseException | None = None
+        started = time.time()
+        try:
+            session.error = None
+            assert session.client is not None
+            response = await session.client.get_response(
+                dialect,
+                body,
+                session.ctx.sampling,
+                headers=headers,
+                session_id=session.trace.id,
+            )
+            if (
+                not (response.message.content or "").strip()
+                or response.message.tool_calls
+            ):
+                raise ProviderError("auxiliary compaction returned no usable text")
+            if session.released:
+                return web.json_response(
+                    dialect.error_body("rollout concluded"), status=409
+                )
+            if response.raw is None:
+                raise ProviderError(
+                    "auxiliary compaction returned no provider response"
+                )
+            return _completion_response(response.raw)
+        except RolloutError as exc:
+            error = exc
+            session.error = exc
+            return web.json_response(
+                dialect.error_body(str(exc)), status=getattr(exc, "status_code", 502)
+            )
+        except Exception as exc:  # noqa: BLE001 - malformed auxiliary provider response
+            error = ProviderError(
+                f"auxiliary compaction failed: {type(exc).__name__}: {exc}"
+            )
+            session.error = error
+            return web.json_response(dialect.error_body(str(error)), status=502)
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self.record_call(
+                session,
+                dialect,
+                body,
+                started,
+                finish_reason=response.finish_reason if response else None,
+                usage=response.usage if response else None,
+                error=error,
+                policy_paths=policy_paths,
+                purpose="compaction",
+            )
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -394,6 +518,15 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        purpose = request.headers.get(AUXILIARY_PURPOSE_HEADER)
+        if purpose is not None:
+            if purpose != "compaction":
+                return web.json_response(
+                    dialect.error_body("unknown auxiliary purpose"), status=400
+                )
+            return await self.handle_auxiliary_compaction(
+                request, session, dialect, body
+            )
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
         logger.debug(

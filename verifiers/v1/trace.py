@@ -4,7 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, Literal
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer
@@ -157,6 +157,8 @@ class ModelCall(BaseModel):
     """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
     """The model requested from the provider."""
+    purpose: Literal["agent", "compaction"] = "agent"
+    """Auxiliary compaction calls are recorded but do not commit scored agent turns."""
     sampling: Sampling | None = None
     """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
@@ -523,7 +525,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             "context_length",
         ):
             return True
-        last = next((c for c in reversed(self.calls) if c.error is None), None)
+        last = next(
+            (
+                c
+                for c in reversed(self.calls)
+                if c.purpose == "agent" and c.error is None
+            ),
+            None,
+        )
         return bool(last and last.finish_reason == "length")
 
     @property

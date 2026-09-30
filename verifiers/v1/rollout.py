@@ -104,6 +104,7 @@ class Rollout:
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
+            auxiliary_models=frozenset(agent_config.auxiliary_models),
             network_policy=(
                 runtime_config
                 if isinstance(runtime_config, NetworkPolicyConfig)

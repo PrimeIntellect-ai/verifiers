@@ -1,6 +1,6 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
@@ -36,6 +36,10 @@ class AgentConfig(BaseConfig):
     """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
     """Sampling values merged onto the run's sampling."""
+    auxiliary_models: list[str] = Field(default_factory=list)
+    """Models the harness may call for explicitly marked, unscored auxiliary work.
+    Ordinary agent turns still use `model`. Each auxiliary call is recorded with its
+    actual model and purpose, but does not become an agent message-graph turn."""
 
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""

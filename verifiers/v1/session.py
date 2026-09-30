@@ -98,6 +98,8 @@ class RolloutLimits:
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
+    auxiliary_models: frozenset[str] = field(default_factory=frozenset)
+    """Host-authorized model ids for marked auxiliary calls; empty by default."""
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
     trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
