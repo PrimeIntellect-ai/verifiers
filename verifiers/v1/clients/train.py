@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import threading
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -17,6 +18,13 @@ from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
+from verifiers.v1.dialects.anthropic import (
+    AnthropicDialect,
+    message_from_response,
+)
+from verifiers.v1.dialects.anthropic import (
+    parse_messages as parse_anthropic_messages,
+)
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
@@ -185,6 +193,60 @@ def response_from_generate(
     )
 
 
+def _without_provider_state(messages: list) -> list:
+    """Assistant messages with provider-native state dropped, so they render from their typed
+    fields (reasoning_content / content / tool_calls). See the Anthropic branch in get_response."""
+    return [
+        m.model_copy(update={"provider_state": None})
+        if isinstance(m, AssistantMessage) and getattr(m, "provider_state", None)
+        else m
+        for m in messages
+    ]
+
+
+def _anthropic_replay_form(message: AssistantMessage) -> AssistantMessage:
+    """The sampled message exactly as Claude Code will replay it on the next request.
+
+    1. Unique tool-use ids: the renderer's parser numbers calls `call_0, call_1, ...` afresh
+       every turn, and Claude Code drops tool_use blocks whose id already appeared in the
+       conversation (their results come back as an empty user turn).
+    2. Replay-equal fields: the next request re-parses our Anthropic message (thinking block
+       with signature -> provider_state, `json.dumps`'d inputs), and the trace graph matches
+       nodes by message hash, so the sampled node must carry the same fields or every turn forks.
+    """
+    if message.tool_calls:
+        message = message.model_copy(
+            update={
+                "tool_calls": [
+                    call.model_copy(update={"id": f"toolu_vf_{uuid.uuid4().hex[:24]}"})
+                    for call in message.tool_calls
+                ]
+            }
+        )
+    blocks = message_from_response(
+        Response(
+            id="replay",
+            created=0,
+            model="",
+            message=message,
+            finish_reason=None,
+            usage=None,
+        ),
+        "",
+    )["content"]
+    replayed = parse_anthropic_messages(
+        {"messages": [{"role": "assistant", "content": blocks}]}
+    )[0]
+    return message.model_copy(
+        update={
+            "content": replayed.content,
+            "reasoning_content": replayed.reasoning_content,
+            "tool_calls": replayed.tool_calls,
+            "provider_state": replayed.provider_state,
+        }
+    )
+
+
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
     if not messages:
@@ -349,16 +411,17 @@ class TrainClient(Client):
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
-        # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
-        # its `Response` for the program instead of relaying provider bytes.
-        if not isinstance(dialect, ChatDialect):
-            # The renderer renders a chat template, so it's only validated for chat-completions
-            # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
-            # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.
+        # it with a chat template. Having no provider bytes to relay, it serializes its own
+        # `Response.raw` in the request's dialect for the program.
+        # Chat-completions and Anthropic Messages both reduce to the same typed messages (the
+        # Anthropic dialect folds thinking -> reasoning_content, tool_use -> tool calls,
+        # tool_result -> tool messages), which the renderer tokenizes with the model's own chat
+        # template, so Anthropic-speaking harnesses (Claude Code) can be trained on. The Responses
+        # dialect stays unsupported.
+        if not isinstance(dialect, (ChatDialect, AnthropicDialect)):
             raise NotImplementedError(
-                f"The renderer client only supports the chat-completions dialect, got "
-                f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
-                f"renderer support for it."
+                f"The renderer client supports the chat-completions and Anthropic Messages "
+                f"dialects, got {type(dialect).__name__}. Use the proxy client for this dialect."
             )
         if turn is not None:
             prompt = turn.prompt
@@ -370,8 +433,17 @@ class TrainClient(Client):
         from renderers.client import generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
+        tail = turn.tail if turn is not None else []
+        if isinstance(dialect, AnthropicDialect):
+            # The Anthropic dialect keeps replayed thinking blocks (with signatures) as
+            # `provider_state`, and `message_to_wire` then emits them as `reasoning_details`
+            # instead of `reasoning_content`, which chat templates ignore: history reasoning
+            # would silently vanish from the rendered prompt. The reasoning text is already on
+            # `reasoning_content`; signatures only matter to Anthropic's own API, never here.
+            prompt = _without_provider_state(prompt)
+            tail = _without_provider_state(tail)
         wire_messages = [message_to_wire(m) for m in prompt]
-        wire_tail = [message_to_wire(m) for m in turn.tail] if turn is not None else []
+        wire_tail = [message_to_wire(m) for m in tail]
         prompt_ids: list[int] | None = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
@@ -466,7 +538,11 @@ class TrainClient(Client):
         )
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
-        response.raw = serialize_completion(response, model)
+        if isinstance(dialect, AnthropicDialect):
+            response.message = _anthropic_replay_form(response.message)
+            response.raw = message_from_response(response, model)
+        else:
+            response.raw = serialize_completion(response, model)
         return response
 
     async def close(self) -> None:
