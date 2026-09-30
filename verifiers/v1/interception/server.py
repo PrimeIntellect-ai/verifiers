@@ -1020,10 +1020,15 @@ class InterceptionServer(Interception):
                         await resp.write_eof()
                     return resp
             finally:
-                # Release the withheld events only now — after the commit — then close.
+                # A rejected terminal response (including a completed but empty
+                # provider reply) must not reach the SDK as a successful turn.
+                # Ending the stream without its terminal event lets the SDK
+                # retry; the typed provider error remains on the rollout trace
+                # if it cannot recover.
                 with contextlib.suppress(ConnectionResetError):
-                    for event in deferred:
-                        await resp.write(event)
+                    if node is not None:
+                        for event in deferred:
+                            await resp.write(event)
                     await resp.write_eof()
             return resp
         except OverlongPromptError as e:

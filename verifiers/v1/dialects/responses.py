@@ -337,6 +337,17 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             f"upstream Responses request did not complete: {detail}",
             status_code=status_code,
         )
+    # A completed response with neither output items nor usage has no evidence of
+    # a model turn. Some compatible providers emit this instead of a transport
+    # error; accepting it makes a rollout finish with a blank answer and a score
+    # of zero. Treat this exact shape as a retryable provider failure, while an
+    # accounted-for empty answer or a tool/reasoning item remains model output.
+    if status == "completed" and not data.get("output") and response.usage is None:
+        response_id = data.get("id") or "unavailable"
+        raise model_error(
+            f"upstream Responses reply had no output or usage (response_id={response_id})",
+            status_code=502,
+        )
     message = fold_assistant(data.get("output"))
     finish: FinishReason = (
         "length"
