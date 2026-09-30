@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import secrets
 import shlex
@@ -240,16 +241,24 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
     # the tmpfs.
     workdir = str(PurePosixPath(runtime.config.workdir))
-    root = str(PurePosixPath(workdir) / ".vf-src")
-    temp = str(PurePosixPath(workdir) / ".vf-tmp")
-    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
-    venv = str(PurePosixPath(workdir) / ".vf-venv")
+    suffix = (
+        f"-{hashlib.sha256(runtime.user.encode()).hexdigest()[:12]}"
+        if runtime.user is not None
+        else ""
+    )
+    root = str(PurePosixPath(workdir) / f".vf-src{suffix}")
+    temp = str(PurePosixPath(workdir) / f".vf-tmp{suffix}")
+    cache = str(PurePosixPath(workdir) / f".vf-uv-cache{suffix}")
+    venv = str(PurePosixPath(workdir) / f".vf-venv{suffix}")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime._mcp_install_lock:
+        if runtime.user is not None:
+            await runtime.ensure_curl()
+        installed = runtime._mcp_sources.setdefault(runtime.user, set())
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
-        pending = [source for source in sources if source not in runtime._mcp_sources]
+        pending = [source for source in sources if source not in installed]
         if not pending:
             return f"{venv}/bin/python"
         setup = (
@@ -257,7 +266,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
             'export PATH="$HOME/.local/bin:$PATH"; '
         )
-        if not runtime._mcp_sources:
+        if not installed:
             # Failed installs can leave the venv behind; retain it when retrying.
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
         # Drain remote writes and installs before cancellation releases the lock.
@@ -272,7 +281,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
                 f"server {server.server_name!r} install failed in runtime: "
                 f"{(result.stderr or result.stdout).strip()[-2000:]}"
             )
-        runtime._mcp_sources.update(pending)
+        installed.update(pending)
     return f"{venv}/bin/python"
 
 

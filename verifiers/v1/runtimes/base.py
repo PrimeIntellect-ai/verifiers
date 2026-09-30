@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
-_INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
-    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
+_INSTALL_CURL = (  # needs a known package manager when curl is absent
+    "command -v curl >/dev/null 2>&1 "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
     "|| apk add --no-cache curl ca-certificates"
 )
@@ -42,7 +42,7 @@ _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
     "command -v uv >/dev/null 2>&1 "
     "|| pip install -q -U --user uv 2>/dev/null "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
+    f"|| {{ command -v wget >/dev/null 2>&1 || {{ {_INSTALL_CURL}; }}; {_DOWNLOAD_UV}; }}"
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
@@ -136,7 +136,9 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
-    __slots__ = ("env",)
+    __slots__ = ("env", "user", "user_home")
+
+    supports_users: ClassVar[bool] = False
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -159,9 +161,11 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        self.user: str | None = None
+        self.user_home: str | None = None
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
-        self._mcp_sources: set[str] = set()
+        self._mcp_sources: dict[str | None, set[str]] = {}
         self._mcp_install_lock = asyncio.Lock()
         self._setup_claimed = False
         self.stopped = False
@@ -205,15 +209,64 @@ class Runtime(ABC):
 
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         """Combine the task's runtime-wide environment with one process's values."""
-        return {**self.env, **env}
+        home = {"HOME": self.user_home} if self.user_home is not None else {}
+        return {**home, **self.env, **env}
 
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
         runtime = copy.copy(self)
-        # `env` is slotted, so every other runtime field stays physical and shared.
+        # Process context is slotted; physical runtime fields stay shared.
         runtime.__dict__ = self.__dict__
         runtime.env = dict(env)
         return runtime
+
+    async def with_user(self, user: str | int | None) -> "Runtime":
+        """Share the box as an execution account, without changing trusted setup."""
+        user = str(user) if user is not None else None
+        if user == self.user:
+            return self
+        if user is not None and not self.supports_users:
+            raise ValueError(f"{type(self).__name__} does not support execution users")
+        runtime = self.with_env(self.env)
+        runtime.user = user
+        runtime.user_home = None
+        if user is None:
+            return runtime
+        result = await runtime.run(
+            ["sh", "-c", 'getent passwd "$(id -u)" | cut -d: -f6'], {}
+        )
+        if result.exit_code or not result.stdout.strip():
+            raise SandboxError(
+                f"cannot resolve execution user {user!r}: {result.stderr}"
+            )
+        runtime.user_home = result.stdout.strip()
+        return runtime
+
+    def user_argv(self, argv: list[str], env: dict[str, str]) -> list[str]:
+        """Switch Linux provider processes, preserving explicit env after su resets it."""
+        if self.user is None:
+            return argv
+        command = shlex.join(
+            ["env", *(f"{key}={value}" for key, value in env.items()), *argv]
+        )
+        return [
+            "sh",
+            "-c",
+            (
+                'account=$(getent passwd "$1" | cut -d: -f1); '
+                '[ -n "$account" ] || exit 1; exec su -s /bin/sh "$account" -c "$2"'
+            ),
+            "vf-user",
+            self.user,
+            f"exec {command}",
+        ]
+
+    async def ensure_curl(self) -> None:
+        """Bootstrap the downloader with privilege before account-owned installs."""
+        trusted = await self.with_user("root") if self.user is not None else self
+        result = await trusted.run(["sh", "-c", _INSTALL_CURL], {})
+        if result.exit_code:
+            raise SandboxError(f"curl setup failed: {result.stderr.strip()[-500:]}")
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
@@ -264,8 +317,14 @@ class Runtime(ABC):
         its environment variables out of child processes spawned by the script.
         """
         data = script.encode() if isinstance(script, str) else script
-        digest = hashlib.sha256(data).hexdigest()
-        path = f"{self.scripts_dir}/{digest}.py"
+        if self.user is not None:
+            await self.ensure_curl()
+        identity = data if self.user is None else self.user.encode() + b"\0" + data
+        digest = hashlib.sha256(identity).hexdigest()
+        directory = self.scripts_dir
+        if self.user is not None:
+            directory += f"-{hashlib.sha256(self.user.encode()).hexdigest()[:12]}"
+        path = f"{directory}/{digest}.py"
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:
@@ -348,7 +407,6 @@ class Runtime(ABC):
         Runtimes without bounded binary reads delegate capped reads here, using
         base64 because `run` returns decoded text.
         """
-        assert max_bytes is not None
         # Through a temp file, not a pipe: `head | base64` exits with base64's 0
         # even when the path is missing, and a missing file must raise here just
         # as it does from a native binary read.
@@ -358,7 +416,12 @@ class Runtime(ABC):
                 "-c",
                 (
                     "t=$(mktemp) || exit 1; "
-                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    + (
+                        'head -c "$1" -- "$2" > "$t" '
+                        if max_bytes is not None
+                        else 'cat -- "$2" > "$t" '
+                    )
+                    + '|| { rm -f "$t"; exit 1; }; '
                     'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
                 ),
                 "sh",
@@ -373,7 +436,31 @@ class Runtime(ABC):
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
-        pass
+        """Provider filesystem APIs need a user-owned copy for scoped writes."""
+        assert self.user is not None
+        trusted = await self.with_user("root")
+        temporary = f"/tmp/vf-write-{uuid.uuid4().hex}"
+        try:
+            await trusted.write(temporary, data)
+            result = await trusted.run(["chown", "--", self.user, temporary], {})
+            if not result.exit_code:
+                result = await self.run(
+                    [
+                        "sh",
+                        "-c",
+                        'mkdir -p -- "$1" && cat -- "$2" > "$3"',
+                        "vf-write",
+                        str(PurePosixPath(path).parent),
+                        temporary,
+                        path,
+                    ],
+                    {},
+                )
+            if result.exit_code:
+                raise SandboxError(f"write {path!r}: {result.stderr.strip()[-500:]}")
+        finally:
+            with contextlib.suppress(Exception):
+                await run_shielded(trusted.run(["rm", "-f", temporary], {}))
 
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""

@@ -82,7 +82,7 @@ async def ensure_node(runtime: Runtime) -> None:
     """Install the shared Node runtime used by ACP adapter harnesses."""
     # The install replaces NODE_DIR wholesale, so the lock lives beside it.
     await ensure_installed(
-        runtime,
+        await runtime.with_user("root") if runtime.user is not None else runtime,
         directory=NODE_DIR,
         lock=f"{NODE_DIR}.install.lock",
         install=INSTALL,

@@ -114,6 +114,7 @@ class CollectHook(BaseModel):
     command: str
     timeout_sec: float = 600.0
     service: str = "main"
+    user: str | int | None = None
 
 
 class HarborArtifact(Artifact):
@@ -181,6 +182,8 @@ class HarborData(TaskData):
     verifier: VerifierConfig | None = None
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
+    verifier_user: str | int | None = None
+    """Grading account in either the shared box or the separate verifier."""
 
 
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
@@ -206,6 +209,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(self, runtime: Runtime) -> None:
+        if self.data.user is not None or self.data.verifier_user is not None:
+            runtime = await runtime.with_user("root")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -277,10 +282,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         runtimes = sidecars or {"main": runtime}
         for hook in [hook for hook in self.data.collect if hook.service in runtimes]:
             try:
-                result = await asyncio.wait_for(
-                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
-                    hook.timeout_sec,
-                )
+                async with asyncio.timeout(hook.timeout_sec):
+                    hook_runtime = await runtimes[hook.service].with_user(hook.user)
+                    result = await hook_runtime.run(["sh", "-c", hook.command], {})
             except TimeoutError as exc:
                 raise RuntimeError(
                     f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
@@ -331,6 +335,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         the agent or shipped in the image — must be gone before `test.sh` runs, so a
         removal that fails must not fall through to reading it.
         """
+        if self.data.user is not None or self.data.verifier_user is not None:
+            runtime = await runtime.with_user("root")
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
@@ -372,7 +378,15 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
-        await runtime.run(
+        verifier_runtime = await runtime.with_user(self.data.verifier_user)
+        if self.data.verifier_user is not None:
+            trusted = await runtime.with_user("root")
+            result = await trusted.run(
+                ["chown", "--", str(self.data.verifier_user), "/logs/verifier"], {}
+            )
+            if result.exit_code:
+                raise TaskError(f"cannot set verifier log owner: {result.stderr}")
+        await verifier_runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
         scores = await self.read_reward_json(runtime)
@@ -432,6 +446,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             if data.verifier_image is not None
             else data.image,
             "workdir": data.workdir if fresh else verifier.workdir,
+            "user": data.verifier_user,
             "resources": data.resources if fresh else verifier.resources,
             "upload_environment": data.upload_environment
             if fresh and data.verifier_image is None
@@ -671,6 +686,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         prompt=harbor_task.instruction.strip(),
         image=image,
         workdir=environment.workdir,
+        user=parsed.agent.user,
         network_allow=(
             ["*"]
             if network.network_mode == NetworkMode.PUBLIC
@@ -698,6 +714,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         ),
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
+        verifier_user=parsed.verifier.user,
         artifacts=artifacts,
         collect=hooks,
         verifier=verifier,
@@ -721,8 +738,6 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user is not None:
-        raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
@@ -740,14 +755,12 @@ def parse_verifier_extras(
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
-        if hook.user is not None:
-            raise ValueError(
-                f"{task_dir.name}: collect hook `user` is not supported "
-                "(commands run as the runtime's default user)"
-            )
         hooks.append(
             CollectHook(
-                command=hook.command, timeout_sec=hook.timeout_sec, service=hook.service
+                command=hook.command,
+                timeout_sec=hook.timeout_sec,
+                service=hook.service,
+                user=hook.user,
             )
         )
     services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}

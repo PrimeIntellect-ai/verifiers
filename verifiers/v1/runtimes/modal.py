@@ -170,6 +170,7 @@ class ModalProcess(RuntimeProcess):
 
 
 class ModalRuntime(Runtime):
+    supports_users = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
@@ -295,7 +296,9 @@ class ModalRuntime(Runtime):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
-                *argv, workdir=self.config.workdir, env=self.process_env(env)
+                *self.user_argv(argv, self.process_env(env)),
+                workdir=self.config.workdir,
+                env=self.process_env(env),
             )
             # Drain both pipes concurrently so a large stderr can't deadlock stdout.
             stdout, stderr = await asyncio.gather(
@@ -319,12 +322,10 @@ class ModalRuntime(Runtime):
         wrapper = 'echo $$ > "$1"; shift; exec "$@"'
         try:
             proc = await self._sandbox.exec.aio(
-                "sh",
-                "-c",
-                wrapper,
-                "vf-process",
-                pidfile,
-                *argv,
+                *self.user_argv(
+                    ["sh", "-c", wrapper, "vf-process", pidfile, *argv],
+                    self.process_env(env),
+                ),
                 workdir=self.config.workdir,
                 env=self.process_env(env),
                 text=False,
@@ -388,7 +389,7 @@ class ModalRuntime(Runtime):
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
-        if max_bytes is not None:
+        if self.user is not None or max_bytes is not None:
             return await super()._read(path, max_bytes)
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
@@ -396,6 +397,8 @@ class ModalRuntime(Runtime):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
+        if self.user not in (None, "root", "0"):
+            return await super().write(path, data)
         # Create the parent first (Modal's write does not mkdir).
         target = self._abs(path)
         try:

@@ -144,6 +144,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeRuntime(Runtime):
+    supports_users = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -289,7 +290,7 @@ class PrimeRuntime(Runtime):
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
                 self.info.id,
-                shlex.join(argv),
+                shlex.join(self.user_argv(argv, self.process_env(env))),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -332,7 +333,7 @@ class PrimeRuntime(Runtime):
         try:
             process = await self._client.open_process(
                 self.info.id,
-                shlex.join(argv),
+                shlex.join(self.user_argv(argv, self.process_env(env))),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -350,6 +351,9 @@ class PrimeRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        command = shlex.join(
+            self.user_argv(["sh", "-c", command], self.process_env(env))
+        )
         try:
             await self._client.start_background_job(
                 self.info.id,
@@ -361,6 +365,8 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if self.user is not None:
+            return await super()._read(path, max_bytes)
         if max_bytes is not None:
             try:
                 # Stream binary output: execute_command buffers base64 text for the
@@ -403,6 +409,8 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
+        if self.user not in (None, "root", "0"):
+            return await super().write(path, data)
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (

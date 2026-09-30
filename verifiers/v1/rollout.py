@@ -240,12 +240,24 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(TaskError, "task setup"),
             ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+                setup_runtime = (
+                    await runtime.with_user("root")
+                    if self.task.data.user is not None
+                    else runtime
+                )
+                await invoke(
+                    self.task.setup, {"trace": self.trace, "runtime": setup_runtime}
+                )
+            async with (
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
+                boundary(TaskError, "agent execution user"),
+            ):
+                agent_runtime = await runtime.with_user(self.task.data.user)
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                await self.harness.setup(runtime)
+                await self.harness.setup(agent_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -270,7 +282,7 @@ class Rollout:
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
-                    runtime,
+                    agent_runtime,
                     shared=self._shared_tools,
                     state_secret=state_secret,
                     state_route=self.trace.id,
@@ -341,7 +353,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        runtime,
+                        agent_runtime,
                         self._endpoint,
                         self._secret,
                         self._urls,

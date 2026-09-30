@@ -70,6 +70,7 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 
 
 class DockerRuntime(ContainerRuntime):
+    supports_users = True
     engine: ClassVar[str] = "docker"
     """The CLI binary for the shared OCI container operations."""
     info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
@@ -528,6 +529,7 @@ class DockerRuntime(ContainerRuntime):
             self.engine,
             "exec",
             *(("-i",) if stdin else ()),
+            *(("--user", self.user) if self.user is not None else ()),
             *(arg for key, value in env.items() for arg in ("--env", f"{key}={value}")),
             "--workdir",
             self.config.workdir,

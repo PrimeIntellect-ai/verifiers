@@ -26,6 +26,8 @@ async def ensure_installed(
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
     lock = shlex.quote(lock or f"{directory}/install.lock")
+    if runtime.user is not None:
+        await runtime.ensure_curl()
     script = f"{ready} || ({install})" if ready else install
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
