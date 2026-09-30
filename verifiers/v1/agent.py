@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Generic, Self, cast
+from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
 
@@ -182,12 +183,25 @@ class Interaction:
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
-        self._steering_locks: dict[str, asyncio.Lock] = {}
+        self._steering_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
         self._steering_receipts: dict[str, tuple[str, dict]] = {}
 
     @property
     def trace(self) -> Trace:
         return self._run.trace
+
+    async def send(self, message: str, *, message_id: str | None = None) -> dict:
+        """Deliver a user message to this open interaction.
+
+        Active work is steered; an idle session resumes on the message. The
+        caller does not need to start another turn. The receipt confirms
+        delivery, not that the interaction is finished; keep its context open
+        while more messages may arrive. A prompted task must start its opening
+        turn first. Stable IDs deduplicate successful deliveries.
+        """
+        return await self.steer(message, message_id=message_id, wake=True)
 
     async def steer(
         self, message: str, *, message_id: str | None = None, wake: bool = False
