@@ -18,6 +18,8 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
+from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.timeouts import TimeoutConfig
 from verifiers.v1.utils.prime import load_prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
@@ -33,6 +35,10 @@ class BaseClientConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    """Upstream connection and per-read timeout overrides."""
+    retries: RetryConfig = RetryConfig()
+    """Only `max_retries` applies to upstream requests; rollout filters are unused here."""
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":
@@ -65,7 +71,7 @@ class EvalClientConfig(BaseClientConfig):
 
 class TrainClientConfig(BaseClientConfig):
     """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
-    `TrainClient`), so responses carry token ids + logprobs. Needs a running vLLM engine."""
+    `TrainClient`), so responses carry token IDs and logprobs. Needs a running vLLM engine."""
 
     type: Literal["train"] = "train"
     renderer: RendererConfig | None = None

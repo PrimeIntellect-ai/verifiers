@@ -2,30 +2,16 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import BaseModel, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.timeouts import TimeoutConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import deep_merge
-
-
-class TimeoutConfig(BaseConfig):
-    """Timeout (in seconds) for different phases of an agent's run. Each unset
-    stage takes the task's own timeout for it, else runs with no limit."""
-
-    # one shared budget: task setup + provisioning
-    setup: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for task/harness setup through session preparation."""
-    rollout: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for the agent's solve attempt."""
-    finalize: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for the task + harness finalize hooks."""
-    scoring: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
 class AgentConfig(BaseConfig):

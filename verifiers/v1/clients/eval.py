@@ -1,5 +1,7 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import asyncio
+import logging
 import re
 from collections.abc import Mapping
 
@@ -7,11 +9,11 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
+from verifiers.v1.clients.base import DEFAULT_LIMITS, client_timeout, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import model_error
+from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
@@ -57,6 +59,8 @@ _BLOCKED_REQUEST_HEADERS = (
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
+logger = logging.getLogger(__name__)
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class EvalClient(Client):
@@ -68,7 +72,10 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
+        self.max_retries = config.retries.max_retries
+        self.client = httpx.AsyncClient(
+            timeout=client_timeout(config), limits=DEFAULT_LIMITS
+        )
 
     async def get_response(
         self,
@@ -79,7 +86,7 @@ class EvalClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
-        resp = await self._request(
+        resp = await self._request_with_retries(
             join_url(self.base_url, dialect.upstream_path),
             body,
             self._headers(dialect, headers, session_id),
@@ -163,6 +170,27 @@ class EvalClient(Client):
             f"upstream {response.status_code}: {text}", status_code=response.status_code
         )
 
+    async def _request_with_retries(
+        self, url: str, body: dict, headers: httpx.Headers
+    ) -> httpx.Response:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self._request(url, body, headers)
+            except ProviderError as error:
+                if (
+                    attempt == self.max_retries
+                    or error.status_code not in _RETRYABLE_STATUS_CODES
+                ):
+                    raise
+                logger.warning(
+                    "retrying upstream request: attempt=%d/%d status=%d",
+                    attempt + 1,
+                    self.max_retries,
+                    error.status_code,
+                )
+                await asyncio.sleep(min(2**attempt, 8))
+        raise AssertionError("request retry loop exhausted")
+
     async def relay(
         self,
         dialect: Dialect,
@@ -170,34 +198,74 @@ class EvalClient(Client):
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        # Relay complete SSE events so the interception server can safely insert keepalives
-        # between them. Error responses are mapped before any event is handed back.
-        resp = await self._request(
-            join_url(self.base_url, dialect.upstream_path),
-            body,
-            self._headers(dialect, headers, session_id),
-            stream=True,
-        )
+        url = join_url(self.base_url, dialect.upstream_path)
+        upstream_headers = self._headers(dialect, headers, session_id)
+        if self.max_retries == 0:
+            resp = await self._request(url, body, upstream_headers, stream=True)
+            return RelayReply(
+                content_type=resp.headers.get("content-type", "text/event-stream"),
+                chunks=self._sse_events(resp),
+                close=resp.aclose,
+            )
 
-        async def chunks():
-            buffer = bytearray()
-            search_from = 0
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer, search_from):
-                    yield bytes(buffer[: match.end()])
-                    del buffer[: match.end()]
-                    search_from = 0
-                # A delimiter is at most four bytes and can straddle chunks.
-                search_from = max(0, len(buffer) - 3)
-            if buffer:
-                yield bytes(buffer)
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = await self._request(url, body, upstream_headers, stream=True)
+                try:
+                    events = [event async for event in self._sse_events(resp)]
+                    if not any(dialect.is_terminal_event(event) for event in events):
+                        raise ProviderError(
+                            "upstream stream ended before its terminal event"
+                        )
+                    content_type = resp.headers.get("content-type", "text/event-stream")
+                finally:
+                    await resp.aclose()
+            except ProviderError as error:
+                if (
+                    attempt == self.max_retries
+                    or error.status_code not in _RETRYABLE_STATUS_CODES
+                ):
+                    raise
+                failure = f"ProviderError({error.status_code})"
+            except (httpx.HTTPError, ConnectionResetError) as error:
+                if attempt == self.max_retries:
+                    raise model_error(str(error), status_code=503) from error
+                failure = type(error).__name__
+            else:
 
-        return RelayReply(
-            content_type=resp.headers.get("content-type", "text/event-stream"),
-            chunks=chunks(),
-            close=resp.aclose,
-        )
+                async def chunks(buffered_events: list[bytes]):
+                    for event in buffered_events:
+                        yield event
+
+                async def close():
+                    return None
+
+                return RelayReply(
+                    content_type=content_type, chunks=chunks(events), close=close
+                )
+            logger.warning(
+                "retrying upstream stream: attempt=%d/%d failure=%s",
+                attempt + 1,
+                self.max_retries,
+                failure,
+            )
+            await asyncio.sleep(min(2**attempt, 8))
+        raise AssertionError("stream retry loop exhausted")
+
+    @staticmethod
+    async def _sse_events(resp: httpx.Response):
+        # Relay complete SSE events so the interception server can insert keepalives.
+        buffer = bytearray()
+        search_from = 0
+        async for chunk in resp.aiter_bytes():
+            buffer += chunk
+            while match := _SSE_EVENT_END.search(buffer, search_from):
+                yield bytes(buffer[: match.end()])
+                del buffer[: match.end()]
+                search_from = 0
+            search_from = max(0, len(buffer) - 3)
+        if buffer:
+            yield bytes(buffer)
 
     async def relay_aux(
         self,
@@ -207,7 +275,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
-        resp = await self._request(
+        resp = await self._request_with_retries(
             join_url(self.base_url, route),
             body,
             self._headers(dialect, headers, None),
