@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
-from typing import Generic, Self, cast
+from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -192,16 +192,31 @@ class Interaction:
     def trace(self) -> Trace:
         return self._run.trace
 
-    async def send(self, message: str, *, message_id: str | None = None) -> dict:
+    async def send(
+        self,
+        message: str,
+        *,
+        mode: Literal["steer", "queue"] = "steer",
+        message_id: str | None = None,
+    ) -> dict:
         """Deliver a user message to this open interaction.
 
-        Active work is steered; an idle session resumes on the message. The
-        caller does not need to start another turn. The receipt confirms
-        delivery, not that the interaction is finished; keep its context open
+        ``steer`` delivers at the harness's next safe point during active work.
+        ``queue`` waits for the current turn to yield, then runs a new turn;
+        it does not wake a wait tool inside the active turn.
+        Both resume an idle session. Queue mode also works without ACP steering.
+        Queued sends and idle wake-ups return after their turn finishes; active
+        steering returns when the harness accepts it. Cancellation withdraws a
+        queued message that has not started. The caller must await or schedule
+        this coroutine; it does not create a background delivery task.
+        The receipt confirms delivery, not that the interaction is finished;
+        keep its context open
         while more messages may arrive. A prompted task must start its opening
         turn first. Stable IDs deduplicate successful deliveries.
         """
-        return await self.steer(message, message_id=message_id, wake=True)
+        if mode not in ("steer", "queue"):
+            raise ValueError("message mode must be 'steer' or 'queue'")
+        return await self._send(message, message_id=message_id, mode=mode, wake=True)
 
     async def steer(
         self, message: str, *, message_id: str | None = None, wake: bool = False
@@ -213,8 +228,18 @@ class Interaction:
         its opening turn. Wake-up uses the normal turn budget and lifecycle.
         Successful deliveries with a stable ID are deduplicated in this interaction.
         """
+        return await self._send(message, message_id=message_id, mode="steer", wake=wake)
+
+    async def _send(
+        self,
+        message: str,
+        *,
+        message_id: str | None,
+        mode: Literal["steer", "queue"],
+        wake: bool,
+    ) -> dict:
         if not isinstance(message, str) or not message.strip():
-            raise ValueError("steering requires a nonempty user message")
+            raise ValueError("delivery requires a nonempty user message")
         # Only retries of the same message share a lock. A wake-up can run a
         # full turn; unrelated messages must still reach that turn through ACP.
         lock = (
@@ -234,7 +259,11 @@ class Interaction:
                 return dict(receipt)
             if self._over or not self._run.ok:
                 return {"outcome": "promptRequired", "reason": "interactionStopped"}
-            receipt = await self._run.steer(message, message_id=message_id)
+            receipt = (
+                await self._run.steer(message, message_id=message_id)
+                if mode == "steer"
+                else {"outcome": "promptRequired", "reason": "noRunningTurn"}
+            )
             if wake and receipt.get("outcome") == "promptRequired":
                 # A finishing prompt may still hold the turn lock. Wait for it,
                 # then resume through the same path as an ordinary user turn.
