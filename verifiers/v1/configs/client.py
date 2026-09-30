@@ -18,14 +18,27 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
-from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.timeouts import TimeoutConfig
 from verifiers.v1.utils.prime import load_prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
+
+
+class ClientTimeoutConfig(BaseConfig):
+    """Timeouts (in seconds) for each phase of an HTTP request to the endpoint; `None`
+    waits indefinitely. Distinct from the agent's stage timeouts, which bound a rollout."""
+
+    connect: float | None = Field(30.0, gt=0)
+    """Time to establish a connection, so an unreachable endpoint still fails fast."""
+    read: float | None = Field(None, gt=0)
+    """Time between received bytes. Unbounded by default: agentic completions are slow
+    and the rollout timeout is the real backstop."""
+    write: float | None = Field(None, gt=0)
+    """Time between sent bytes."""
+    pool: float | None = Field(None, gt=0)
+    """Time to acquire a connection from the pool."""
 
 
 class BaseClientConfig(BaseConfig):
@@ -35,10 +48,7 @@ class BaseClientConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
-    timeout: TimeoutConfig = TimeoutConfig()
-    """Upstream connection and per-read timeout overrides."""
-    retries: RetryConfig = RetryConfig()
-    """Only `max_retries` applies to upstream requests; rollout filters are unused here."""
+    timeout: ClientTimeoutConfig = ClientTimeoutConfig()
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":
