@@ -61,6 +61,7 @@ async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
     if result.exit_code:
         raise RuntimeError(result.stderr)
 
+
 async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
     trace.info["answer"] = (
         await runtime.read("results/answer.txt", max_bytes=1_000_000)

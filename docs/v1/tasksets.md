@@ -174,12 +174,18 @@ the first message. For images, use message content:
 ```python
 from verifiers.v1.utils.image import image_data_url
 
-data = vf.TaskData(prompt=[vf.UserMessage(content=[
-    vf.TextContentPart(text="What is shown in this image?"),
-    vf.ImageUrlContentPart(
-        image_url=vf.ImageUrlSource(url=image_data_url(image)),
-    ),
-])])
+data = vf.TaskData(
+    prompt=[
+        vf.UserMessage(
+            content=[
+                vf.TextContentPart(text="What is shown in this image?"),
+                vf.ImageUrlContentPart(
+                    image_url=vf.ImageUrlSource(url=image_data_url(image)),
+                ),
+            ]
+        )
+    ]
+)
 ```
 
 Here `image` is a PIL image. Keep the benchmark's text and image order unchanged.
