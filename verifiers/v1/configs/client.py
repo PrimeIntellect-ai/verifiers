@@ -18,6 +18,8 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
+from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.timeouts import TimeoutConfig
 from verifiers.v1.utils.prime import load_prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
@@ -33,6 +35,10 @@ class BaseClientConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    """Upstream connection and per-read timeout overrides."""
+    retries: RetryConfig = RetryConfig()
+    """Only `max_retries` applies to upstream requests; rollout filters are unused here."""
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":
@@ -61,18 +67,11 @@ class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
-    stream_retries: int = Field(default=0, ge=0, le=7)
-    """Retry a streamed provider response that fails before its terminal event. The
-    default leaves the relay's existing behavior unchanged."""
-    connect_timeout_seconds: float | None = Field(default=None, gt=0)
-    read_timeout_seconds: float | None = Field(default=None, gt=0)
-    """Optional upstream connection and per-read timeouts in seconds."""
 
 
 class TrainClientConfig(BaseClientConfig):
     """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
-    `TrainClient`), so responses carry token IDs and, by default, logprobs. Needs a running
-    compatible token-in/token-out engine."""
+    `TrainClient`), so responses carry token IDs and logprobs. Needs a running vLLM engine."""
 
     type: Literal["train"] = "train"
     renderer: RendererConfig | None = None
@@ -84,15 +83,6 @@ class TrainClientConfig(BaseClientConfig):
     """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
-    require_logprobs: bool = True
-    """Require sampled logprobs for every completion token. Disable only when
-    capturing token IDs from an endpoint that omits logprobs."""
-    send_routed_experts_prompt_start: bool = True
-    """Send the bridge offset used by prime-rl's routed-expert capture. Disable
-    for token endpoints that reject this sampling parameter."""
-    upstream_max_retries: int = Field(default=0, ge=0, le=7)
-    """Retry transient hosted token-generation failures before returning a model error.
-    The default keeps the training client's existing no-retry behavior."""
     multiplex: int = Field(256, ge=1)
     """Rollouts that share one renderer (~75-95 MB each): the pool warms one and grows on
     demand, so N concurrent rollouts hold ~N/multiplex tokenizers. A renderer is only busy

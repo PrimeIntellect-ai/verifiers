@@ -8,23 +8,10 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.timeouts import TimeoutConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import deep_merge
-
-
-class TimeoutConfig(BaseConfig):
-    """Timeout (in seconds) for different phases of an agent's run."""
-
-    setup: float | None = None  # one shared budget: task setup + provisioning
-    """Timeout (in seconds) for task/harness setup through session preparation."""
-    rollout: float | None = None
-    """Timeout (in seconds) for the agent's solve attempt. Unset: the task's own
-    timeout, else 4 hours. `0` disables the timeout."""
-    finalize: float | None = None
-    """Timeout (in seconds) for the task + harness finalize hooks."""
-    scoring: float | None = None
-    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
 class AgentConfig(BaseConfig):

@@ -316,9 +316,7 @@ class TrainClient(Client):
 
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
-        self.client = build_async_openai(
-            config, max_retries=config.upstream_max_retries
-        )
+        self.client = build_async_openai(config)
         # The per-request model is only known at call time; a config that pins the renderer
         # model can warm now, which is every training run (prime-rl always pins it).
         if config.renderer_model_name is not None:
@@ -408,11 +406,10 @@ class TrainClient(Client):
                     multi_modal_data = bridged.multi_modal_data
                     prompt_attribution = bridged
                     bridged_turn = turn
-                    if self.config.send_routed_experts_prompt_start:
-                        sampling_params["routed_experts_prompt_start"] = max(
-                            len(previous_prompt_ids) + len(previous_completion_ids) - 1,
-                            0,
-                        )
+                    sampling_params["routed_experts_prompt_start"] = max(
+                        len(previous_prompt_ids) + len(previous_completion_ids) - 1,
+                        0,
+                    )
 
             # Render here (encode-side, so through the slot) rather than inside `generate`:
             # handed prebuilt prompt_ids, generate's own renderer touches are decode-side
@@ -428,9 +425,6 @@ class TrainClient(Client):
                 multi_modal_data = rendered.multi_modal_data
                 prompt_attribution = rendered
 
-            generate_options: dict[str, bool] = {}
-            if not self.config.require_logprobs:
-                generate_options["require_logprobs"] = False
             try:
                 result = await generate(
                     client=self.client,
@@ -446,7 +440,6 @@ class TrainClient(Client):
                     extra_headers={SESSION_ID_HEADER: session_id}
                     if session_id
                     else None,
-                    **generate_options,
                 )
             except OverlongPromptError as e:
                 # The renderer's pre-flight overflow never reached the provider: a
