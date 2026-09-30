@@ -240,6 +240,7 @@ class ACPSession:
         self.stack = AsyncExitStack()
         self.connection: Any = None
         self.capabilities: Any = None
+        self.supports_steering = False
         self.session_id: str | None = None
         self.is_new = True
 
@@ -263,6 +264,9 @@ class ACPSession:
                 ),
             )
             self.capabilities = initialized.agent_capabilities
+            self.supports_steering = (initialized.field_meta or {}).get(
+                "steering", {}
+            ).get("supported") is True
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
@@ -293,6 +297,20 @@ class ACPSession:
         )
         self.is_new = False
         return result
+
+    async def steer(self, message: str, message_id: str | None = None) -> dict:
+        if self.connection is None or self.session_id is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        if not self.supports_steering:
+            raise NotImplementedError("ACP agent does not advertise steering support")
+        params = {
+            "sessionId": self.session_id,
+            "prompt": [{"type": "text", "text": message}],
+            "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+        }
+        if message_id is not None:
+            params["messageId"] = message_id
+        return await self.connection.ext_method("session/steering", params)
 
     async def close(self) -> dict[str, Any]:
         response_metadata: dict[str, Any] = {}
@@ -350,39 +368,50 @@ async def serve_stream() -> None:
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: protocol, sys.stdin.buffer
     )
+    tasks: set[asyncio.Task] = set()
+    prompt_lock = asyncio.Lock()
+
+    async def handle(request: dict) -> None:
+        operation = request.get("operation")
+        try:
+            if operation == "prompt":
+                async with prompt_lock:
+                    result = asdict(await session.run(request["config"]))
+            elif operation == "steer":
+                result = await session.steer(
+                    request["message"], request.get("message_id")
+                )
+            elif operation == "shutdown":
+                result = {"response_metadata": await session.close()}
+            else:
+                raise ValueError(f"unknown ACP session operation: {operation!r}")
+            response = {"ok": True, "result": result}
+        except Exception as error:  # noqa: BLE001 - serialize protocol failures
+            traceback.print_exc()
+            response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+            if isinstance(error, RequestError) and isinstance(error.data, dict):
+                response["error"] = error.data.get("details") or str(error)
+                response["error_data"] = error.data
+            if operation == "prompt":
+                response["result"] = asdict(session.client.turn_result())
+        response["id"] = request.get("id")
+        write_packet(sys.stdout.buffer, response)
+
     try:
         while request := await read_packet(reader):
-            stop = False
-            try:
-                operation = request.get("operation")
-                if operation == "prompt":
-                    response = {
-                        "ok": True,
-                        "result": asdict(await session.run(request["config"])),
-                    }
-                elif operation == "shutdown":
-                    stop = True
-                    response = {
-                        "ok": True,
-                        "result": {"response_metadata": await session.close()},
-                    }
-                else:
-                    raise ValueError(f"unknown ACP session operation: {operation!r}")
-            except Exception as error:  # noqa: BLE001 - serialize protocol failures
-                traceback.print_exc()
-                response = {
-                    "ok": False,
-                    "error": f"{type(error).__name__}: {error}",
-                }
-                if isinstance(error, RequestError) and isinstance(error.data, dict):
-                    response["error"] = error.data.get("details") or str(error)
-                    response["error_data"] = error.data
-                if operation == "prompt":
-                    response["result"] = asdict(session.client.turn_result())
-            write_packet(sys.stdout.buffer, response)
-            if stop:
+            if request.get("operation") == "shutdown":
+                if tasks:
+                    await asyncio.gather(*tasks)
+                await handle(request)
                 break
+            task = asyncio.create_task(handle(request))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
     finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await session.close()
 
 

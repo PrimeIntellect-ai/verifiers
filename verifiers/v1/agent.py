@@ -187,6 +187,19 @@ class Interaction:
     def trace(self) -> Trace:
         return self._run.trace
 
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        """Inject a user message into the running turn without acquiring its lock.
+
+        Returns the ACP steering receipt. ``promptRequired`` leaves the message
+        unconsumed; the caller can retry during a later turn. A stable message ID
+        permits deduplication by agents that support it.
+        """
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("steering requires a nonempty user message")
+        if self._over:
+            raise RuntimeError("the exchange is over")
+        return await self._run.steer(message, message_id=message_id)
+
     async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
         multi-message turns); run one segment; return its `Segment`. A
