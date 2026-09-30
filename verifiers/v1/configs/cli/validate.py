@@ -16,8 +16,8 @@ class CheckTimeoutConfig(BaseConfig):
     setup: float | None = None
     """Max wall-clock for the task's `setup` hook."""
     total: float | None = None
-    """Max wall-clock for the check itself per task — the `validate` hook, or the debug
-    command/script."""
+    """Max wall-clock for the check itself per task, after setup — the gold check's
+    `validate` hook, or the setup check's `finalize` and scoring."""
 
 
 class ValidateConfig(BaseConfig):
@@ -32,9 +32,10 @@ class ValidateConfig(BaseConfig):
     """Where each task's validation hooks run."""
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     only_setup: bool = False
-    """Run only `Task.setup`."""
+    """Run only the setup check: `Task.setup`, then `Task.finalize` and scoring on the
+    untouched task (no reference answer, no agent). Invalid when it already passes."""
     only_gold: bool = False
-    """Run only `Task.setup` and `Task.validate`."""
+    """Run only the gold check: `Task.setup`, then `Task.validate`."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

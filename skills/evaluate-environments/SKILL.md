@@ -25,7 +25,7 @@ uv run vf-eval <MY_ENV>
 uv run vf-eval <MY_ENV> --dry-run
 ```
 
-2. Run model-free gold validation when the taskset implements `validate`:
+2. Run model-free validation. Each task gets two checks in independent runtimes: gold (`setup`, then `validate` applies and checks the reference answer; unchecked when the task has no `validate`) and setup (`setup`, then `finalize` and scoring on the untouched task; invalid when its reward already reaches 1.0, unchecked when it has no reward). `--only-gold` / `--only-setup` run one:
 
 ```bash
 uv run vf-validate <MY_ENV> --runtime.type subprocess
