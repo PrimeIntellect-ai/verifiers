@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
-from verifiers.v1.errors import HarnessError, SandboxError, boundary
+from verifiers.v1.errors import (
+    MODEL_TRANSPORT_ERROR_EXIT_CODE,
+    HarnessError,
+    InterceptionError,
+    SandboxError,
+    boundary,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
@@ -177,6 +183,10 @@ copy_failed=$(
             raise SandboxError(
                 f"runtime died under harness {self.config.id!r} "
                 f"(exit {result.exit_code}): {detail}"
+            )
+        if result.exit_code == MODEL_TRANSPORT_ERROR_EXIT_CODE:
+            raise InterceptionError(
+                f"harness {self.config.id!r} model connection to interception failed: {detail}"
             )
         raise HarnessError(
             f"harness {self.config.id!r} exited {result.exit_code}: {detail}"

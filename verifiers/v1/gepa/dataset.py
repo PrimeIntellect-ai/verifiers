@@ -2,8 +2,8 @@
 
 v1 tasksets have no generic train/val split concept (`TasksetConfig` has no `split` field;
 individual tasksets define ad hoc ones inconsistently), so GEPA carves one out of the tasks
-`Taskset.select` hands it (the shared fixed-seed shuffle, reproducible across runs like every
-other entrypoint): two disjoint slices.
+`select` yields (reproducible across runs like every other entrypoint): two
+disjoint slices.
 """
 
 from verifiers.v1.task import Task

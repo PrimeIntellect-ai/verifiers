@@ -1,5 +1,6 @@
 """Run-config plumbing around the `[env]` block: narrowing the `env` field of
-every config that owns one, and layering shared env defaults under it.
+every config that owns one. `merge_defaults` (`utils/generic.py`) layers shared env
+defaults under it.
 
 A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
 `[serve]` (how it's hosted, `configs/serve.py`) — plus its own fields. Nothing here is a base class: the eval
@@ -10,11 +11,11 @@ single_agent_env_config)`. The `SerializeAsAny` is load-bearing: pydantic serial
 by declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
 and knobs from `model_dump()` — the env-server wire's payload."""
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig
-from verifiers.v1.utils.generic import deep_merge, prefix_validation_error
+from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.utils.generic import prefix_validation_error
 
 
 def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
@@ -43,32 +44,6 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
         # `--agent.model` for the `--env.agent.model` the user typed.
         raise prefix_validation_error(e, ("env",)) from None
     return data
-
-
-def merge_env_defaults(defaults: SharedEnvConfig, env: dict | None) -> dict:
-    """A raw `env` block over `defaults`, the knobs that several envs of one run share
-    (e.g. the retries of every eval source). Only the fields set in `defaults` apply,
-    and the env's own values win. A subtree whose `id`/`type` differs from the
-    default's is the env's alone, so one plugin's knobs never leak into another's."""
-    return deep_merge(_dump_set(defaults), env or {})
-
-
-def _dump_set(config: BaseModel) -> dict:
-    """`config`'s set fields, including those set on a sub-config after construction
-    (which leaves the parent's field unmarked). Each dumped sub-config keeps its
-    `id`/`type` even at the default: `deep_merge` detects a plugin switch only when
-    both sides name it."""
-    dump = {}
-    for name in type(config).model_fields:
-        value = getattr(config, name)
-        if isinstance(value, BaseModel):
-            nested = _dump_set(value)
-            if nested or name in config.model_fields_set:
-                keys = [k for k in ("id", "type") if k in type(value).model_fields]
-                dump[name] = {**{k: getattr(value, k) for k in keys}, **nested}
-        elif name in config.model_fields_set:
-            dump[name] = config.model_dump(include={name})[name]
-    return dump
 
 
 def narrowed_env_annotation(cls) -> "type[EnvConfig] | None":

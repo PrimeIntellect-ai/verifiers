@@ -193,7 +193,6 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
 
                 yield AlphabetSortTask(
                     AlphabetSortTaskData(
-                        idx=idx,
                         # No prompt on the row: the scripted user opens with the sort prompt,
                         # then the follow-ups — one user turn per `user_turns` entry.
                         prompt=None,

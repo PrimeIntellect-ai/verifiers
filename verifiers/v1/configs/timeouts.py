@@ -5,13 +5,17 @@ from pydantic_config import BaseConfig
 
 
 class TimeoutConfig(BaseConfig):
-    setup: float | None = None
+    """Agent stage and upstream client timeouts. Unset agent stages use the task's
+    timeout for that stage, then no limit; unset client fields use client defaults."""
+
+    # one shared budget: task setup + provisioning
+    setup: float | None = Field(None, gt=0)
     """Agent task/harness setup through session preparation."""
-    rollout: float | None = None
-    """Agent solve attempt. Unset: the task's own timeout, else 4 hours; 0 disables it."""
-    finalize: float | None = None
+    rollout: float | None = Field(None, gt=0)
+    """Agent solve attempt."""
+    finalize: float | None = Field(None, gt=0)
     """Agent task/harness finalization."""
-    scoring: float | None = None
+    scoring: float | None = Field(None, gt=0)
     """Agent task/harness metrics and scoring."""
     connect: float | None = Field(default=None, gt=0)
     """Upstream client connection timeout; unset uses the client default."""

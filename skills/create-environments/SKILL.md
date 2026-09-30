@@ -140,7 +140,7 @@ Runtime config chooses where code executes. Task hooks should use the `vf.Runtim
 
 ## Validation and lifecycle
 
-Implement `Task.validate(self, runtime)` whenever ground truth can be checked without a model. Keep rollout work on the task:
+Implement `Task.validate(self, runtime)` whenever ground truth can be checked without a model. `vf-validate` also runs a noop check that scores each task untouched (`setup`, `finalize`, then rewards, with no agent) and flags any that already pass, so scoring must hold up on unmodified state. Keep rollout work on the task:
 
 - `setup(self, trace, runtime)` — prepare files or services.
 - harness execution — let the agent act.

@@ -45,7 +45,6 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
         return [
             DeepWikiTask(
                 DeepWikiTaskData(
-                    idx=i,
                     name=repo,
                     prompt=(
                         f"Use the `deepwiki_ask_question` tool to ask what programming "
@@ -56,5 +55,5 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
                 ),
                 self.config.task,
             )
-            for i, (repo, language) in enumerate(TASKS)
+            for repo, language in TASKS
         ]
