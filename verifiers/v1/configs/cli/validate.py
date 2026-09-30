@@ -37,7 +37,8 @@ class ValidateConfig(BaseConfig):
     """Run only the gold check: `Task.setup`, then `Task.validate`."""
     only_noop: bool = False
     """Run only the noop check: `Task.setup`, then `Task.finalize` and scoring on the
-    untouched task (no reference answer, no agent). Invalid when it already passes."""
+    untouched task (no reference answer, no agent). Scoring is the task's full rewards,
+    configured judges included. Invalid when it already passes."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
