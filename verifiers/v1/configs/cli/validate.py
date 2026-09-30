@@ -17,7 +17,7 @@ class CheckTimeoutConfig(BaseConfig):
     """Max wall-clock for the task's `setup` hook."""
     total: float | None = None
     """Max wall-clock for the check itself per task, after setup — the gold check's
-    `validate` hook, or the setup check's `finalize` and scoring."""
+    `validate` hook, or the noop check's `finalize` and scoring."""
 
 
 class ValidateConfig(BaseConfig):
@@ -32,10 +32,12 @@ class ValidateConfig(BaseConfig):
     """Where each task's validation hooks run."""
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     only_setup: bool = False
-    """Run only the setup check: `Task.setup`, then `Task.finalize` and scoring on the
-    untouched task (no reference answer, no agent). Invalid when it already passes."""
+    """Run only the setup check: `Task.setup`."""
     only_gold: bool = False
     """Run only the gold check: `Task.setup`, then `Task.validate`."""
+    only_noop: bool = False
+    """Run only the noop check: `Task.setup`, then `Task.finalize` and scoring on the
+    untouched task (no reference answer, no agent). Invalid when it already passes."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
@@ -73,8 +75,10 @@ class ValidateConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_only(self):
-        if self.only_setup and self.only_gold:
-            raise ValueError("pass at most one of `--only-setup` or `--only-gold`")
+        if self.only_setup + self.only_gold + self.only_noop > 1:
+            raise ValueError(
+                "pass at most one of `--only-setup`, `--only-gold` or `--only-noop`"
+            )
         return self
 
     @model_validator(mode="before")
