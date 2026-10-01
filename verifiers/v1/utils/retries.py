@@ -6,7 +6,7 @@ Two opt-in whole-run retry atoms sit above that: `Agent.run` reruns ITS OWN roll
 while the trace ends with a retryable error (`--env.<agent>.retries` — a flaky
 grader retries without re-burning the solver), and `run_episode_with_retry` reruns
 the entire episode (`--env.retries`) — the coarse fallback for faults no agent
-owns: the env's own hooks, cross-agent state. Both match by exception type name;
+owns: the env's own hooks, cross-agent state. Both use ordered retry rules;
 both off by default.
 """
 
@@ -15,7 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
 from tenacity import (
@@ -73,39 +74,47 @@ def retrying(
     )
 
 
-def _retryable(error: Error | None, retry: RetryConfig) -> bool:
-    """Whether `error` matches the retry policy: the error doesn't declare itself
-    unretryable (`retryable is False` — a deterministic fault a rerun reproduces,
-    unless `retry_nonretryable` opts in), and its exception type is included and
-    not excluded."""
-    if error is None:
-        return False
-    if error.retryable is False and not retry.retry_nonretryable:
-        return False
-    if error.type in retry.exclude:
-        return False
-    if retry.include:
-        return error.type in retry.include
-    return True
+class RetryState:
+    """Per-run budgets, shared across attempts but never across concurrent runs."""
 
+    def __init__(self, config: RetryConfig) -> None:
+        self.config = config
+        self.used = [0] * len(config.rules)
+        self.patterns = [
+            re.compile(rule.message) if rule.message is not None else None
+            for rule in config.rules
+        ]
 
-def trace_should_retry(trace, retry: RetryConfig) -> bool:
-    """Whether a finished agent rollout should be retried: any captured error on
-    its trace is retryable (all captures count, not just the most recent)."""
-    return any(_retryable(e, retry) for e in trace.errors)
+    def next_error(self, errors: Iterable[Error]) -> Error | None:
+        """Consume one retry for the first eligible error in capture order.
 
-
-def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
-    """Whether a finished episode should be retried: any LIVE captured error —
-    episode-level, or on a trace that ended not-`ok` — is retryable. An `ok` trace's
-    errors are history its own per-agent retry already recovered from, never
-    grounds to re-run the episode. All of a failed trace's captures count, not just
-    the most recent: a retryable failure followed by a teardown error would
-    otherwise never retry. Episode-atomic — a half-played sibling context isn't
-    reproducible."""
-    return any(_retryable(e, retry) for e in episode.errors) or any(
-        _retryable(e, retry) for t in episode.traces if not t.ok for e in t.errors
-    )
+        A denied/exhausted first match shadows later rules for that error only.
+        Return the triggering error so logs identify the actual retry cause.
+        """
+        if sum(self.used) >= self.config.max_retries:
+            return None
+        for error in errors:
+            for index, rule in enumerate(self.config.rules):
+                if rule.type is not None and error.type != rule.type:
+                    continue
+                if rule.status_code is not None and (
+                    error.status_code is None
+                    or not any(
+                        error.status_code == status
+                        if isinstance(status, int)
+                        else error.status_code // 100 == int(status[0])
+                        for status in rule.status_code
+                    )
+                ):
+                    continue
+                pattern = self.patterns[index]
+                if pattern is not None and pattern.search(error.message) is None:
+                    continue
+                if self.used[index] < rule.max_retries:
+                    self.used[index] += 1
+                    return error
+                break
+        return None
 
 
 async def run_episode_with_retry(
@@ -117,13 +126,17 @@ async def run_episode_with_retry(
     attempts' errors are prepended so the episode shows the full history; a final
     good attempt returns clean."""
     history: list = []
+    state = RetryState(retry)
     for attempt in range(retry.max_retries + 1):
         final = await run()
-        if attempt == retry.max_retries or not episode_should_retry(final, retry):
+        if attempt == retry.max_retries or final.ok:
             break
-        cause = final.last_error or next(
-            (t.last_error for t in final.traces if t.last_error), None
-        )
+        # Successful traces may contain recovered failures from agent retries.
+        errors = list(final.errors)
+        errors.extend(e for trace in final.traces if not trace.ok for e in trace.errors)
+        cause = state.next_error(errors)
+        if cause is None:
+            break
         history.extend(final.errors)
         for trace in final.traces:
             history.extend(trace.errors)
@@ -134,7 +147,7 @@ async def run_episode_with_retry(
             attempt + 1,
             retry.max_retries,
             delay,
-            cause.type if cause else "?",
+            cause.type,
         )
         await asyncio.sleep(delay)
     if history:

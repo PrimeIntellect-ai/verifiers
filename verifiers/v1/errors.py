@@ -28,24 +28,7 @@ from openai import OpenAIError
 
 
 class RolloutError(Exception):
-    """Base for a failure recorded onto the trace rather than crashing the rollout.
-
-    `retryable` says whether rerunning the whole rollout could plausibly succeed —
-    a property of the fault, not the policy: `True` for a transient infra fault,
-    `False` for a deterministic one a rerun only reproduces, `None` when the type
-    alone can't tell (the `--env.retries` include/exclude lists decide). It rides
-    onto the recorded `Error` so `trace_should_retry` can honour it without the
-    live exception."""
-
-    retryable: bool | None = None
-
-
-def _transient_status(status_code: int) -> bool:
-    """Whether an HTTP status a provider fault carries is worth a rerun: any 5xx
-    (incl. Cloudflare 52x) plus 408/409/425/429. A deterministic 4xx (400 bad
-    request, 413 context overflow, 422) just re-fails, so a rerun only burns the
-    trajectory again."""
-    return status_code >= 500 or status_code in {408, 409, 425, 429}
+    """Base for a failure recorded onto the trace rather than crashing the rollout."""
 
 
 class ProviderError(RolloutError):
@@ -57,11 +40,6 @@ class ProviderError(RolloutError):
     def __init__(self, message: str = "", *, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
-
-    @property
-    def retryable(self) -> bool:
-        """Transient statuses (5xx/429/timeout) can succeed on a rerun; 4xx can't."""
-        return _transient_status(self.status_code)
 
 
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
@@ -86,19 +64,13 @@ class EnvError(RolloutError):
 class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
-    retryable = True  # provisioning/exec hiccups usually clear on a fresh box
-
 
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
-    retryable = False  # authored code is deterministic — a rerun reproduces it
-
 
 class InterceptionError(RolloutError):
     """Communication with the host interception server failed."""
-
-    retryable = True  # a tunnel/interception drop is transient
 
 
 class TunnelError(InterceptionError):

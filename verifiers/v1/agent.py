@@ -50,7 +50,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
-from verifiers.v1.utils.retries import backoff, trace_should_retry
+from verifiers.v1.utils.retries import RetryState, backoff
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
@@ -400,18 +400,22 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
+        retry_state = RetryState(retry)
         history: list = []
         for attempt in range(retry.max_retries + 1):
             trace = await self._run_once(
                 task, runtime, tools, on_trace, collect_artifacts
             )
-            if attempt == retry.max_retries or not trace_should_retry(trace, retry):
+            if attempt == retry.max_retries or trace.ok:
                 break
             if runtime is not None:
                 logger.warning(
                     "not retrying the rollout on a borrowed box (its state is no "
                     "longer the task's start state); the error stands"
                 )
+                break
+            cause = retry_state.next_error(trace.errors)
+            if cause is None:
                 break
             history.extend(trace.errors)
             delay = backoff(attempt)
@@ -420,7 +424,7 @@ class Agent:
                 attempt + 1,
                 retry.max_retries,
                 delay,
-                trace.last_error.type if trace.last_error else "?",
+                cause.type,
             )
             await asyncio.sleep(delay)
         if history:

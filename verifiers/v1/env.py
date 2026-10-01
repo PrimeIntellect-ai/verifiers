@@ -46,7 +46,6 @@ def _as_error(e: Exception) -> Error:
         type=type(e).__name__,
         message=str(e),
         status_code=getattr(e, "status_code", None),
-        retryable=getattr(e, "retryable", None),
         traceback=traceback.format_exc(),
     )
 

@@ -1,23 +1,48 @@
-"""Whole-rollout retry policy — each agent's own and the env's episode fallback."""
+"""Whole-rollout retry rules — each agent's own and the env's episode fallback."""
 
-from pydantic import Field
+import re
+from typing import Annotated, Literal
+
+from pydantic import Field, StrictInt, field_validator
 from pydantic_config import BaseConfig
 
 
+class RetryRule(BaseConfig):
+    """Match all specified fields. First matching rule wins for each error."""
+
+    type: str | None = None
+    """Exact recorded exception class name, e.g. ``ProviderError``."""
+    status_code: (
+        list[
+            Annotated[StrictInt, Field(ge=100, le=599)]
+            | Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
+        ]
+        | None
+    ) = None
+    """Match any listed HTTP status or status class; absent status never matches."""
+    message: str | None = None
+    """Regex search of the error message; plain text matches a substring."""
+    max_retries: int = Field(0, ge=0)
+    """Retries this rule may trigger across the run. Zero excludes matching errors."""
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"Invalid message regex: {exc}") from exc
+        return value
+
+
 class RetryConfig(BaseConfig):
-    """Retry a whole rollout when it ends with a captured error. `include`/`exclude`
-    name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
+    """Ordered rules for whole-rollout retries. No matching rule means no retry.
+
+    Fields within a rule are ANDed. An exhausted rule never falls through to a
+    later rule for that error; another captured error can still trigger a retry.
+    """
 
     max_retries: int = Field(0, ge=0)
-    """Whole-rollout retries beyond the first attempt. Off by default — the SDKs
-    already retry transient per-call faults; rerunning a whole trajectory is opt-in."""
-    include: list[str] = Field(default_factory=list)
-    """Only retry errors whose type is listed. Empty = retry anything not excluded."""
-    exclude: list[str] = Field(default_factory=list)
-    """Never retry errors whose type is listed (wins over `include`)."""
-    retry_nonretryable: bool = False
-    """Also rerun faults the error itself declares deterministic (`retryable is
-    False` — e.g. a 4xx `ProviderError` or a `TaskError`). Off by default, since a
-    rerun usually just reproduces them; opt in when you accept the (often wasted)
-    cost — e.g. a flaky authored grader. `include`/`exclude` still scope which
-    types this applies to."""
+    """Overall retry cap across all rules. Off by default."""
+    rules: list[RetryRule] = Field(default_factory=list)

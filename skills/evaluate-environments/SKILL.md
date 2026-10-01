@@ -146,14 +146,26 @@ uv run vf-eval @ configs/my-eval.toml
 
 ## Retries
 
-Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
+Whole-rollout retry is opt-in. Each retry starts a fresh rollout. Configure ordered rules in your eval TOML; use `env.retries` for whole-episode retries or `env.agent.retries` for the agent alone:
 
-```bash
-uv run vf-eval my-task-v1 \
-  --env.agent.retries.max-retries 2 \
-  --env.agent.retries.include SandboxError ProviderError \
-  --env.agent.retries.exclude TaskError
+```toml
+[env.agent.retries]
+max_retries = 5
+
+[[env.agent.retries.rules]]
+type = "ProviderError"
+status_code = [429, "5xx"]
+max_retries = 3
+
+[[env.agent.retries.rules]]
+type = "SandboxError"
+message = 'temporarily unavailable|connection reset'
+max_retries = 2
 ```
+
+Fields within a rule must all match. `type` matches the exact recorded exception name, `status_code` matches any listed status or status class, and `message` is a regex search (plain text matches a substring). Invalid regexes fail config validation. Omitted fields match anything.
+
+The first matching rule wins for each error; zero retries excludes it, and exhausted rules never fall through. Unmatched errors do not retry. Each retry consumes its rule's budget and the overall `max_retries` budget across the entire run. When an attempt captures multiple errors, the first eligible error triggers the retry; a denied error does not veto other errors. Successful traces' recovered errors do not trigger episode retries.
 
 ## Output and resume
 
