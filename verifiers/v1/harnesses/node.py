@@ -85,7 +85,7 @@ async def ensure_node(runtime: Runtime) -> None:
         await runtime.with_user("root") if runtime.user is not None else runtime,
         directory=NODE_DIR,
         lock=f"{NODE_DIR}.install.lock",
-        ready=f"{NODE_BIN_DIR}/node -e 'const [a,b]=process.versions.node.split(\".\").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'",
+        ready=f"test -x {NODE_BIN_DIR}/npm && {NODE_BIN_DIR}/node -e 'const [a,b]=process.versions.node.split(\".\").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'",
         install=INSTALL,
         env={"VF_NODE_VERSION": NODE_VERSION},
         label="Node.js",
