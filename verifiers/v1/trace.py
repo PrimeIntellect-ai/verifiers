@@ -203,6 +203,9 @@ class Checkpoint(BaseModel):
     """The turn's prompt messages after `node` that had no node yet (tool results, user
     turns): with `node`'s conversation, the prompt a resumed harness continues from.
     Live-only — a retry resumes in the process that took the snapshot."""
+    state: Any = Field(None, exclude=True)
+    """The trace's typed state as the snapshot was taken (tool servers write it over
+    `/state`), restored with the box so a retry sees one consistent world. Live-only."""
 
 
 class Branch(BaseModel):
@@ -797,10 +800,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if keep > len(self.nodes):
             raise ValueError(f"checkpoint {checkpoint.id!r} is past this trace's graph")
         del self.nodes[keep:]
+        for node in self.nodes:
+            node.semantic_parents = [
+                link for link in node.semantic_parents if link.node < keep
+            ]
         self._head_index = {}
         self._pending = {}
         self._generation += 1
         self.calls = [c for c in self.calls if c.node is None or c.node < keep]
+        if checkpoint.state is not None:
+            self.state = copy.deepcopy(checkpoint.state)
+        # The resumed rollout re-stamps every stage span; the run's start stays.
+        self.timing = Timing(start=self.timing.start)
         dropped = [
             c.id for c in self.checkpoints if c.node is not None and c.node >= keep
         ]

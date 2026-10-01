@@ -8,7 +8,7 @@ made two turns — after the checkpoint of turn 2 exists, whose box holds step o
 The resumed attempt continues from that checkpoint: it never sees the injected failure
 again (the trace already carries the error), inherits step one, and finishes. Needs an
 agentic (shell) harness that can continue a conversation, e.g. `bash`, on a runtime with
-checkpoints (docker, prime).
+checkpoints (prime).
 """
 
 import uuid

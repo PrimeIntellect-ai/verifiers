@@ -170,7 +170,12 @@ class PrimeRuntime(Runtime):
         # The image and disk come with the checkpoint; the platform refuses them here.
         self.info.restored_from = checkpoint
         self._lease_client()
-        await self._wait_durable(checkpoint)
+        try:
+            await self._client.wait_for_checkpoint(
+                checkpoint, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {checkpoint}: {e}") from e
         await self._boot(checkpoint_id=checkpoint)
 
     def _lease_client(self) -> None:
@@ -271,13 +276,23 @@ class PrimeRuntime(Runtime):
     async def checkpoint(self) -> str:
         # Blocking: the turn goes upstream only once the snapshot is durable, so it
         # cannot include that turn's writes, and teardown (which fails pending
-        # checkpoints) never loses one.
+        # checkpoints) never loses one. The POST is shielded through the id capture
+        # and a cancelled wait deletes the snapshot: a checkpoint the trace never
+        # records is one nothing would ever discard.
         try:
-            checkpoint = await self._client.checkpoint(self.info.id)
+            checkpoint = await run_shielded(self._client.checkpoint(self.info.id))
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
         started = time.monotonic()
-        await self._wait_durable(checkpoint.id)
+        try:
+            await self._client.wait_for_checkpoint(
+                checkpoint.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except asyncio.CancelledError:
+            await run_shielded(self.discard_checkpoints([checkpoint.id]))
+            raise
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {checkpoint.id}: {e}") from e
         logger.debug(
             "prime: checkpoint %s durable after %.1fs on sandbox %s",
             checkpoint.id,
@@ -285,14 +300,6 @@ class PrimeRuntime(Runtime):
             self.info.id,
         )
         return checkpoint.id
-
-    async def _wait_durable(self, checkpoint: str) -> None:
-        try:
-            await self._client.wait_for_checkpoint(
-                checkpoint, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
-            )
-        except Exception as e:
-            raise SandboxError(f"prime checkpoint {checkpoint}: {e}") from e
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
         if self._client is None:

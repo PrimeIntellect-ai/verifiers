@@ -158,13 +158,18 @@ class DeltaStreamer:
     async def flush(self) -> None:
         # Serialized: deltas must leave in diff order, and the reply after the last.
         async with self._lock:
+            held: set[str] = set()
             for trace_id, delta, cursor in self.diff():
+                if trace_id in held:
+                    continue
                 try:
                     await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
                     logger.warning(
                         "failed to send delta for %s", trace_id, exc_info=True
                     )
+                    # A rewound trace's reopen must not land before its discard did.
+                    held.add(trace_id)
                     continue
                 if cursor is None:
                     self.cursors.pop(trace_id, None)

@@ -73,9 +73,6 @@ class DockerRuntime(ContainerRuntime):
     engine: ClassVar[str] = "docker"
     """The CLI binary for the shared OCI container operations."""
     info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
-    supports_checkpoints: ClassVar[bool] = True
-    """A checkpoint is the container committed to a local image (`<engine> commit`), so
-    a restore is a run from that image."""
 
     def __init__(
         self,
@@ -155,43 +152,6 @@ class DockerRuntime(ContainerRuntime):
         return SERVICE_PORT
 
     async def start(self) -> None:
-        await self._start(self.config.image)
-
-    async def restore(self, checkpoint: str) -> None:
-        self.info.restored_from = checkpoint
-        await self._start(checkpoint)
-
-    async def checkpoint(self) -> str:
-        assert self._container is not None
-        image = f"localhost/vf-checkpoint:{uuid.uuid4().hex}"
-        # `commit` pauses the container while it captures, and the image keeps the
-        # container's config (env, user, workdir) for the run that restores it.
-        committed = await self._run_host(
-            self.engine,
-            "commit",
-            "--change",
-            f"LABEL verifiers.run={run_scope()}",
-            self._container,
-            image,
-        )
-        if committed.exit_code != 0:
-            raise SandboxError(
-                f"{self.engine} commit failed: {committed.stderr.strip()}"
-            )
-        return image
-
-    async def discard_checkpoints(self, ids: list[str]) -> None:
-        if not ids:
-            return
-        removed = await self._run_host(self.engine, "rmi", "--force", *ids)
-        if removed.exit_code != 0:
-            logger.warning(
-                "%s: failed to remove checkpoint images: %s",
-                self.engine,
-                removed.stderr.strip(),
-            )
-
-    async def _start(self, image: str) -> None:
         try:
             version = await cli(self.engine, "version")
         except FileNotFoundError as e:
@@ -279,7 +239,7 @@ class DockerRuntime(ContainerRuntime):
             "sleep",
             "--name",
             self._container,
-            image,
+            self.config.image,
             "infinity",
         )
         if run.exit_code != 0:
@@ -363,7 +323,7 @@ class DockerRuntime(ContainerRuntime):
             "%s: started container %s (image=%s)",
             self.engine,
             self._container,
-            image,
+            self.config.image,
         )
 
     def host_url(self, url: str) -> str:

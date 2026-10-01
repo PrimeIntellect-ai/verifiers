@@ -115,8 +115,11 @@ async def test_rewound_trace_streams_again_from_scratch():
     holds; the stream drops the client's copy and resends the trace as it now is."""
     traces: list[vf.Trace] = []
     frames: list[bytes] = []
+    fail = {"on": False}
 
     async def send(data: dict) -> None:
+        if fail["on"]:
+            raise OSError("host unreachable")
         frames.append(pack(data))
 
     async with DeltaStreamer(lambda: traces, send) as streamer:
@@ -130,11 +133,15 @@ async def test_rewound_trace_streams_again_from_scratch():
         assert len(assembled(frames)[trace.id]["nodes"]) == 4
         trace.record_error(RuntimeError("boom"))
         trace.rewind(vf.Checkpoint(id="cp", node=1))
+        # the discard fails on the wire: the reopen must wait for it, not race ahead
+        fail["on"] = True
         trace.notify()  # the resumed rollout's boot
         await settle()
+        fail["on"] = False
         add_turn(trace, "a2 again")
         await settle()
         traces = [trace]
+    assert sum(bool(unpack(f).get("discard")) for f in frames) == 1
     record = assembled(frames)[trace.id]
     assert [n["message"]["content"] for n in record["nodes"]] == ["q", "a1", "a2 again"]
     assert len(record["calls"]) == 2

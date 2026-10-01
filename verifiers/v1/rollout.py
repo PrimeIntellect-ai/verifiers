@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import time
 from collections.abc import Callable
@@ -506,6 +507,11 @@ class Rollout:
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> None:
         assert self.runtime is not None
+        if len(self.trace._pending) > 1:
+            # Another request is in flight (parallel sub-agents share the trace): the
+            # box is not idle, so no snapshot would match this turn's prefix.
+            return
+        state = copy.deepcopy(self.trace.state)
         try:
             checkpoint = await self.runtime.checkpoint()
         except Exception:
@@ -515,7 +521,7 @@ class Rollout:
             return
         node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
         self.trace.checkpoints.append(
-            Checkpoint(id=checkpoint, node=node, tail=list(turn.tail))
+            Checkpoint(id=checkpoint, node=node, tail=list(turn.tail), state=state)
         )
         logger.debug(
             "checkpoint %s taken: id=%s node=%s", checkpoint, self.trace.id, node
