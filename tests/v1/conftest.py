@@ -156,7 +156,7 @@ def _eval_config(
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
     retries = {
-        "max_retries": 2,
+        "max_retries": 0,
         "rules": [
             {"type": error_type, "max_retries": 2}
             for error_type in ("ProviderError", "InterceptionError", "HarnessError")

@@ -402,11 +402,11 @@ class Agent:
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
-        for attempt in range(retry.max_retries + 1):
+        for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
                 task, runtime, tools, on_trace, collect_artifacts
             )
-            if attempt == retry.max_retries or trace.ok:
+            if attempt == retry_state.max_retries or trace.ok:
                 break
             if runtime is not None:
                 logger.warning(
@@ -422,7 +422,7 @@ class Agent:
             logger.warning(
                 "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
                 attempt + 1,
-                retry.max_retries,
+                retry_state.max_retries,
                 delay,
                 cause.type,
             )

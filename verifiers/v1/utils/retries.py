@@ -78,12 +78,9 @@ class RetryState:
     """Per-run budgets, shared across attempts but never across concurrent runs."""
 
     def __init__(self, config: RetryConfig) -> None:
-        self.config = config
-        self.rules = (
-            config.rules
-            if config.rules is not None
-            else [RetryRule(max_retries=config.max_retries)]
-        )
+        self.rules = [*config.rules, RetryRule(max_retries=config.max_retries)]
+        # Each retry consumes one finite budget, so their sum bounds the run.
+        self.max_retries = sum(rule.max_retries for rule in self.rules)
         self.used = [0] * len(self.rules)
         self.patterns = [
             re.compile(rule.message) if rule.message is not None else None
@@ -96,8 +93,6 @@ class RetryState:
         A denied/exhausted first match shadows later rules for that error only.
         Return the triggering error so logs identify the actual retry cause.
         """
-        if sum(self.used) >= self.config.max_retries:
-            return None
         for error in errors:
             for index, rule in enumerate(self.rules):
                 if rule.type is not None and error.type != rule.type:
@@ -132,9 +127,9 @@ async def run_episode_with_retry(
     good attempt returns clean."""
     history: list = []
     state = RetryState(retry)
-    for attempt in range(retry.max_retries + 1):
+    for attempt in range(state.max_retries + 1):
         final = await run()
-        if attempt == retry.max_retries or final.ok:
+        if attempt == state.max_retries or final.ok:
             break
         # Successful traces may contain recovered failures from agent retries.
         errors = list(final.errors)
@@ -150,7 +145,7 @@ async def run_episode_with_retry(
             "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
             final.id,
             attempt + 1,
-            retry.max_retries,
+            state.max_retries,
             delay,
             cause.type,
         )

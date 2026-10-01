@@ -43,7 +43,6 @@ class RetryConfig(BaseConfig):
     """
 
     max_retries: int = Field(0, ge=0)
-    """Overall retry cap across all rules. Zero disables retries regardless of rule budgets."""
-    rules: list[RetryRule] | None = None
-    """Omitted rules retry any captured error up to the overall cap. Explicit rules
-    restrict matching; an empty list disables matching."""
+    """Default budget for errors that match no rule. Matching rules override it."""
+    rules: list[RetryRule] = Field(default_factory=list)
+    """Ordered overrides; a matching rule may enable retries or deny them with zero."""
