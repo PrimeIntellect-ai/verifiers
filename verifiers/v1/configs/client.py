@@ -80,10 +80,13 @@ class EvalClientConfig(BaseClientConfig):
 
 
 class TrainClientConfig(BaseClientConfig):
-    """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
-    `TrainClient`), so responses carry token IDs and logprobs. Needs a running vLLM engine."""
+    """Training with exact token IDs and logprobs: renderer-based TITO generation or
+    provider-tokenized MITO chat completions."""
 
     type: Literal["train"] = "train"
+    protocol: Literal["tito", "mito"] = "tito"
+    """TITO renders locally; MITO sends chat messages and requires exact training arrays
+    in the provider's `nvext.engine_data`. MITO buffers streamed harness requests."""
     renderer: RendererConfig | None = None
     """The `renderers.RendererConfig` to use (the same shared type prime-rl configures).
     `None` auto-resolves from the model — which falls back to the default renderer (no
