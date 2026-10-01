@@ -221,11 +221,14 @@ class EgressProxy:
             if callback is None and not hmac.compare_digest(
                 authorization, self._authorization
             ):
+                # libcurl (git) sends the first CONNECT without credentials and retries
+                # on the same connection unless told it is closed.
                 response_started = True
                 writer.write(
                     b"HTTP/1.1 407 Proxy Authentication Required\r\n"
                     b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
-                    b"Content-Length: 0\r\n\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"Connection: close\r\n\r\n"
                 )
                 await _drain(writer)
                 return
@@ -286,7 +289,10 @@ class EgressProxy:
                             break
             if not permitted:
                 response_started = True
-                writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                writer.write(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
                 await _drain(writer)
                 return
             tls = callback is not None and scheme == "https"

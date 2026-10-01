@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.types import ID
 
@@ -18,6 +19,12 @@ class SharedTasksetConfig(BaseConfig):
     system_prompt: Path | None = None
     """File whose text overrides each task's `TaskData.system_prompt` on
     iteration (e.g. a GEPA `best_system_prompt.txt`)."""
+    network: NetworkPolicyConfig | None = None
+    """The taskset's execution-time egress policy — the same `allow`/`block` object the
+    runtimes carry. Set from TOML/CLI (`[env.taskset.network]`, `--env.taskset.network.allow`)
+    it replaces every task's own policy; left at the config class's declared value it
+    is the default for tasks that set none (a closed-book taskset declares
+    `NetworkPolicyConfig(allow=[])`). The runtime's own rules still intersect."""
 
 
 class TasksetConfig(SharedTasksetConfig):

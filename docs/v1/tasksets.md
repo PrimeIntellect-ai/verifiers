@@ -110,6 +110,13 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
+Every taskset also takes `network`, the execution-time egress policy for its tasks, as the same `allow`/`block` object the runtimes carry (`NetworkPolicyConfig`). A task can set its own `TaskData.network`; the taskset config's `network` declares the default for tasks that set none; and a `network` set from TOML/CLI (`[env.taskset.network]`, `--env.taskset.network.allow`) replaces both. A closed-book benchmark, for example, declares `allow = []` on its config class, which keeps it overridable from config (see [Network access](evaluation.md#network-access)):
+
+```python
+class ClosedBookConfig(vf.TasksetConfig):
+    network: vf.NetworkPolicyConfig | None = vf.NetworkPolicyConfig(allow=[])
+```
+
 ## Task identity
 
 A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.

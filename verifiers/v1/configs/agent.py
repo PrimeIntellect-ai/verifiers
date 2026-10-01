@@ -54,6 +54,11 @@ class AgentConfig(BaseConfig):
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
 
+    network_notice: bool = True
+    """Append a note to the system prompt when the resolved network policy restricts
+    execution-time egress, so the model treats a failing connection as intended
+    rather than something to work around."""
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):

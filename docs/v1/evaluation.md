@@ -51,6 +51,31 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
   created instead of opening a new one — this is how a hosted evaluation's sandbox runs
   the same command; it is not something a local run sets by hand
 
+## Network access
+
+The `prime`, `docker` and `modal` runtimes enforce an egress policy on the agent's box; `subprocess` has none. The policy is one `allow`/`block` object (`NetworkPolicyConfig`) that can be set in three places, resolved in this order:
+
+1. `[env.taskset.network]` in TOML or `--env.taskset.network.allow` on the CLI replaces every task's policy.
+2. Otherwise a task's own `TaskData.network`, set by the taskset in code.
+3. Otherwise the taskset config class's declared default (a closed-book benchmark declares `allow = []`); open when there is none.
+
+The runtime's own `allow`/`block` (`[env.agent.runtime]`) then intersects with the result, so a runtime restriction is never widened by a task.
+
+```toml
+[env.taskset.network]
+allow = []              # framework-only: no internet
+# allow = ["github.com"]  # an allowlist
+# block = ["example.com"] # a denylist
+```
+
+Whenever the resolved policy restricts egress, the model's system prompt ends with one of these notes (after a blank line, following the task's own system prompt):
+
+- `allow = []`: "Internet access is disabled for this task. Any command or request that reaches outside the sandbox will fail. This is intentional: do not try to work around it, and solve the task with what is available to you."
+- an allowlist: "Internet access is restricted for this task. Only these destinations are reachable: github.com. Requests to any other destination will fail. This is intentional: do not try to work around it, and solve the task with what is available to you."
+- a denylist: "Internet access is restricted for this task. These destinations are blocked and requests to them will fail: example.com. This is intentional: do not try to work around it, and solve the task with what is available to you."
+
+Turn the note off per seat with `--env.agent.no-network-notice` (`network_notice = false` under `[env.agent]`).
+
 ## Resuming evaluations
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.

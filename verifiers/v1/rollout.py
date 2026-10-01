@@ -38,6 +38,31 @@ from verifiers.v1.utils.decorators import discover_decorated, invoke
 logger = logging.getLogger(__name__)
 
 
+def network_notice(policy: NetworkPolicyConfig) -> str:
+    """What the model is told about a restricted execution policy: the boundary is
+    deliberate, so a failing connection is not a fault to route around."""
+    if not policy.allow:
+        scope = (
+            "Internet access is disabled for this task. Any command or request that "
+            "reaches outside the sandbox will fail."
+        )
+    elif policy.block:
+        scope = (
+            "Internet access is restricted for this task. These destinations are "
+            f"blocked and requests to them will fail: {', '.join(policy.block)}."
+        )
+    else:
+        scope = (
+            "Internet access is restricted for this task. Only these destinations "
+            f"are reachable: {', '.join(policy.allow)}. Requests to any other "
+            "destination will fail."
+        )
+    return (
+        f"{scope} This is intentional: do not try to work around it, and solve the "
+        "task with what is available to you."
+    )
+
+
 @dataclass(frozen=True)
 class RolloutTimeouts:
     """Per-stage rollout timeouts, each bounding one rollout stage."""
@@ -84,6 +109,7 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
+        self._network_notice = agent_config.network_notice
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -285,6 +311,22 @@ class Rollout:
                 boundary(HarnessError, "opening harness session"),
             ):
                 harness_data = self.trace.task.data
+                if (
+                    self._network_notice
+                    and self._session.network_policy.network_restricted
+                ):
+                    harness_data = harness_data.model_copy(
+                        update={
+                            "system_prompt": "\n\n".join(
+                                part
+                                for part in (
+                                    harness_data.system_prompt,
+                                    network_notice(self._session.network_policy),
+                                )
+                                if part
+                            )
+                        }
+                    )
                 if (
                     self._session.request_interceptors
                     and harness_data.prompt is not None
