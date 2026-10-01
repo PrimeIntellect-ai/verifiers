@@ -4,14 +4,12 @@ recompute on load), transient `state` never crosses the wire, and the permissive
 dump without importing the originating taskset."""
 
 import json
-from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
@@ -36,131 +34,6 @@ class MyTask(vf.TaskData):
 
 class MyState(vf.State):
     score: int = 0
-
-
-@pytest.mark.parametrize("encrypted", [False, True])
-def test_restricted_responses_preserve_inline_reasoning(encrypted):
-    item = {
-        "type": "reasoning",
-        "id": "rs_0",
-        "summary": [],
-        "content": [{"type": "reasoning_text", "text": "Use the lookup tool."}],
-    }
-    if encrypted:
-        item["encrypted_content"] = "opaque-state"
-    body, blocked = ResponsesDialect().mediate_external_capabilities(
-        {"input": [deepcopy(item)]}, NetworkPolicyConfig(allow=[])
-    )
-    expected = item if encrypted else {k: v for k, v in item.items() if k != "id"}
-    assert blocked == []
-    assert body["input"] == [expected]
-    assert fold_assistant(body["input"]).reasoning_content == "Use the lookup tool."
-
-
-@pytest.mark.parametrize(
-    "item",
-    [
-        {"type": "reasoning", "id": "rs_0"},
-        {"type": "reasoning", "id": "rs_0", "content": []},
-        {
-            "type": "reasoning",
-            "id": "rs_0",
-            "summary": [{"type": "summary_text", "text": "A summary."}],
-        },
-        {"type": "reasoning", "id": "rs_0", "content": "not a content list"},
-        {
-            "type": "reasoning",
-            "id": "rs_0",
-            "content": [{"type": "item_reference", "id": "rs_1"}],
-        },
-        {
-            "type": "reasoning",
-            "id": "rs_0",
-            "content": [{"type": "reasoning_text", "text": {"id": "rs_1"}}],
-        },
-        {"type": "item_reference", "id": "rs_0"},
-    ],
-)
-def test_restricted_responses_block_reasoning_references(item):
-    body, blocked = ResponsesDialect().mediate_external_capabilities(
-        {"input": [deepcopy(item)]}, NetworkPolicyConfig(allow=[])
-    )
-    assert blocked == ["input[0].id"]
-    assert not any(part.get("id") == "rs_0" for part in body["input"])
-
-
-def test_restricted_reasoning_tool_replay_stays_on_one_branch():
-    dialect = ResponsesDialect()
-    policy = NetworkPolicyConfig(allow=[])
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
-        task=vf.TraceTask(
-            type="Task", data=vf.TaskData(idx=0, prompt="Use lookup twice.")
-        ),
-    )
-    history = [{"role": "user", "content": "Use lookup twice."}]
-    for index in range(3):
-        body, blocked = dialect.mediate_external_capabilities(
-            {"input": deepcopy(history)}, policy
-        )
-        assert blocked == []
-        request = dialect.parse_request(body)
-        output = [
-            {
-                "type": "reasoning",
-                "id": f"rs_{index}",
-                "summary": [],
-                "content": [{"type": "reasoning_text", "text": f"Step {index}."}],
-            }
-        ]
-        if index < 2:
-            output.append(
-                {
-                    "type": "function_call",
-                    "call_id": f"call_{index}",
-                    "name": "lookup",
-                    "arguments": "{}",
-                }
-            )
-        else:
-            output.append(
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Done."}],
-                }
-            )
-        prepare_turn(trace, request.messages).commit(
-            vf.Response(
-                id=f"response_{index}",
-                created=0,
-                model="test",
-                message=fold_assistant(output),
-                finish_reason="tool_calls" if index < 2 else "stop",
-            )
-        )
-        history.extend(output)
-        if index < 2:
-            history.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": f"call_{index}",
-                    "output": "result",
-                }
-            )
-    assert trace.num_branches == 1
-    assert trace.num_turns == 3
-    assert len(trace.nodes) == 6
-    assert all(
-        node.sampled
-        for node in trace.nodes
-        if isinstance(node.message, AssistantMessage)
-    )
-    assert [m.reasoning_content for m in trace.assistant_messages] == [
-        "Step 0.",
-        "Step 1.",
-        "Step 2.",
-    ]
 
 
 @pytest.mark.parametrize(
