@@ -296,7 +296,7 @@ class ModalRuntime(Runtime):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
-                *self.user_argv(argv, self.process_env(env)),
+                *self.user_argv(argv),
                 workdir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -324,7 +324,6 @@ class ModalRuntime(Runtime):
             proc = await self._sandbox.exec.aio(
                 *self.user_argv(
                     ["sh", "-c", wrapper, "vf-process", pidfile, *argv],
-                    self.process_env(env),
                 ),
                 workdir=self.config.workdir,
                 env=self.process_env(env),

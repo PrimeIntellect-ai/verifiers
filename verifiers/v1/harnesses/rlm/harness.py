@@ -151,7 +151,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
-        directory = self._install_dir()
+        directory = runtime.cache_dir(self._install_dir())
         skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
         await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
@@ -264,8 +264,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
-            command=[f"{self._install_dir()}/bin/rlm", "--acp"],
+            env={**self.config.resolved_env, "RLM_HOME": self._home(trace, runtime)},
+            command=[f"{runtime.cache_dir(self._install_dir())}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
                 ctx, trace, runtime, endpoint, secret, system_prompt
@@ -290,15 +290,19 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             self._consume_snapshot(trace, response_metadata)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        await runtime.run(
+            ["rm", "-rf", f"{runtime.cache_dir(RLM_STATE_DIR)}/{trace.id}"], {}
+        )
         if self._skills_install_dir is not None:
             await remove_dir(
-                runtime, self._skills_install_dir, "RLM skill installation"
+                runtime,
+                runtime.cache_dir(self._skills_install_dir),
+                "RLM skill installation",
             )
 
     @staticmethod
-    def _home(trace: Trace) -> str:
-        return f"{RLM_STATE_DIR}/{trace.id}/home"
+    def _home(trace: Trace, runtime: Runtime) -> str:
+        return f"{runtime.cache_dir(RLM_STATE_DIR)}/{trace.id}/home"
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()

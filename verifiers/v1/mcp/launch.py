@@ -254,8 +254,6 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime._mcp_install_lock:
-        if runtime.user is not None:
-            await runtime.ensure_curl()
         installed = runtime._mcp_sources.setdefault(runtime.user, set())
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [source for source in sources if source not in installed]

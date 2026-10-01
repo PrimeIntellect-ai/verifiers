@@ -16,9 +16,8 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-BINARY = "/tmp/vf-kimi-code/bin/kimi"
+KIMI_DIR = "/tmp/vf-kimi-code"
 KIMI_HOME = ".vf-kimi-code"
-ACP_COMMAND = [BINARY, "acp"]
 
 INSTALL = r"""
 set -e
@@ -56,10 +55,14 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
-        script = INSTALL.replace("{version}", self.config.version)
+        directory = runtime.cache_dir(KIMI_DIR)
+        script = INSTALL.replace("{version}", self.config.version).replace(
+            KIMI_DIR, directory
+        )
         await ensure_installed(
             runtime,
-            directory="/tmp/vf-kimi-code",
+            directory=directory,
+            ready=f'[ "$("{directory}/bin/kimi" --version 2>/dev/null)" = "{self.config.version}" ]',
             install=script,
             env={},
             label="Kimi Code",
@@ -123,7 +126,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                 "KIMI_DISABLE_TELEMETRY": "1",
                 "KIMI_CODE_NO_AUTO_UPDATE": "1",
             },
-            command=ACP_COMMAND,
+            command=[f"{runtime.cache_dir(KIMI_DIR)}/bin/kimi", "acp"],
             prompt=prompt,
             system_prompt=system_prompt,
         )

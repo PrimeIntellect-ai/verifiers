@@ -290,7 +290,7 @@ class PrimeRuntime(Runtime):
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
                 self.info.id,
-                shlex.join(self.user_argv(argv, self.process_env(env))),
+                shlex.join(self.user_argv(argv)),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -333,7 +333,7 @@ class PrimeRuntime(Runtime):
         try:
             process = await self._client.open_process(
                 self.info.id,
-                shlex.join(self.user_argv(argv, self.process_env(env))),
+                shlex.join(self.user_argv(argv)),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
             )
@@ -351,9 +351,7 @@ class PrimeRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
-        command = shlex.join(
-            self.user_argv(["sh", "-c", command], self.process_env(env))
-        )
+        command = shlex.join(self.user_argv(["sh", "-c", command]))
         try:
             await self._client.start_background_job(
                 self.info.id,

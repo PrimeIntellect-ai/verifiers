@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
-OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
 SETUP = r"""
 set -e
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
@@ -128,8 +127,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        directory = OPENCLAW_DIR.format(version=self.config.version)
-        binary = OPENCLAW_BIN.format(version=self.config.version)
+        directory = runtime.cache_dir(OPENCLAW_DIR.format(version=self.config.version))
+        binary = f"{directory}/bin/openclaw"
         logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
         # Borrowed runtimes can share this cache, so one filesystem lock owns both
         # installation and the transcript adjustment.
@@ -227,7 +226,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             "OPENCLAW_HIDE_BANNER": "1",
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
-            "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
+            "VF_OPENCLAW_BIN": f"{runtime.cache_dir(OPENCLAW_DIR.format(version=self.config.version))}/bin/openclaw",
         }
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
         # config owns the equivalent task-scoped server definitions.

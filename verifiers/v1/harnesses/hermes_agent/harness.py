@@ -39,7 +39,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         # Hermes needs its source-tree assets and supports editable installs only.
-        directory = HERMES_DIR.format(version=self.config.version)
+        directory = runtime.cache_dir(HERMES_DIR.format(version=self.config.version))
         await ensure_installed(
             runtime,
             directory=directory,
@@ -68,7 +68,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("Hermes Agent ACP does not support disabling tools")
 
-        home = f"/tmp/vf-hermes/{trace.id}"
+        home = f"{runtime.cache_dir('/tmp/vf-hermes')}/{trace.id}"
         # Keep interception routing separate from vendor names that Hermes may resolve
         # to built-in cloud providers instead of the configured endpoint.
         model = {
@@ -110,7 +110,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         return ACPConfig(
             env=env,
             command=[
-                f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
+                f"{runtime.cache_dir(HERMES_DIR.format(version=self.config.version))}/.venv/bin/python",
                 "-P",  # Keep task files from shadowing installed Hermes modules.
                 "-c",
                 PROGRAM_SOURCE,
@@ -120,4 +120,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")
+        await remove_dir(
+            runtime, f"{runtime.cache_dir('/tmp/vf-hermes')}/{trace.id}", "Hermes home"
+        )

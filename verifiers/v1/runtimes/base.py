@@ -242,31 +242,42 @@ class Runtime(ABC):
         runtime.user_home = result.stdout.strip()
         return runtime
 
-    def user_argv(self, argv: list[str], env: dict[str, str]) -> list[str]:
-        """Switch Linux provider processes, preserving explicit env after su resets it."""
+    def cache_dir(self, directory: str) -> str:
+        """Keep writable program caches separate for each execution account."""
+        if self.user is None:
+            return directory
+        return f"{directory}-{hashlib.sha256(self.user.encode()).hexdigest()[:12]}"
+
+    def user_argv(self, argv: list[str]) -> list[str]:
+        """Preserve provider-supplied env without copying its values into argv."""
         if self.user is None:
             return argv
-        command = shlex.join(
-            ["env", *(f"{key}={value}" for key, value in env.items()), *argv]
-        )
         return [
             "sh",
             "-c",
             (
                 'account=$(getent passwd "$1" | cut -d: -f1); '
-                '[ -n "$account" ] || exit 1; exec su -s /bin/sh "$account" -c "$2"'
+                '[ -n "$account" ] || exit 1; exec su -m -s /bin/sh "$account" -c "$2"'
             ),
             "vf-user",
             self.user,
-            f"exec {command}",
+            f"exec {shlex.join(argv)}",
         ]
 
     async def ensure_curl(self) -> None:
         """Bootstrap the downloader with privilege before account-owned installs."""
+        from verifiers.v1.harnesses.utils.install import ensure_installed
+
         trusted = await self.with_user("root") if self.user is not None else self
-        result = await trusted.run(["sh", "-c", _INSTALL_CURL], {})
-        if result.exit_code:
-            raise SandboxError(f"curl setup failed: {result.stderr.strip()[-500:]}")
+        await ensure_installed(
+            trusted,
+            directory="/var/tmp/vf-curl",
+            ready="command -v curl >/dev/null 2>&1",
+            install=_INSTALL_CURL,
+            env={},
+            label="curl",
+            bootstrap_curl=False,
+        )
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
@@ -317,8 +328,6 @@ class Runtime(ABC):
         its environment variables out of child processes spawned by the script.
         """
         data = script.encode() if isinstance(script, str) else script
-        if self.user is not None:
-            await self.ensure_curl()
         identity = data if self.user is None else self.user.encode() + b"\0" + data
         digest = hashlib.sha256(identity).hexdigest()
         directory = self.scripts_dir

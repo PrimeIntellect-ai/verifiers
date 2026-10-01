@@ -79,10 +79,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             ACP_VERSION,
         )
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
-        directory = CODEX_DIR.format(**versions)
-        packages = PACKAGES_DIR.format(**versions)
-        codex_bin = CODEX_BIN.format(**versions)
-        acp_bin = ACP_BIN.format(**versions)
+        base = CODEX_DIR.format(**versions)
+        directory = runtime.cache_dir(base)
+        packages = PACKAGES_DIR.format(**versions).replace(base, directory)
+        codex_bin = CODEX_BIN.format(**versions).replace(base, directory)
+        acp_bin = ACP_BIN.format(**versions).replace(base, directory)
         ready = f"{directory}/.ready"
         script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
         await ensure_installed(
@@ -118,7 +119,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             env=env,
             command=[
                 f"{NODE_BIN_DIR}/node",
-                ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
+                f"{runtime.cache_dir(CODEX_DIR.format(version=self.config.version, acp_version=ACP_VERSION))}/acp/node_modules/.bin/codex-acp",
             ],
             prompt=prompt,
             # Codex reads MCP servers from the config written by build_env().

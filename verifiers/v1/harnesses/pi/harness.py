@@ -74,8 +74,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
         await ensure_installed(
             runtime,
-            directory=PI_DIR,
-            install=INSTALL,
+            directory=runtime.cache_dir(PI_DIR),
+            ready=f'[ "$(cat {runtime.cache_dir(PI_DIR)}/mcp/.versions 2>/dev/null)" = "{self.config.version}:{MCP_VERSION}:{ACP_VERSION}" ]',
+            install=INSTALL.replace(PI_DIR, runtime.cache_dir(PI_DIR)),
             env={
                 "VF_PI_VERSION": self.config.version,
                 "VF_PI_MCP_VERSION": MCP_VERSION,
@@ -155,7 +156,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 }
             }
             extension = (
-                f'import {{ createMcpAdapter }} from "{MCP_ADAPTER}";\n'
+                f'import {{ createMcpAdapter }} from "{MCP_ADAPTER.replace(PI_DIR, runtime.cache_dir(PI_DIR))}";\n'
                 "export default createMcpAdapter({ config: "
                 f"JSON.parse({json.dumps(json.dumps(mcp))}) }});\n"
             )
@@ -175,7 +176,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             for arg in ("--skill", skill_destination(skill, skills_dir))
         ]
         pi_args = [
-            PI_BIN,
+            PI_BIN.replace(PI_DIR, runtime.cache_dir(PI_DIR)),
             "--no-approve",
             "--provider",
             provider,
@@ -197,7 +198,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         env["PI_ACP_PI_COMMAND"] = pi_wrapper
         return ACPConfig(
             env=env,
-            command=ACP_COMMAND,
+            command=[
+                part.replace(PI_DIR, runtime.cache_dir(PI_DIR)) for part in ACP_COMMAND
+            ],
             prompt=prompt,
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},

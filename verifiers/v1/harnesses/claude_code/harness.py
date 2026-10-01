@@ -43,10 +43,11 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
-        directory = CLAUDE_ACP_DIR.format(**versions)
-        packages = PACKAGES_DIR.format(**versions)
-        claude_bin = CLAUDE_BIN.format(**versions)
-        acp_bin = ACP_BIN.format(**versions)
+        base = CLAUDE_ACP_DIR.format(**versions)
+        directory = runtime.cache_dir(base)
+        packages = PACKAGES_DIR.format(**versions).replace(base, directory)
+        claude_bin = CLAUDE_BIN.format(**versions).replace(base, directory)
+        acp_bin = ACP_BIN.format(**versions).replace(base, directory)
         ready = f"{directory}/.ready"
         script = ACP_INSTALL.replace("{packages}", packages).replace("{ready}", ready)
         await ensure_installed(
@@ -77,6 +78,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         config_dir = self.config_dir(trace)
         await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        base = CLAUDE_ACP_DIR.format(**versions)
+        directory = runtime.cache_dir(base)
         session_meta = {
             "claudeCode": {
                 "options": {
@@ -93,7 +96,9 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_MODEL": ctx.model,
-            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
+            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions).replace(
+                base, directory
+            ),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
@@ -101,7 +106,10 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         }
         return ACPConfig(
             env=env,
-            command=[f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
+            command=[
+                f"{NODE_BIN_DIR}/node",
+                ACP_BIN.format(**versions).replace(base, directory),
+            ],
             prompt=prompt or "",
             session_meta=session_meta,
         )

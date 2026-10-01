@@ -211,10 +211,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.data.user is not None or self.data.verifier_user is not None:
             runtime = await runtime.with_user("root")
+        environment = None
         if self.data.upload_environment:
+            environment = make_tar(Path(self.data.task_dir) / "environment")
             await runtime.write(
                 "/tmp/environment.tgz",
-                make_tar(Path(self.data.task_dir) / "environment"),
+                environment,
             )
             result = await runtime.run(
                 [
@@ -231,6 +233,20 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 )
         if self.data.healthcheck is not None:
             await self.wait_for_health(runtime, self.data.healthcheck)
+        if self.data.user is not None:
+            # Healthchecks may create the agent account. Transfer only staged files,
+            # leaving existing image-owned files and their access controls intact.
+            paths = [runtime.config.workdir]
+            if environment is not None:
+                with tarfile.open(fileobj=io.BytesIO(environment), mode="r:gz") as tar:
+                    paths.extend(f"./{member.name}" for member in tar.getmembers())
+            result = await runtime.run(
+                ["chown", "-h", "--", str(self.data.user), *paths], {}
+            )
+            if result.exit_code:
+                raise RuntimeError(
+                    f"workspace ownership setup failed: {result.stderr.strip()[-500:]}"
+                )
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError

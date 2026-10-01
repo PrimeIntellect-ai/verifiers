@@ -158,11 +158,12 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
-            directory=PRIME_AGENT_DIR,
+            directory=runtime.cache_dir(PRIME_AGENT_DIR),
+            ready=f'[ -x {self._bin(runtime)} ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]',
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
+                "VF_PRIME_AGENT_DIR": runtime.cache_dir(PRIME_AGENT_DIR),
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
@@ -187,7 +188,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "surface is ipython"
             )
 
-        root = self._root(trace)
+        root = self._root(trace, runtime)
         agent_dir = f"{root}/agent"
         skills_dir = f"{agent_dir}/skills"
         created = await runtime.run(
@@ -237,7 +238,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
         system_prompt, prompt = self.resolve_prompt(data)
         args = [
-            self._bin(),
+            self._bin(runtime),
             "--mode",
             "acp",
             "--provider",
@@ -256,7 +257,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--append-system-prompt", system_prompt]
 
         return ACPConfig(
-            env=self._env(trace, secret),
+            env=self._env(trace, secret, runtime),
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",
@@ -270,19 +271,21 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        root = self._root(trace)
+        root = self._root(trace, runtime)
         await remove_dir(runtime, root, "prime-agent state")
 
-    def _bin(self) -> str:
-        return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
+    def _bin(self, runtime: Runtime) -> str:
+        return (
+            f"{runtime.cache_dir(PRIME_AGENT_DIR)}/{self.config.commit}/bin/prime-agent"
+        )
 
     @staticmethod
-    def _root(trace: Trace) -> str:
+    def _root(trace: Trace, runtime: Runtime) -> str:
         digest = hashlib.sha256(trace.id.encode()).hexdigest()[:16]
-        return f"{STATE_ROOT}/{digest}"
+        return f"{runtime.cache_dir(STATE_ROOT)}/{digest}"
 
-    def _env(self, trace: Trace, secret: str) -> dict[str, str]:
-        root = self._root(trace)
+    def _env(self, trace: Trace, secret: str, runtime: Runtime) -> dict[str, str]:
+        root = self._root(trace, runtime)
         return {
             **self.config.resolved_env,
             KEY_VAR: secret,
