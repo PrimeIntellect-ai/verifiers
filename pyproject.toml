@@ -116,7 +116,7 @@ default = true
 
 [tool.uv.sources]
 # Filesystem checkpoints ship in prime-cli PR #971 (unreleased): pin the SDK to that branch.
-prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-sandboxes", rev = "c10a621" }
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-sandboxes", rev = "13c8688" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }

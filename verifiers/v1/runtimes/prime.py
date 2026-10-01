@@ -7,6 +7,7 @@ import logging
 import math
 import shlex
 import tempfile
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,7 +48,8 @@ _OUTPUT_RETRIES = 10
 exec is reported as failed."""
 _CHECKPOINT_DURABLE_SECONDS = 300
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform captures
-and uploads it after the request returns, and only a durable one restores."""
+and uploads it after the request returns, and only a durable one restores. A turn
+waits this long at most before it goes upstream."""
 
 
 BASE_LABELS: list[str] = []
@@ -267,56 +269,30 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def checkpoint(self) -> str:
+        # Blocking: the turn goes upstream only once the snapshot is durable, so it
+        # cannot include that turn's writes, and teardown (which fails pending
+        # checkpoints) never loses one.
         try:
             checkpoint = await self._client.checkpoint(self.info.id)
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
+        started = time.monotonic()
+        await self._wait_durable(checkpoint.id)
         logger.debug(
-            "prime: checkpoint %s requested on sandbox %s", checkpoint.id, self.info.id
+            "prime: checkpoint %s durable after %.1fs on sandbox %s",
+            checkpoint.id,
+            time.monotonic() - started,
+            self.info.id,
         )
         return checkpoint.id
 
     async def _wait_durable(self, checkpoint: str) -> None:
-        """Wait until `checkpoint` is `DURABLE`; a failed or overdue one raises."""
         try:
-            async with asyncio.timeout(_CHECKPOINT_DURABLE_SECONDS):
-                delay = 0.5
-                while True:
-                    state = await self._client.get_checkpoint(checkpoint)
-                    if state.state == "DURABLE":
-                        return
-                    if state.error or state.state == "FAILED":
-                        raise SandboxError(
-                            f"prime checkpoint {checkpoint} failed: "
-                            f"{state.error or state.state}"
-                        )
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 5)
-        except SandboxError:
-            raise
-        except TimeoutError as e:
-            raise SandboxError(
-                f"prime checkpoint {checkpoint} was not durable within "
-                f"{_CHECKPOINT_DURABLE_SECONDS}s"
-            ) from e
+            await self._client.wait_for_checkpoint(
+                checkpoint, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
         except Exception as e:
-            raise SandboxError(
-                f"prime checkpoint {checkpoint} lookup failed: {e}"
-            ) from e
-
-    async def preserve_checkpoints(self, ids: list[str]) -> list[str]:
-        # Deleting the sandbox fails its pending checkpoints, so wait here, before
-        # teardown. The platform marks a checkpoint durable only after its parent, so
-        # the newest durable one vouches for every older one.
-        remaining = list(ids)
-        while remaining:
-            try:
-                await self._wait_durable(remaining[-1])
-                return remaining
-            except SandboxError as e:
-                logger.warning("prime: %s - falling back to an older checkpoint", e)
-                remaining.pop()
-        return remaining
+            raise SandboxError(f"prime checkpoint {checkpoint}: {e}") from e
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
         if self._client is None:
