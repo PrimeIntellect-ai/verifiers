@@ -62,13 +62,15 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.config = config
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
-        self.network_policy = (
-            None
-            if config.network_allow is None and config.network_block is None
-            else NetworkPolicyConfig(
-                allow=["*"] if config.network_allow is None else config.network_allow,
-                block=config.network_block or [],
-            )
+        declared = (
+            type(config).model_fields["network"].get_default(call_default_factory=True)
+        )
+        self.network_default: NetworkPolicyConfig | None = declared
+        # Only a value that differs from the config class's own default can have come
+        # from TOML/CLI: a run's config crosses full-dump boundaries that lose
+        # `model_fields_set`, so set-ness cannot tell the two apart.
+        self.network_override: NetworkPolicyConfig | None = (
+            config.network if config.network != declared else None
         )
 
     @abstractmethod
@@ -82,28 +84,26 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return not self.INFINITE if self._bounded is None else self._bounded
 
     def __iter__(self) -> Iterator[TaskT]:
-        """Lazily iterate `load()` with each task's `idx` set to its position and the
-        config-layer system prompt and network policy applied, then the views'
-        transform. The views see the final task data, so a `keys` match compares the
-        keys that traces record. This is the read path; `load` is the subclass hook."""
+        """Lazily iterate `load()` with each task's `idx` set to its position, the
+        config-layer system prompt and the resolved network policy applied (a TOML/CLI
+        `network` replaces, else the task's own, else the taskset's declared default),
+        then the views' transform. The views see the final task data, so a `keys` match
+        compares the keys that traces record. This is the read path; `load` is the
+        subclass hook."""
         update = (
             {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
+        override, default = self.network_override, self.network_default
+
+        def policy(task: TaskT) -> NetworkPolicyConfig | None:
+            if override is not None:
+                return override
+            return task.data.network if task.data.network is not None else default
+
         tasks: Iterator[TaskT] = (
-            task.with_data(idx=idx, **update) for idx, task in enumerate(self.load())
+            task.with_data(idx=idx, network=policy(task), **update)
+            for idx, task in enumerate(self.load())
         )
-        if self.network_policy is not None:
-            base = self.network_policy
-
-            def restrict(task: TaskT) -> TaskT:
-                policy = base.with_task_network_policy(
-                    task.data.network_allow, task.data.network_block
-                )
-                return task.with_data(
-                    network_allow=policy.allow, network_block=policy.block
-                )
-
-            tasks = map(restrict, tasks)
         return tasks if self.transform is None else self.transform(tasks)
 
     def include(self, **match: Any) -> Self:

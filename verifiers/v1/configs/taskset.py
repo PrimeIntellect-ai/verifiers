@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.types import ID
 
@@ -18,16 +19,12 @@ class SharedTasksetConfig(BaseConfig):
     system_prompt: Path | None = None
     """File whose text overrides each task's `TaskData.system_prompt` on
     iteration (e.g. a GEPA `best_system_prompt.txt`)."""
-    network_allow: list[str] | None = None
-    """Execution-time destinations every task of this taskset may reach, composed
-    with each task's own `network_allow` on iteration the way a task's policy
-    composes with the runtime's: restrictions intersect, so `[]` allows none and
-    `["*"]` adds no restriction. None leaves each task's policy alone. A taskset
-    declares its own default on its config class, e.g. `[]` for a closed-book
-    benchmark, which a run overrides with `--env.taskset.network-allow`."""
-    network_block: list[str] | None = None
-    """Execution-time destinations denied to every task of this taskset, combined
-    with each task's own `network_block` on iteration. None adds none."""
+    network: NetworkPolicyConfig | None = None
+    """The taskset's execution-time egress policy — the same `allow`/`block` object the
+    runtimes carry. Set from TOML/CLI (`[env.taskset.network]`, `--env.taskset.network.allow`)
+    it replaces every task's own policy; left at the config class's declared value it
+    is the default for tasks that set none (a closed-book taskset declares
+    `NetworkPolicyConfig(allow=[])`). The runtime's own rules still intersect."""
 
 
 class TasksetConfig(SharedTasksetConfig):

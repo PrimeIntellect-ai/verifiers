@@ -110,11 +110,11 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
-Every taskset also takes `network_allow` and `network_block`, the execution-time egress every task of the taskset gets. They compose with each task's own `TaskData.network_allow`/`network_block` the way a task's policy composes with the runtime's: restrictions intersect, so `network_allow = []` allows no destination, `network_allow = ["*"]` adds no restriction, and both left unset keep each task's own policy. A taskset declares its own default on its config class, which keeps it overridable from config (`--env.taskset.network-allow '["*"]'`), unlike a policy hardcoded on its task data. A closed-book benchmark, for example, blocks egress by default (see [Network access](evaluation.md#network-access)):
+Every taskset also takes `network`, the execution-time egress policy for its tasks, as the same `allow`/`block` object the runtimes carry (`NetworkPolicyConfig`). A task can set its own `TaskData.network`; the taskset config's `network` declares the default for tasks that set none; and a `network` set from TOML/CLI (`[env.taskset.network]`, `--env.taskset.network.allow`) replaces both. A closed-book benchmark, for example, declares `allow = []` on its config class, which keeps it overridable from config (see [Network access](evaluation.md#network-access)):
 
 ```python
 class ClosedBookConfig(vf.TasksetConfig):
-    network_allow: list[str] | None = []
+    network: vf.NetworkPolicyConfig | None = vf.NetworkPolicyConfig(allow=[])
 ```
 
 ## Task identity

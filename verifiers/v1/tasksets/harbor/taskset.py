@@ -32,6 +32,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
@@ -136,9 +137,9 @@ class VerifierConfig(BaseModel):
     declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
     resources; a declared environment states its own, and what it omits falls back to
     the run's rather than to the agent's task-derived values."""
-    network_allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Destinations the verifier may reach, from the verifier's network mode. `["*"]`
-    is unrestricted; `[]` is Harbor's `no-network` / `allow_internet = false`."""
+    network: NetworkPolicyConfig = NetworkPolicyConfig()
+    """The verifier's egress policy, from its network mode: open, or `allow=[]` for
+    Harbor's `no-network` / `allow_internet = false`."""
 
 
 class HarborData(TaskData):
@@ -444,8 +445,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "healthcheck": verifier.healthcheck,
             "skills": [],
             "mcp_servers": [],
-            "network_allow": list(verifier.network_allow),
-            "network_block": [],
+            "network": verifier.network,
         }
     )
 
@@ -675,8 +675,8 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         prompt=harbor_task.instruction.strip(),
         image=image,
         workdir=environment.workdir,
-        network_allow=(
-            ["*"]
+        network=NetworkPolicyConfig(
+            allow=["*"]
             if network.network_mode == NetworkMode.PUBLIC
             else list(network.allowed_hosts)
         ),
@@ -824,8 +824,8 @@ def parse_verifier_environment(
         workdir=environment.workdir if declared else None,
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         fresh_copy=not declared,
-        network_allow=(
-            ["*"]
+        network=NetworkPolicyConfig(
+            allow=["*"]
             if network.network_mode == NetworkMode.PUBLIC
             else list(network.allowed_hosts)
         ),

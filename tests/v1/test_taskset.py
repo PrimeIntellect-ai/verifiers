@@ -204,18 +204,36 @@ def test_select_bounds_an_infinite_taskset() -> None:
 # Network policy
 
 
-def policy(task) -> tuple[list[str], list[str]]:
-    return task.data.network_allow, task.data.network_block
+class ClosedBookConfig(vf.TasksetConfig):
+    network: vf.NetworkPolicyConfig | None = vf.NetworkPolicyConfig(allow=[])
 
 
-def test_taskset_network_policy_composes_with_each_task() -> None:
-    assert policy(next(iter(finite()))) == (["*"], [])
-    blocked = FiniteTaskset(vf.TasksetConfig(network_allow=[]))
-    assert policy(next(iter(blocked))) == ([], ["*"])
-    denied = FiniteTaskset(vf.TasksetConfig(network_block=["example.com"]))
-    assert policy(next(iter(denied))) == (["*"], ["example.com"])
-    # `["*"]` adds no restriction, so a task's own allowlist stands.
-    open_ = FiniteTaskset(vf.TasksetConfig(network_allow=["*"]))
-    task = next(iter(open_)).with_data(network_allow=["pypi.org"])
-    assert policy(next(iter(open_.include(idx=[0])))) == (["*"], [])
-    assert policy(task) == (["pypi.org"], [])
+class ClosedBookTaskset(vf.Taskset[CountTask, ClosedBookConfig]):
+    def load(self):
+        tasks = [count_task(i) for i in range(3)]
+        tasks[1] = tasks[1].with_data(
+            network=vf.NetworkPolicyConfig(allow=["pypi.org"])
+        )
+        return tasks
+
+
+def policies(taskset) -> list[list[str] | None]:
+    return [None if t.data.network is None else t.data.network.allow for t in taskset]
+
+
+def test_network_policy_resolves_config_over_task_over_taskset_default() -> None:
+    assert policies(finite()) == [None] * 10
+    # The taskset's declared default fills in; a task's own policy wins over it.
+    assert policies(ClosedBookTaskset(ClosedBookConfig())) == [[], ["pypi.org"], []]
+    # A policy set from TOML/CLI replaces both.
+    opened = ClosedBookTaskset(
+        ClosedBookConfig.model_validate({"network": {"allow": ["*"]}})
+    )
+    assert policies(opened) == [["*"]] * 3
+    blocked = FiniteTaskset(vf.TasksetConfig(network=vf.NetworkPolicyConfig(allow=[])))
+    assert policies(blocked) == [[]] * 10
+    # The resolved policy survives the config round trip a served run takes.
+    reloaded = ClosedBookConfig.model_validate(
+        ClosedBookConfig().model_dump(mode="json")
+    )
+    assert policies(ClosedBookTaskset(reloaded)) == [[], ["pypi.org"], []]

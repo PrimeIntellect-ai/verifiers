@@ -572,21 +572,21 @@ ALLOWED_URL, BLOCKED_URL = "https://example.com/", "https://pypi.org/"
 NETWORK_POLICIES = [
     pytest.param({}, True, None, {ALLOWED_URL: True, BLOCKED_URL: True}, id="open"),
     pytest.param(
-        {"network_allow": []},
+        {"network": {"allow": []}},
         True,
         "Internet access is disabled",
         {ALLOWED_URL: False, BLOCKED_URL: False},
         id="framework-only",
     ),
     pytest.param(
-        {"network_allow": ["example.com"]},
+        {"network": {"allow": ["example.com"]}},
         True,
         "Only these destinations are reachable: example.com",
         {ALLOWED_URL: True, BLOCKED_URL: False},
         id="allowlist",
     ),
     pytest.param(
-        {"network_allow": ["example.com"]},
+        {"network": {"allow": ["example.com"]}},
         False,
         None,
         {ALLOWED_URL: True, BLOCKED_URL: False},
