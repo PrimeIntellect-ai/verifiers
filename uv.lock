@@ -3486,7 +3486,7 @@ wheels = [
 [[package]]
 name = "prime-sandboxes"
 version = "0.3.2"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=13c8688#13c86889a6c277ae18e3dcaaaccfc2051b293db1" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=d5f57be#d5f57be7ffb1f9c1cf0afb082622746357bae5fd" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
