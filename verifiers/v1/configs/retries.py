@@ -39,18 +39,18 @@ class RetryRule(BaseConfig):
 def _default_rules() -> list[RetryRule]:
     """Fresh, conservative policies for transport and provider failures."""
     return [
-        RetryRule(type="ProviderError", status_code=[408, 429, "5xx"], max_retries=3),
-        RetryRule(type="InterceptionError", max_retries=3),
-        RetryRule(type="TunnelError", max_retries=3),
+        RetryRule(type="ProviderError", status_code=[408, 429, "5xx"], max_retries=5),
+        RetryRule(type="InterceptionError", max_retries=5),
+        RetryRule(type="TunnelError", max_retries=5),
         RetryRule(
             type="SandboxError",
             message="(?i)connection reset by peer|connection timed out",
-            max_retries=2,
+            max_retries=5,
         ),
         RetryRule(
             type="HarnessError",
             message="Tunnel not found or no longer active",
-            max_retries=2,
+            max_retries=5,
         ),
     ]
 

@@ -150,10 +150,10 @@ Whole-rollout retry is opt-in. Each retry starts a fresh rollout. Set the overal
 
 ```toml
 [env.agent.retries]
-max_retries = 3
+max_retries = 5
 ```
 
-Default rules allow provider HTTP 408/429/5xx, interception failures, and tunnel failures up to three retries each. Sandbox messages matching `(?i)connection reset by peer|connection timed out` and harness messages containing `Tunnel not found or no longer active` allow two retries each. The overall cap bounds all rules together. Other errors do not match; these defaults are recovery heuristics, not guarantees that a failure is transient.
+Default rules allow provider HTTP 408/429/5xx, interception failures, and tunnel failures up to five retries each. Sandbox messages matching `(?i)connection reset by peer|connection timed out` and harness messages containing `Tunnel not found or no longer active` allow five retries each. The overall cap bounds all rules together. Other errors do not match; these defaults are recovery heuristics, not guarantees that a failure is transient.
 
 An explicit `rules` list replaces the defaults completely; `rules = []` disables matching. For example:
 
