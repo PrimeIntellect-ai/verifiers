@@ -74,9 +74,13 @@ def retrying(
 
 
 def _retryable(error: Error | None, retry: RetryConfig) -> bool:
-    """Whether `error` matches the retry policy: its exception type is included (and
-    not excluded)."""
+    """Whether `error` matches the retry policy: the error doesn't declare itself
+    unretryable (`retryable is False` — a deterministic fault a rerun reproduces,
+    unless `retry_nonretryable` opts in), and its exception type is included and
+    not excluded."""
     if error is None:
+        return False
+    if error.retryable is False and not retry.retry_nonretryable:
         return False
     if error.type in retry.exclude:
         return False

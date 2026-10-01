@@ -86,6 +86,9 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    retryable: bool | None = None
+    """Whether a whole-rollout rerun could succeed (see `RolloutError.retryable`);
+    carried from the live exception so `trace_should_retry` needn't reconstruct it."""
 
 
 class VersionInfo(BaseModel):
@@ -769,6 +772,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                retryable=getattr(error, "retryable", None),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None

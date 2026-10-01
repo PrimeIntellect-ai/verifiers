@@ -15,3 +15,9 @@ class RetryConfig(BaseConfig):
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = Field(default_factory=list)
     """Never retry errors whose type is listed (wins over `include`)."""
+    retry_nonretryable: bool = False
+    """Also rerun faults the error itself declares deterministic (`retryable is
+    False` — e.g. a 4xx `ProviderError` or a `TaskError`). Off by default, since a
+    rerun usually just reproduces them; opt in when you accept the (often wasted)
+    cost — e.g. a flaky authored grader. `include`/`exclude` still scope which
+    types this applies to."""
