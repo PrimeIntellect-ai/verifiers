@@ -8,7 +8,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.configs.env import EnvConfig, restrict_network_by_default
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
@@ -132,13 +132,6 @@ class EvalConfig(BaseConfig):
     @classmethod
     def _resolve_env(cls, data):
         return resolve_env_field(data, narrowed_env_annotation(cls))
-
-    @model_validator(mode="after")
-    def restrict_network(self):
-        """An eval's boxes reach nothing beyond the framework unless the config says
-        otherwise (`--env.taskset.network-allow '["*"]'` keeps the internet)."""
-        restrict_network_by_default(self.env)
-        return self
 
     @model_validator(mode="after")
     def auto_setup_run_name(self):

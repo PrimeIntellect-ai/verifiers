@@ -22,8 +22,9 @@ class SharedTasksetConfig(BaseConfig):
     """Execution-time destinations every task of this taskset may reach, composed
     with each task's own `network_allow` on iteration the way a task's policy
     composes with the runtime's: restrictions intersect, so `[]` allows none and
-    `["*"]` adds no restriction. None leaves each task's policy alone, which lets
-    an eval entrypoint fall back to its own default (`restrict_network_by_default`)."""
+    `["*"]` adds no restriction. None leaves each task's policy alone. A taskset
+    declares its own default on its config class, e.g. `[]` for a closed-book
+    benchmark, which a run overrides with `--env.taskset.network-allow`."""
     network_block: list[str] | None = None
     """Execution-time destinations denied to every task of this taskset, combined
     with each task's own `network_block` on iteration. None adds none."""

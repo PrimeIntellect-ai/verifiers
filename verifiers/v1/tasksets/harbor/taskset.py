@@ -61,9 +61,6 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
-    network_allow: list[str] | None = Field(default_factory=lambda: ["*"])
-    """Each Harbor task carries the network policy its own config declares, so the
-    taskset adds no restriction of its own."""
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()

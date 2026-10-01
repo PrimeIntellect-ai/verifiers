@@ -18,12 +18,7 @@ from verifiers.v1.configs.cli.env import (
     narrowed_env_annotation,
     resolve_env_field,
 )
-from verifiers.v1.configs.env import (
-    EnvConfig,
-    SharedEnvConfig,
-    default_agent_harness,
-    restrict_network_by_default,
-)
+from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.configs.retries import RetryConfig
@@ -326,7 +321,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SharedEnvConfig",
     "ServeConfig",
     "resolve_env_field",
-    "restrict_network_by_default",
     "merge_defaults",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",

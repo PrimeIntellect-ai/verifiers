@@ -53,14 +53,14 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 
 ## Network access
 
-An eval gives its boxes no internet: unless the config says otherwise, every task runs with `env.taskset.network_allow = []`, so only the framework's own routes (the model endpoint, tool servers) are reachable. The default applies when every seat's runtime can enforce a policy (`prime`, `docker`, `modal`) and none of them already restricts one; the host `subprocess` runtime has no policy and runs unrestricted. Set the taskset's policy to change it:
+The `prime`, `docker` and `modal` runtimes enforce an egress policy on the agent's box; `subprocess` has none. The policy composes from three places, and restrictions intersect: the runtime's own `allow`/`block` (`[env.agent.runtime]`), the taskset's (`[env.taskset]`), and each task's own `TaskData.network_allow`/`network_block`. The runtime and taskset layers default to open; a taskset that wants a different default declares it on its config class, and a run overrides it from config:
 
 ```toml
 [env.taskset]
-network_allow = ["*"]
+network_allow = []              # framework-only: no internet
+# network_allow = ["github.com"]  # an allowlist
+# network_block = ["example.com"] # a denylist
 ```
-
-`network_allow = ["pypi.org"]` limits the boxes to an allowlist, and `network_block = ["example.com"]` denies a list instead; a task's own policy composes with these (restrictions intersect). Tasksets whose tasks need the internet declare `network_allow = ["*"]` on their config class themselves (see [Data and configuration](tasksets.md#data-and-configuration)).
 
 Whenever the resolved policy restricts egress, the model's system prompt ends with a note that says so — that internet access is disabled or limited to which destinations, that this is intentional, and that it must not try to work around it. Turn the note off per seat with `--env.agent.no-network-notice` (`network_notice = false` under `[env.agent]`).
 

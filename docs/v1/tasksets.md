@@ -110,11 +110,11 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
-Every taskset also takes `network_allow` and `network_block`, the execution-time egress every task of the taskset gets. They compose with each task's own `TaskData.network_allow`/`network_block` the way a task's policy composes with the runtime's: restrictions intersect, so `network_allow = []` allows no destination, `network_allow = ["*"]` adds no restriction, and both left unset keep each task's own policy. A taskset whose tasks depend on the internet (for example, one that asks the model to research a question with web search) declares that on its config class, so an eval's block-by-default (see [Evaluation](evaluation.md#network-access)) does not apply to it:
+Every taskset also takes `network_allow` and `network_block`, the execution-time egress every task of the taskset gets. They compose with each task's own `TaskData.network_allow`/`network_block` the way a task's policy composes with the runtime's: restrictions intersect, so `network_allow = []` allows no destination, `network_allow = ["*"]` adds no restriction, and both left unset keep each task's own policy. A taskset declares its own default on its config class, which keeps it overridable from config (`--env.taskset.network-allow '["*"]'`), unlike a policy hardcoded on its task data. A closed-book benchmark, for example, blocks egress by default (see [Network access](evaluation.md#network-access)):
 
 ```python
-class ResearchConfig(vf.TasksetConfig):
-    network_allow: list[str] | None = ["*"]
+class ClosedBookConfig(vf.TasksetConfig):
+    network_allow: list[str] | None = []
 ```
 
 ## Task identity

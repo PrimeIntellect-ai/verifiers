@@ -14,7 +14,6 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
 from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
@@ -147,27 +146,6 @@ class EnvConfig(SharedEnvConfig):
                     "instance is the role's author default (CLI overrides "
                     "deep-merge onto it, and the seat plays under the field's name)"
                 )
-
-
-def restrict_network_by_default(env: EnvConfig) -> None:
-    """Give the env's tasks framework-only egress unless the config already speaks
-    to it — the eval entrypoints' default, where a box that can reach the internet
-    can look answers up. The taskset's own `network_allow`/`network_block` win
-    (`["*"]` keeps the internet), and so does any seat whose runtime enforces no
-    policy (subprocess) or already restricts one: a restriction added here would
-    silently shrink a configured allowlist to nothing."""
-    from verifiers.v1.runtimes import ModalConfig
-
-    taskset = env.taskset
-    if taskset.network_allow is not None or taskset.network_block is not None:
-        return
-    for agent in agent_config_fields(env).values():
-        runtime = agent.runtime
-        if not isinstance(runtime, NetworkPolicyConfig) or runtime.network_restricted:
-            return
-        if isinstance(runtime, ModalConfig) and not runtime.network_access:
-            return
-    taskset.network_allow = []
 
 
 def default_agent_harness(taskset_id: str) -> HarnessConfig:
