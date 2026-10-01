@@ -22,8 +22,8 @@ class RetryRule(BaseConfig):
     """Match any listed HTTP status or status class; absent status never matches."""
     message: str | None = None
     """Regex search of the error message; plain text matches a substring."""
-    max_retries: int = Field(0, ge=0)
-    """Retries this rule may trigger across the run. Zero excludes matching errors."""
+    max_retries: int = Field(ge=0)
+    """Required retry budget across the run. Explicit zero excludes matching errors."""
 
     @field_validator("message")
     @classmethod
@@ -36,6 +36,25 @@ class RetryRule(BaseConfig):
         return value
 
 
+def _default_rules() -> list[RetryRule]:
+    """Fresh, conservative policies for transport and provider failures."""
+    return [
+        RetryRule(type="ProviderError", status_code=[408, 429, "5xx"], max_retries=3),
+        RetryRule(type="InterceptionError", max_retries=3),
+        RetryRule(type="TunnelError", max_retries=3),
+        RetryRule(
+            type="SandboxError",
+            message="(?i)connection reset by peer|connection timed out",
+            max_retries=2,
+        ),
+        RetryRule(
+            type="HarnessError",
+            message="Tunnel not found or no longer active",
+            max_retries=2,
+        ),
+    ]
+
+
 class RetryConfig(BaseConfig):
     """Ordered rules for whole-rollout retries. No matching rule means no retry.
 
@@ -45,4 +64,5 @@ class RetryConfig(BaseConfig):
 
     max_retries: int = Field(0, ge=0)
     """Overall retry cap across all rules. Off by default."""
-    rules: list[RetryRule] = Field(default_factory=list)
+    rules: list[RetryRule] = Field(default_factory=_default_rules)
+    """Conservative defaults; an explicit list replaces them, and [] disables matching."""
