@@ -36,27 +36,8 @@ class RetryRule(BaseConfig):
         return value
 
 
-def _default_rules() -> list[RetryRule]:
-    """Fresh, conservative policies for transport and provider failures."""
-    return [
-        RetryRule(type="ProviderError", status_code=[408, 429, "5xx"], max_retries=5),
-        RetryRule(type="InterceptionError", max_retries=5),
-        RetryRule(type="TunnelError", max_retries=5),
-        RetryRule(
-            type="SandboxError",
-            message="(?i)connection reset by peer|connection timed out",
-            max_retries=5,
-        ),
-        RetryRule(
-            type="HarnessError",
-            message="Tunnel not found or no longer active",
-            max_retries=5,
-        ),
-    ]
-
-
 class RetryConfig(BaseConfig):
-    """Ordered rules for whole-rollout retries. No matching rule means no retry.
+    """Ordered rules for opt-in whole-rollout retries.
 
     Fields within a rule are ANDed. An exhausted rule never falls through to a
     later rule for that error; another captured error can still trigger a retry.
@@ -64,5 +45,6 @@ class RetryConfig(BaseConfig):
 
     max_retries: int = Field(0, ge=0)
     """Overall retry cap across all rules. Off by default."""
-    rules: list[RetryRule] = Field(default_factory=_default_rules)
-    """Conservative defaults; an explicit list replaces them, and [] disables matching."""
+    rules: list[RetryRule] | None = None
+    """Omitted rules retry any captured error up to the overall cap. Explicit rules
+    restrict matching; an empty list disables matching."""

@@ -28,7 +28,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.retries import RetryConfig, RetryRule
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode
@@ -79,10 +79,15 @@ class RetryState:
 
     def __init__(self, config: RetryConfig) -> None:
         self.config = config
-        self.used = [0] * len(config.rules)
+        self.rules = (
+            config.rules
+            if config.rules is not None
+            else [RetryRule(max_retries=config.max_retries)]
+        )
+        self.used = [0] * len(self.rules)
         self.patterns = [
             re.compile(rule.message) if rule.message is not None else None
-            for rule in config.rules
+            for rule in self.rules
         ]
 
     def next_error(self, errors: Iterable[Error]) -> Error | None:
@@ -94,7 +99,7 @@ class RetryState:
         if sum(self.used) >= self.config.max_retries:
             return None
         for error in errors:
-            for index, rule in enumerate(self.config.rules):
+            for index, rule in enumerate(self.rules):
                 if rule.type is not None and error.type != rule.type:
                     continue
                 if rule.status_code is not None and (

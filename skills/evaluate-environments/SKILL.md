@@ -146,16 +146,9 @@ uv run vf-eval @ configs/my-eval.toml
 
 ## Retries
 
-Whole-rollout retry is opt-in. Each retry starts a fresh rollout. Set the overall cap to enable conservative defaults; use `env.retries` for whole-episode retries or `env.agent.retries` for the agent alone:
+Whole-rollout retry is off by default (`max_retries = 0`). Each retry starts a fresh rollout. Setting only `max_retries` retries any captured error up to that cap. Use `env.retries` for whole-episode retries or `env.agent.retries` for the agent alone.
 
-```toml
-[env.agent.retries]
-max_retries = 5
-```
-
-Default rules allow provider HTTP 408/429/5xx, interception failures, and tunnel failures up to five retries each. Sandbox messages matching `(?i)connection reset by peer|connection timed out` and harness messages containing `Tunnel not found or no longer active` allow five retries each. The overall cap bounds all rules together. Other errors do not match; these defaults are recovery heuristics, not guarantees that a failure is transient.
-
-An explicit `rules` list replaces the defaults completely; `rules = []` disables matching. For example:
+To restrict retries, provide ordered rules. An explicit empty list (`rules = []`) disables matching. For example:
 
 ```toml
 [env.agent.retries]
