@@ -56,12 +56,11 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
         return [
             TriviaTask(
                 TriviaTaskData(
-                    idx=i,
                     question=row["question"],
                     answer=str(row["answer"]),
                     prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
                 ),
                 self.config.task,
             )
-            for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
+            for row in rows.select(range(min(NUM_QUESTIONS, len(rows))))
         ]

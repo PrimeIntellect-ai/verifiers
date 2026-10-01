@@ -1,6 +1,7 @@
 """Run Kimi Code's native ACP server against interception."""
 
 import logging
+import tomllib
 from typing import Literal
 
 import tomli_w
@@ -49,6 +50,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(
@@ -128,3 +130,15 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, f"{KIMI_HOME}/{trace.id}", "Kimi Code state")
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        # An `ask` rule for every tool routes each call through Kimi's approval bridge,
+        # which its ACP server turns into a permission request for the runner.
+        path = f"{config.env['KIMI_CODE_HOME']}/config.toml"
+        settings = tomllib.loads((await runtime.read(path)).decode())
+        settings.setdefault("permission", {}).setdefault("rules", []).append(
+            {"decision": "ask", "scope": "user", "pattern": "*"}
+        )
+        await runtime.write(path, tomli_w.dumps(settings).encode())

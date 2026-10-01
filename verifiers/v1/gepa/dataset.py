@@ -2,8 +2,8 @@
 
 v1 tasksets have no generic train/val split concept (`TasksetConfig` has no `split` field;
 individual tasksets define ad hoc ones inconsistently), so GEPA carves one out of the tasks
-`Taskset.select` hands it (the shared fixed-seed shuffle, reproducible across runs like every
-other entrypoint): two disjoint slices.
+`select` yields (reproducible across runs like every other entrypoint): two
+disjoint slices.
 """
 
 from verifiers.v1.task import Task
@@ -40,5 +40,5 @@ def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> s
         "no task in this taskset sets Task.system_prompt — some tasksets bake instructions "
         "directly into `prompt` instead (e.g. gsm8k) and can't be optimized this way. Pass "
         "--initial-prompt to seed one explicitly, or pick a taskset whose load() sets "
-        "system_prompt on its task data (e.g. reverse-text, lean, textarena)."
+        "system_prompt on its task data (e.g. reverse-text, textarena)."
     )

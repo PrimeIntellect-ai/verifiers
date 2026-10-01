@@ -114,12 +114,11 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         return [
             CodeGolfTask(
                 CodeGolfData(
-                    idx=i,
                     name=name,
                     prompt=f"{SYSTEM}\n\nPrint {description}.",
                     expected=expected,
                 ),
                 self.config.task,
             )
-            for i, (name, description, expected) in enumerate(self.SPECS)
+            for name, description, expected in self.SPECS
         ]

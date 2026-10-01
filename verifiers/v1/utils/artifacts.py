@@ -39,8 +39,9 @@ async def collect(
     artifacts: list[Artifact] | None = None,
     *,
     max_bytes: int = MAX_ARTIFACT_BYTES,
+    sweep: bool = True,
 ) -> dict[str, bytes | None]:
-    """Tar the convention dir and every declared path out of `runtime`.
+    """Tar the convention dir (when `sweep`) and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
     they were declared, and a path cannot be collected twice.
@@ -61,7 +62,7 @@ async def collect(
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
     declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
-    if convention in declared_paths:
+    if not sweep or convention in declared_paths:
         entries = declared
     else:
         sweep_excludes = [
@@ -140,7 +141,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
-    before the grading runtime is changed. Only regular files and directories travel.
+    before the grading runtime is changed. Regular files, directories, and confined links
+    can travel; link chains and extraction through symlinks cannot.
     """
     if not collected:
         return
@@ -157,7 +159,12 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
     roots = " ".join(shlex.quote(root) for root in collected)
-    await _run(runtime, f"rm -rf -- {roots}", "clear artifact roots")
+    # Container exec requires its configured cwd to exist, including while a
+    # submission replaces the entire working directory (or one of its parents).
+    workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
+    await _run(
+        runtime, f"rm -rf -- {roots} && mkdir -p -- {workdir}", "clear artifact roots"
+    )
     for root, archive in collected.items():
         if archive is None:
             continue
@@ -208,6 +215,9 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
 
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            regular_files: set[PurePosixPath] = set()
+            members: set[PurePosixPath] = set()
+            symlinks: dict[PurePosixPath, str] = {}
             for member in tar:
                 member_path = PurePosixPath(member.name)
                 destination = PurePosixPath("/") / member_path
@@ -221,10 +231,65 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                         f"artifact member {member.name!r} is outside declared root "
                         f"{root!r}"
                     )
-                if not (member.isfile() or member.isdir()):
+                if member_path in members:
+                    raise RuntimeError(f"duplicate artifact member {member.name!r}")
+                members.add(member_path)
+                if member.issym():
+                    symlinks[member_path] = member.linkname
+                elif member.islnk():
+                    # Tar deduplicates hard-linked build outputs (e.g. Cargo's build
+                    # scripts). A target must already be a regular member of this
+                    # archive, never a path supplied by the verifier image.
+                    target = PurePosixPath(member.linkname)
+                    if (
+                        not member.linkname
+                        or target.is_absolute()
+                        or ".." in target.parts
+                        or target not in regular_files
+                        or target == member_path
+                    ):
+                        raise RuntimeError(
+                            f"artifact hard link {member.name!r} has unsafe target "
+                            f"{member.linkname!r}"
+                        )
+                elif not (member.isfile() or member.isdir()):
                     raise RuntimeError(
                         f"artifact member {member.name!r} is a link or special file"
                     )
+                if member.isfile():
+                    regular_files.add(member_path)
+            # Check after reading the whole archive, so a later symlink cannot
+            # turn an earlier member's parent or a link target into a redirection.
+            for member_path in members:
+                if any(parent in symlinks for parent in member_path.parents):
+                    raise RuntimeError(
+                        f"artifact member {str(member_path)!r} traverses a symlink"
+                    )
+            relative_root = root_path.relative_to("/")
+            for member_path, linkname in symlinks.items():
+                target = PurePosixPath(linkname)
+                if not linkname or target.is_absolute():
+                    raise RuntimeError(
+                        f"artifact symlink {str(member_path)!r} has unsafe target "
+                        f"{linkname!r}"
+                    )
+                resolved = member_path.parent
+                if not resolved.is_relative_to(relative_root):
+                    raise RuntimeError(
+                        f"artifact symlink {str(member_path)!r} has unsafe target "
+                        f"{linkname!r}"
+                    )
+                # Walk before normalizing '..': a/../b is unsafe if a is itself
+                # a symlink. Missing internal targets are safe (e.g. build outputs).
+                for part in target.parts:
+                    resolved = resolved.parent if part == ".." else resolved / part
+                    if not resolved.is_relative_to(relative_root) or any(
+                        path in symlinks for path in (resolved, *resolved.parents)
+                    ):
+                        raise RuntimeError(
+                            f"artifact symlink {str(member_path)!r} has unsafe target "
+                            f"{linkname!r}"
+                        )
     except tarfile.TarError as exc:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
 

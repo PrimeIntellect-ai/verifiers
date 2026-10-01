@@ -156,7 +156,10 @@ def _eval_config(
         runtime_cfg = dict(runtime)
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
-    retries = {"max_retries": 2, "include": ["ProviderError", "HarnessError"]}
+    retries = {
+        "max_retries": 2,
+        "include": ["ProviderError", "InterceptionError", "HarnessError"],
+    }
     env_cfg.setdefault("retries", retries)
     # Per-run caps live on the seats: resolve the env's declared roles and cap
     # each one (a test's own seat dict wins over the shared defaults).
@@ -178,7 +181,7 @@ def _eval_config(
             "taskset": taskset_cfg,
             **env_cfg,
         },
-        num_tasks=num_tasks,
+        select={"limit": num_tasks},
         num_rollouts=n,
         sampling={
             "max_tokens": max_tokens,
@@ -219,7 +222,7 @@ def run_v1_server():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        tasks = list(load_taskset(config.env.taskset).head(config.num_tasks))
+        tasks = list(load_taskset(config.env.taskset).select(config.select))
         mpctx = mp.get_context("spawn")
         address_queue: mp.Queue = mpctx.Queue()
         proc = mpctx.Process(

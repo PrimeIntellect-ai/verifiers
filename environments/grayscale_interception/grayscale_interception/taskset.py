@@ -81,8 +81,4 @@ class GrayscaleInterceptionTaskset(vf.Taskset[GrayscaleInterceptionTask]):
                 ]
             )
         ]
-        return [
-            GrayscaleInterceptionTask(
-                vf.TaskData(idx=0, prompt=prompt), self.config.task
-            )
-        ]
+        return [GrayscaleInterceptionTask(vf.TaskData(prompt=prompt), self.config.task)]

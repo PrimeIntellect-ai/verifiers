@@ -1,6 +1,7 @@
 import base64
 
 import numpy as np
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -203,6 +204,31 @@ def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
 
     assert graph.message_hash(left) == graph.message_hash(right)
 
+    # Identical call IDs and short names can occur in different agent branches.
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="lookup")),
+    )
+    user = vf.UserMessage(content="lookup")
+    calls = [
+        vf.AssistantMessage(
+            tool_calls=[
+                vf.ToolCall(id="call_0", name="lookup", namespace=ns, arguments="{}")
+            ]
+        )
+        for ns in (None, "alpha", "beta")
+    ]
+    node_ids = [
+        graph.prepare_turn(trace, [user]).commit(_response(message))
+        for message in calls
+    ]
+    for message, node_id in zip(calls, node_ids, strict=True):
+        turn = graph.prepare_turn(
+            trace,
+            [user, message, vf.ToolMessage(content="result", tool_call_id="call_0")],
+        )
+        assert turn.prefix_node_ids == [0, node_id]
+
 
 def test_reasoning_content_participates_in_graph_prefix_matching():
     task = vf.TaskData(idx=0, prompt="use a tool")
@@ -243,7 +269,8 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
-def test_parallel_commits_reconcile_shared_prompt_prefix():
+@pytest.mark.parametrize("same_tools", [False, True])
+def test_parallel_commits_reconcile_shared_prompt_prefix(same_tools):
     """Two requests prepared from the same graph snapshot share any common prompt prefix that
     the first response commits while the second is in flight. A later turn must keep following
     its original child path rather than re-rooting through the sibling and stranding an orphan."""
@@ -257,10 +284,13 @@ def test_parallel_commits_reconcile_shared_prompt_prefix():
     assistant_a = vf.AssistantMessage(content="A1")
 
     # Both model requests leave before either response has committed its prompt.
-    pending_a = graph.prepare_turn(trace, [system, user_a])
-    pending_b = graph.prepare_turn(trace, [system, user_b])
+    tool_a = vf.Tool(name="echo", namespace="a")
+    tool_b = vf.Tool(name="echo", namespace="a" if same_tools else "b")
+    pending_a = graph.prepare_turn(trace, [system, user_a], [tool_a])
+    pending_b = graph.prepare_turn(trace, [system, user_b], [tool_b])
     assistant_a_id = pending_a.commit(_response(assistant_a))
     pending_b.commit(_response(vf.AssistantMessage(content="B1")))
+    assert trace.tools == ([tool_a] if same_tools else [tool_a, tool_b])
 
     graph.prepare_turn(
         trace,
@@ -270,16 +300,23 @@ def test_parallel_commits_reconcile_shared_prompt_prefix():
             assistant_a,
             vf.ToolMessage(content="tool A", tool_call_id="call_a"),
         ],
+        [tool_a],
     ).commit(_response(vf.AssistantMessage(content="A2")))
 
     roots = [node for node in trace.nodes if node.parent is None]
     identities = [
-        (node.parent, graph.message_hash(node.message)) for node in trace.nodes
+        (
+            node.parent,
+            tuple(tool.namespace for tool in node.tools),
+            graph.message_hash(node.message),
+        )
+        for node in trace.nodes
     ]
-    assert len(roots) == 1
+    assert len(roots) == (1 if same_tools else 2)
     assert len(identities) == len(set(identities))
     assert trace.num_branches == 2
     assert assistant_a_id not in graph.leaves(trace)
+    assert [branch.tools for branch in trace.branches] == [[tool_b], [tool_a]]
 
 
 def test_parallel_commit_reconciles_only_token_identical_prefixes():
@@ -500,6 +537,92 @@ def test_renderer_level_break_forks_by_token_id():
         [1, 2, 3, 4, 5],
         [1, 2, 3, 99, 5, 6, 7, 8],
     ]
+
+
+def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="image")
+    assistant = vf.AssistantMessage(content="looked")
+    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids == [9]
+    assert (
+        graph.MessageNode(
+            message=user, token_ids=[9], renderer_token_ids=[]
+        ).logical_ids
+        == []
+    )
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=assistant,
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3],
+                renderer_prompt_ids=[1, 9, 3],
+                completion_ids=[4],
+                message_spans=[(0, 2)],
+                is_content=[False, True, False],
+                mm_placeholders=[(1, 2)],
+                mm_token_type_id_map={9: 1},
+            ),
+        )
+    )
+
+    assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
+    assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
+    assert trace.nodes[0].token_ids == [1, 9, 9]
+    assert trace.nodes[0].is_content == [False, True, True]
+    turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
+    assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
+
+    with pytest.raises(ValueError, match="exactly extend"):
+        turn.commit(
+            vf.Response(
+                id="b",
+                created=0,
+                model="t",
+                message=vf.AssistantMessage(content="bad"),
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=[1, 9, 8, 3, 4, 5],
+                    renderer_prompt_ids=[1, 9, 3, 4, 5],
+                    bridged=True,
+                    completion_ids=[6],
+                    message_spans=[None, None, (4, 5)],
+                ),
+            )
+        )
+
+    tool = vf.ToolMessage(content="result", tool_call_id="call_0")
+    graph.prepare_turn(trace, [user, assistant, tool]).commit(
+        vf.Response(
+            id="b",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="done"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3, 4, 5, 6, 7],
+                renderer_prompt_ids=[1, 9, 3, 4, 5, 6, 7],
+                bridged=True,
+                completion_ids=[8],
+                message_spans=[None, None, (4, 6)],
+                is_content=[False, True, False, True, False, True, False],
+                mm_placeholders=[(1, 2)],
+                mm_token_type_id_map={9: 1},
+            ),
+        )
+    )
+
+    tool_node = trace.nodes[-2]
+    assert tool_node.message == tool
+    assert tool_node.token_ids == [5, 6]
+    assert tool_node.renderer_token_ids == [5, 6]
+    assert tool_node.is_content == [False, True]
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():

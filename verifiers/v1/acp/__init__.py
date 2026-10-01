@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, InterceptionError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
@@ -85,6 +85,13 @@ class ACPHarness(Harness[ConfigT]):
             )
             trace.add_semantic_edges(edge_set)
 
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        """Configure the agent to ask before every tool call, so each request reaches the
+        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
+        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
+
     @abstractmethod
     async def prepare_acp(
         self,
@@ -116,6 +123,8 @@ class ACPHarness(Harness[ConfigT]):
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
+        if tool_interception_url is not None:
+            await self.gate_tools(config, runtime, tool_interception_url, secret)
         return ACPHarnessSession(
             self,
             ctx,
@@ -268,6 +277,12 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
+            "tool_interception": {
+                "url": self.tool_interception_url,
+                "secret": self.secret,
+            }
+            if self.tool_interception_url
+            else None,
         }
         async with self._lock:
             if self._closed:
@@ -293,6 +308,12 @@ class ACPHarnessSession(HarnessSession):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+            error_data = response.get("error_data")
+            if (
+                isinstance(error_data, dict)
+                and error_data.get("kind") == "model_transport"
+            ):
+                raise InterceptionError(detail)
             raise RuntimeError(detail)
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)

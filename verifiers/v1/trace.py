@@ -8,8 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, field_serializer
-from renderers.base import MultiModalData
+from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -17,7 +16,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError
+from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -43,7 +42,6 @@ TRACE_VERSION = 1
 EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
-            "multi_modal_data",
             "routed_experts",
             "sampling_mask",
         }
@@ -310,30 +308,13 @@ class Branch(BaseModel):
         return weights
 
     @property
-    def multi_modal_data(self) -> MultiModalData | None:
-        """Node image data concatenated in token order for training; never persisted."""
-        merged = MultiModalData()
-        found = False
-        for node in self.nodes:
-            mmd = node.multi_modal_data
-            if mmd is None or mmd.is_empty():
-                continue
-            found = True
-            for modality, items in mmd.mm_items.items():
-                merged.mm_items.setdefault(modality, []).extend(items)
-            for modality, hashes in mmd.mm_hashes.items():
-                merged.mm_hashes.setdefault(modality, []).extend(hashes)
-        return merged if found else None
-
-    @property
     def mm_token_type_ids(self) -> list[int] | None:
         """Per-token modality markers aligned to `token_ids` (0 = text, 1 = image
-        placeholder, 2 = video placeholder), driving the trainer's vision-encoder
-        slicing; None for branches carrying no multimodal data."""
-        if self.multi_modal_data is None:
+        placeholder, 2 = video placeholder); None when none are present."""
+        if not self.mm_token_type_id_map:
             return None
-        mapping = self.mm_token_type_id_map
-        return [mapping.get(t, 0) for t in self.token_ids]
+        token_types = [self.mm_token_type_id_map.get(t, 0) for t in self.token_ids]
+        return token_types if any(token_types) else None
 
     @property
     def routed_experts(self) -> np.ndarray | None:
@@ -376,16 +357,19 @@ class Branch(BaseModel):
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
@@ -405,7 +389,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
-    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+    """Tools observed across requests; the latest definition wins for each identity."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph, including physical and semantic parent links."""
@@ -441,6 +425,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    is_timeout: bool = False
+    """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
@@ -491,6 +477,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def has_error(self) -> bool:
         return not self.ok
 
+    @computed_field
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once across all branches —
@@ -506,11 +493,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     total += increment
         return total
 
+    @computed_field
     @property
     def num_output_tokens(self) -> int:
         """Model-generated tokens across all turns, summed across branches."""
         return sum(branch.num_output_tokens for branch in self.branches)
 
+    @computed_field
     @property
     def num_total_tokens(self) -> int:
         """New input plus generated tokens, counted once per call across branches.
@@ -703,7 +692,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 if message.content:
                     lines.append(message.content)
                 lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
+                    f"[tool_call {call.namespace + '.' if call.namespace else ''}"
+                    f"{call.name}({call.arguments})]"
                     for call in message.tool_calls or []
                 )
             else:
@@ -748,10 +738,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def stop(self, condition: str) -> None:
-        """Stop the trace, optionally with a stop condition."""
+    def stop(self, condition: str, override: bool = False) -> None:
+        """Stop the trace with a stop condition. The first condition wins unless
+        `override` replaces it."""
         self.is_completed = True
-        if self.stop_condition is None:
+        if override or self.stop_condition is None:
             self.stop_condition = condition
 
     def split_agent_time(self) -> None:
@@ -763,8 +754,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
 
+    def record_timeout(self, stage: str) -> None:
+        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
+        The deadline is what ended the trace, so it replaces any earlier stop
+        condition (a finalize deadline can expire after `agent_completed`)."""
+        self.is_timeout = True
+        self.stop(f"{stage}_timeout", override=True)
+
     def record_error(self, error: Exception) -> None:
-        """Record an error, and stop the trace as failed."""
+        """Record an error, and stop the trace as failed: `<boundary>_error` for a
+        typed rollout error (`errors.stop_condition`), `error` for any other."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
@@ -778,7 +777,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         )
         self.ok = False
-        self.stop("error")
+        self.stop(stop_condition(error))
 
     def to_record(
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS

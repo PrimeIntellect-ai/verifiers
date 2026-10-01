@@ -9,6 +9,7 @@ runs env servers); this CLI is the quick local path.
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import TypeVar, cast
@@ -16,11 +17,7 @@ from typing import TypeVar, cast
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
-from verifiers.v1.cli.output import (
-    append_episode,
-    output_path,
-    save_config,
-)
+from verifiers.v1.cli.output import output_path, save_config
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
@@ -34,6 +31,7 @@ from verifiers.v1.utils.platform import (
     log_episodes,
     open_run,
 )
+from verifiers.v1.utils.trace_store import append_episode
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +82,12 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     from verifiers.v1.utils.loaders import load_environment
 
     env = load_environment(config.env)
-    taskset = env.taskset
-    if config.num_tasks is None and taskset.INFINITE:
+    taskset = env.taskset.select(config.select)
+    if not taskset.bounded:
         raise ValueError(
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
-    selected = taskset.shuffle() if config.shuffle else taskset
-    if config.num_tasks is not None:
-        selected = selected.head(config.num_tasks)
-    tasks = list(selected)
+    tasks = list(taskset)
     out = output_path(config)
     # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
     plan = [(task, config.num_rollouts) for task in tasks]
@@ -139,6 +134,8 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
 
     # Opened before the first rollout so every episode streams as it lands.
     run = open_run(config, push_state, num_examples=len(tasks))
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", config.run.id)
     # Resumed rollouts are part of this run too.
     log_episodes(run, finished)
 
