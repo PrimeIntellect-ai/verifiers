@@ -221,7 +221,13 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
-    pair("rlm", "e2b", "rlm-acp-in-e2b"),
+    # Give RLM 2 GB for ACP session startup.
+    pytest.param(
+        "rlm",
+        {"type": "e2b", "memory": 2.0},
+        marks=[mark.rlm, mark.e2b],
+        id="rlm-acp-in-e2b",
+    ),
     pytest.param(
         "prime-agent",
         "prime",
@@ -397,7 +403,9 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime=harness_runtime
+        if isinstance(harness_runtime, dict)
+        else {"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
