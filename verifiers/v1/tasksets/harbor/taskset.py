@@ -364,6 +364,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
+            # The agent is done, and the verifier is the benchmark's own trusted code
+            # (Harbor runs it with the environment's full network), so grading in the
+            # solver's box gets open egress like a separate verifier box would.
+            await runtime.prepare_execution(None)
             await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
