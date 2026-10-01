@@ -70,6 +70,8 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 
 
 class DockerRuntime(ContainerRuntime):
+    supports_users = True
+
     engine: ClassVar[str] = "docker"
     """The CLI binary for the shared OCI container operations."""
     info_cls: ClassVar[type[BaseRuntimeInfo]] = DockerRuntimeInfo
@@ -528,10 +530,26 @@ class DockerRuntime(ContainerRuntime):
             self.engine,
             "exec",
             *(("-i",) if stdin else ()),
+            *(("--user", str(self.user)) if self.user is not None else ()),
             *(arg for key, value in env.items() for arg in ("--env", f"{key}={value}")),
             "--workdir",
             self.config.workdir,
             self._container,
+            # Docker exec retains the image's HOME when overriding its user.
+            *(
+                (
+                    "sh",
+                    "-c",
+                    (
+                        "home=$(awk -F: -v uid=\"$(id -u)\" '$3 == uid { print $6; exit }' /etc/passwd); "
+                        '[ -n "$home" ] || { echo "execution user has no home in /etc/passwd" >&2; exit 1; }; '
+                        'export HOME="$home"; exec "$@"'
+                    ),
+                    "vf-user",
+                )
+                if self.user is not None and "HOME" not in env
+                else ()
+            ),
         ]
 
     async def run_background(

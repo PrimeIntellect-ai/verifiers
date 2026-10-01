@@ -50,7 +50,13 @@ async def ensure_installed(
         f"mkdir -p {shlex.quote(directory)} && "
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
-    result = await runtime.run(["sh", "-c", guarded], env)
+    # Shared harness binaries may need system packages; execution stays unprivileged.
+    installer = runtime.with_user("root") if runtime.user is not None else runtime
+    result = await installer.run(
+        ["sh", "-c", guarded],
+        # Managed interpreters must be reachable without entering root's home.
+        {"UV_PYTHON_INSTALL_DIR": f"{directory}/python", **env},
+    )
     if result.exit_code != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[-500:]
         raise RuntimeError(f"{label} install failed: {detail}")

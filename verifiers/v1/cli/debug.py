@@ -241,7 +241,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         trace.timing.setup.end = time.time()
 
         trace.timing.agent.start = time.time()
-        debug.update(await run_action(runtime, config))
+        debug.update(await run_action(runtime.with_user(task.data.user), config))
         trace.timing.agent.end = time.time()
         trace.ok = bool(debug["ok"])
         if not trace.ok:

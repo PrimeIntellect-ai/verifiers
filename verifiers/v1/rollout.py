@@ -245,7 +245,8 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                await self.harness.setup(runtime)
+                execution_runtime = runtime.with_user(self.task.data.user)
+                await self.harness.setup(execution_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -270,7 +271,7 @@ class Rollout:
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
-                    runtime,
+                    execution_runtime,
                     shared=self._shared_tools,
                     state_secret=state_secret,
                     state_route=self.trace.id,
@@ -341,7 +342,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        runtime,
+                        execution_runtime,
                         self._endpoint,
                         self._secret,
                         self._urls,
@@ -518,7 +519,9 @@ class Rollout:
                         # Cross-trace judgement runs later, after the runtime is gone.
                         await asyncio.gather(
                             self.task.score(trace, runtime),
-                            self.harness.score(trace, runtime),
+                            self.harness.score(
+                                trace, runtime.with_user(self.task.data.user)
+                            ),
                         )
                 except TimeoutError:
                     self.timeout("scoring")

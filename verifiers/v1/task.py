@@ -100,6 +100,9 @@ class TaskData(BaseModel):
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
 
+    user: str | int | None = None
+    """Execution user for the harness and its colocated tools; setup stays trusted."""
+
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
 

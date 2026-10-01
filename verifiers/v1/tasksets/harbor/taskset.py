@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import shlex
 import shutil
 import subprocess
 import sys
@@ -114,6 +115,7 @@ class CollectHook(BaseModel):
     command: str
     timeout_sec: float = 600.0
     service: str = "main"
+    user: str | int | None = None
 
 
 class HarborArtifact(Artifact):
@@ -170,6 +172,7 @@ class HarborData(TaskData):
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
+    verifier_user: str | int | None = None
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -206,6 +209,16 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(self, runtime: Runtime) -> None:
+        # Check every declared identity before the agent starts, including grading.
+        users = (
+            self.data.user,
+            self.data.verifier_user,
+            *(h.user for h in self.data.collect),
+        )
+        for user in users:
+            runtime.with_user(user)
+        if any(user is not None for user in users):
+            runtime = runtime.with_user("root")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -278,7 +291,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         for hook in [hook for hook in self.data.collect if hook.service in runtimes]:
             try:
                 result = await asyncio.wait_for(
-                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
+                    runtimes[hook.service]
+                    .with_user(hook.user)
+                    .run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
@@ -333,6 +348,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
+        if self.data.user is not None or self.data.verifier_user is not None:
+            runtime = runtime.with_user("root")
         stage = "test -f /tests/test.sh"
         if self.data.verifier is None or self.data.verifier_image is None:
             await runtime.write(
@@ -346,6 +363,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
             f"mkdir -p /logs/verifier && {stage}"
         )
+        if self.data.verifier_user is not None:
+            command += f" && chown -- {shlex.quote(str(self.data.verifier_user))} /logs/verifier"
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
@@ -372,8 +391,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
+        if self.data.user is not None or self.data.verifier_user is not None:
+            runtime = runtime.with_user("root")
         # The reward file is authoritative even when the script exits nonzero.
-        result = await runtime.run(
+        result = await runtime.with_user(self.data.verifier_user).run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
         scores = await self.read_reward_json(runtime)
@@ -433,6 +454,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
     return data.model_copy(
         update={
             "name": f"{data.name} (verifier)",
+            "user": None,
             "image": data.verifier_image
             if data.verifier_image is not None
             else data.image,
@@ -445,6 +467,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "healthcheck": verifier.healthcheck,
             "skills": [],
             "mcp_servers": [],
+            "collect": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -676,6 +699,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         prompt=harbor_task.instruction.strip(),
         image=image,
         workdir=environment.workdir,
+        user=parsed.agent.user,
         network_allow=(
             ["*"]
             if network.network_mode == NetworkMode.PUBLIC
@@ -702,6 +726,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
         ),
         verifier_image=verifier_image,
+        verifier_user=parsed.verifier.user,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -726,8 +751,6 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user is not None:
-        raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
@@ -745,14 +768,12 @@ def parse_verifier_extras(
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
-        if hook.user is not None:
-            raise ValueError(
-                f"{task_dir.name}: collect hook `user` is not supported "
-                "(commands run as the runtime's default user)"
-            )
         hooks.append(
             CollectHook(
-                command=hook.command, timeout_sec=hook.timeout_sec, service=hook.service
+                command=hook.command,
+                timeout_sec=hook.timeout_sec,
+                service=hook.service,
+                user=hook.user,
             )
         )
     services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}

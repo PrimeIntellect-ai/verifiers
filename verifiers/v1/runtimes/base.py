@@ -136,7 +136,9 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
-    __slots__ = ("env",)
+    __slots__ = ("env", "user")
+
+    supports_users: ClassVar[bool] = False
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -159,6 +161,7 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        self.user: str | int | None = None
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._mcp_sources: set[str] = set()
@@ -210,9 +213,23 @@ class Runtime(ABC):
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
         runtime = copy.copy(self)
-        # `env` is slotted, so every other runtime field stays physical and shared.
+        # Process settings are slotted; physical runtime fields stay shared.
         runtime.__dict__ = self.__dict__
         runtime.env = dict(env)
+        return runtime
+
+    def with_user(self, user: str | int | None) -> "Runtime":
+        """Share this physical runtime with a separate execution identity.
+
+        Providers must apply it to commands, live/background processes, and file IO.
+        Unsupported providers reject explicit users before executing anything.
+        """
+        if user == "":
+            raise SandboxError("execution user must not be empty")
+        if user is not None and not self.supports_users:
+            raise SandboxError(f"{self.type} runtime does not support execution users")
+        runtime = self.with_env(self.env)
+        runtime.user = user
         return runtime
 
     async def alive(self) -> bool:
@@ -265,10 +282,14 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"{self.scripts_dir}/{digest}.py"
-        if digest not in self._uv_interpreters:
-            async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
-                if digest not in self._uv_interpreters:
+        # Each identity needs writable scripts and its own uv interpreter cache.
+        directory = self.scripts_dir
+        if self.user is not None:
+            directory += "-" + hashlib.sha256(str(self.user).encode()).hexdigest()[:12]
+        path = f"{directory}/{digest}.py"
+        if path not in self._uv_interpreters:
+            async with self._uv_script_locks.setdefault(path, asyncio.Lock()):
+                if path not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
@@ -287,10 +308,8 @@ class Runtime(ABC):
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
-                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
-                        -1
-                    ]
-        interpreter = self._uv_interpreters[digest]
+                    self._uv_interpreters[path] = result.stdout.strip().splitlines()[-1]
+        interpreter = self._uv_interpreters[path]
         if not activate:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
