@@ -21,7 +21,7 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "interruption", [None, "disconnect", "timeout", "eof", "server_error"]
+    "interruption", [None, "disconnect", "timeout", "eof", "server_error", "tunnel404"]
 )
 async def test_chat_harness_preserves_streamed_reasoning(interruption):
     import json
@@ -92,6 +92,12 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
 
     async def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if interruption == "tunnel404" and len(requests) == 1:
+            return httpx.Response(
+                404,
+                text="<html><p>Tunnel not found or no longer active.</p></html>",
+                headers={"content-type": "text/html"},
+            )
         stream = CompletionStream(request, interruption and len(requests) == 1)
         streams.append(stream)
         return httpx.Response(

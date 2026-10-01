@@ -257,11 +257,22 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+def _is_tunnel_unavailable(error: BaseException) -> bool:
+    return (
+        isinstance(error, APIStatusError)
+        and error.status_code == 404
+        and "text/html" in error.response.headers.get("content-type", "")
+        and "Tunnel not found or no longer active." in error.response.text
+    )
+
+
 def _model_retryable(error: BaseException) -> bool:
     if isinstance(error, APIStatusError):
         advice = error.response.headers.get("x-should-retry")
         if advice in ("true", "false"):
             return advice == "true"
+        if _is_tunnel_unavailable(error):
+            return True
         status = error.status_code
     elif isinstance(error, (APIConnectionError, httpx.TransportError)):
         return True
@@ -334,7 +345,9 @@ async def chat(
                     extra_headers=headers,
                 )
                 return await _read_chat_completion(raw_stream)
-    except (APIConnectionError, httpx.TransportError) as error:
+    except (APIConnectionError, APIStatusError, httpx.TransportError) as error:
+        if isinstance(error, APIStatusError) and not _is_tunnel_unavailable(error):
+            raise
         # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
         raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
