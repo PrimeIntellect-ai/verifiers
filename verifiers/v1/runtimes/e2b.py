@@ -44,6 +44,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.paths import CACHE_DIR
+from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ class E2BConfig(NetworkPolicyConfig):
     """Advisory disk request in GB. E2B template builds have no disk-size knob, so this
     is accepted (so a task can declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 1.0
-    """Pace sandbox creation to this many per second, enforced user-wide across every
+    """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). Raise it to your plan's rate."""
 
     @model_validator(mode="after")
@@ -291,6 +292,11 @@ class E2BProcess(RuntimeProcess):
         assert self._wait_task is not None
         return await asyncio.shield(self._wait_task)
 
+    async def poll(self) -> int | None:
+        if self._wait_task is not None and self._wait_task.done():
+            return self._wait_task.result()
+        return self._exit_code
+
     async def terminate(self) -> None:
         await self._signal("TERM")
 
@@ -395,7 +401,9 @@ class E2BRuntime(Runtime):
 
             async def _create() -> None:
                 async with (
-                    creation_limiter(self.config.creates_per_sec, "e2b-sandbox")
+                    creation_limiter(
+                        self.config.creates_per_sec, "e2b-sandbox", run_scope()
+                    )
                     or contextlib.nullcontext()
                 ):
                     # Created unrestricted: setup (uv installs, task staging) needs open
