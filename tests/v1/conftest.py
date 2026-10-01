@@ -156,8 +156,11 @@ def _eval_config(
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
     retries = {
-        "max_retries": 2,
-        "include": ["ProviderError", "InterceptionError", "HarnessError"],
+        "max_retries": 0,
+        "rules": [
+            {"type": error_type, "max_retries": 2}
+            for error_type in ("ProviderError", "InterceptionError", "HarnessError")
+        ],
     }
     env_cfg.setdefault("retries", retries)
     # Per-run caps live on the seats: resolve the env's declared roles and cap

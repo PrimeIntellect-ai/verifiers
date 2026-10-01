@@ -43,7 +43,10 @@ def _as_error(e: Exception) -> Error:
     """`e` as an episode-level `Error`. Call inside the `except` handling `e` — the
     traceback comes from the active exception context."""
     return Error(
-        type=type(e).__name__, message=str(e), traceback=traceback.format_exc()
+        type=type(e).__name__,
+        message=str(e),
+        status_code=getattr(e, "status_code", None),
+        traceback=traceback.format_exc(),
     )
 
 
