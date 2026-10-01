@@ -372,7 +372,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
-        await runtime.run(
+        # The reward file is authoritative even when the script exits nonzero.
+        result = await runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
         scores = await self.read_reward_json(runtime)
@@ -393,9 +394,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 .decode()
                 .strip()
             )
-            return float(reward or 0)
-        except (SandboxError, OSError, ValueError):
-            return 0.0
+            return REWARD_JSON_ADAPTER.validate_python(float(reward))
+        except (SandboxError, OSError, ValueError) as exc:
+            raise TaskError(
+                "Harbor verifier produced no valid reward.json or reward.txt "
+                f"(exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            ) from exc
 
     async def read_reward_json(
         self, runtime: Runtime
