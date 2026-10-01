@@ -179,6 +179,9 @@ class HarborData(TaskData):
     collect: list[CollectHook] = Field(default_factory=list)
     """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
     after the agent stops, so the files can travel to a grading box as artifacts."""
+    verifier_network: NetworkPolicyConfig = NetworkPolicyConfig()
+    """The verifier phase's declared egress policy. Grading in the solver's box opens
+    egress only when this is open; a separate verifier box resolves from `verifier`."""
     verifier: VerifierConfig | None = None
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
@@ -365,10 +368,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
-            # The agent is done, and the verifier is the benchmark's own trusted code
-            # (Harbor runs it with the environment's full network), so grading in the
-            # solver's box gets open egress like a separate verifier box would.
-            await runtime.prepare_execution(None)
+            if not self.data.verifier_network.network_restricted:
+                # The agent is done and Harbor runs a public verifier with the
+                # environment's full network, so grading in the solver's box gets
+                # the same, whatever the run restricted the agent to. A process the
+                # agent left behind shares that window, as it does under Harbor.
+                await runtime.prepare_execution(None)
             await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
@@ -648,6 +653,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         docker_image=image,
     )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
+    verifier_network = (
+        parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
+    )
     task, meta = parsed.task, parsed.metadata
     authors = (
         [Author(name=author.name, email=author.email) for author in task.authors]
@@ -702,6 +710,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         ),
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
+        verifier_network=NetworkPolicyConfig(
+            allow=["*"]
+            if verifier_network.network_mode == NetworkMode.PUBLIC
+            else list(verifier_network.allowed_hosts)
+        ),
         artifacts=artifacts,
         collect=hooks,
         verifier=verifier,

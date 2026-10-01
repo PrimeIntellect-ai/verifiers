@@ -6,7 +6,7 @@ import logging
 import random
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 import verifiers.v1 as vf
 
@@ -204,11 +204,9 @@ def test_select_bounds_an_infinite_taskset() -> None:
 # Network policy
 
 
-class ClosedBookConfig(vf.TasksetConfig):
-    network: vf.NetworkPolicyConfig | None = vf.NetworkPolicyConfig(allow=[])
+class ClosedBookTaskset(vf.Taskset[CountTask, vf.TasksetConfig]):
+    network = vf.NetworkPolicyConfig(allow=[])
 
-
-class ClosedBookTaskset(vf.Taskset[CountTask, ClosedBookConfig]):
     def load(self):
         tasks = [count_task(i) for i in range(3)]
         tasks[1] = tasks[1].with_data(
@@ -223,17 +221,23 @@ def policies(taskset) -> list[list[str] | None]:
 
 def test_network_policy_resolves_config_over_task_over_taskset_default() -> None:
     assert policies(finite()) == [None] * 10
-    # The taskset's declared default fills in; a task's own policy wins over it.
-    assert policies(ClosedBookTaskset(ClosedBookConfig())) == [[], ["pypi.org"], []]
-    # A policy set from TOML/CLI replaces both.
-    opened = ClosedBookTaskset(
-        ClosedBookConfig.model_validate({"network": {"allow": ["*"]}})
-    )
-    assert policies(opened) == [["*"]] * 3
-    blocked = FiniteTaskset(vf.TasksetConfig(network=vf.NetworkPolicyConfig(allow=[])))
-    assert policies(blocked) == [[]] * 10
-    # The resolved policy survives the config round trip a served run takes.
-    reloaded = ClosedBookConfig.model_validate(
-        ClosedBookConfig().model_dump(mode="json")
-    )
-    assert policies(ClosedBookTaskset(reloaded)) == [[], ["pypi.org"], []]
+    # The taskset's default fills in; a task's own policy wins over it.
+    assert policies(ClosedBookTaskset(vf.TasksetConfig())) == [[], ["pypi.org"], []]
+    # A policy set from config replaces both, whatever its value.
+    for allow in (["*"], []):
+        config = vf.TasksetConfig.model_validate({"network": {"allow": allow}})
+        assert policies(ClosedBookTaskset(config)) == [allow] * 3
+        reloaded = vf.TasksetConfig.model_validate(config.model_dump(mode="json"))
+        assert policies(ClosedBookTaskset(reloaded)) == [allow] * 3
+
+
+def test_replaced_network_fields_are_refused() -> None:
+    with pytest.raises(ValueError, match="network=NetworkPolicyConfig"):
+        vf.TaskData(network_allow=[])
+    with pytest.raises(TypeError, match="network=NetworkPolicyConfig"):
+
+        class Legacy(vf.TaskData):
+            network_block: list[str] = Field(default_factory=list)
+
+    # A recorded trace from before the rename still reads.
+    assert vf.WireTaskData(network_allow=[]).network is None

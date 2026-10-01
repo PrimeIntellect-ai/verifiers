@@ -57,7 +57,7 @@ The `prime`, `docker` and `modal` runtimes enforce an egress policy on the agent
 
 1. `[env.taskset.network]` in TOML or `--env.taskset.network.allow` on the CLI replaces every task's policy.
 2. Otherwise a task's own `TaskData.network`, set by the taskset in code.
-3. Otherwise the taskset config class's declared default (a closed-book benchmark declares `allow = []`); open when there is none.
+3. Otherwise the `Taskset` class's `network` attribute (a closed-book benchmark declares `allow = []`); open when there is none.
 
 The runtime's own `allow`/`block` (`[env.agent.runtime]`) then intersects with the result, so a runtime restriction is never widened by a task.
 

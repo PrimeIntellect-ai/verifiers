@@ -52,6 +52,10 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
     """Whether `load()` yields tasks forever. A view can still bound the iteration
     (see `bounded`)."""
 
+    network: NetworkPolicyConfig | None = None
+    """The taskset's default execution-time egress policy, for tasks whose data sets
+    none (a closed-book benchmark declares `NetworkPolicyConfig(allow=[])`). A config
+    `network` replaces both; None here leaves such tasks open."""
     transform: Transform | None = None
     """Iteration transform carried by the views (see `_view`)."""
     _bounded: bool | None = None
@@ -62,16 +66,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.config = config
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
-        declared = (
-            type(config).model_fields["network"].get_default(call_default_factory=True)
-        )
-        self.network_default: NetworkPolicyConfig | None = declared
-        # Only a value that differs from the config class's own default can have come
-        # from TOML/CLI: a run's config crosses full-dump boundaries that lose
-        # `model_fields_set`, so set-ness cannot tell the two apart.
-        self.network_override: NetworkPolicyConfig | None = (
-            config.network if config.network != declared else None
-        )
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
@@ -85,15 +79,15 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def __iter__(self) -> Iterator[TaskT]:
         """Lazily iterate `load()` with each task's `idx` set to its position, the
-        config-layer system prompt and the resolved network policy applied (a TOML/CLI
-        `network` replaces, else the task's own, else the taskset's declared default),
+        config-layer system prompt and the resolved network policy applied (a config
+        `network` replaces, else the task's own, else the taskset class's `network`),
         then the views' transform. The views see the final task data, so a `keys` match
         compares the keys that traces record. This is the read path; `load` is the
         subclass hook."""
         update = (
             {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
-        override, default = self.network_override, self.network_default
+        override, default = self.config.network, self.network
 
         def policy(task: TaskT) -> NetworkPolicyConfig | None:
             if override is not None:
