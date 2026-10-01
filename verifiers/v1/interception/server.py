@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import secrets
+import os
 import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
@@ -88,6 +89,17 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+
+
+def _note_rate_limit(error: BaseException) -> None:
+    """Append a timestamp to SFT_GEN_RATE_LIMIT_FILE per relayed upstream 429, for a runner that backs off on them."""
+    path = os.environ.get("SFT_GEN_RATE_LIMIT_FILE")
+    if path and getattr(error, "status_code", None) == 429:
+        try:
+            with open(path, "a") as handle:
+                handle.write(f"{time.time()}\n")
+        except OSError:
+            pass
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -849,6 +861,7 @@ class InterceptionServer(Interception):
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
                     error = e
                     session.error = e
+                    _note_rate_limit(e)
                     logger.warning(
                         "model call failed: id=%s %s: %s",
                         session.trace.id,
