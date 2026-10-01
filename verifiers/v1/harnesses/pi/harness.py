@@ -6,11 +6,14 @@ import shlex
 from pathlib import Path
 from typing import Literal
 
+from pydantic import PositiveInt
+
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.pi_config import PiCompactionConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -55,6 +58,10 @@ class PiHarnessConfig(HarnessConfig):
     """Model API transport."""
     supports_developer_role: bool | None = None
     """Override Pi's chat-completions role detection for custom model endpoints."""
+    context_window: PositiveInt | None = None
+    """Override the native model context window for custom model endpoints."""
+    compaction: PiCompactionConfig | None = None
+    """Override native compaction settings; omitted values keep Pi's defaults."""
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
@@ -126,6 +133,10 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 else {}
             ),
         }
+        if self.config.context_window is not None:
+            model_config["contextWindow"] = self.config.context_window
+        if ctx.sampling.max_tokens is not None:
+            model_config["maxTokens"] = ctx.sampling.max_tokens
         if (
             self.config.transport == "chat_completions"
             and self.config.supports_developer_role is not None
@@ -144,6 +155,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             }
         }
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
+        if self.config.compaction is not None:
+            await runtime.write(
+                f"{agent_dir}/settings.json",
+                json.dumps(
+                    {
+                        "compaction": self.config.compaction.model_dump(
+                            by_alias=True, exclude_none=True
+                        )
+                    }
+                ).encode(),
+            )
 
         mcp_args: list[str] = []
         if mcp_urls:
