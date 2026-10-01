@@ -22,7 +22,7 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from openai import OpenAIError
 
@@ -37,9 +37,20 @@ class ProviderError(RolloutError):
     (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
     transport fault."""
 
-    def __init__(self, message: str = "", *, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        status_code: int = 502,
+        retry_headers: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_headers = {
+            name.lower(): value
+            for name, value in (retry_headers or {}).items()
+            if name.lower() in {"retry-after", "retry-after-ms", "x-should-retry"}
+        }
 
 
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
@@ -118,7 +129,10 @@ def _provider_status(e: OpenAIError | str) -> int:
 
 
 def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
+    e: OpenAIError | str,
+    *,
+    status_code: int | None = None,
+    retry_headers: Mapping[str, str] | None = None,
 ) -> ProviderError:
     """Map a provider failure to a `ProviderError`. `status_code` is the HTTP status surfaced to
     the harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error
@@ -129,4 +143,5 @@ def model_error(
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
+        retry_headers=retry_headers,
     )

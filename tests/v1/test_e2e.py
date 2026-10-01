@@ -20,7 +20,9 @@ def pair(a: str, b: str, id: str, *extra_marks):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("interruption", [None, "disconnect", "timeout", "eof"])
+@pytest.mark.parametrize(
+    "interruption", [None, "disconnect", "timeout", "eof", "server_error"]
+)
 async def test_chat_harness_preserves_streamed_reasoning(interruption):
     import json
 
@@ -75,6 +77,9 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
         async def __aiter__(self):
             if self.interrupted:
                 yield f"data: {json.dumps(chunk('discard this attempt'))}\n\n".encode()
+                if interruption == "server_error":
+                    yield b'data: {"error":{"message":"unavailable","status_code":503}}\n\n'
+                    return
                 if interruption == "disconnect":
                     raise httpx.ReadError("connection reset", request=self.request)
                 if interruption == "timeout":
@@ -108,6 +113,7 @@ async def test_chat_harness_preserves_streamed_reasoning(interruption):
     assert [r.headers["x-stainless-retry-count"] for r in requests] == (
         ["0", "1"] if interruption else ["0"]
     )
+    assert len({r.headers["Idempotency-Key"] for r in requests}) == 1
     assert all(r.content == requests[0].content for r in requests)
     assert all(stream.closed for stream in streams)
     message = completion.choices[0].message.model_dump(exclude_none=True)
