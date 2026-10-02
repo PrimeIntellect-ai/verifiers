@@ -21,14 +21,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-harbor = "2026-08-11T00:00:00Z"
 prime-pydantic-config = false
-prime-runs = false
-prime-sandboxes = false
-prime-tunnel = false
-renderers = false
-ruff = "2026-07-28T00:00:00Z"
+harbor = "2026-08-11T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
+ruff = "2026-07-28T00:00:00Z"
+prime-runs = false
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
 
 [[package]]
 name = "aiofile"
@@ -3526,7 +3526,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.3.0"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3538,9 +3538,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/46/2d118d8bbb901b729f3bc0678725eb28088d757a872db04cffa1492d0208/prime_sandboxes-0.3.0.tar.gz", hash = "sha256:c99075ed82a9bbfe5a453cee84b9f09565a7f6b07fd5ace072401cce59a1fe08", size = 132759, upload-time = "2026-09-18T01:32:31.263Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/31/5ad18141756a8cdbff89061426cbb8816aafb513de935caa8e8f875c8819/prime_sandboxes-0.4.1.tar.gz", hash = "sha256:53f7577dc9070e3b8e30db360f9e3cce3bcc35f8765b26f24f64dbc3c7763b06", size = 134242, upload-time = "2026-10-01T01:58:55.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/04/c77c7f260babf93978f912b85511e76f63a3cfa5bb11a8c34108177d5825/prime_sandboxes-0.3.0-py3-none-any.whl", hash = "sha256:19078ff508fa72de8f565422918faf367e2831ed8a2f26a5a6a98110e4062941", size = 71441, upload-time = "2026-09-18T01:32:30.062Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c9/72067996420188928a6d5e05af46d60530edf24d78ca2d5bbf9fcef247cf/prime_sandboxes-0.4.1-py3-none-any.whl", hash = "sha256:1a1bb96afacc66d690815be82c0b7af180ea141421b7d180b4a0adbada4f38f0", size = 72136, upload-time = "2026-10-01T01:58:53.63Z" },
 ]
 
 [[package]]

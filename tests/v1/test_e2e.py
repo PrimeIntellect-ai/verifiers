@@ -190,6 +190,12 @@ USER_RUNTIMES = [
     pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
 ]
 
+# Runtimes that can switch users (`Runtime.with_user`).
+AGENT_USER_RUNTIMES = [
+    pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
+    pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
+]
+
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
@@ -329,6 +335,29 @@ async def test_browser_use(run_v1, tmp_path):
         max_turns=2,
     )
     assert trace.ok
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness_runtime", AGENT_USER_RUNTIMES, indirect=True)
+async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
+    """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
+    the secret the root-run setup planted and write its own workspace, but every
+    root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
+    denied."""
+    (trace,) = await run_v1(
+        "agent-user-v1",
+        harness="agent-user-v1",
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+    )
+    report = trace.info["agent_user_report"]
+    assert report["user"] == "vf-agent"
+    assert report["secret_exists"] == "ok" and report["write_workdir"] == "ok"
+    root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
+    assert {action: report[action] for action in root_actions} == dict.fromkeys(
+        root_actions, "denied"
+    )
     assert trace.reward == 1.0
 
 

@@ -144,6 +144,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeRuntime(Runtime):
+    supports_user: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -292,6 +293,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
             delay = 0.1
             output_retries = 0
@@ -335,6 +337,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
@@ -356,6 +359,7 @@ class PrimeRuntime(Runtime):
                 command,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
@@ -370,6 +374,7 @@ class PrimeRuntime(Runtime):
                     f"head -c {max_bytes} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
                     env=self.process_env({}),
+                    user=self.user,
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:

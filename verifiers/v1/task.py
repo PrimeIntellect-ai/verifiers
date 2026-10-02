@@ -99,6 +99,10 @@ class TaskData(BaseModel):
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
+    agent_user: str | None = None
+    """Existing user in the task's box that the harness, and so every command the agent
+    runs, executes as. None uses the runtime's default user (usually root). Task setup,
+    harness setup, artifact collection, and grading keep running as the default user."""
 
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""

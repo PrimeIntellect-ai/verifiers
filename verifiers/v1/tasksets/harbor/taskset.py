@@ -676,6 +676,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         prompt=harbor_task.instruction.strip(),
         image=image,
         workdir=environment.workdir,
+        agent_user=None if parsed.agent.user is None else str(parsed.agent.user),
         network_allow=(
             ["*"]
             if network.network_mode == NetworkMode.PUBLIC
