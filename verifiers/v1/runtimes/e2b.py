@@ -100,14 +100,12 @@ def _is_address(rule: str) -> bool:
 
 
 def _validate_egress_rules(allow: list[str], block: list[str]) -> None:
-    """Validate the two selector shapes E2B's network API accepts: allow rules take
-    hostnames (a leading ``*.`` wildcard included), IPs, and CIDRs; deny rules take IPs
-    and CIDRs only."""
-    for rule in block:
-        if not _is_address(rule):
-            raise ValueError(
-                f"E2B block rules must be IP addresses or CIDR blocks, got {rule!r}"
-            )
+    """Require an allowlist: E2B's domain exceptions need a deny-all floor, so a
+    partial blocklist cannot keep framework domains reachable."""
+    if block:
+        raise ValueError(
+            "E2B blocklists cannot preserve framework routes; use an allowlist or allow=[]"
+        )
     for rule in allow:
         if not (_is_address(rule) or _HOSTNAME.fullmatch(rule)):
             raise ValueError(
@@ -120,14 +118,10 @@ def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
     """The complete egress policy for `update_network`, which replaces all rules
     atomically. None restores unrestricted egress for another trusted setup phase;
     otherwise `routes` (the interception and MCP endpoints) stay reachable alongside
-    the configured allowlist. E2B resolves an `allow_out` entry over a same-host
-    `deny_out` one and requires the deny-everything floor whenever `allow_out` names
-    domains, so an allowlist is expressed as allow + deny-everything and a blocklist
-    as deny only (everything else, framework routes included, stays reachable)."""
-    if routes is None:
+    the configured allowlist. E2B allows those entries through the deny-everything
+    floor required for domain exceptions."""
+    if routes is None or not config.network_restricted:
         return {"allow_internet_access": True}
-    if config.allow == ["*"]:
-        return {"deny_out": list(config.block)}
     hosts = list(
         dict.fromkeys(
             host for route in routes if (host := urlsplit(route).hostname) is not None
@@ -400,28 +394,28 @@ class E2BRuntime(Runtime):
             self.info.template = template
 
             async def _create() -> None:
-                async with (
-                    creation_limiter(
-                        self.config.creates_per_sec, "e2b-sandbox", run_scope()
-                    )
-                    or contextlib.nullcontext()
-                ):
-                    # Created unrestricted: setup (uv installs, task staging) needs open
-                    # egress; `prepare_execution` locks the policy down before the agent.
-                    self._sandbox = await AsyncSandbox.create(
-                        template,
-                        # Maximum lifetime of any sandbox (Pro; Base's 1h cap rejects it).
-                        timeout=24 * 60 * 60,
-                        metadata={"runtime": "verifiers", "name": self.name},
-                    )
-                    # The atexit backstop kills by id, so record it the moment the sandbox
-                    # exists — the cancellation `run_shielded` re-raises can keep the code
-                    # after it from ever running.
-                    self.info.id = self._sandbox.sandbox_id
+                # Created unrestricted: setup (uv installs, task staging) needs open
+                # egress; `prepare_execution` locks the policy down before the agent.
+                self._sandbox = await AsyncSandbox.create(
+                    template,
+                    # Maximum lifetime of any sandbox (Pro; Base's 1h cap rejects it).
+                    timeout=24 * 60 * 60,
+                    metadata={"runtime": "verifiers", "name": self.name},
+                )
+                # The atexit backstop kills by id, so record it the moment the sandbox
+                # exists — the cancellation `run_shielded` re-raises can keep the code
+                # after it from ever running.
+                self.info.id = self._sandbox.sandbox_id
 
-            # Finish an accepted create request even if the rollout is cancelled so the
-            # surrounding provision_runtime finally can see and kill the sandbox.
-            await run_shielded(_create())
+            async with (
+                creation_limiter(
+                    self.config.creates_per_sec, "e2b-sandbox", run_scope()
+                )
+                or contextlib.nullcontext()
+            ):
+                # Keep the rate-limit wait cancellable; finish an accepted create so
+                # provision_runtime's finally can see and kill the sandbox.
+                await run_shielded(_create())
             logger.info(
                 "e2b: sandbox %s up (image=%s, template=%s)",
                 self.info.id,
