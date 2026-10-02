@@ -136,12 +136,15 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
-    __slots__ = ("env",)
+    __slots__ = ("env", "user")
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
     subprocess and the local container runtimes; remote runtimes override to False and
     use a host `Tunnel` inward plus `expose` outward."""
+
+    supports_user: ClassVar[bool] = False
+    """Whether `with_user` can run this runtime's commands as another existing user."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
@@ -159,6 +162,8 @@ class Runtime(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        self.user: str | None = None
+        """Existing user this view runs commands as; None uses the runtime's default."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._mcp_sources: set[str] = set()
@@ -213,6 +218,19 @@ class Runtime(ABC):
         # `env` is slotted, so every other runtime field stays physical and shared.
         runtime.__dict__ = self.__dict__
         runtime.env = dict(env)
+        return runtime
+
+    def with_user(self, user: str | None) -> "Runtime":
+        """Share this physical runtime through a view that runs commands as `user`, an
+        existing user in the box (None keeps the default). Only the view runs as `user`:
+        setup, collection, and grading keep using the original runtime."""
+        if user is not None and not self.supports_user:
+            raise ValueError(
+                f"{type(self).__name__} cannot run commands as another user"
+            )
+        runtime = copy.copy(self)
+        runtime.__dict__ = self.__dict__
+        runtime.user = user
         return runtime
 
     async def alive(self) -> bool:
