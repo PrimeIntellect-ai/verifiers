@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from pydantic import Field, field_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.runtime import BindMount
+from verifiers.v1.configs.runtime import BindMount, validate_mounts
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.runtimes.subprocess import SubprocessProcess
@@ -51,30 +51,7 @@ class ContainerConfig(BaseConfig):
     Mount targets and their parent directories must not be moved.
     Harbor Compose is unsupported."""
 
-    @field_validator("mounts")
-    @classmethod
-    def validate_mounts(cls, mounts: dict[str, BindMount]) -> dict[str, BindMount]:
-        paths: dict[PurePosixPath, BindMount] = {}
-        for target, mount in mounts.items():
-            path = PurePosixPath("/" + target.lstrip("/"))
-            if (
-                not target.startswith("/")
-                or path == PurePosixPath("/")
-                or ".." in path.parts
-                or "\x00" in target
-            ):
-                raise ValueError(
-                    f"mount target {target!r} must be an absolute path below '/' with no '..' or NUL"
-                )
-            if any(
-                path.is_relative_to(other) or other.is_relative_to(path)
-                for other in paths
-            ):
-                raise ValueError(f"mount target {target!r} overlaps another mount")
-            if path == PurePosixPath("/tmp"):
-                raise ValueError("/tmp is reserved for runtime and artifact staging")
-            paths[path] = mount
-        return {str(path): mount for path, mount in paths.items()}
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
 
 async def _communicate(

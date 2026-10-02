@@ -115,8 +115,8 @@ class DockerRuntime(ContainerRuntime):
         host: Runtime | None = None,
     ) -> AsyncIterator["DockerRuntime"]:
         """Borrow an existing container; its caller owns creation and removal."""
-        if isinstance(config, ContainerConfig) and config.mounts:
-            raise ValueError("Bind mounts cannot be added to an existing container")
+        if getattr(config, "mounts", {}):
+            raise ValueError("Mounts cannot be added to an existing container")
         runtime = cls(config, host=host)
         runtime._container = container
         runtime.info.borrowed = True  # cleanup never removes a borrowed container

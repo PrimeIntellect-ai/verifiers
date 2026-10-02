@@ -80,6 +80,7 @@ from verifiers.v1.runtimes import (
     ApptainerConfig,
     BindMount,
     DockerConfig,
+    ModalConfig,
     PodmanConfig,
     PrimeConfig,
     ProgramResult,
@@ -199,6 +200,15 @@ from verifiers.v1.utils.score import (
 from verifiers.v1.utils.score import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
+from verifiers.v1.volumes import (
+    HuggingFaceVolumeConfig,
+    ModalVolumeConfig,
+    S3VolumeConfig,
+    Volume,
+    VolumeConfig,
+    make_volume,
+    provision_volume,
+)
 
 __all__ = [  # noqa: RUF022 - grouped by public API area
     # types
@@ -313,7 +323,15 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
+    "ModalConfig",
     "BindMount",
+    "HuggingFaceVolumeConfig",
+    "ModalVolumeConfig",
+    "S3VolumeConfig",
+    "Volume",
+    "VolumeConfig",
+    "make_volume",
+    "provision_volume",
     "PodmanConfig",
     "ApptainerConfig",
     "PrimeConfig",

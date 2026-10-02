@@ -3,7 +3,8 @@
 from fnmatch import fnmatchcase
 from glob import has_magic
 from itertools import product
-from typing import Self
+from pathlib import PurePosixPath
+from typing import Self, TypeVar
 from urllib.parse import SplitResult, urlsplit
 
 from pydantic import Field, model_validator
@@ -16,6 +17,33 @@ class BindMount(BaseConfig):
     source: str = Field(pattern=r"^/[^\x00]*$")
     """Absolute host path. The runtime never creates or removes the source."""
     read_only: bool = True
+
+
+Mount = TypeVar("Mount", bound=BaseConfig)
+
+
+def validate_mounts(mounts: dict[str, Mount]) -> dict[str, Mount]:
+    """Normalize disjoint guest mount targets without covering runtime staging."""
+    paths: dict[PurePosixPath, Mount] = {}
+    for target, mount in mounts.items():
+        path = PurePosixPath("/" + target.lstrip("/"))
+        if (
+            not target.startswith("/")
+            or path == PurePosixPath("/")
+            or ".." in path.parts
+            or "\x00" in target
+        ):
+            raise ValueError(
+                f"mount target {target!r} must be an absolute path below '/' with no '..' or NUL"
+            )
+        if any(
+            path.is_relative_to(other) or other.is_relative_to(path) for other in paths
+        ):
+            raise ValueError(f"mount target {target!r} overlaps another mount")
+        if path == PurePosixPath("/tmp"):
+            raise ValueError("/tmp is reserved for runtime and artifact staging")
+        paths[path] = mount
+    return {str(path): mount for path, mount in paths.items()}
 
 
 def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:

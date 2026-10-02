@@ -127,6 +127,8 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
+    # Mounted artifacts stay in place, so publish them before the grader attaches.
+    await runtime.commit_volumes()
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
