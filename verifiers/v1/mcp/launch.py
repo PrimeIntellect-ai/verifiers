@@ -400,6 +400,7 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -424,6 +425,8 @@ async def _serve(
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
+        if relay_base and not exposed:
+            state_base = relay_base  # the harness runtime's relay is on its loopback
         # The shared-state channel: every server reaches the interception at the rollout's
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
@@ -468,6 +471,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -476,6 +480,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        relay_base=relay_base,
     ) as served:
         yield served.url
 
@@ -583,6 +588,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -623,6 +629,7 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        relay_base=relay_base,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])
