@@ -599,43 +599,98 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         raw["stop_reason"] = "end_turn"
         raw["stop_sequence"] = None
 
+    def response_to_wire(self, response: Response, model: str) -> dict:
+        message = response.message
+        content = [dict(block) for block in message.provider_state or []]
+        if message.content:
+            content.append({"type": "text", "text": message.content})
+        for call in message.tool_calls or []:
+            block = {
+                "type": "tool_use",
+                "id": call.id,
+                "name": call.name,
+                "input": json.loads(call.arguments or "{}"),
+            }
+            if call.namespace:
+                block["toolset_name"] = call.namespace
+            content.append(block)
+        stop = {"length": "max_tokens", "tool_calls": "tool_use"}.get(
+            response.finish_reason or "", "end_turn"
+        )
+        raw: dict = {
+            "id": response.id,
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": content,
+            "stop_reason": stop,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        if usage := response.usage:
+            raw["usage"] = {
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "cache_read_input_tokens": usage.cached_input_tokens,
+            }
+            if usage.reasoning_tokens is not None:
+                raw["usage"]["output_tokens_details"] = {
+                    "thinking_tokens": usage.reasoning_tokens
+                }
+        return raw
+
     def stream_events(self, raw: dict) -> list[bytes]:
         def event(kind: str, payload: dict) -> bytes:
-            return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
+            return f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n".encode()
 
-        text = raw["content"][0]["text"]
         head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
         if isinstance(usage := head.get("usage"), dict):
             head["usage"] = {**usage, "output_tokens": 0}
-        return [
-            event("message_start", {"type": "message_start", "message": head}),
-            event(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            ),
-            event(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": text},
-                },
-            ),
-            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        events = [event("message_start", {"message": head})]
+        for index, block in enumerate(raw["content"]):
+            kind = block["type"]
+            if kind == "text":
+                start = {**block, "text": ""}
+                deltas = [{"type": "text_delta", "text": block["text"]}]
+            elif kind == "thinking":
+                start = {**block, "thinking": "", "signature": ""}
+                deltas = [{"type": "thinking_delta", "thinking": block["thinking"]}]
+                if block.get("signature"):
+                    deltas.append(
+                        {"type": "signature_delta", "signature": block["signature"]}
+                    )
+            elif kind == "tool_use":
+                start = {**block, "input": {}}
+                deltas = [
+                    {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(block["input"]),
+                    }
+                ]
+            else:
+                start, deltas = block, []
+            events.append(
+                event("content_block_start", {"index": index, "content_block": start})
+            )
+            events += [
+                event("content_block_delta", {"index": index, "delta": delta})
+                for delta in deltas
+            ]
+            events.append(event("content_block_stop", {"index": index}))
+        events += [
             event(
                 "message_delta",
                 {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "delta": {
+                        "stop_reason": raw.get("stop_reason") or "end_turn",
+                        "stop_sequence": raw.get("stop_sequence"),
+                    },
                     "usage": raw.get("usage") or {},
                 },
             ),
-            event("message_stop", {"type": "message_stop"}),
+            event("message_stop", {}),
         ]
+        return events
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)

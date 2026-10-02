@@ -704,40 +704,119 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         }
         return f"event: response.failed\ndata: {json.dumps(payload)}\n\n".encode()
 
+    def response_to_wire(self, response: Response, model: str) -> dict:
+        message = response.message
+        output = message.provider_state
+        if output is None:
+            output = [
+                {
+                    "type": "function_call"
+                    if call.type == "function"
+                    else "custom_tool_call",
+                    "id": f"fc_{call.id}",
+                    "call_id": call.id,
+                    "name": call.name,
+                    **({"namespace": call.namespace} if call.namespace else {}),
+                    "arguments" if call.type == "function" else "input": call.arguments,
+                    "status": "completed",
+                }
+                for call in message.tool_calls or []
+            ]
+            if message.content:
+                output.insert(
+                    0,
+                    {
+                        "type": "message",
+                        "id": f"msg_{response.id}",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": message.content,
+                                "annotations": [],
+                            }
+                        ],
+                    },
+                )
+        usage = response.usage
+        return {
+            "id": response.id,
+            "object": "response",
+            "created_at": response.created,
+            "model": model,
+            "status": "incomplete"
+            if response.finish_reason == "length"
+            else "completed",
+            "incomplete_details": {"reason": "max_output_tokens"}
+            if response.finish_reason == "length"
+            else None,
+            "error": None,
+            "output": output,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "input_tokens_details": {
+                    "cached_tokens": usage.cached_input_tokens or 0
+                },
+                "output_tokens": usage.completion_tokens,
+                "output_tokens_details": {
+                    "reasoning_tokens": usage.reasoning_tokens or 0
+                },
+                "total_tokens": usage.total_tokens,
+            }
+            if usage
+            else None,
+        }
+
     def stream_events(self, raw: dict) -> list[bytes]:
-        item = raw["output"][0]
-        part = item["content"][0]
-        common = {"output_index": 0, "item_id": item["id"], "content_index": 0}
-        logprobs = part.get("logprobs") or []
         head = {
             **raw,
             "status": "in_progress",
             "output": [],
             "completed_at": None,
         }
-        events = [
-            ("response.created", {"response": head}),
-            (
-                "response.output_item.added",
-                {"output_index": 0, "item": {**item, "content": []}},
-            ),
-            (
-                "response.content_part.added",
-                {**common, "part": {**part, "text": ""}},
-            ),
-            # `logprobs` is required on both text events; carry the part's own.
-            (
-                "response.output_text.delta",
-                {**common, "delta": part["text"], "logprobs": logprobs},
-            ),
-            (
-                "response.output_text.done",
-                {**common, "text": part["text"], "logprobs": logprobs},
-            ),
-            ("response.content_part.done", {**common, "part": part}),
-            ("response.output_item.done", {"output_index": 0, "item": item}),
-            ("response.completed", {"response": raw}),
-        ]
+        events: list[tuple[str, dict]] = [("response.created", {"response": head})]
+        for index, item in enumerate(raw["output"]):
+            parts = item.get("content") if item.get("type") == "message" else None
+            events.append(
+                (
+                    "response.output_item.added",
+                    {"output_index": index, "item": {**item, "content": []}}
+                    if parts is not None
+                    else {"output_index": index, "item": item},
+                )
+            )
+            for content_index, part in enumerate(parts or []):
+                common = {
+                    "output_index": index,
+                    "item_id": item["id"],
+                    "content_index": content_index,
+                }
+                text = part.get("type") == "output_text"
+                events.append(
+                    (
+                        "response.content_part.added",
+                        {**common, "part": {**part, "text": ""} if text else part},
+                    )
+                )
+                if text:
+                    # `logprobs` is required on both text events; carry the part's own.
+                    logprobs = part.get("logprobs") or []
+                    events += [
+                        (
+                            "response.output_text.delta",
+                            {**common, "delta": part["text"], "logprobs": logprobs},
+                        ),
+                        (
+                            "response.output_text.done",
+                            {**common, "text": part["text"], "logprobs": logprobs},
+                        ),
+                    ]
+                events.append(("response.content_part.done", {**common, "part": part}))
+            events.append(
+                ("response.output_item.done", {"output_index": index, "item": item})
+            )
+        events.append(("response.completed", {"response": raw}))
         return [
             *(
                 f"data: {json.dumps({'type': kind, 'sequence_number': i, **data})}\n\n".encode()
