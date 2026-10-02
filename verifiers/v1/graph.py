@@ -90,10 +90,11 @@ class MessageNode(BaseModel):
     tools: list[Tool] = Field(default_factory=list, exclude_if=lambda tools: not tools)
     """Tools rendered into this branch's prompt. Populated only on root nodes."""
     semantic_parents: list[ParentLink] = Field(default_factory=list)
-    """Additional harness-declared parents in the semantic execution graph.
+    """Typed incoming edges from other turns, declared by the harness (for example
+    ``subagent_return`` or ``subagent_cancel``).
 
-    Unlike ``parent``, these links do not imply an exact token prefix and therefore do
-    not affect physical branch construction. A list permits multiple parents of the same
+    They record causal links, not ancestry: unlike ``parent`` they imply no token prefix,
+    do not affect physical branch construction, and may form loops. A list permits multiple parents of the same
     type, supports incremental appends, and preserves their advertised wire order; edge
     application prevents duplicate ``(node, type)`` links.
     """

@@ -568,7 +568,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
         resolved_identities: set[tuple[int, int, str]] = set()
         additions: list[tuple[int, ParentLink]] = []
-        pending_parents: dict[int, list[ParentLink]] = {}
         for edge in edge_set.edges:
             endpoints: list[int] = []
             for request_id in (
@@ -592,28 +591,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if link in self.nodes[target].semantic_parents:
                 continue
 
-            # Adding source -> target creates a cycle exactly when target is already an
-            # ancestor of source. Walk parent links directly so existing nodes and links
-            # are never rebuilt as cumulative ACP edge sets arrive.
-            stack = [source]
-            visited: set[int] = set()
-            while stack:
-                node_id = stack.pop()
-                if node_id == target:
-                    raise ValueError(
-                        "semantic edges create a cycle in the message graph"
-                    )
-                if node_id in visited:
-                    continue
-                visited.add(node_id)
-                node = self.nodes[node_id]
-                if node.parent is not None:
-                    stack.append(node.parent)
-                stack.extend(parent.node for parent in node.semantic_parents)
-                stack.extend(parent.node for parent in pending_parents.get(node_id, ()))
-
             additions.append((target, link))
-            pending_parents.setdefault(target, []).append(link)
 
         for target, link in additions:
             self.nodes[target].semantic_parents.append(link)
