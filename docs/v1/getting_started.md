@@ -1,5 +1,7 @@
 # Installation
 
+verifiers v1 requires Linux or macOS. Parts of the stack depend on Unix-only functionality (POSIX file locking in the runtime rate limiters, ZMQ `ipc://` sockets in the env server), so `import verifiers.v1` fails on native Windows even though `pip install verifiers` succeeds. On Windows, run verifiers under [WSL](https://learn.microsoft.com/windows/wsl/install).
+
 verifiers runs locally with `uv`. Install it, clone the repo, and sync dependencies:
 
 ```bash
