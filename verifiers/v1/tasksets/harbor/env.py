@@ -22,7 +22,7 @@ from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnvConfig,
 )
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import Runtime, RuntimeConfig
+from verifiers.v1.runtimes import Runtime, RuntimeConfig, _runtime_cls
 from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
@@ -88,7 +88,15 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             if self.config.verifier.runtime is not None
             else self.config.agent.runtime
         )
-        return resolve_runtime_config(base, HarborTask(verifier_box_data(task.data)))
+        config = resolve_runtime_config(base, HarborTask(verifier_box_data(task.data)))
+        _runtime_cls(config).check_user(task.data.verifier_user)
+        return config
+
+    async def stage_verifier(
+        self, task: vf.Task, solution: vf.Trace, runtime: Runtime
+    ) -> None:
+        assert isinstance(task, HarborTask)
+        await super().stage_verifier(task, solution, task.trusted_runtime(runtime))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """Grade a separate-verifier task in its own box, onto the solver's trace.
