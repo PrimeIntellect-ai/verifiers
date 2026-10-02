@@ -392,6 +392,7 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
         root_actions, "denied"
     )
     assert report["read_secret_api"] == "denied"
+    assert report["tool_uv"] == "ok"
     assert not report["uv_python"].startswith("/root/")
     assert report["uv_script"] != report["root_uv_script"]
     assert trace.reward == 1.0

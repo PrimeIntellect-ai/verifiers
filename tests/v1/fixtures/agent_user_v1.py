@@ -7,7 +7,7 @@ typical image WORKDIR. The scripted harness then runs as that user and records w
 - the same uv script, prepared through the harness's runtime, runs as the user from its own
   environment rather than root's;
 - a file written through the runtime is the user's, and a root-only file can't be read;
-- its colocated tool server runs as the user too.
+- its colocated tool server runs as the user too, with uv on its PATH.
 The reward is 1 only if every check holds. Needs a runtime that can switch users (docker or
 prime).
 """
@@ -15,6 +15,7 @@ prime).
 import json
 import os
 import pwd
+import shutil
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -31,6 +32,7 @@ SECRET = "/opt/vf-agent-user-secret"
 REPORT = "/tmp/agent-user-report.json"
 WRITTEN = "/home/vf-agent/agent-user-written.txt"
 TOOL_USER = "/tmp/vf-agent-user-tool-user"
+TOOL_UV = "/tmp/vf-agent-user-tool-uv"
 ROOT_ACTIONS = ("read_secret", "write_etc", "chmod_secret", "signal_init")
 
 SETUP = f"useradd -m {AGENT_USER} && echo secret > {SECRET} && chmod 600 {SECRET}"
@@ -44,10 +46,10 @@ print(pwd.getpwuid(os.getuid()).pw_name, sys.executable)
 
 PROBE = f"""
 r() {{ "$@" >/dev/null 2>&1 && echo ok || echo denied; }}
-printf '{{"user":"%s","secret_exists":"%s","read_secret":"%s","write_etc":"%s","chmod_secret":"%s","signal_init":"%s","write_home":"%s","written_owner":"%s","tool_user":"%s"}}' \\
+printf '{{"user":"%s","secret_exists":"%s","read_secret":"%s","write_etc":"%s","chmod_secret":"%s","signal_init":"%s","write_home":"%s","written_owner":"%s","tool_user":"%s","tool_uv":"%s"}}' \\
   "$(id -un)" "$(r test -e {SECRET})" "$(r cat {SECRET})" "$(r touch /etc/vf-agent-user-probe)" \\
   "$(r chmod 644 {SECRET})" "$(r kill -0 1)" "$(r touch "$HOME/probe")" "$(stat -c %U {WRITTEN})" \\
-  "$(cat {TOOL_USER})" > {REPORT}
+  "$(cat {TOOL_USER})" "$(cat {TOOL_UV})" > {REPORT}
 """
 
 
@@ -120,6 +122,7 @@ class AgentUserTask(vf.Task):
             and report["secret_exists"] == report["write_home"] == "ok"
             and all(report[action] == "denied" for action in ROOT_ACTIONS)
             and report["read_secret_api"] == "denied"
+            and report["tool_uv"] == "ok"
             and not report["uv_python"].startswith("/root/")
             and report["uv_script"] != report["root_uv_script"]
         )
@@ -140,4 +143,5 @@ class AgentUserTaskset(vf.Taskset[AgentUserTask, vf.TasksetConfig]):
 
 if __name__ == "__main__":
     Path(TOOL_USER).write_text(current_user())
+    Path(TOOL_UV).write_text("ok" if shutil.which("uv") else "missing")
     AgentUserToolset.run()

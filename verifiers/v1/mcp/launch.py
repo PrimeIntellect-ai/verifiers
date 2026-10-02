@@ -273,6 +273,8 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
             await run_shielded(runtime.write(remote, data))
             setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
         if agent.user is not None:
+            # uv sits in the default user's home; give the agent's server its own copy.
+            setup += f'cp "$(command -v uv)" {venv_q}/bin/uv; '
             setup += f"chmod -R a+rX {venv_q} {shlex.quote(python_dir)} 2>/dev/null || true; "
         result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
         if result.exit_code != 0:
@@ -346,10 +348,13 @@ async def serve_in_runtime(
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
+        path = "$HOME/.local/bin:$PATH"
+        if runtime.user is not None:
+            path = f"{PurePosixPath(python).parent}:{path}"
         command = [
             "sh",
             "-c",
-            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+            f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
     log = f"vf_tool_{server.server_name}.log"
     if runtime.user is not None:
