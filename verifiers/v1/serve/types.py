@@ -48,6 +48,8 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    replay: list[dict] = Field(default_factory=list)
+    """Dumped traces of an interrupted attempt of this episode, replayed before sampling live."""
 
 
 class RunResponse(BaseResponse):

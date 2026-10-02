@@ -60,6 +60,7 @@ class Rollout:
         *,
         task: Task,
         agent_config: AgentConfig,
+        agent_name: str = "agent",
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
@@ -94,8 +95,12 @@ class Rollout:
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
+            agent=AgentInfo(config=agent_config, name=agent_name),
         )
+        if ctx.replay is not None and (
+            claimed := ctx.replay.claim(agent_name, task.key)
+        ):
+            self.trace.id = claimed
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [

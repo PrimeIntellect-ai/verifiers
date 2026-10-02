@@ -190,13 +190,15 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        replay: list[dict] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. `replay` carries the dumped
+        traces of an interrupted attempt of this episode (`verifiers.v1.replay`)."""
         assembly = EpisodeAssembly()
 
         def apply(data: bytes) -> None:
@@ -211,6 +213,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                replay=replay or [],
             ),
             RunResponse,
             on_delta=apply,

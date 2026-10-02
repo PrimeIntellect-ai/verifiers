@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, Literal
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
@@ -173,6 +173,9 @@ class ModelCall(BaseModel):
     """Policy mediation applied to the request before this call."""
     acp: ACPInfo | None = None
     """Metadata advertised by the ACP harness for this model request."""
+    replayed: Literal["exact", "structural"] | None = None
+    """Answered from a recorded trace (`ModelContext.replay`) instead of the provider, and
+    whether the prompt matched its recorded path exactly or by structure."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:

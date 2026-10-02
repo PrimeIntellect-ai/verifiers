@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import replace
 
 import msgpack
 import zmq
@@ -8,6 +9,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.replay import Replay
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -19,6 +21,7 @@ from verifiers.v1.serve.types import (
     RunResponse,
 )
 from verifiers.v1.task import Task
+from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import load_environment
 
@@ -98,6 +101,9 @@ class EnvServer:
         self, req: RunRequest, client_id: bytes, request_id: bytes
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
+        if req.replay:
+            traces = [WireTrace.model_validate(trace) for trace in req.replay]
+            ctx = replace(ctx, replay=Replay(traces))
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
         async def send_delta(delta: dict) -> None:

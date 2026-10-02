@@ -537,6 +537,36 @@ class ChatDialect(Dialect[ChatCompletion]):
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
+    def response_to_wire(self, response: Response, model: str) -> dict:
+        message = message_to_wire(response.message)
+        if response.message.reasoning_content is not None:
+            message["reasoning_content"] = response.message.reasoning_content
+        finish = response.finish_reason or (
+            "tool_calls" if response.message.tool_calls else "stop"
+        )
+        raw: dict = {
+            "id": response.id,
+            "object": "chat.completion",
+            "created": response.created,
+            "model": model,
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        }
+        if usage := response.usage:
+            raw["usage"] = {
+                "prompt_tokens": usage.input_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+            if usage.cached_input_tokens is not None:
+                raw["usage"]["prompt_tokens_details"] = {
+                    "cached_tokens": usage.cached_input_tokens
+                }
+            if usage.reasoning_tokens is not None:
+                raw["usage"]["completion_tokens_details"] = {
+                    "reasoning_tokens": usage.reasoning_tokens
+                }
+        return raw
+
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         for native, original, rewritten in zip(
             body.get("messages", []), before.messages, after.messages, strict=True

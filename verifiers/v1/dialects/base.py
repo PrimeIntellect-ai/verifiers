@@ -350,6 +350,10 @@ class Dialect(ABC, Generic[RespT]):
     def parse_response(self, response: RespT) -> Response:
         """A native (non-streamed) response -> the vf `Response` we consume."""
 
+    @abstractmethod
+    def response_to_wire(self, response: Response, model: str) -> dict:
+        """A vf `Response` -> the native response that parses back to it."""
+
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)

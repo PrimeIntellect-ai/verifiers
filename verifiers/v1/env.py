@@ -226,6 +226,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                replay=ctx.replay,
             )
 
         agents = Agents(self.config, make)

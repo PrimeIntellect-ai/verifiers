@@ -26,6 +26,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.replay import Replay
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -268,6 +269,8 @@ class Agent:
         config: AgentConfig,
         *,
         interception: Interception | None = None,
+        name: str = "agent",
+        replay: Replay | None = None,
     ) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
@@ -286,10 +289,12 @@ class Agent:
             config = config.model_copy(update={"sampling": Sampling()})
         self.config = config
         self.harness = load_harness(config.harness)
+        self._name = name
         self.ctx = ModelContext(
             model=config.model,
             client=config.client or EvalClientConfig(),
             sampling=config.sampling,
+            replay=replay,
         )
         self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime
@@ -562,6 +567,7 @@ class Agent:
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
             "agent_config": self.config,
+            "agent_name": self._name,
             "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
@@ -612,11 +618,11 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        replay: Replay | None = None,
     ) -> None:
-        super().__init__(config, interception=interception)
+        super().__init__(config, interception=interception, name=name, replay=replay)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
-        self._name = name
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate

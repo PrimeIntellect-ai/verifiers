@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -12,6 +13,9 @@ from verifiers.v1.configs.client import (
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
+
+if TYPE_CHECKING:
+    from verifiers.v1.replay import Replay
 
 SESSION_ID_HEADER = "X-Session-ID"
 """Per-rollout routing header (the trace id, same value every turn), so a session-affinity
@@ -87,3 +91,5 @@ class ModelContext:
     model: str
     client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)
+    replay: "Replay | None" = field(default=None, compare=False)
+    """Recorded traces whose replies answer matching requests before the live model."""

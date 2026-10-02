@@ -66,7 +66,7 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,29 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+
+
+def _replay_reply(
+    session: RolloutSession, dialect: Dialect, request: Request
+) -> tuple[Response, Literal["exact", "structural"]] | None:
+    """The recorded reply that answers this request, rendered for the harness; None to
+    sample live. Replay only saves work, so a failure in it falls back to the model."""
+    if session.ctx.replay is None or isinstance(session.ctx.client, TrainClientConfig):
+        return None
+    try:
+        replayed = session.ctx.replay.take(
+            session.trace.id, request.messages, request.tools
+        )
+        if replayed is not None:
+            replayed[0].raw = dialect.response_to_wire(replayed[0], session.ctx.model)
+        return replayed
+    except Exception:
+        logger.warning(
+            "replay lookup failed, sampling live: id=%s",
+            session.trace.id,
+            exc_info=True,
+        )
+        return None
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -528,6 +551,7 @@ class InterceptionServer(Interception):
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
+        replayed: Literal["exact", "structural"] | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -576,6 +600,7 @@ class InterceptionServer(Interception):
                 if policy_paths
                 else None,
                 acp=acp,
+                replayed=replayed,
             )
         )
         session.trace.notify()
@@ -777,11 +802,14 @@ class InterceptionServer(Interception):
             node: int | None = None
             error: Exception | None = None
             started = time.time()
+            replayed = _replay_reply(session, dialect, model_request)
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
+                    if replayed is not None:
+                        call_response = replayed[0]
+                    elif relay:
                         reply = await session.client.relay(
                             dialect,
                             body,
@@ -809,7 +837,9 @@ class InterceptionServer(Interception):
                         )
                     response_rewrites = []
                     stopped = None
-                    if session.response_interceptors or session.response_stops:
+                    if replayed is None and (
+                        session.response_interceptors or session.response_stops
+                    ):
                         (
                             call_response,
                             response_rewrites,
@@ -891,6 +921,7 @@ class InterceptionServer(Interception):
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
+                    replayed=replayed[1] if replayed is not None else None,
                 )
             return serve(call_response, events)
 
