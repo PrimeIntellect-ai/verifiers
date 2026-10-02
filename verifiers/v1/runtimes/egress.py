@@ -1,4 +1,4 @@
-"""In-process HTTP(S) proxy for Docker policy and host callbacks."""
+"""In-process HTTP(S) proxy for container policy and host callbacks."""
 
 import asyncio
 import base64
@@ -132,7 +132,7 @@ class EgressProxy:
         )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
-        self._handlers: set[asyncio.Task] = set()
+        self._handlers: dict[asyncio.Task, bool | None] = {}
         self.server: asyncio.Server | None = None
         self.port = 0
 
@@ -142,7 +142,7 @@ class EgressProxy:
         scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
         host = (parsed.hostname or "").lower().rstrip(".")
         if scheme not in ("http", "https") or not is_loopback_host(host):
-            raise ValueError(f"unsupported Docker host callback URL: {url}")
+            raise ValueError(f"unsupported host callback URL: {url}")
         port = parsed.port or (443 if scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
         callback = _Callback(scheme, host, port, authority, host_alias)
@@ -157,13 +157,44 @@ class EgressProxy:
         visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
         return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
 
+    def environment(self, host: str = "127.0.0.1") -> dict[str, str]:
+        """Proxy all external HTTP(S), leaving instance-local services reachable."""
+        proxy = f"http://verifiers:{self.token}@{host}:{self.port}"
+        exclusions = ",".join(dict.fromkeys(("localhost", "127.0.0.1", "::1", host)))
+        env = {"http_proxy": proxy, "https_proxy": proxy, "no_proxy": exclusions}
+        return env | {key.upper(): value for key, value in env.items()}
+
+    async def prepare_execution(
+        self, config: NetworkPolicyConfig, routes: list[str] | None
+    ) -> None:
+        """Change policy and revoke existing egress streams before execution starts."""
+        self.policy = NetworkPolicy(
+            NetworkPolicyConfig() if routes is None else config,
+            list(routes or []),
+            allow_non_global=routes is None,
+        )
+        if routes is not None:
+            # Tunnels retain their upstream connection; replacing policy alone cannot
+            # revoke setup access. Preserve callbacks and requests still reading headers;
+            # those requests will be checked against the new policy once classified.
+            handlers = [
+                task for task, callback in self._handlers.items() if callback is False
+            ]
+            for handler in handlers:
+                handler.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
     async def start(
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
     ) -> None:
         if listener is None:
             self.server = await asyncio.start_server(self._handle, bind_host, 0)
         else:
-            self.server = await asyncio.start_server(self._handle, sock=listener)
+            try:
+                self.server = await asyncio.start_server(self._handle, sock=listener)
+            except BaseException:
+                listener.close()
+                raise
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
@@ -186,7 +217,7 @@ class EgressProxy:
             return
         handler = asyncio.current_task()
         assert handler is not None
-        self._handlers.add(handler)
+        self._handlers[handler] = None
         upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
@@ -210,6 +241,7 @@ class EgressProxy:
                 callback = self._callbacks.get(token)
                 if callback is not None:
                     parsed = parsed._replace(path=f"/{path}" if separator else "/")
+            self._handlers[handler] = callback is not None
             authorization = next(
                 (
                     value
@@ -537,7 +569,7 @@ class EgressProxy:
             if upstream_writer is not None:
                 upstream_writer.close()
             writer.close()
-            self._handlers.discard(handler)
+            self._handlers.pop(handler, None)
 
 
 async def _relay(

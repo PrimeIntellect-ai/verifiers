@@ -406,7 +406,7 @@ class Runtime(ABC):
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
         `None` for runtimes whose services already sit on host loopback (subprocess,
-        apptainer), which pick a free port."""
+        unrestricted apptainer), which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str:

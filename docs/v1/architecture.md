@@ -11,7 +11,7 @@ The **rollout** is the executable combination of one loaded task, the harness, a
 - The `subprocess` runtime runs the rollouts in Python subprocesses locally. Thus, it is meant for debugging purposes, as there might be side effects during runtime, such as one subprocess altering the config files of the harness, which then affects the other subprocesses.
 - The `docker` runtime runs the rollouts in docker containers on your local machine.
 - The `podman` runtime is the same implementation driving the Podman CLI, for hosts without Docker.
-- The `apptainer` runtime runs the rollouts in unprivileged Apptainer instances on the host network, as on HPC clusters. It has no egress policy.
+- The `apptainer` runtime runs the rollouts in unprivileged Apptainer instances. Unrestricted instances share the host network. Restricted instances require network namespaces and Python 3.9+ in the image; both setup and execution use the HTTP(S) proxy. Tool servers in restricted instances must be colocated with the harness.
 - Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
 
 For offline Docker/Podman use on Linux, cache the task image and, if it lacks Python 3, `docker.io/library/python:3.11-alpine` for host callbacks. Restricted execution also needs the cached `localhost/verifiers-network:1` image, built during the first online startup.
