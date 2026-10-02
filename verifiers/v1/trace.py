@@ -173,9 +173,10 @@ class ModelCall(BaseModel):
     """Policy mediation applied to the request before this call."""
     acp: ACPInfo | None = None
     """Metadata advertised by the ACP harness for this model request."""
-    replayed: Literal["exact", "structural"] | None = None
+    replayed: Literal["exact", "structural", "verbatim"] | None = None
     """Answered from a recorded trace (`ModelContext.replay`) instead of the provider, and
-    whether the prompt matched its recorded path exactly or by structure."""
+    how: the prompt matched its recorded prompt exactly or by structure, or the seat
+    follows its recording verbatim."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:

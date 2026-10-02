@@ -1,21 +1,24 @@
-"""Resume interrupted rollouts by replaying their recorded model replies.
+"""Replay recorded model replies: resume an interrupted rollout, or drive a seat verbatim.
 
-A rollout whose context carries a `Replay` claims a free recorded trace of its agent on
-its task and continues under that trace's id. A failed attempt frees its recording, so
-the attempt that retries it replays the recording again, under its own id. Each model
-request is matched to a path of the recording and answered with the recorded reply; the
-harness still runs every tool call, so its runtime and program state are rebuilt.
+A rollout whose context carries a `Replay` claims a free recorded trace of its agent and
+continues under that trace's id; a failed attempt frees its recording, so the attempt that
+retries it replays the recording again, under its own id. Each model request is answered
+with the recorded reply that followed the prompt's last assistant message (or opened a
+branch, when the prompt has none). The harness still runs every tool call, so its runtime
+and program state are rebuilt.
 
-A prompt matches its exact recorded path, or else (`structural`) a path with the same
-tools and structure: every assistant message identical, every other message in the same
-role (a tool result answering the same call) and differing only in volatile runs such as
-an id, a hostname, a clock time, or a duration. A request no path answers goes to the
-live model, and so does everything after it, since its prompt carries the live reply."""
+Resume (the default) replays a reply only when the prompt is its recorded prompt: every
+message identical (`exact`), or every assistant message identical and every other message
+in the same role, answering the same call, and differing only in volatile runs such as an
+id, a hostname, a clock time, or a duration (`structural`). Any other request samples live,
+and so does everything after it, since its prompt carries the live reply.
 
-import difflib
+Verbatim replays the recording whatever the tools returned or other agents said, never
+samples live, and stops the rollout (`replay_ended`) once the recording has no reply left.
+It claims a recording by agent alone, so a recorded seat can drive a seat of another task."""
+
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -23,45 +26,45 @@ from verifiers.v1 import graph
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, Message, Response, Tool, ToolMessage
 
-ReplayMatch = Literal["exact", "structural"]
+ReplayMatch = Literal["exact", "structural", "verbatim"]
 
 
 @dataclass(eq=False)
 class _Recording:
     trace: Trace
-    children: dict[int | None, list[int]] = field(default_factory=dict)
-    hashes: list[str] = field(default_factory=list)
-    used: Counter[int] = field(default_factory=Counter)
     adopted: bool = False
-    _masked: dict[int, str] = field(default_factory=dict)
-    _toolsets: dict[int, str] = field(default_factory=dict)
+    used: set[int] = field(default_factory=set)
+    hashes: list[str] = field(default_factory=list)
+    replies: dict[str | None, list[int]] = field(default_factory=dict)
+    """Recorded replies by the hash of the assistant message their prompt ends after."""
 
     def __post_init__(self) -> None:
-        for node_id, node in enumerate(self.trace.nodes):
-            self.children.setdefault(node.parent, []).append(node_id)
-            self.hashes.append(graph.message_hash(node.message))
+        nodes = self.trace.nodes
+        self.hashes = [graph.message_hash(node.message) for node in nodes]
+        for reply, node in enumerate(nodes):
+            if not node.sampled:
+                continue
+            last = node.parent
+            while last is not None and not isinstance(
+                nodes[last].message, AssistantMessage
+            ):
+                last = nodes[last].parent
+            key = None if last is None else self.hashes[last]
+            self.replies.setdefault(key, []).append(reply)
 
-    def toolset(self, root: int) -> str:
-        if root not in self._toolsets:
-            self._toolsets[root] = _toolset(self.trace.nodes[root].tools)
-        return self._toolsets[root]
-
-    def masked(self, node: int) -> str:
-        if node not in self._masked:
-            self._masked[node] = _volatile_masked(_text(self.trace.nodes[node].message))
-        return self._masked[node]
-
-    def next_reply(self, parent: int) -> int | None:
-        """The parent's first recorded reply not yet replayed."""
-        replies = [
-            n for n in self.children.get(parent, []) if self.trace.nodes[n].sampled
-        ]
-        used = self.used[parent]
-        return replies[used] if used < len(replies) else None
+    def prompt(self, reply: int) -> list[int]:
+        """The recorded prompt of `reply`, root first."""
+        nodes: list[int] = []
+        current = self.trace.nodes[reply].parent
+        while current is not None:
+            nodes.append(current)
+            current = self.trace.nodes[current].parent
+        return nodes[::-1]
 
 
 class Replay:
-    def __init__(self, traces: list[Trace]) -> None:
+    def __init__(self, traces: list[Trace], *, verbatim: bool = False) -> None:
+        self.verbatim = verbatim
         self._recordings = [_Recording(trace) for trace in traces]
         self._bound: dict[str, _Recording] = {}
 
@@ -75,7 +78,7 @@ class Replay:
             for recording in self._recordings
             if id(recording) not in bound
             and recording.trace.agent.name == agent
-            and recording.trace.task.key == task_key
+            and (self.verbatim or recording.trace.task.key == task_key)
         ]
         if not free:
             return trace_id
@@ -91,88 +94,79 @@ class Replay:
         """Free a failed trace's recording for the attempt that retries it."""
         self._bound.pop(trace_id, None)
 
+    def drives(self, trace_id: str) -> bool:
+        """Whether this trace follows its recording verbatim, never sampling live."""
+        return self.verbatim and trace_id in self._bound
+
     def take(
         self, trace_id: str, prompt: list[Message], tools: list[Tool] | None
     ) -> tuple[Response, ReplayMatch] | None:
-        """The recorded reply to `prompt` and how the prompt matched, or None to sample live."""
+        """The recorded reply to `prompt` and how the prompt matched, or None."""
         recording = self._bound.get(trace_id)
         if not prompt or recording is None:
             return None
-        source = recording.trace
-        turn = graph.prepare_turn(source, prompt, tools)
-        match: ReplayMatch = "exact"
-        if len(turn.prefix_node_ids) == len(prompt):
-            parent = turn.prefix_node_ids[-1]
-        elif (parent := _structural_match(recording, prompt, tools)) is not None:
-            match = "structural"
+        last = next(
+            (m for m in reversed(prompt) if isinstance(m, AssistantMessage)), None
+        )
+        key = None if last is None else graph.message_hash(last)
+        candidates = [
+            reply
+            for reply in recording.replies.get(key, [])
+            if reply not in recording.used
+        ]
+        matches = [
+            (match, reply)
+            for reply in candidates
+            if (match := _compare(recording, reply, prompt, tools)) is not None
+        ]
+        if matches:
+            match, reply = min(matches, key=lambda pair: pair[0] != "exact")
+        elif self.verbatim and candidates:
+            match, reply = "verbatim", candidates[0]
         else:
             return None
-        node = recording.next_reply(parent)
-        if node is None:
-            return None
-        recording.used[parent] += 1
-        call = next((c for c in source.calls if c.node == node), None)
+        recording.used.add(reply)
+        source = recording.trace
+        call = next((c for c in source.calls if c.node == reply), None)
         response = Response(
-            id=f"replay-{node}",
+            id=f"replay-{reply}",
             created=0,
             model=call.model if call and call.model else "",
-            message=source.nodes[node].message.model_copy(deep=True),
+            message=source.nodes[reply].message.model_copy(deep=True),
             finish_reason=call.finish_reason if call else None,
             usage=call.usage if call else None,
         )
-        return response, match
+        return response, "verbatim" if self.verbatim else match
 
 
-def _structural_match(
-    recording: _Recording, prompt: list[Message], tools: list[Tool] | None
-) -> int | None:
-    """The recorded node the prompt ends at, matched by structure. Every branch that fits
-    the prompt so far stays a candidate, so siblings that agree on a long prefix resolve
-    at the message that tells them apart. Among the full matches that still have a reply,
-    the one with the most exact messages, then the most similar text, wins."""
-    source = recording.trace
-    toolset = _toolset(tools)
-    frontier: dict[int | None, tuple[int, float]] = {None: (0, 0.0)}
-    for message in prompt:
-        key = graph.message_hash(message)
-        exact: dict[int | None, tuple[int, float]] = {}
-        alike: list[tuple[int, tuple[int, float]]] = []
-        for parent, score in frontier.items():
-            for n in recording.children.get(parent, []):
-                if parent is None and recording.toolset(n) != toolset:
-                    continue
-                if recording.hashes[n] == key:
-                    exact[n] = (score[0] + 1, score[1])
-                elif _same_structure(source.nodes[n].message, message):
-                    alike.append((n, score))
-        frontier = exact
-        if alike:
-            text = _text(message)
-            masked = _volatile_masked(text)
-            alike = [(n, score) for n, score in alike if recording.masked(n) == masked]
-            for n, (matched, similarity) in alike:
-                if len(alike) > 1:
-                    recorded = _text(source.nodes[n].message)
-                    similarity += difflib.SequenceMatcher(None, recorded, text).ratio()
-                frontier[n] = (matched, similarity)
-        if not frontier:
+def _compare(
+    recording: _Recording, reply: int, prompt: list[Message], tools: list[Tool] | None
+) -> Literal["exact", "structural"] | None:
+    """How `prompt` matches the recorded prompt of `reply`, or None when it does not."""
+    nodes = recording.prompt(reply)
+    if len(nodes) != len(prompt):
+        return None
+    recorded_tools = recording.trace.nodes[nodes[0]].tools
+    exact = recorded_tools == list(tools or [])
+    if not exact and _toolset(recorded_tools) != _toolset(tools):
+        return None
+    for node, message in zip(nodes, prompt):
+        if recording.hashes[node] == graph.message_hash(message):
+            continue
+        exact = False
+        recorded = recording.trace.nodes[node].message
+        if (
+            isinstance(message, AssistantMessage)
+            or recorded.role != message.role
+            or (
+                isinstance(message, ToolMessage)
+                and getattr(recorded, "tool_call_id", None) != message.tool_call_id
+            )
+            or _media(recorded) != _media(message)
+            or _volatile_masked(_text(recorded)) != _volatile_masked(_text(message))
+        ):
             return None
-    answered = [
-        n for n in frontier if n is not None and recording.next_reply(n) is not None
-    ]
-    return max(answered, key=lambda n: frontier[n]) if answered else None
-
-
-def _same_structure(recorded: Message, message: Message) -> bool:
-    """Whether a recorded message may stand for `message` when only volatile text differs:
-    never an assistant message (the model's own words must match exactly), else the same
-    role, and for a tool result the same call."""
-    if isinstance(message, AssistantMessage) or recorded.role != message.role:
-        return False
-    return not isinstance(message, ToolMessage) or (
-        isinstance(recorded, ToolMessage)
-        and recorded.tool_call_id == message.tool_call_id
-    )
+    return "exact" if exact else "structural"
 
 
 def _text(message: Message) -> str:
@@ -181,14 +175,11 @@ def _text(message: Message) -> str:
     return "".join(getattr(part, "text", "") for part in message.content or [])
 
 
-_VOLATILE = re.compile(
-    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"  # uuids
-    r"|\b(?=[0-9a-fA-F]*[a-fA-F])(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,}\b"  # hashes, hostnames
-    r"|\b\d+(?:\.\d+)?\s?(?:ns|us|µs|ms|s|secs?|seconds?)\b"  # durations
-    r"|\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b"  # clock times
-    r"|\b\d{10,}\b"  # epoch timestamps
-)
-"""Runs that differ between two runs of one rollout without changing what it observed."""
+def _media(message: Message) -> list[str]:
+    """A message's non-text parts (images), which must match exactly."""
+    if isinstance(message.content, str):
+        return []
+    return [part.model_dump_json() for part in message.content if part.type != "text"]
 
 
 def _toolset(tools: list[Tool] | None) -> str:
@@ -198,6 +189,17 @@ def _toolset(tools: list[Tool] | None) -> str:
         for tool in tools or []
     )
     return _volatile_masked("\n".join(declared))
+
+
+_VOLATILE = re.compile(
+    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"  # uuids
+    r"|\b(?=[0-9a-fA-F]*[a-fA-F])(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,}\b"  # hashes, hostnames
+    r"|(?<=[-_/])[0-9a-fA-F]{8,}\b"  # ids in names and paths
+    r"|\b\d+(?:\.\d+)?\s?(?:ns|us|µs|ms|s|secs?|seconds?)\b"  # durations
+    r"|\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b"  # clock times
+    r"|\b\d{10,}\b"  # epoch timestamps
+)
+"""Runs that differ between two runs of one rollout without changing what it observed."""
 
 
 def _volatile_masked(text: str) -> str:

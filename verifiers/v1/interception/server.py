@@ -95,7 +95,7 @@ IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
 
 def _replay_reply(
     session: RolloutSession, dialect: Dialect, request: Request
-) -> tuple[Response, Literal["exact", "structural"]] | None:
+) -> tuple[Response, Literal["exact", "structural", "verbatim"]] | None:
     """The recorded reply that answers this request, rendered for the harness; None to
     sample live. Replay only saves work, so a failure in it falls back to the model."""
     if session.ctx.replay is None or isinstance(session.ctx.client, TrainClientConfig):
@@ -551,7 +551,7 @@ class InterceptionServer(Interception):
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
-        replayed: Literal["exact", "structural"] | None = None,
+        replayed: Literal["exact", "structural", "verbatim"] | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -803,6 +803,17 @@ class InterceptionServer(Interception):
             error: Exception | None = None
             started = time.time()
             replayed = _replay_reply(session, dialect, model_request)
+            if (
+                replayed is None
+                and session.ctx.replay is not None
+                and session.ctx.replay.drives(session.trace.id)
+            ):
+                # A verbatim seat never samples live: its recording ended here.
+                turn.commit_prompt()
+                session.trace.stop("replay_ended")
+                return web.json_response(
+                    dialect.error_body("rollout stopped: replay_ended"), status=400
+                )
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
