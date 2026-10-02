@@ -23,8 +23,8 @@ class TimeoutConfig(BaseConfig):
     """Wall-clock timeouts for the env's own `run()`/`finalize()` hooks, in seconds
     (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
-    episode: float | None = None
-    finalize: float | None = None
+    episode: float | None = Field(None, gt=0)
+    finalize: float | None = Field(None, gt=0)
 
 
 def _mentions_agent_config(annotation) -> bool:
