@@ -139,6 +139,8 @@ class Runtime(ABC):
     __slots__ = ("env", "user")
 
     supports_users: ClassVar[bool] = False
+    default_user: str = "0"
+    """Image execution user, populated by providers that support user selection."""
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -218,16 +220,16 @@ class Runtime(ABC):
         runtime.env = dict(env)
         return runtime
 
-    def with_user(self, user: str | int | None) -> "Runtime":
-        """Share this physical runtime with a separate execution identity.
-
-        Providers must apply it to commands, live/background processes, and file IO.
-        Unsupported providers reject explicit users before executing anything.
-        """
+    @classmethod
+    def check_user(cls, user: str | int | None) -> None:
         if user == "":
             raise SandboxError("execution user must not be empty")
-        if user is not None and not self.supports_users:
-            raise SandboxError(f"{self.type} runtime does not support execution users")
+        if user is not None and not cls.supports_users:
+            raise SandboxError(f"{cls.__name__} does not support execution users")
+
+    def with_user(self, user: str | int | None) -> "Runtime":
+        """Share the box through a user view, including process and file operations."""
+        self.check_user(user)
         runtime = self.with_env(self.env)
         runtime.user = user
         return runtime

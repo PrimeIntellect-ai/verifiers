@@ -41,7 +41,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
+from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, _run, collect
 from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -209,16 +209,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(self, runtime: Runtime) -> None:
-        # Check every declared identity before the agent starts, including grading.
-        users = (
-            self.data.user,
-            self.data.verifier_user,
-            *(h.user for h in self.data.collect),
-        )
-        for user in users:
-            runtime.with_user(user)
-        if any(user is not None for user in users):
-            runtime = runtime.with_user("root")
+        runtime = runtime.with_user(self.data.user)
+        for hook in self.data.collect:
+            type(runtime).check_user(hook.user)
+        if self.data.verifier is None:
+            type(runtime).check_user(self.data.verifier_user)
+        if self.data.user is not None:
+            await self.chown(runtime, runtime.config.workdir)
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -238,7 +235,30 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
         if self.data.healthcheck is not None:
-            await self.wait_for_health(runtime, self.data.healthcheck)
+            await self.wait_for_health(
+                self.trusted_runtime(runtime), self.data.healthcheck
+            )
+
+    @staticmethod
+    def trusted_runtime(runtime: Runtime) -> Runtime:
+        return runtime.with_user(0) if runtime.supports_users else runtime
+
+    async def chown(
+        self, runtime: Runtime, *paths: str, recursive: bool = False
+    ) -> None:
+        """Transfer only writable inputs, preserving permissions on other image files."""
+        if not runtime.supports_users or not paths:
+            return
+        owner = str(runtime.user if runtime.user is not None else runtime.default_user)
+        if owner.split(":")[0] not in {"0", "root"} and any(
+            PurePosixPath(path) == PurePosixPath("/") for path in paths
+        ):
+            raise TaskError("cannot transfer filesystem root ownership")
+        await _run(
+            self.trusted_runtime(runtime),
+            shlex.join(["chown", "-hR" if recursive else "-h", "--", owner, *paths]),
+            "set execution ownership",
+        )
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError
@@ -309,7 +329,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         for service, source_runtime in runtimes.items():
             used = sum(len(data or b"") for data in trace.state.artifacts.values())
             collected = await collect(
-                source_runtime,
+                self.trusted_runtime(source_runtime),
                 [
                     artifact
                     for artifact in self.data.artifacts
@@ -336,6 +356,15 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             for root in trace.state.artifacts
         ):
             raise TaskError("Harbor artifacts cannot restore into /tests")
+        await self.chown(
+            runtime.with_user(self.data.verifier_user),
+            *(
+                root
+                for root, archive in trace.state.artifacts.items()
+                if archive is not None
+            ),
+            recursive=True,
+        )
         await self.stage_tests(runtime, wipe=True)
         self.verifier_staged = True
 
@@ -348,8 +377,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
-        if self.data.user is not None or self.data.verifier_user is not None:
-            runtime = runtime.with_user("root")
+        runtime = self.trusted_runtime(runtime)
         stage = "test -f /tests/test.sh"
         if self.data.verifier is None or self.data.verifier_image is None:
             await runtime.write(
@@ -363,14 +391,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
             f"mkdir -p /logs/verifier && {stage}"
         )
-        if self.data.verifier_user is not None:
-            command += f" && chown -- {shlex.quote(str(self.data.verifier_user))} /logs/verifier"
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
                 f"{(result.stderr or result.stdout).strip()[-500:]}"
             )
+        await self.chown(
+            runtime.with_user(self.data.verifier_user),
+            "/tests",
+            "/logs/verifier",
+            recursive=True,
+        )
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
@@ -391,8 +423,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
-        if self.data.user is not None or self.data.verifier_user is not None:
-            runtime = runtime.with_user("root")
+        runtime = self.trusted_runtime(runtime)
         # The reward file is authoritative even when the script exits nonzero.
         result = await runtime.with_user(self.data.verifier_user).run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
@@ -454,7 +485,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
     return data.model_copy(
         update={
             "name": f"{data.name} (verifier)",
-            "user": None,
+            "user": data.verifier_user,
             "image": data.verifier_image
             if data.verifier_image is not None
             else data.image,

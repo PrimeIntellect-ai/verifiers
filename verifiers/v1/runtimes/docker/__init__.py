@@ -126,6 +126,7 @@ class DockerRuntime(ContainerRuntime):
                     f"Container inspection failed: {stderr.decode(errors='replace')}"
                 )
             info = json.loads(data)
+            runtime.default_user = info["User"] or "0"
             runtime._image_env = dict(
                 entry.split("=", 1) for entry in info["Env"] or []
             )
@@ -279,6 +280,7 @@ class DockerRuntime(ContainerRuntime):
                 f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
             )
         container = json.loads(inspected.stdout)
+        self.default_user = container["User"] or "0"
         self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
         # Create missing workdirs for either engine, owned by the image's execution user.
         made = await cli(
@@ -526,7 +528,7 @@ class DockerRuntime(ContainerRuntime):
                 "NO_PROXY": ",".join(exclusions),
                 "no_proxy": ",".join(exclusions),
             }
-        return [
+        command = [
             self.engine,
             "exec",
             *(("-i",) if stdin else ()),
@@ -535,22 +537,19 @@ class DockerRuntime(ContainerRuntime):
             "--workdir",
             self.config.workdir,
             self._container,
-            # Docker exec retains the image's HOME when overriding its user.
-            *(
-                (
-                    "sh",
-                    "-c",
-                    (
-                        "home=$(awk -F: -v uid=\"$(id -u)\" '$3 == uid { print $6; exit }' /etc/passwd); "
-                        '[ -n "$home" ] || { echo "execution user has no home in /etc/passwd" >&2; exit 1; }; '
-                        'export HOME="$home"; exec "$@"'
-                    ),
-                    "vf-user",
-                )
-                if self.user is not None and "HOME" not in env
-                else ()
-            ),
         ]
+        # Docker retains the image's HOME; numeric UIDs may have no passwd entry.
+        if self.user is not None and "HOME" not in env:
+            command += [
+                "sh",
+                "-c",
+                (
+                    "home=$(awk -F: -v uid=\"$(id -u)\" '$3 == uid { print $6; exit }' /etc/passwd); "
+                    'if [ -n "$home" ]; then export HOME="$home"; else unset HOME; fi; exec "$@"'
+                ),
+                "vf-user",
+            ]
+        return command
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
