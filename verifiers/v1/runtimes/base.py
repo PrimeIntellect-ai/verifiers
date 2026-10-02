@@ -299,8 +299,10 @@ class Runtime(ABC):
                 if self.user is not None and not self._curl_ready:
                     # A non-root user can't install a downloader; ensure one as root so
                     # its own uv bootstrap below can run.
-                    await self.with_user(None).run(["sh", "-c", _INSTALL_CURL], {})
-                    self._curl_ready = True
+                    curl = await self.with_user(None).run(
+                        ["sh", "-c", _INSTALL_CURL], {}
+                    )
+                    self._curl_ready = curl.exit_code == 0
                 if path not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)

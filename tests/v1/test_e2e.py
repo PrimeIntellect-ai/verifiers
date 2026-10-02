@@ -372,7 +372,7 @@ async def test_browser_use(run_v1, tmp_path):
 @pytest.mark.parametrize("harness_runtime", AGENT_USER_RUNTIMES, indirect=True)
 async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
     """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
-    the secret the root-run setup planted and write its own workspace, but every
+    the secret the root-run setup planted and write its home, but every
     root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
     denied. Everything else the harness touches runs as that user too: its uv script
     (prepared apart from root's copy), runtime file writes and reads, and its colocated
@@ -386,7 +386,7 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
     report = trace.info["agent_user_report"]
     for key in ("user", "uv_user", "written_owner", "tool_user"):
         assert report[key] == "vf-agent", key
-    assert report["secret_exists"] == "ok" and report["write_workdir"] == "ok"
+    assert report["secret_exists"] == "ok" and report["write_home"] == "ok"
     root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
     assert {action: report[action] for action in root_actions} == dict.fromkeys(
         root_actions, "denied"

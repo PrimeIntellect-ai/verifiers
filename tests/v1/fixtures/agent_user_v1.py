@@ -1,8 +1,8 @@
 """agent-user-v1: a scripted, model-free agent that runs as a non-root user and tries root actions.
 
 Task setup runs as root: it creates the task's `agent_user` (images normally ship one),
-plants a root-only secret, hands the workdir to that user, and prepares a uv script. The
-scripted harness then runs as that user and records whether:
+plants a root-only secret, and prepares a uv script; the workdir stays root-owned, like a
+typical image WORKDIR. The scripted harness then runs as that user and records whether:
 - four actions only root may take are denied and two the user may take still work;
 - the same uv script, prepared through the harness's runtime, runs as the user from its own
   environment rather than root's;
@@ -28,15 +28,12 @@ __all__ = ["AgentUserTaskset", "ScriptedAgentUserHarness"]
 
 AGENT_USER = "vf-agent"
 SECRET = "/opt/vf-agent-user-secret"
-REPORT = "agent-user-report.json"
-WRITTEN = "agent-user-written.txt"
+REPORT = "/tmp/agent-user-report.json"
+WRITTEN = "/home/vf-agent/agent-user-written.txt"
 TOOL_USER = "/tmp/vf-agent-user-tool-user"
 ROOT_ACTIONS = ("read_secret", "write_etc", "chmod_secret", "signal_init")
 
-SETUP = (
-    f"useradd -m {AGENT_USER} && echo secret > {SECRET} && chmod 600 {SECRET} "
-    f"&& chown -R {AGENT_USER} ."
-)
+SETUP = f"useradd -m {AGENT_USER} && echo secret > {SECRET} && chmod 600 {SECRET}"
 
 UV_SCRIPT = """# /// script
 # dependencies = []
@@ -47,9 +44,9 @@ print(pwd.getpwuid(os.getuid()).pw_name, sys.executable)
 
 PROBE = f"""
 r() {{ "$@" >/dev/null 2>&1 && echo ok || echo denied; }}
-printf '{{"user":"%s","secret_exists":"%s","read_secret":"%s","write_etc":"%s","chmod_secret":"%s","signal_init":"%s","write_workdir":"%s","written_owner":"%s","tool_user":"%s"}}' \\
+printf '{{"user":"%s","secret_exists":"%s","read_secret":"%s","write_etc":"%s","chmod_secret":"%s","signal_init":"%s","write_home":"%s","written_owner":"%s","tool_user":"%s"}}' \\
   "$(id -un)" "$(r test -e {SECRET})" "$(r cat {SECRET})" "$(r touch /etc/vf-agent-user-probe)" \\
-  "$(r chmod 644 {SECRET})" "$(r kill -0 1)" "$(r touch probe)" "$(stat -c %U {WRITTEN})" \\
+  "$(r chmod 644 {SECRET})" "$(r kill -0 1)" "$(r touch "$HOME/probe")" "$(stat -c %U {WRITTEN})" \\
   "$(cat {TOOL_USER})" > {REPORT}
 """
 
@@ -120,7 +117,7 @@ class AgentUserTask(vf.Task):
         users = ("user", "uv_user", "written_owner", "tool_user")
         return float(
             all(report[key] == AGENT_USER for key in users)
-            and report["secret_exists"] == report["write_workdir"] == "ok"
+            and report["secret_exists"] == report["write_home"] == "ok"
             and all(report[action] == "denied" for action in ROOT_ACTIONS)
             and report["read_secret_api"] == "denied"
             and not report["uv_python"].startswith("/root/")

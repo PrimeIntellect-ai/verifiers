@@ -234,7 +234,10 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
+    # An agent user can't bootstrap uv or write a root-owned workdir: install as the
+    # default user (Python included) and open the result to the user, who runs the server.
+    runtime = agent if agent.user is None else agent.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -244,6 +247,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
+    python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
@@ -257,6 +261,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
             'export PATH="$HOME/.local/bin:$PATH"; '
         )
+        if agent.user is not None:
+            setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
         if not runtime._mcp_sources:
             # Failed installs can leave the venv behind; retain it when retrying.
             setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
@@ -266,6 +272,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             remote = f"{root}/{name}"
             await run_shielded(runtime.write(remote, data))
             setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+        if agent.user is not None:
+            setup += f"chmod -R a+rX {venv_q} {shlex.quote(python_dir)} 2>/dev/null || true; "
         result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
         if result.exit_code != 0:
             raise ToolsetError(
@@ -344,6 +352,9 @@ async def serve_in_runtime(
             f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
         ]
     log = f"vf_tool_{server.server_name}.log"
+    if runtime.user is not None:
+        # The agent user may not be able to write the workdir.
+        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
