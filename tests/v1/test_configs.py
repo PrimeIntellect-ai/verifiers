@@ -39,9 +39,20 @@ def test_e2b_config_rejects_unenforceable_egress_rules(rule: str) -> None:
         E2BConfig(allow=[rule])
 
 
-@pytest.mark.parametrize("rule", ["api.example.com", "*.example.com"])
-def test_e2b_config_rejects_hostname_block_rules(rule: str) -> None:
-    with pytest.raises(ValueError, match="block rules must be IP addresses or CIDR"):
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "api.example.com",
+        "*.example.com",
+        "10.0.0.1",
+        "10.0.0.0/24",
+        "2001:db8::1",
+        "2001:db8::/32",
+        "0.0.0.0/0",
+    ],
+)
+def test_e2b_config_rejects_blocklists(rule: str) -> None:
+    with pytest.raises(ValueError, match="blocklists cannot preserve framework routes"):
         E2BConfig(block=[rule])
 
 
@@ -60,13 +71,6 @@ def test_e2b_config_accepts_supported_egress_rules(rule: str) -> None:
     assert E2BConfig(allow=[rule]).allow == [rule]
 
 
-@pytest.mark.parametrize(
-    "rule", ["10.0.0.1", "10.0.0.0/24", "2001:db8::1", "2001:db8::/32"]
-)
-def test_e2b_config_accepts_supported_block_rules(rule: str) -> None:
-    assert E2BConfig(block=[rule]).block == [rule]
-
-
 def test_e2b_egress_update_states_the_complete_policy() -> None:
     # The security-critical policy table: whether a "restricted" sandbox actually
     # gets a deny-everything floor, with framework routes kept reachable. No e2e
@@ -75,9 +79,6 @@ def test_e2b_egress_update_states_the_complete_policy() -> None:
 
     unrestricted = _egress_update(E2BConfig(), None)
     assert unrestricted == {"allow_internet_access": True}
-
-    blocklist = _egress_update(E2BConfig(block=["203.0.113.0/24"]), routes)
-    assert blocklist == {"deny_out": ["203.0.113.0/24"]}
 
     allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
     assert allowlist == {
@@ -90,6 +91,8 @@ def test_e2b_egress_update_states_the_complete_policy() -> None:
         "allow_out": ["tunnel.example.com"],
         "deny_out": ["0.0.0.0/0"],
     }
+    assert _egress_update(E2BConfig(block=["*"]), routes) == framework_only
+    assert _egress_update(E2BConfig(allow=[]), None) == unrestricted
 
     no_routes = _egress_update(E2BConfig(allow=[]), [])
     assert no_routes == {"allow_internet_access": False}
