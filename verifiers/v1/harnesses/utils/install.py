@@ -55,9 +55,12 @@ async def ensure_installed(
     if runtime.user is None:
         result = await runtime.run(["sh", "-c", guarded], env)
     else:
+        # Installers may create private files (e.g. a mktemp prefix); open the install
+        # to the agent user, even one an earlier root rollout already left in place.
         python_dir = {"UV_PYTHON_INSTALL_DIR": f"{directory}/python"}
+        shareable = f"{guarded} && chmod -R a+rX {shlex.quote(directory)}"
         result = await runtime.with_user(None).run(
-            ["sh", "-c", guarded], {**python_dir, **env}
+            ["sh", "-c", shareable], {**python_dir, **env}
         )
     if result.exit_code != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[-500:]

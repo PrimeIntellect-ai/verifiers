@@ -196,6 +196,36 @@ AGENT_USER_RUNTIMES = [
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
 ]
 
+
+# Every harness that installs and launches in a box, run as a non-root agent user (terminus-2
+# drives the host tmux and browser-use needs its own image). prime-agent is prime-only.
+def _agent_user_placements():
+    harnesses = [
+        ("null", "null"),
+        ("bash", "bash"),
+        ("rlm", "rlm"),
+        ("codex", "codex"),
+        ("claude-code", "claude_code"),
+        ("hermes-agent", "hermes_agent"),
+        ({"id": "kimi-code", "transport": "responses"}, "kimi_code"),
+        ({"id": "pi", "transport": "responses"}, "pi"),
+        ("openclaw", "openclaw"),
+        ("mini-swe-agent", None),
+        ("prime-agent", None),
+    ]
+    for harness, harness_mark in harnesses:
+        name = harness if isinstance(harness, str) else harness["id"]
+        for runtime in ("docker", "prime"):
+            if name == "prime-agent" and runtime != "prime":
+                continue
+            marks = [getattr(mark, runtime)]
+            if harness_mark:
+                marks.append(getattr(mark, harness_mark))
+            yield pytest.param(harness, runtime, marks=marks, id=f"{name}-in-{runtime}")
+
+
+AGENT_USER_HARNESS_PLACEMENTS = list(_agent_user_placements())
+
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
@@ -365,6 +395,27 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
     assert not report["uv_python"].startswith("/root/")
     assert report["uv_script"] != report["root_uv_script"]
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "harness,harness_runtime", AGENT_USER_HARNESS_PLACEMENTS, indirect=True
+)
+async def test_agent_user_harness(
+    run_v1, harness, harness_runtime, scripted_model, tmp_path
+):
+    """Each harness installs and runs a turn as a non-root agent user, deterministically:
+    a scripted upstream answers "OK" in the harness's own dialect, so the run fails only
+    if the harness can't set up or run without root."""
+    (trace,) = await run_v1(
+        "agent-user-harness-v1",
+        harness=harness,
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+        client=scripted_model,
+    )
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.num_turns >= 1
 
 
 @pytest.mark.e2e
