@@ -341,7 +341,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        runtime,
+                        runtime.with_user(harness_data.agent_user),
                         self._endpoint,
                         self._secret,
                         self._urls,
