@@ -60,11 +60,14 @@ class ParentLink(BaseModel):
 
 
 class SemanticEdgeSet(BaseModel):
-    """A harness-published set of semantic edges over logical request IDs.
+    """A harness-published list of typed edges between logical request IDs.
+
+    Each edge records that one turn caused or fed another. They are not ancestry, so
+    they may form loops: a cancel can land on the child turn whose report triggered it.
 
     Edge labels are intentionally extensible. Initial harnesses use ``continuation``,
-    ``compaction_attempt``, ``compaction``, ``subagent_call``, and ``subagent_return``;
-    consumers must preserve unknown labels.
+    ``compaction_attempt``, ``compaction``, ``subagent_call``, ``subagent_return``,
+    ``agent_message``, and ``subagent_cancel``; consumers must preserve unknown labels.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -74,8 +77,6 @@ class SemanticEdgeSet(BaseModel):
     @model_validator(mode="after")
     def validate_edges(self) -> SemanticEdgeSet:
         identities: set[tuple[str, str, str]] = set()
-        children: dict[str, list[str]] = {}
-        nodes: set[str] = set()
         for edge in self.edges:
             identity = (
                 edge.source_request_id,
@@ -85,27 +86,6 @@ class SemanticEdgeSet(BaseModel):
             if identity in identities:
                 raise ValueError(f"duplicate semantic edge: {identity!r}")
             identities.add(identity)
-            children.setdefault(edge.source_request_id, []).append(
-                edge.target_request_id
-            )
-            nodes.update((edge.source_request_id, edge.target_request_id))
-
-        indegree = dict.fromkeys(nodes, 0)
-        for targets in children.values():
-            for target in targets:
-                indegree[target] += 1
-
-        stack = [node for node, degree in indegree.items() if degree == 0]
-        visited = 0
-        while stack:
-            node = stack.pop()
-            visited += 1
-            for child in children.get(node, ()):
-                indegree[child] -= 1
-                if indegree[child] == 0:
-                    stack.append(child)
-        if visited != len(nodes):
-            raise ValueError("semantic edge cycle detected")
         return self
 
 
