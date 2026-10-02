@@ -132,6 +132,7 @@ class ReplayResponse:
     status: int
     body: bytes
     content_type: str
+    retry_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

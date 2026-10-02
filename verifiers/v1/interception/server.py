@@ -122,6 +122,29 @@ def _completion_response(completion: dict | None) -> web.Response:
     return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
+def _error_response(dialect: Dialect, error: Exception) -> web.Response:
+    status = getattr(error, "status_code", 502)
+    headers = (
+        error.retry_headers
+        if isinstance(error, ProviderError)
+        else {"x-should-retry": "false"}
+    )
+    return web.json_response(
+        dialect.error_body(str(error)), status=status, headers=headers
+    )
+
+
+def _stream_error(dialect: Dialect, response: web.Response, body: bytes) -> bytes:
+    error = from_json(body)
+    error["error"]["status_code"] = response.status
+    error["error"]["retry_headers"] = {
+        name.lower(): value
+        for name, value in response.headers.items()
+        if name.lower() in {"retry-after", "retry-after-ms", "x-should-retry"}
+    }
+    return dialect.stream_error(error)
+
+
 def _capture_response(response: web.Response) -> ReplayResponse:
     body = response.body
     if body is None:
@@ -136,6 +159,11 @@ def _capture_response(response: web.Response) -> ReplayResponse:
         status=response.status,
         body=data,
         content_type=response.headers["Content-Type"],
+        retry_headers={
+            name.lower(): value
+            for name, value in response.headers.items()
+            if name.lower() in {"retry-after", "retry-after-ms", "x-should-retry"}
+        },
     )
 
 
@@ -143,7 +171,7 @@ def _replay_response(response: ReplayResponse) -> web.Response:
     return web.Response(
         body=response.body,
         status=response.status,
-        headers={"Content-Type": response.content_type},
+        headers={"Content-Type": response.content_type, **response.retry_headers},
     )
 
 
@@ -287,7 +315,7 @@ async def _buffered_stream(
                 await stream.write(
                     replay.body
                     if response.status < 400
-                    else dialect.stream_error(from_json(replay.body))
+                    else _stream_error(dialect, response, replay.body)
                 )
                 await stream.write_eof()
             except ConnectionResetError:
@@ -467,10 +495,7 @@ class InterceptionServer(Interception):
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
-        return web.json_response(
-            dialect.error_body(str(error)),
-            status=getattr(error, "status_code", 502),
-        )
+        return _error_response(dialect, error)
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -659,7 +684,9 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(error)), status=400)
         if session.released:
             return web.json_response(
-                dialect.error_body("rollout concluded"), status=409
+                dialect.error_body("rollout concluded"),
+                status=409,
+                headers={"x-should-retry": "false"},
             )
         if session.stopped:
             return web.json_response(
@@ -805,7 +832,9 @@ class InterceptionServer(Interception):
                     )
                     if session.released:  # concluded while sampling — seal holds
                         return web.json_response(
-                            dialect.error_body("rollout concluded"), status=409
+                            dialect.error_body("rollout concluded"),
+                            status=409,
+                            headers={"x-should-retry": "false"},
                         )
                     response_rewrites = []
                     stopped = None
@@ -855,10 +884,7 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
-                    )
+                    return _error_response(dialect, e)
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
@@ -867,7 +893,7 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(dialect.error_body(str(e)), status=502)
+                    return _error_response(dialect, e)
                 except BaseException as e:
                     # A cancelled exchange (harness disconnect, shutdown) is still
                     # recorded, coupled to its cancellation.
@@ -924,12 +950,10 @@ class InterceptionServer(Interception):
                 type(e).__name__,
                 e,
             )
-            return web.json_response(
-                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
-            )
+            return _error_response(dialect, e)
         except Exception as e:  # noqa: BLE001 - surface auxiliary relay failures
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return _error_response(dialect, e)
         return web.json_response(result)
 
     async def handle_models(self, request: web.Request) -> web.Response:

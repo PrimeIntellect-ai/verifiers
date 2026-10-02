@@ -4,9 +4,13 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import subprocess
+import time
 import traceback
+import uuid
 from contextlib import AsyncExitStack
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +18,7 @@ import certifi
 import httpx
 from openai import (
     APIConnectionError,
+    APIError,
     APIStatusError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
@@ -23,7 +28,7 @@ from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -252,6 +257,59 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+def _is_tunnel_unavailable(error: BaseException) -> bool:
+    return (
+        isinstance(error, APIStatusError)
+        and error.status_code == 404
+        and "text/html" in error.response.headers.get("content-type", "")
+        and "Tunnel not found or no longer active." in error.response.text
+    )
+
+
+def _model_retryable(error: BaseException) -> bool:
+    if isinstance(error, APIStatusError):
+        advice = error.response.headers.get("x-should-retry")
+        if advice in ("true", "false"):
+            return advice == "true"
+        if _is_tunnel_unavailable(error):
+            return True
+        status = error.status_code
+    elif isinstance(error, (APIConnectionError, httpx.TransportError)):
+        return True
+    elif isinstance(error, APIError) and isinstance(error.body, dict):
+        # SSE has already committed HTTP 200; interception preserves the real status.
+        advice = error.body.get("retry_headers", {}).get("x-should-retry")
+        if advice in ("true", "false"):
+            return advice == "true"
+        status = error.body.get("status_code")
+    else:
+        return False
+    return isinstance(status, int) and (status in (408, 409, 429) or status >= 500)
+
+
+def _model_retry_wait(state) -> float:
+    error = state.outcome.exception()
+    headers = {}
+    if isinstance(error, APIStatusError):
+        headers = error.response.headers
+    elif isinstance(error, APIError) and isinstance(error.body, dict):
+        headers = error.body.get("retry_headers", {})
+    try:
+        if "retry-after-ms" in headers:
+            delay = float(headers["retry-after-ms"]) / 1000
+        else:
+            value = headers.get("retry-after", "")
+            try:
+                delay = float(value)
+            except ValueError:
+                delay = parsedate_to_datetime(value).timestamp() - time.time()
+        if math.isfinite(delay) and delay >= 0:
+            return delay
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return wait_random_exponential(multiplier=0.5, max=8.0)(state)
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -265,29 +323,31 @@ async def chat(
         kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
+    request_id = str(uuid.uuid4())
+    request_client = client.with_options(max_retries=0)
     try:
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+            retry=retry_if_exception(_model_retryable),
             stop=stop_after_attempt(client.max_retries + 1),
-            wait=wait_random_exponential(multiplier=0.5, max=8.0),
+            wait=_model_retry_wait,
             before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
             reraise=True,
         ):
-            # Reuse the interception server's body-digest replay guard on stream retries.
-            retry_count = attempt.retry_state.attempt_number - 1
-            headers = (
-                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-            )
-            raw_stream = await client.chat.completions.create(
-                **kwargs,
-                stream=True,
-                stream_options={"include_usage": True},
-                extra_headers=headers,
-            )
-            # The SDK retries request setup; only stream consumption is retried here.
+            headers = {
+                "Idempotency-Key": request_id,
+                "x-stainless-retry-count": str(attempt.retry_state.attempt_number - 1),
+            }
             with attempt:
+                raw_stream = await request_client.chat.completions.create(
+                    **kwargs,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_headers=headers,
+                )
                 return await _read_chat_completion(raw_stream)
-    except (APIConnectionError, httpx.TransportError) as error:
+    except (APIConnectionError, APIStatusError, httpx.TransportError) as error:
+        if isinstance(error, APIStatusError) and not _is_tunnel_unavailable(error):
+            raise
         # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
         raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
