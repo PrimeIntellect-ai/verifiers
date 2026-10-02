@@ -174,6 +174,7 @@ def _eval_config(
     ]
     for seat in seats:
         seat_cfg = env_cfg.setdefault(seat, {})
+        seat_cfg.setdefault("runtime", {"type": "docker"})
         seat_cfg.setdefault("max_turns", max_turns)
         seat_cfg.setdefault("max_output_tokens", max_tokens)
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
