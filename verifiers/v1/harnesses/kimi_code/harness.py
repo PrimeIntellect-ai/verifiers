@@ -64,7 +64,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             env={},
             label="Kimi Code",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,

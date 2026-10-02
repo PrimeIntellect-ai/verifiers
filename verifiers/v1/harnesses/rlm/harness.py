@@ -182,7 +182,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=env,
             label="rlm",
         )
-        await super().setup(runtime)
 
     def _runtime_metadata(
         self,

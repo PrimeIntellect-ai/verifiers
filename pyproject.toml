@@ -52,6 +52,7 @@ dependencies = [
     "renderers[multimodal]>=0.1.12.dev2",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
+    "agent-client-protocol==0.12.1",
 ]
 
 [dependency-groups]
