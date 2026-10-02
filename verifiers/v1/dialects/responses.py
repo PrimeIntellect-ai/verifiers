@@ -404,6 +404,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                         and isinstance(part.get("text"), str)
                         for part in content
                     )
+                    and any(part["text"] for part in content)
                 ):
                     # Inline reasoning needs no provider-side history lookup.
                     item.pop("id", None)
