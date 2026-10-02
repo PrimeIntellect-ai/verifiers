@@ -1,28 +1,24 @@
-import json
-import logging
-import os
-from pathlib import Path
+from prime_sandboxes import Config
 
-logger = logging.getLogger(__name__)
+
+def prime_config() -> Config:
+    """The active Prime CLI config, resolved by the prime SDK as `prime` does."""
+    return Config()
 
 
 def load_prime_config() -> dict:
-    """The user's `~/.prime/config.json` (`prime login`), `{}` when absent/invalid."""
-    try:
-        config_file = Path.home() / ".prime" / "config.json"
-        if config_file.exists():
-            data = json.loads(config_file.read_text())
-            if isinstance(data, dict):
-                return data
-            logger.warning("Invalid prime config: expected dict")
-    except (RuntimeError, json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to load prime config: {e}")
-    return {}
+    """The active Prime CLI config values without `PRIME_*` env overrides. Unset
+    values are dropped, so `.get(key, default)` falls back to the default."""
+    return {k: v for k, v in prime_config().config.items() if v is not None}
 
 
 def ensure_prime_auth() -> None:
     """Exit when no Prime API key is configured (`prime login` or `$PRIME_API_KEY`)."""
-    if os.getenv("PRIME_API_KEY") or load_prime_config().get("api_key"):
+    try:
+        api_key = prime_config().api_key
+    except ValueError as e:
+        raise SystemExit(f"invalid prime config: {e}") from e
+    if api_key:
         return
     raise SystemExit(
         "not authenticated with prime - run `prime login` or set $PRIME_API_KEY"
