@@ -18,7 +18,8 @@ from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
+from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
 from verifiers.v1.errors import SandboxError
@@ -73,6 +74,14 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     return host
 
 
+class ModalVolumeConfig(BaseConfig):
+    name: str
+    """An existing Modal Volume; a missing one fails provisioning."""
+    read_only: bool
+    """True: Modal refuses every write from the sandbox. False: writes persist through
+    Modal's background commits; stop() waits for the final one as the sandbox ends."""
+
+
 class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
     vm: bool = False
@@ -95,9 +104,21 @@ class ModalConfig(NetworkPolicyConfig):
     disk: float = 5.0
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
+    volumes: dict[str, ModalVolumeConfig] = Field(default_factory=dict)
+    """Modal Volumes to mount, by absolute mount path."""
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it)."""
+
+    @model_validator(mode="after")
+    def _validate_volumes(self) -> "ModalConfig":
+        for path in self.volumes:
+            mount = PurePosixPath(path)
+            if not mount.is_absolute() or mount == PurePosixPath("/"):
+                raise ValueError(
+                    f"Modal volume mount path {path!r} must be absolute and not /"
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "ModalConfig":
@@ -245,6 +266,13 @@ class ModalRuntime(Runtime):
             timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
             encrypted_ports=[SERVICE_PORT],
             experimental_options={"vm_runtime": True} if self.config.vm else {},
+            # Modal enforces read_only on its side, not in the sandbox's mount table.
+            volumes={
+                path: modal.Volume.from_name(volume.name).with_mount_options(
+                    read_only=volume.read_only
+                )
+                for path, volume in self.config.volumes.items()
+            },
         )
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
@@ -429,4 +457,18 @@ class ModalRuntime(Runtime):
             await sandbox.terminate.aio()
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("modal: failed to terminate sandbox %s: %s", self.info.id, e)
+            self._sandbox = None
+            return
         self._sandbox = None
+        if all(volume.read_only for volume in self.config.volumes.values()):
+            return
+        # Writable Volumes get their final commit as the sandbox finishes terminating, after
+        # `terminate` returns; wait for it, so a finished stop() means the writes are saved.
+        try:
+            async with asyncio.timeout(300):
+                await sandbox.wait.aio(raise_on_termination=False)
+        except Exception as e:
+            raise SandboxError(
+                f"modal sandbox {self.info.id} did not finish terminating, so its writes "
+                f"to writable Volumes may be lost: {e!r}"
+            ) from e
