@@ -251,6 +251,59 @@ def message_to_wire(message: Message) -> dict:
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
+def completion_to_wire(response: Response, model: str) -> dict:
+    """A vf `Response` -> the OpenAI chat.completion a program's SDK expects, for a response
+    no provider sent (the renderer generates it, or a replay serves it again)."""
+    message: dict = {"role": "assistant", "content": response.message.content}
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
+    if response.message.provider_state:
+        message["reasoning_details"] = response.message.provider_state
+    if response.message.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": c.type,
+                c.type: {
+                    "name": c.name,
+                    **({"namespace": c.namespace} if c.namespace else {}),
+                    "input" if c.type == "custom" else "arguments": c.arguments,
+                },
+            }
+            for c in response.message.tool_calls
+        ]
+    usage: dict | None = None
+    if response.usage:
+        # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
+        usage = {
+            "completion_tokens": response.usage.completion_tokens,
+            "prompt_tokens": response.usage.input_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage.reasoning_tokens is not None:
+            usage["completion_tokens_details"] = {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            }
+        if response.usage.cached_input_tokens is not None:
+            usage["prompt_tokens_details"] = {
+                "cached_tokens": response.usage.cached_input_tokens
+            }
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
@@ -538,34 +591,7 @@ class ChatDialect(Dialect[ChatCompletion]):
         return response_from_wire(response)
 
     def response_to_wire(self, response: Response, model: str) -> dict:
-        message = message_to_wire(response.message)
-        if response.message.reasoning_content is not None:
-            message["reasoning_content"] = response.message.reasoning_content
-        finish = response.finish_reason or (
-            "tool_calls" if response.message.tool_calls else "stop"
-        )
-        raw: dict = {
-            "id": response.id,
-            "object": "chat.completion",
-            "created": response.created,
-            "model": model,
-            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        }
-        if usage := response.usage:
-            raw["usage"] = {
-                "prompt_tokens": usage.input_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "total_tokens": usage.total_tokens,
-            }
-            if usage.cached_input_tokens is not None:
-                raw["usage"]["prompt_tokens_details"] = {
-                    "cached_tokens": usage.cached_input_tokens
-                }
-            if usage.reasoning_tokens is not None:
-                raw["usage"]["completion_tokens_details"] = {
-                    "reasoning_tokens": usage.reasoning_tokens
-                }
-        return raw
+        return completion_to_wire(response, model)
 
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         for native, original, rewritten in zip(
