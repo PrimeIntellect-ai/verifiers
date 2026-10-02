@@ -7,6 +7,7 @@ import logging
 import math
 import shlex
 import tempfile
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -365,13 +366,15 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
-        if max_bytes is not None:
+        # The file API reads as the default user, so a user view streams through exec too.
+        if max_bytes is not None or self.user is not None:
+            reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
             try:
                 # Stream binary output: execute_command buffers base64 text for the
                 # entire file. Bound the source read and the host buffer independently.
                 process = await self._client.open_process(
                     self.info.id,
-                    f"head -c {max_bytes} -- {shlex.quote(path)}",
+                    f"{reader} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
                     env=self.process_env({}),
                     user=self.user,
@@ -379,7 +382,10 @@ class PrimeRuntime(Runtime):
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
                         async for chunk in process.stdout:
-                            if data.tell() + len(chunk) > max_bytes:
+                            if (
+                                max_bytes is not None
+                                and data.tell() + len(chunk) > max_bytes
+                            ):
                                 raise SandboxError(
                                     "read stream exceeded its byte limit"
                                 )
@@ -415,12 +421,27 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
+        if self.user is None:
+            try:
+                await self._client.upload_bytes(
+                    self.info.id, target, data, filename=PurePosixPath(target).name
+                )
+            except Exception as e:
+                raise SandboxError(f"write {path!r}: {e}") from e
+            return
+        # Uploads land as the default user: stage the bytes privately, then copy them into
+        # place as this view's user so ownership and permission checks are the user's.
+        root = self.with_user(None)
+        staged = f"/tmp/vf-write-{uuid.uuid4().hex}"
         try:
-            await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
-            )
-        except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+            await root.write(staged, data)
+            await root.run(["chmod", "644", staged], {})
+            copy = 'mkdir -p "$(dirname "$1")" && cat -- "$2" > "$1"'
+            result = await self.run(["sh", "-c", copy, "sh", target, staged], {})
+        finally:
+            await root.run(["rm", "-f", staged], {})
+        if result.exit_code != 0:
+            raise SandboxError(f"write {path!r}: {result.stderr.strip()[-500:]}")
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

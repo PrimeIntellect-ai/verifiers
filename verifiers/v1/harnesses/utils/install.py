@@ -50,7 +50,15 @@ async def ensure_installed(
         f"mkdir -p {shlex.quote(directory)} && "
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
-    result = await runtime.run(["sh", "-c", guarded], env)
+    # Installs may need system packages, so an agent user's runtime installs as the default
+    # user, with uv-managed Python inside `directory` where the agent user can run it.
+    if runtime.user is None:
+        result = await runtime.run(["sh", "-c", guarded], env)
+    else:
+        python_dir = {"UV_PYTHON_INSTALL_DIR": f"{directory}/python"}
+        result = await runtime.with_user(None).run(
+            ["sh", "-c", guarded], {**python_dir, **env}
+        )
     if result.exit_code != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[-500:]
         raise RuntimeError(f"{label} install failed: {detail}")

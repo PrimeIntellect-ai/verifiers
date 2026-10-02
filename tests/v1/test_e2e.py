@@ -344,7 +344,9 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
     """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
     the secret the root-run setup planted and write its own workspace, but every
     root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
-    denied."""
+    denied. Everything else the harness touches runs as that user too: its uv script
+    (prepared apart from root's copy), runtime file writes and reads, and its colocated
+    tool server."""
     (trace,) = await run_v1(
         "agent-user-v1",
         harness="agent-user-v1",
@@ -352,12 +354,16 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
         output_dir=tmp_path,
     )
     report = trace.info["agent_user_report"]
-    assert report["user"] == "vf-agent"
+    for key in ("user", "uv_user", "written_owner", "tool_user"):
+        assert report[key] == "vf-agent", key
     assert report["secret_exists"] == "ok" and report["write_workdir"] == "ok"
     root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
     assert {action: report[action] for action in root_actions} == dict.fromkeys(
         root_actions, "denied"
     )
+    assert report["read_secret_api"] == "denied"
+    assert not report["uv_python"].startswith("/root/")
+    assert report["uv_script"] != report["root_uv_script"]
     assert trace.reward == 1.0
 
 
