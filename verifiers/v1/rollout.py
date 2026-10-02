@@ -97,10 +97,8 @@ class Rollout:
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config, name=agent_name),
         )
-        if ctx.replay is not None and (
-            claimed := ctx.replay.claim(agent_name, task.key)
-        ):
-            self.trace.id = claimed
+        if ctx.replay is not None:
+            self.trace.id = ctx.replay.claim(agent_name, task.key, self.trace.id)
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [
@@ -539,6 +537,8 @@ class Rollout:
                 await self._stack.aclose()
             trace.is_completed = True
             trace.ok = not self._failed
+            if not trace.ok and self.ctx.replay is not None:
+                self.ctx.replay.release(trace.id)
             now = time.time()
             for span in (
                 trace.timing.boot,

@@ -76,6 +76,7 @@ from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
 )
+from verifiers.v1.replay import Replay
 from verifiers.v1.runtimes import (
     ApptainerConfig,
     DockerConfig,
@@ -229,6 +230,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Trace",
     "TraceTask",
     "WireTrace",
+    "Replay",
     "Reward",
     "EnvInfo",
     "Episode",
