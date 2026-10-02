@@ -218,8 +218,16 @@ async def _collect_stream(
     try:
         async for chunk in reply.chunks:
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
+                # Comment-only chunks (the provider's keepalives) are dropped; a
+                # terminal line with no data (bare `event: message_stop`) still
+                # ends the stream.
+                saw_terminal |= dialect.is_terminal_event(chunk)
                 continue
             events += chunk
+            if saw_terminal:
+                # Relay the bytes to the client, but events after the terminal one
+                # (stats re-emits from some gateways) must not mutate the response.
+                continue
             saw_terminal |= dialect.is_terminal_event(chunk)
             if parser.on_done is not None and is_sse_done_event(chunk):
                 parser.on_done()
