@@ -60,25 +60,29 @@ _HOME_PROBE = (
 
 
 async def agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
-    """The runtime the harness runs on: `runtime` itself, or a view running as `user`.
-    `user` must exist with a home directory (task authors ship it in the image), and
-    the view must really run as it, so a runtime ignoring the user never runs the
-    agent as root."""
+    """The runtime the harness runs on: `runtime` itself, or a view running as `user`
+    with `HOME` set to its home. `user` must exist with a home directory it can write
+    (task authors ship it in the image), and the view must really run as it, so a
+    runtime ignoring the user never runs the agent as root."""
     if user is None:
         return runtime
-    view = runtime.with_user(user)
     lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user], {})
     home = lookup.stdout.strip()
     if not home:
         raise TaskError(f"agent_user {user!r} does not exist in the image")
     if lookup.exit_code != 0:
         raise TaskError(f"agent_user {user!r} has no home directory ({home})")
-    effective = (await view.run(["id", "-un"], {})).stdout.strip()
+    view = runtime.with_user(user)
+    view = view.with_env({**view.env, "HOME": home})
+    probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
+    effective, *rest = probe.stdout.split() or [""]
     if effective != user:
         raise SandboxError(
             f"{type(runtime).__name__} ran as {effective!r} instead of agent_user "
             f"{user!r}; refusing to run the agent"
         )
+    if rest != ["writable"]:
+        raise TaskError(f"agent_user {user!r} cannot write its home directory ({home})")
     return view
 
 
