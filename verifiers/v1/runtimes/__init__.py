@@ -25,6 +25,7 @@ from verifiers.v1.runtimes.docker import (
     PodmanRuntime,
     PodmanRuntimeInfo,
 )
+from verifiers.v1.runtimes.e2b import E2BConfig, E2BRuntime, E2BRuntimeInfo
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -44,7 +45,8 @@ RuntimeConfig = Annotated[
     | PodmanConfig
     | ApptainerConfig
     | PrimeConfig
-    | ModalConfig,
+    | ModalConfig
+    | E2BConfig,
     Field(discriminator="type"),
 ]
 
@@ -54,7 +56,8 @@ RuntimeInfo = Annotated[
     | PodmanRuntimeInfo
     | ApptainerRuntimeInfo
     | PrimeRuntimeInfo
-    | ModalRuntimeInfo,
+    | ModalRuntimeInfo
+    | E2BRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -67,6 +70,7 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         "apptainer": ApptainerRuntime,
         "prime": PrimeRuntime,
         "modal": ModalRuntime,
+        "e2b": E2BRuntime,
     }[config.type]
 
 
@@ -109,6 +113,9 @@ __all__ = [
     "DockerConfig",
     "DockerRuntime",
     "DockerRuntimeInfo",
+    "E2BConfig",
+    "E2BRuntime",
+    "E2BRuntimeInfo",
     "ModalConfig",
     "ModalRuntime",
     "ModalRuntimeInfo",
