@@ -157,11 +157,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
-        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        # install.sh fetches curl/uv itself; add git only when the image lacks it, with
+        # whichever package manager the image has (Debian, Alpine, Fedora/RHEL, SUSE).
         install = (
             f"rm -f {ready} && "
             "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } && "
+            "{ { apt-get update -qq && apt-get install -y -qq git; } || apk add --no-cache git || "
+            "dnf install -y -q git || yum install -y -q git || zypper -n install git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
             f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
