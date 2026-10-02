@@ -1,86 +1,126 @@
-# The Env
+# Environments
 
-An `Env` defines the control flow between `Agents`. In the simplest case, it is just a `SingleAgentEnv` where a single agent solves a task from a taskset.
+An `Env` decides which agents run and in what order. Each completed agent run
+produces a trace. The environment collects those traces in an `Episode`.
 
-Its core signature is `Env.run(task: Task, agents: Agents)` -> None — it is passed an initial task and pre-initialized agents and then programs the full multi-agent control flow; every finished agent run automatically joins the resulting `Episode`, which holds all the traces of all the agents.
+Choose a built-in environment with `--env.id`:
+
+| ID | What it does |
+| --- | --- |
+| `best-of-n` | Runs several independent attempts, marks the best reward, and records whether any attempt passed. |
+| `agentic-judge` | Runs a solver, then a judge agent in a fresh runtime. |
+| `shared-agentic-judge` | Runs a solver, then a judge agent in the same runtime. |
+| `user-sim` | Runs a conversation between an assistant and a model playing the user. |
+| `isolated-verifier` | Runs one solver, then scores its saved files in a fresh runtime without a judge model. |
+
+Without an explicit ID, verifiers uses the environment exported by the taskset
+package. If none is exported, `SingleAgentEnv` runs one agent on each task.
+
+## Custom control flow
+
+Add an `AgentConfig` field for each agent role. Its name becomes the config path,
+such as `--env.solver.model` and `--env.solver.harness.id`:
 
 ```python
-class Env(ABC):
-    @abstractmethod
-    async def run(self, task: Task, agents: Agents) -> None:
-        """Run a single multi-agent episode."""
-        ...
+import verifiers.v1 as vf
+
+
+class AttemptsConfig(vf.EnvConfig):
+    solver: vf.AgentConfig = vf.AgentConfig()
+    attempts: int = 2
+
+
+class AttemptsEnv(vf.Env[AttemptsConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        for _ in range(self.config.attempts):
+            await agents.solver.run(task)
+
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        best = max(trace.reward for trace in episode.traces)
+        for trace in episode.traces:
+            trace.record_metric("best", float(trace.reward == best))
 ```
 
-verifiers comes with different pre-built `Env`s to use:
+Export the environment alongside the taskset in the package's `__all__`.
+`run(task, agents)` returns nothing: completed agent runs are added to the
+episode automatically. Unless configured, roles use the evaluation's model and
+client and the taskset's default harness. Read the role from `trace.agent.name`.
 
-- `IsolatedVerifierEnv` runs one solver, transfers only declared artifacts into a
-  fresh configured runtime, and runs deterministic task scoring there.
-- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The judge can re-use the same runtime after the solver (`SharedAgenticJudgeEnv`) or use its own, new runtime `IsolatedAgenticJudgeEnv`.
-- The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
-- The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
+Use `finalize(task, episode)` for scores that compare several traces. The agents'
+runtimes have already been released, so save any needed evidence in the traces.
+
+To exclude a role from training, set it in `setup(agents)`, for example
+`agents.judge.trainable = False`.
+
+### Role defaults
+
+Set a role's default harness on its `AgentConfig`. For example, an answer-only
+environment can use the `null` harness by default:
+
+```python
+class AnswerConfig(vf.EnvConfig):
+    agent: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"})
+
+
+class AnswerEnv(vf.Env[AnswerConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        await agents.agent.run(task)
+```
+
+Export `AnswerEnv` alongside the taskset. Declare roles with default instances,
+as above. CLI and TOML overrides merge into those defaults; a user can select
+another harness with `--env.agent.harness.id bash`. If the default depends on a
+task setting, type the config's `taskset` field with that taskset's config class
+and choose a harness in an `after` model validator only when `agent.harness`
+is unset. An explicit selection should remain under the user's control.
+
+### Scripted conversations
+
+Keep all messages in one interaction when a task has a fixed sequence of user
+turns. Store the first message in `prompt` and the rest in a task data field:
+
+```python
+class ConversationData(vf.TaskData):
+    followups: list[str] = []
+
+
+class ConversationEnv(vf.SingleAgentEnv):
+    async def run(self, task: vf.Task[ConversationData], agents: vf.Agents) -> None:
+        async with agents.agent.interaction(task) as interaction:
+            segment = await interaction.turn()
+            for message in task.data.followups:
+                if segment.terminated:
+                    break
+                segment = await interaction.turn(message)
+```
+
+Use a harness that supports conversation resume. The initial bare `turn()` uses
+the task prompt; for `prompt=None`, supply the first message yourself. Each call
+runs one harness segment, which can include several model and tool calls. A
+later call can report termination without consuming its message. Leaving the
+context ends this rollout and runs finalization and scoring, even when the
+script ends before the agent's limits. All segments share one trace and the
+same token and turn budgets.
+
+Record any results needed by task hooks in `interaction.trace.state` or
+`interaction.trace.info` before leaving the context. Use `user-sim` when a model
+should generate the user messages. See [Agent](agent.md) for interaction details.
 
 ## Isolated deterministic verification
 
-Select `--env.id isolated-verifier` when the task's score must not run in the
-solver's sandbox. It is still a one-agent run: the environment records one solver
-trace and starts no verifier agent, model, or harness.
+Use `--env.id isolated-verifier` to grade in a container the solver has never
+touched. It runs one agent and records one trace; grading uses code, not a model.
 
 ```bash
 uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
 ```
 
-Task authors use the existing task API. Declare every solver output the verifier
-needs in `TaskData.artifacts`, then implement deterministic `@vf.reward` and
-`@vf.metric` methods. A runtime parameter makes the fresh verifier box available:
+List outputs in `TaskData.artifacts` and prepare private tests in
+`Task.stage_verifier`. The solver runtime is removed before task metrics and
+rewards run against the verifier runtime. By default, the verifier uses the
+solver's resolved runtime settings; `env.verifier.runtime` selects independent
+settings. Model-backed task judges are not supported.
 
-```python
-from pathlib import Path
-
-import verifiers.v1 as vf
-
-
-PRIVATE_TESTS = Path("tests/test_solution.sh").read_bytes()
-
-
-class CodeTask(vf.Task[CodeData]):
-    async def stage_verifier(self, runtime: vf.Runtime) -> None:
-        await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
-
-    @vf.reward
-    async def tests(self, runtime: vf.Runtime) -> float:
-        result = await runtime.run(["bash", "/tmp/test_solution.sh"], {})
-        return float(result.exit_code == 0)
-
-
-task = CodeTask(
-    CodeData(
-        prompt="Fix the implementation.",
-        artifacts=[vf.Artifact(source="src")],
-    )
-)
-```
-
-The lifecycle is fixed:
-
-1. The task and harness run normally, including task `finalize` and harness metrics,
-   but task metrics and rewards are deferred.
-2. The environment collects the declared paths and `/logs/artifacts`, then destroys
-   the solver runtime.
-3. It creates a fresh task controller and provisions either the same resolved
-   container/runtime policy or the independently configured verifier runtime, runs
-   task `setup`, restores the artifacts at their original paths, runs task
-   `stage_verifier`, reapplies the execution network policy, and runs task metrics
-   and rewards onto the solver trace.
-
-The verifier runtime must be Docker, Prime, or another container runtime; absolute
-artifact restoration is intentionally refused on the host subprocess runtime.
-By default the verifier uses the solver's resolved runtime policy. Set
-`--env.verifier.runtime.*` to independently choose its runtime type, image, resources,
-and network policy; `--env.verifier.env` can independently set its process environment.
-Relative artifacts require matching solver and verifier workdirs because artifacts are
-restored without path translation; absolute artifacts permit different workdirs.
-Configured model-backed task judges are rejected: use deterministic metrics/rewards
-here, or an agentic/judge environment when a model must judge the result.
-`--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
-staging, or scoring failures (default: 2).
+See [building environments](building-environments.md#separate-agent-and-grading-sandboxes)
+for a complete package, lifecycle diagram, separate images and resources,
+artifact requirements, and validation commands.

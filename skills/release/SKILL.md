@@ -19,11 +19,11 @@ git status --short --branch
 VERSION=vX.Y.Z
 ```
 
-Require a clean worktree. Confirm that `$VERSION` is absent from GitHub and
-PyPI. Review `pyproject.toml` and require published stable dependency versions.
-For example, replace any `.dev`, alpha, beta, or release-candidate version and
-update `uv.lock`. Land dependency changes through the normal PR process. Pull
-`main` again and require a clean worktree before tagging.
+Make sure there are no local changes and `$VERSION` has not been released on
+GitHub or PyPI. Check that dependencies in `pyproject.toml` use published stable
+versions. Replace any `.dev`, alpha, beta, or release-candidate versions using
+`uv`, which also updates `uv.lock`. Merge dependency changes through the normal
+PR process. Pull `main` again and check for local changes before tagging.
 
 ## 2. Tag latest main
 
@@ -36,7 +36,7 @@ Confirm that the remote tag points to the current `main` commit.
 
 ## 3. Publish
 
-Manually dispatch the stable release workflow:
+Start the stable release workflow:
 
 ```bash
 gh workflow run publish-verifiers.yml \
@@ -45,8 +45,7 @@ gh workflow run publish-verifiers.yml \
   -f tag="$VERSION"
 ```
 
-Monitor the new run through completion with `gh run watch <run-id>
---exit-status`.
+Wait for it to finish with `gh run watch <run-id> --exit-status`.
 
 ## 4. Update the release notes
 

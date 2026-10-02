@@ -1,27 +1,28 @@
 ---
 name: brainstorm
-description: Run interactive brainstorming across verifiers tasksets, evaluations, GEPA, and RL training. Use when the user wants ideation, literature scanning, concept teaching, roadmap planning, or research program design grounded in local CLI sources, verifiers, and RL trainer code.
+description: Help plan tasksets, evaluations, prompt optimization, and reinforcement learning experiments. Use to explore ideas, explain options, review research, or turn a goal into an experiment.
 ---
 
 # Brainstorm
 
-## Goal
+Help the user turn an idea into a concrete next step.
 
-Run an interactive idea session with the user to turn their idea into a concrete taskset outline.
+1. Establish the goal, budget, and what a useful result would look like. Use
+   constraints already given; ask only about missing choices that matter.
+2. Check existing tasksets on the Environment Hub and read the relevant code or
+   research before proposing something new.
+3. Explain the options and their tradeoffs in plain language. Assume the user is
+   knowledgeable, but may not know every API or research term.
+4. Agree on what to measure and outline the work needed to measure it.
 
-## Interaction style
+For an existing taskset, use [evaluate-environments](../evaluate-environments/SKILL.md)
+to plan and run the comparison. For a new taskset or interaction, use
+[create-environments](../create-environments/SKILL.md). For an unexpected result,
+use [debug-environments](../debug-environments/SKILL.md) before redesigning it.
+Use [audit-envs](../audit-envs/SKILL.md) to check whether the tasks and scores
+measure the intended ability.
 
-- Find out what the goal of the user is, what their budget is, and ultimately what they want to achieve.
-- Ask a lot of clarifying questions and outline the concrete steps before you start implementing.
-- When something is ambiguous, do research first and present the user with different options to choose from.
-- Don't overload the user with terminology, but guide them in the right direction. Assume a knowledgeable user, but not an in-depth expert at every topic.
-
-## Discovery workflow
-
-1. Find out what the user wants:
-
-  - Is it running existing evaluations or training with common tasksets? If so, use the Environment Hub to see whether those tasksets already exist.
-  - Is it optimizing an existing workflow? In this case, prompt optimization with GEPA is the right tool.
-  - Else: For training and evaluations, building a taskset together is the right call.
-
-2. After you have found this out, look at the other skills and choose the appropriate one to proceed on the technical level, while still keeping the interactive session with the user alive.
+If the goal is to improve a system prompt against a measurable reward, consider
+[gepa](../gepa/SKILL.md). Keep final-test tasks separate from both the tasks used
+to improve the prompt and those used to select it. Problems with tools, task
+design, or the harness may need changes to those parts instead.

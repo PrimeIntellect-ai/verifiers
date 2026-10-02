@@ -1,14 +1,20 @@
 # GEPA Prompt Optimization
 
-verifiers offers built in support for [GEPA](https://github.com/gepa-ai/gepa), an algorithm that optimizes a system prompt to maximize the downstream reward for a given taskset:
+[GEPA](https://github.com/gepa-ai/gepa) uses a model to improve a system prompt
+based on task scores. Run it with:
 
 ```bash
 uv run vf-gepa reverse-text
 ```
 
-`gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
+`vf-gepa` runs tasks, asks a model to review the results and propose better
+prompts, then evaluates those prompts. It changes `TaskData.system_prompt`, not
+the model's weights.
 
-GEPA reuses the same `env` (taskset + agent) / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
+The [gepa skill](../../skills/gepa/SKILL.md) covers the full workflow, including
+task selection, budgets, and comparison on tasks not used during optimization.
+
+GEPA uses the same `env`, `client`, and `sampling` settings as evaluation:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"
@@ -23,22 +29,26 @@ id = "bash"
 temperature = 1.0
 ```
 
-Validate the config by using `uv run vf-gepa @ config.toml --dry-run`. To run GEPA, use `uv run vf-gepa @ config.toml`. CLI arguments overwrite toml arguments when both are present.
+Check the config with `uv run vf-gepa @ config.toml --dry-run`, then run it with
+`uv run vf-gepa @ config.toml`. CLI flags override TOML values.
 
 ## Common config values
 
-- `model` / `-m` — model for the rollouts under optimization (default: `deepseek/deepseek-v4-flash`, same as eval)
+- `model` / `-m` — model that solves the tasks (default: `deepseek/deepseek-v4-flash`, same as eval)
 - `reflection_model` / `reflection_client` — model/endpoint that proposes new prompts (default: reuse `model` / `client`)
-- `num_train` / `num_val` — train tasks for reflection minibatches and held-out val tasks for the pareto frontier (defaults: 100 / 50)
-- `max_total_rollouts` — total rollouts the run may spend (default: 500)
-- `max_concurrent` / `-c` — caps how many episodes are in flight at once (default: 128)
+- `select` — [tasks to split into the two groups](tasksets.md#selecting-tasks); shuffling is off by default
+- `num_train` / `num_val` — tasks used to improve prompts and separate tasks used to compare them (defaults: 100 / 50)
+- `max_total_rollouts` — total agent runs allowed (default: 500)
+- `max_concurrent` / `-c` — episodes running at once (default: 128)
 
 ## Output
 
-Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`.
+Results go to `output_dir / run.dir`, defaulting to
+`outputs/<env>--<model>--<harness>--<short-id>/`, as in eval. The resolved config is
+saved at `configs/resolved/gepa.json`.
 The best system prompt is printed when the run finishes and written to `best_system_prompt.txt` in that folder.
 
-Hand it back to eval or training via the config-layer taskset system prompt:
+Use the saved prompt in evaluation or training:
 
 ```bash
 uv run vf-eval reverse-text \
@@ -47,6 +57,13 @@ uv run vf-eval reverse-text \
 
 ## Limitations
 
-**Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k`) are not supported out of the box.
+**Tasksets** — If the taskset has no `TaskData.system_prompt`, set
+`--initial-prompt` to provide a starting prompt. Keep task splits and scoring
+fixed when comparing prompts.
 
-**Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message but otherwise is folded into the user prompt.
+**Environments** — Only `SingleAgentEnv` and its subclasses are supported.
+Environments that run several agents or score traces together are rejected.
+
+**Harnesses** — Any evaluation harness works. A harness with
+`APPENDS_SYSTEM_PROMPT` uses the result as a system message. Otherwise it is
+added to the user prompt.

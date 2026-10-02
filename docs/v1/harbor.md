@@ -1,6 +1,13 @@
 # Harbor
 
-verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a Harbor-based taskset is straightforward in most cases:
+Use `HarborTaskset` to load tasks from Harbor. Install the `harbor` extra with
+Python 3.12 or later:
+
+```bash
+uv sync --extra harbor
+```
+
+A wrapper only needs to choose the dataset:
 
 ```python
 import verifiers.v1 as vf
@@ -19,7 +26,31 @@ class TerminalBench2Taskset(
     pass
 ```
 
-You can also write custom code for your tasksets. Override each task's `image` and `verifier_image` by rebuilding it around an updated copy of its data:
+`dataset` accepts a Harbor Hub ID such as `org/name@ref`. Pin a tag, revision, or
+digest to keep the dataset fixed. Use `tasks` to select task names.
+
+Export both the taskset and `HarborEnv` in the package's `__init__.py`:
+
+```python
+from verifiers.v1.tasksets.harbor import HarborEnv
+
+from terminal_bench_2.taskset import TerminalBench2Taskset
+
+__all__ = ["TerminalBench2Taskset", "HarborEnv"]
+```
+
+Install the package before using its taskset ID. Exporting `HarborEnv` is required
+for Compose and separate verification; inheriting `HarborTaskset` does not select
+that environment by itself.
+
+## Task images
+
+For ordinary container tasks, verifiers needs an image it can pull. Build the
+task's Dockerfile, push the image to a registry, and set its reference in the task
+data. Compose tasks can also build images; see [Docker Compose](#docker-compose).
+
+To replace images while loading tasks, use `task.with_data(...)`. It copies the
+task with the requested fields changed:
 
 ```python
 from pathlib import Path
@@ -44,36 +75,34 @@ class OpenThoughtsTBLiteTaskset(
     HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]
 ):
     def load(self) -> list[HarborTask]:
-        # Task data is frozen, so rebuild each task around an updated copy.
         return [
-            HarborTask(
-                task.data.model_copy(
-                    update={
-                        "image": IMAGE_TEMPLATE.format(
-                            task=Path(task.data.task_dir).name
-                        ),
-                        "verifier_image": VERIFIER_IMAGE_TEMPLATE.format(
-                            task=Path(task.data.task_dir).name
-                        ),
-                    }
+            task.with_data(
+                image=IMAGE_TEMPLATE.format(task=Path(task.data.task_dir).name),
+                verifier_image=VERIFIER_IMAGE_TEMPLATE.format(
+                    task=Path(task.data.task_dir).name
                 ),
-                task.config,
             )
             for task in super().load()
         ]
 ```
 
-Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. When `verifier_image` is `None`, a separate verifier inherits the task's current `image` and stages the task package's tests. These changes leave `task.toml` unchanged.
+Only replace the fields you need. Set `ignore_dockerfile = true` when you will
+supply an image for tasks that otherwise have only a Dockerfile.
 
-To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
+`verifier_image` is used only for a separate verifier. It must include the full
+`/tests` suite and `/tests/test.sh`. If it is `None`, the verifier uses the task's
+`image` and receives the tests from the task package. These overrides do not
+change `task.toml`.
 
-On the `prime` runtime any pullable image reference just works: the first sandbox to use an image makes the platform build and cache what it needs from it (for VM sandboxes this build can take ~10 minutes — the eval dashboard marks affected rollouts as `build` and a warning is logged); every later sandbox on the same reference starts in seconds.
+Prime caches pullable images on first use. Preparing a new VM image can take
+about ten minutes; the dashboard shows `build` and logs a warning. Later
+sandboxes using the same image start much faster.
 
-## Additional features
+## Timeouts and resources
 
-By default, each task's declared agent and verifier timeouts are ignored (`ignore_timeouts = true`): Harbor task timeouts are authored against Harbor's own runtime, so enforcing them confounds model capability with the speed of your inference stack. Set `ignore_timeouts = false` (or pass `--no-env.taskset.ignore-timeouts`) to apply them, e.g. for a faithful comparison against the Harbor implementation.
-
-With `ignore_timeouts = false`, every Harbor taskset can also be modified with a `timeout_multiplier`, and any Harbor taskset with a `resource_multiplier`:
+Harbor's task timeouts are ignored by default (`ignore_timeouts = true`). Set
+`ignore_timeouts = false`, or pass `--no-env.taskset.ignore-timeouts`, to use the
+task's agent and verifier time limits.
 
 ```toml
 [env.taskset]
@@ -83,109 +112,158 @@ timeout_multiplier = 2.0
 resource_multiplier = 2.0
 ```
 
-The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
+`timeout_multiplier` scales both time limits when `ignore_timeouts = false`.
+`resource_multiplier` scales CPU, memory, and disk requests regardless of the
+timeout setting.
 
 ## Docker Compose
 
-Select `runtime.type = "docker"` to run Compose tasks locally.
+With `HarborEnv`, tasks containing `environment/docker-compose.yaml` can run on
+local Docker, Prime VMs, or Modal VMs. Choose the runtime with
+`--env.agent.runtime.type`.
 
-With the default Harbor env, tasks containing `environment/docker-compose.yaml`
-run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
-Local Docker requires `--env.trust-compose`: task definitions can mount host files
-and request Docker privileges, so only enable it for trusted packages. Local Compose
-receives Docker connection settings and infrastructure variables rather than the
-evaluator's full environment. Task-local `.env` files and declared task env remain available.
+| Runtime | Requirements |
+| --- | --- |
+| `docker` | Local Docker, unrestricted networking, and `--env.trust-compose` |
+| `prime` | A Prime VM; its network policy covers every service after setup |
+| `modal` | Access to Modal's experimental VM backend and `network_access = true` |
 
-Compose preserves service entrypoints, commands, dependencies, health checks,
-networking, and volumes; the agent executes in a single `main` container.
-Host networking is unsupported. Runtime defaults preserve the authored image and
-working directory; task settings and non-default runtime overrides take precedence.
+Only trust local Compose packages you have reviewed: their definitions can mount
+host files and request Docker privileges. Local Compose receives Docker
+connection settings, infrastructure variables, task variables, and task-local
+`.env` files, rather than the evaluator's full environment.
 
-For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
-services, and its network policy applies to every service after trusted setup.
-For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
-backend with Docker support and requires `network_access = true` and access to that
-backend. Local Docker Compose also requires unrestricted networking. GPU Compose
-tasks are unsupported.
+Compose keeps the task's service commands, entrypoints, dependencies, health
+checks, networks, and volumes. The agent runs in `main`. Host networking and GPU
+Compose tasks are unsupported. Default runtime settings keep the authored image
+and workdir; task settings and non-default runtime overrides take precedence.
 
-The runtime's CPU and memory settings size the entire remote sandbox, so allow room
-for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
-Prebuilt service images must be Docker-pullable inside the sandbox; services with a
-`build` stanza are built there. Prime-only VM image references cannot serve as inner
-container images. Prime VM ports cannot be published externally. Modal publishes
-main's runtime service port through its encrypted tunnel, including when main shares
-another service's network namespace.
+For remote Compose, CPU and memory settings cover the whole VM, including
+sidecars. Prime also applies the disk request; Modal has no disk-size setting.
+Service images must be pullable by Docker inside the VM. A Prime VM image
+reference cannot be used as a service image. Services with `build` are built
+inside the VM.
 
-A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
-daemon instead of the stock one. Docker is installed only when the image lacks it, and
-`docker save` archives shipped in `/opt/verifiers/compose-images/` load before the
-services start, so services referencing their tags pull nothing from a registry.
+Prime VM ports cannot be published externally. Modal exposes main's runtime
+service port through an encrypted tunnel, even when main shares another service's
+network namespace.
 
-The Harbor environment removes the entire project or remote sandbox before
-separate grading, which retains the ordinary fresh verifier runtime. A verifier
-without its own image inherits the resolved main image; a fresh copy also inherits
-main's working directory. Images built only
-inside a cloud host must be published separately and declared in the verifier environment.
+Set a task's `compose_host_image` to choose the VM image that runs Docker.
+Docker is installed if missing. Archives made with `docker save` and placed in
+`/opt/verifiers/compose-images/` are loaded before services start, so their image
+tags can be used without a registry pull.
 
-Compose projects are owned by the Harbor environment; agents borrow the existing
-Docker main container. Failures retry with a fresh project through
-`--env.retries`, rather than retrying an agent inside the same project.
+`HarborEnv` creates and removes the Compose project. An agent uses the existing
+main container. Failed attempts retry with a new project through `--env.retries`.
+
+Before separate verification, the entire project or remote VM is removed. The
+verifier then runs in a fresh container. Without its own image, it uses main's
+resolved image and workdir. If that image was built only inside the remote VM,
+publish it separately and declare it as the verifier image.
 
 ## Network policies
 
-Harbor's effective agent network policy is applied to Docker or Prime VM harness
-runtimes. An `[agent].network_mode` override takes precedence over the `[environment]`
-baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema.
+Harbor's `[agent].network_mode` overrides the policy in `[environment]`.
+Harbor also reads `[environment].allow_internet` through its schema.
 
-| Harbor mode | Task network policy |
+| Harbor mode | Task network setting |
 | --- | --- |
-| `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
-| `no-network` | Sets the task allowlist to `[]` (framework routes only). |
-| `allowlist` | Sets the task allowlist to `allowed_hosts`. |
+| `public` | `network_allow = ["*"]`; runtime restrictions still apply |
+| `no-network` | `network_allow = []`; only framework connections are allowed |
+| `allowlist` | `network_allow = allowed_hosts` |
 
-Trusted task and harness setup remains online. The policy starts immediately before the
-agent and stays active through finalization and scoring. Interception and MCP URLs are
-added automatically in allowlist and framework-only modes. Concrete task/runtime
-allowlists retain their shared entries, while blocklists combine; framework-only access on
-either side takes precedence, and concrete allowlists cannot be combined with blocklists.
-Docker framework routes take precedence over deny rules, while ordinary Prime deny rules
-are applied unchanged and may block a matching route. Restricted Harbor tasks require
-Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained
-when their initial destination matches the effective policy. OpenAI Responses web search and
-Anthropic web search/fetch receive wildcard host allowlists translated to provider domains;
-policies that cannot be translated without widening still disable them. Every other hosted
-tool and provider-held resource remains disabled.
+Task and harness setup runs before restrictions start. Restrictions then remain
+active through finalization and scoring. Model and MCP connections are added
+when using an allowlist or framework-only access.
+
+When both the task and runtime set allowlists, only destinations allowed by both
+remain. Blocklists combine. An empty allowlist takes precedence. A nonempty
+allowlist cannot be combined with a blocklist. See [runtimes](runtimes.md#network-policies)
+for the runtimes that support each policy.
+
+Docker keeps framework connections open even if a block rule matches them.
+Prime applies ordinary block rules unchanged, so they may also block framework
+connections. Prime accepts host-level entries. Provider-resolved URLs are kept
+when their initial destination matches the policy.
+
+Provider web tools run outside the sandbox. Verifiers translates supported host
+allowlists for OpenAI Responses web search and Anthropic web search/fetch. It
+disables tools when translation would allow broader access. Other hosted tools
+and provider-held resources stay disabled under these restrictions.
+
+## Task-declared MCP servers
+
+Harbor's `mcp_servers` entries are exposed through a tool server inside the task
+runtime. The harness receives an HTTP MCP endpoint and must support MCP.
+
+The wrapper supports `stdio`, `sse`, and `streamable-http`. For `stdio`, install
+the command and its dependencies in the image or during setup. URL entries
+connect to an existing service; they do not launch it. The wrapper forwards the
+service's tools and schemas without requiring task-specific tool code.
 
 ## Artifacts and collect hooks
 
-`--env.taskset.artifact-max-bytes` sets the total artifact archive budget per solver across all services (default: 32 MiB), including the `/logs/artifacts/` convention directory. Increase it for tasks that transfer trained checkpoints or VM disk files. The budget also applies when scoring is deferred to a separate verifier.
+Declare outputs in `artifacts = [...]` and `[[verifier.collect]]` in `task.toml`.
+See the [Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts).
+Each entry's `service` chooses where to collect it; the default is `main`.
 
-Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
+Main's hooks and artifacts are collected during `finalize`. For separate
+verification, `HarborEnv` then stops main and collects sidecar outputs. A shared
+verifier grades in main and skips sidecar entries. Files are restored at their
+original paths, including main's `/logs/artifacts/` directory. Paths from
+different services must not overlap in the verifier.
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the Harbor-owned Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the Harbor environment then stops main and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+`--env.taskset.artifact-max-bytes` sets the total archive limit per solver across
+all services. The default is 32 MiB, including `/logs/artifacts/`. Increase it
+for large outputs such as checkpoints. Archives stay in evaluator memory for
+grading and are not saved in traces. Prime VM reads stream binary data within
+the configured limit.
 
-Artifact roots from different services must not overlap, since they share the grader's filesystem.
+Two differences from `harbor run` matter:
 
-Two deliberate differences from `harbor run`:
-
-- **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
-- **`destination` has no effect.** It positions a file in Harbor's host trial directory; verifiers has no trial directory (the trace is the record), and Harbor never lets `destination` affect verifier-side placement.
+- A failed collect hook fails the rollout because the missing file may affect grading.
+- `destination` is ignored. It controls Harbor's host output folder, not where files are restored for grading.
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The harbor env — this taskset's default — grades such tasks in `finalize`: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the env then provisions a fresh box, restores those artifacts, prepares the verifier tests, and grades there, recording the verifier's rewards and metrics onto the solver's trace. The grading box derives from the solver's runtime policy unless `--env.verifier.runtime.*` names its own; setup, restoration, staging, and scoring failures retry per `--env.verifier.retries` before the episode fails. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
+Set `[verifier].environment_mode = "separate"` to grade in a fresh container.
+`HarborEnv` handles the following steps:
 
-Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image. A dedicated `[verifier.environment].docker_image` must contain the complete `/tests` suite, including `/tests/test.sh` and its dependencies; that suite runs without uploading packaged tests, matching Harbor. When grading in a fresh copy of the solver image (including the `ignore_dockerfile` fallback), `/tests` is replaced with the task package's tests so stale image files cannot affect grading. Solver artifacts rooted under `/tests` are rejected before the tests run, and old reward files are cleared in either case.
+1. Run the solver and collect its declared artifacts and `/logs/artifacts/`.
+2. Remove the solver's runtime.
+3. Start a fresh verifier runtime, restore the artifacts, and prepare the tests.
+4. Run the tests and add their rewards and metrics to the solver's trace.
 
-A declared `[verifier.environment]` needs a pullable `docker_image`. Without one Harbor would build the verifier image from `tests/Dockerfile`, and verifiers never builds images — so build and push it yourself and name the resulting reference, exactly as for `[environment]`. `ignore_dockerfile` grades in the agent's image instead, which means the verifier runs somewhere the task never declared; it warns when it does.
+The verifier uses the solver's resolved runtime settings unless overridden with
+`--env.verifier.runtime.*`. Failures during setup, file restoration, test
+preparation, or scoring retry according to `--env.verifier.retries`.
 
-Under any other env, a separate-verifier task refuses to grade in the agent's box rather than silently losing its isolation. `ignore_separate_verifier = true` forces every task back into shared grading, trading the isolation for one sandbox per task.
+The score is read from `/logs/verifier/reward.json`:
 
-## Shortcomings
+- A finite number becomes the reward.
+- An object with a `reward` key uses that value as the reward and the other values as metrics.
+- An object without `reward` records each value as a separate reward.
 
-verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
+All values must be finite numbers. If `reward.json` is missing or invalid,
+verifiers tries `reward.txt`.
 
-- Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
-- Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
-- Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
-- Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+A declared `[verifier.environment].docker_image` must be pullable and contain the
+complete `/tests` suite, including `/tests/test.sh` and its dependencies. Tests
+from the task package are not uploaded to that image. Without a separate image,
+a fresh copy of the solver image receives the task package's tests. Solver
+artifacts under `/tests` are rejected, and old reward files are cleared.
+
+verifiers does not build `tests/Dockerfile`. Build and publish that image, then
+set `docker_image`. `ignore_dockerfile` instead uses the solver's image and logs a
+warning because this changes the task's declared verifier environment.
+
+A task that requires separate verification fails under an environment that does
+not support it. Setting `ignore_separate_verifier = true` forces grading into the
+solver's container and removes that isolation.
+
+## Limitations
+
+- Outside Compose, image entrypoints are replaced with a process that keeps the container alive. Start required services during setup; health checks cannot rely on the original entrypoint.
+- A shared verifier cannot switch to a different [network policy](https://www.harborframework.com/docs/tasks/network-policy). A separate verifier can use its own policy.
+- Verifier images must be built and published in advance.
+- [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are unsupported.
