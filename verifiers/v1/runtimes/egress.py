@@ -132,7 +132,7 @@ class EgressProxy:
         )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
-        self._handlers: dict[asyncio.Task, bool] = {}
+        self._handlers: dict[asyncio.Task, bool | None] = {}
         self.server: asyncio.Server | None = None
         self.port = 0
 
@@ -175,9 +175,10 @@ class EgressProxy:
         )
         if routes is not None:
             # Tunnels retain their upstream connection; replacing policy alone cannot
-            # revoke setup access. Registered host callbacks must survive the change.
+            # revoke setup access. Preserve callbacks and requests still reading headers;
+            # those requests will be checked against the new policy once classified.
             handlers = [
-                task for task, callback in self._handlers.items() if not callback
+                task for task, callback in self._handlers.items() if callback is False
             ]
             for handler in handlers:
                 handler.cancel()
@@ -216,7 +217,7 @@ class EgressProxy:
             return
         handler = asyncio.current_task()
         assert handler is not None
-        self._handlers[handler] = False
+        self._handlers[handler] = None
         upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
