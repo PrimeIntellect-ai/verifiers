@@ -43,6 +43,8 @@ from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
+    NodeSegment,
+    PayloadSegment,
     Response,
     SamplingMask,
     TextContentPart,
@@ -692,6 +694,43 @@ def _attribute_routed_experts(
         off = end
 
 
+def _attribute_payload(
+    trace: Trace,
+    prefix_node_ids: list[int],
+    new_node_ids: list[int],
+    path_len: int,
+    segments: list[PayloadSegment] | None,
+) -> None:
+    """Append this turn's by-handle rows to `Trace.payload`, node by node. The request's
+    positions tile `[path_len:]` over the nodes created this turn. The one position before,
+    the prefix's final token, belongs to the prefix's last node when that node was sampled:
+    the previous turn never forwarded its final token, so this prefill is the first to
+    produce its row. Rows of other reused prefix positions (a turn that re-forwarded its
+    history) are dropped. Rows are never rewritten, only appended."""
+    if not segments:
+        return
+    spans: list[
+        tuple[int, int, int, int]
+    ] = []  # node, request lo, request hi, node start
+    last = next(
+        (nid for nid in reversed(prefix_node_ids) if trace.nodes[nid].token_ids), None
+    )
+    if last is not None and trace.nodes[last].sampled:
+        spans.append(
+            (last, path_len - 1, path_len, path_len - len(trace.nodes[last].token_ids))
+        )
+    start = path_len
+    for nid in new_node_ids:
+        end = start + len(trace.nodes[nid].token_ids)
+        spans.append((nid, start, end, start))
+        start = end
+    for segment in segments:
+        for nid, lo, hi, node_start in spans:
+            part = segment.clip(lo, hi, shift=-node_start)
+            if part is not None:
+                trace.payload.append(NodeSegment(node=nid, segment=part))
+
+
 def _attribute_sampling_mask(
     trace: Trace, assistant_id: int, payload: SamplingMask | None
 ) -> None:
@@ -969,6 +1008,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+
+    _attribute_payload(
+        trace, prefix, new_node_ids, path_len, tokens.payload if tokens else None
     )
 
     return assistant_id

@@ -27,6 +27,8 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
+    NodeSegment,
+    PayloadSegment,
     Sampling,
     SamplingMask,
     Tool,
@@ -45,9 +47,11 @@ EXCLUDE_FIELDS: dict = {
             "routed_experts",
             "sampling_mask",
         }
-    }
+    },
+    "payload": True,
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+"""Raw tensor fields and short-lived payload handles, kept on the msgpack wire but excluded
+from disk serialization."""
 
 
 class TimeSpan(BaseModel):
@@ -199,6 +203,9 @@ class Branch(BaseModel):
     """Whether this physical path contributes a training sample."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
+    payload: list[PayloadSegment] = Field(default_factory=list)
+    """The trace's payload segments on this path, positions relative to `token_ids`, in
+    the order they were appended (a later segment wins where two overlap)."""
 
     @property
     def messages(self) -> Messages:
@@ -395,6 +402,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph, including physical and semantic parent links."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    payload: list[NodeSegment] = Field(default_factory=list)
+    """By-handle per-token side arrays (router-replay ids, sampling masks), append-only:
+    each turn's `commit` attributes the inference server's segments to the nodes they cover.
+    Handles point into a short-lived shared directory; kept off disk records."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
     """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
     from the renderer that tokenized this trace, stamped at turn commit. Applied to a
@@ -534,6 +545,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
+            node_starts: dict[int, int] = {}
+            offset = 0
+            for n in path:
+                node_starts[n] = offset
+                offset += len(self.nodes[n].token_ids)
             is_compaction_attempt = any(
                 link.type == "compaction_attempt"
                 for link in self.nodes[leaf].semantic_parents
@@ -548,6 +564,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                         or leaf in accepted_compaction_attempts
                     ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
+                    payload=[
+                        entry.segment.model_copy(
+                            update={"pos": entry.segment.pos + node_starts[entry.node]}
+                        )
+                        for entry in self.payload
+                        if entry.node in node_starts
+                    ],
                 )
             )
         return branches
