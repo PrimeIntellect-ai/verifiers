@@ -254,35 +254,45 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
     async with runtime._mcp_install_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [source for source in sources if source not in runtime._mcp_sources]
-        if not pending:
-            return f"{venv}/bin/python"
-        setup = (
-            f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-            f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
-        )
-        if agent.user is not None:
-            setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-        if not runtime._mcp_sources:
-            # Failed installs can leave the venv behind; retain it when retrying.
-            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
-        # Drain remote writes and installs before cancellation releases the lock.
-        for source in pending:
-            name, data = await _cached_package(Path(source))
-            remote = f"{root}/{name}"
-            await run_shielded(runtime.write(remote, data))
-            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-        if agent.user is not None:
-            # uv sits in the default user's home; give the agent's server its own copy.
-            setup += f'cp "$(command -v uv)" {venv_q}/bin/uv; '
-            setup += f"chmod -R a+rX {venv_q} {shlex.quote(python_dir)} 2>/dev/null || true; "
-        result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
-        if result.exit_code != 0:
-            raise ToolsetError(
-                f"server {server.server_name!r} install failed in runtime: "
-                f"{(result.stderr or result.stdout).strip()[-2000:]}"
+        if pending:
+            setup = (
+                f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+                f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+                'export PATH="$HOME/.local/bin:$PATH"; '
             )
-        runtime._mcp_sources.update(pending)
+            if agent.user is not None:
+                setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
+            if not runtime._mcp_sources:
+                # Failed installs can leave the venv behind; retain it when retrying.
+                setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+            # Drain remote writes and installs before cancellation releases the lock.
+            for source in pending:
+                name, data = await _cached_package(Path(source))
+                remote = f"{root}/{name}"
+                await run_shielded(runtime.write(remote, data))
+                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} install failed in runtime: "
+                    f"{(result.stderr or result.stdout).strip()[-2000:]}"
+                )
+            runtime._mcp_sources.update(pending)
+        if agent.user is not None:
+            # uv sits in the default user's home: give the agent's server its own copy and
+            # open the venv to the agent user, including one installed earlier.
+            python_q = shlex.quote(python_dir)
+            share = (
+                'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+                f'cp "$(command -v uv)" {venv_q}/bin/uv; chmod -R a+rX {venv_q}; '
+                f"[ ! -d {python_q} ] || chmod -R a+rX {python_q}"
+            )
+            result = await run_shielded(runtime.run(["sh", "-c", share], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} could not be shared with "
+                    f"{agent.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
+                )
     return f"{venv}/bin/python"
 
 
