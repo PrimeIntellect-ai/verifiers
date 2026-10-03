@@ -13,9 +13,10 @@ returned; concurrent branches therefore get their own recordings regardless of a
 order. A call whose branch has no recorded call left, or that continues a call that was
 not replayed, is sampled. A rollout that ends before the cut just ends.
 
-`PrefixReplay.finish` drops the replayed completions from the loss and records, for
-monitoring only, how many calls were replayed and how many saw an observation (the
-prompt tokens added since the call they continue) that differs from the recording.
+Replayed completions are committed as context (`MessageNode.replayed`, mask False).
+`PrefixReplay.finish` records, for monitoring only, how many calls were replayed and how
+many saw an observation (the prompt tokens added since the call they continue) that
+differs from the recording.
 """
 
 from __future__ import annotations
@@ -41,8 +42,10 @@ def observation_hash(prompt_ids: list[int], previous: list[int]) -> str:
     return hashlib.sha256(array("i", prompt_ids).tobytes()).hexdigest()
 
 
-def sampled_ids(node: MessageNode) -> tuple[int, ...]:
-    return tuple(token for token, sampled in zip(node.token_ids, node.mask) if sampled)
+def completion_ids(node: MessageNode) -> tuple[int, ...]:
+    """An assistant node's sampled or replayed completion tokens."""
+    count = sum(node.mask) or node.replayed
+    return tuple(node.token_ids[len(node.token_ids) - count :])
 
 
 class PrefixCall(BaseModel):
@@ -57,6 +60,8 @@ class PrefixCall(BaseModel):
 class Prefix(BaseModel):
     calls: list[PrefixCall]
     """The source's first committed calls, in call order; the next call is sampled."""
+    agent: str = "agent"
+    """The episode agent whose rollout replays the prefix (the source trace's agent)."""
     source: dict[str, Any] = Field(default_factory=dict)
     """Caller metadata about the source rollout, copied to `trace.info["prefix"]`."""
 
@@ -93,7 +98,7 @@ class Prefix(BaseModel):
                 )
             )
             full_ids.append(ids)
-        return cls(calls=calls, source=source or {})
+        return cls(calls=calls, agent=trace.agent.name, source=source or {})
 
 
 class PrefixReplay:
@@ -117,7 +122,7 @@ class PrefixReplay:
         for node_id in reversed(turn.prefix_node_ids if turn is not None else []):
             node = turn.trace.nodes[node_id]
             if node.sampled:
-                parent = self.served.get(sampled_ids(node))
+                parent = self.served.get(completion_ids(node))
                 if parent is None:
                     return None  # continues a live call
                 break
@@ -136,13 +141,7 @@ class PrefixReplay:
         return call
 
     def finish(self, trace: Trace) -> None:
-        """Turn the replayed completions into context and record the outcome."""
-        for call in trace.calls:
-            if call.replayed and call.node is not None:
-                node = trace.nodes[call.node]
-                node.mask = [False] * len(node.mask)
-                node.logprobs = []
-                node.sampling_mask = None
+        """Record the replay's outcome on the trace."""
         realized = len(self.obs_changed)
         trace.info["prefix"] = {
             "cut": len(self.prefix.calls),

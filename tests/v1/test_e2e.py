@@ -976,19 +976,21 @@ async def test_replay_round_trip(run_v1, tmp_path):
 @pytest.mark.bash
 @pytest.mark.subprocess
 async def test_prefix_replay():
-    """A train-client rollout with a `Prefix` serves the recorded completions for its first
-    calls in order (no `/generate`), runs their tool calls for real, trains only the live
+    """Through an env server, a train-client rollout with a `Prefix` serves the recorded
+    completions (no `/generate`), runs their tool calls for real, trains only the live
     calls, and flags replayed calls whose tool output differs from the recording."""
+    import asyncio
     import json
+    import multiprocessing as mp
 
     from aiohttp import web
     from transformers import AutoTokenizer
 
     import verifiers.v1 as vf
-    from verifiers.v1.clients import ModelContext
     from verifiers.v1.configs.cli.eval import EvalConfig
     from verifiers.v1.configs.client import TrainClientConfig
-    from verifiers.v1.utils.loaders import load_environment
+    from verifiers.v1.serve import EnvClient, env_config_data, serve_env
+    from verifiers.v1.utils.loaders import load_taskset
 
     model = "Qwen/Qwen3-0.6B"
     tok = AutoTokenizer.from_pretrained(model)
@@ -1025,32 +1027,46 @@ async def test_prefix_replay():
     client = TrainClientConfig(
         base_url=f"http://127.0.0.1:{port}/v1", renderer_model_name=model
     )
-    env = load_environment(
-        EvalConfig.model_validate(
-            {
-                "env": {
-                    "taskset": {"id": "gsm8k"},
-                    "agent": {
-                        "harness": {"id": "bash"},
-                        "runtime": {"type": "subprocess"},
-                    },
-                }
+    config = EvalConfig.model_validate(
+        {
+            "env": {
+                "taskset": {"id": "gsm8k"},
+                "agent": {"harness": {"id": "bash"}, "runtime": {"type": "subprocess"}},
             }
-        ).env
+        }
+    ).env
+    task = next(iter(load_taskset(config.taskset)))
+    # Through an env server, like prime-rl: the client assembles traces from the delta
+    # stream, so replayed nodes must be committed masked, not masked at close.
+    ctx = mp.get_context("spawn")
+    addresses: mp.Queue = ctx.Queue()
+    server = ctx.Process(
+        target=serve_env,
+        kwargs={
+            "max_workers": 1,
+            "elastic": False,
+            "address": "tcp://127.0.0.1:0",
+            "address_queue": addresses,
+            "config_data": env_config_data(config),
+        },
     )
-    task = next(iter(env.taskset))
+    server.start()
+    env = EnvClient(address=await asyncio.to_thread(addresses.get, timeout=600))
 
     async def run(prefix=None):
         sampled.clear()
-        (slot,) = env.slots(task)
-        episode = await env.run_slot(
-            slot, ModelContext(model=model, client=client, prefix=prefix)
+        episode = await env.run(
+            client=client,
+            model=model,
+            sampling=vf.SamplingConfig(),
+            task_data=task.data.model_dump(mode="json"),
+            prefix=prefix,
         )
         (trace,) = episode.traces
         return trace
 
-    await env.start()
     try:
+        await env.wait_for_server_startup(timeout=600)
         source = await run()
         assert sampled == [0, 1, 2, 3, 4]
         replay = await run(vf.Prefix.from_trace(source, 3, source={"episode": "src"}))
@@ -1060,8 +1076,9 @@ async def test_prefix_replay():
         assert [m.content for m in replay.tool_messages] == [
             m.content for m in source.tool_messages
         ]
-        loss = [sum(replay.nodes[call.node].mask) for call in replay.calls]
-        assert loss[:3] == [0, 0, 0] and all(loss[3:])
+        nodes = [replay.nodes[call.node] for call in replay.calls]
+        assert [sum(node.mask) for node in nodes][:3] == [0, 0, 0]
+        assert all(sum(node.mask) == len(node.logprobs) > 0 for node in nodes[3:])
         assert [call.usage is None for call in replay.calls] == [True] * 3 + [False] * 2
 
         # Blind: a changed tool output does not stop the replay, it is only flagged.
@@ -1076,5 +1093,7 @@ async def test_prefix_replay():
         replay = await run(vf.Prefix.from_trace(source, 5))
         assert sampled == [] and replay.info["prefix"]["realized_cut"] == 5
     finally:
-        await env.stop()
+        await env.close()
+        server.terminate()
+        await asyncio.to_thread(server.join, 10)
         await runner.cleanup()
