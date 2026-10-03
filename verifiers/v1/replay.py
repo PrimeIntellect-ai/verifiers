@@ -1,32 +1,30 @@
-"""Replay recorded model replies: resume an interrupted rollout, or drive a seat verbatim.
+"""Replay recorded model replies, in one of two modes.
 
-A rollout whose context carries a `Replay` claims a free recorded trace of its agent and
-continues under that trace's id; a failed attempt frees its recording, so the attempt that
-retries it replays the recording again, under its own id. Each model request is answered
-with the recorded reply that followed the prompt's last assistant message (or opened a
-branch, when the prompt has none). The harness still runs every tool call, so its runtime
-and program state are rebuilt.
+`resume` (the default) continues an interrupted rollout: it replays recorded replies while
+each prompt is exactly its recorded prompt (`exact`), then samples live from the first
+prompt that differs.
 
-Resume (the default) replays a reply only when the prompt is its recorded prompt: every
-message identical (`exact`), or every assistant message identical and every other message
-in the same role, answering the same call, and differing only in volatile runs such as an
-id, a hostname, a clock time, or a duration (`structural`). Any other request samples live,
-and so does everything after it, since its prompt carries the live reply.
+`playback` plays a recording back, on any task: it replays every recorded reply whatever the
+tools returned or other agents said, never samples live, and stops the rollout
+(`replay_ended`) when the recording runs out. A reply played onto a prompt that differs from
+its recorded prompt is `forced`: the recorded model never saw that prompt.
 
-Verbatim replays the recording whatever the tools returned or other agents said, never
-samples live, and stops the rollout (`replay_ended`) once the recording has no reply left.
-It claims a recording by agent alone, so a recorded seat can drive a seat of another task."""
+A rollout whose context carries a `Replay` claims a free recording of its agent (on its task,
+in resume) and runs under the recording's trace id. A failed attempt frees its recording, so
+the attempt that retries it replays the recording again, under its own id. Each model
+request is answered with the recorded reply that followed the prompt's last assistant
+message, or that opened a branch when the prompt has none. The harness still runs every tool
+call, so its runtime and program state are rebuilt."""
 
-import json
-import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 from verifiers.v1 import graph
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, Message, Response, Tool, ToolMessage
+from verifiers.v1.types import AssistantMessage, Message, Response, Tool
 
-ReplayMatch = Literal["exact", "structural", "verbatim"]
+ReplayMode = Literal["resume", "playback"]
+ReplayMatch = Literal["exact", "forced"]
 
 
 @dataclass(eq=False)
@@ -52,19 +50,22 @@ class _Recording:
             key = None if last is None else self.hashes[last]
             self.replies.setdefault(key, []).append(reply)
 
-    def prompt(self, reply: int) -> list[int]:
-        """The recorded prompt of `reply`, root first."""
+    def is_prompt(self, reply: int, hashes: list[str], tools: list[Tool]) -> bool:
+        """Whether a prompt with these message hashes and tools is `reply`'s recorded prompt."""
         nodes: list[int] = []
         current = self.trace.nodes[reply].parent
         while current is not None:
             nodes.append(current)
             current = self.trace.nodes[current].parent
-        return nodes[::-1]
+        nodes.reverse()
+        return [self.hashes[n] for n in nodes] == hashes and self.trace.nodes[
+            nodes[0]
+        ].tools == tools
 
 
 class Replay:
-    def __init__(self, traces: list[Trace], *, verbatim: bool = False) -> None:
-        self.verbatim = verbatim
+    def __init__(self, traces: list[Trace], *, mode: ReplayMode = "resume") -> None:
+        self.mode = mode
         self._recordings = [_Recording(trace) for trace in traces]
         self._bound: dict[str, _Recording] = {}
 
@@ -78,7 +79,7 @@ class Replay:
             for recording in self._recordings
             if id(recording) not in bound
             and recording.trace.agent.name == agent
-            and (self.verbatim or recording.trace.task.key == task_key)
+            and (self.mode == "playback" or recording.trace.task.key == task_key)
         ]
         if not free:
             return trace_id
@@ -94,14 +95,14 @@ class Replay:
         """Free a failed trace's recording for the attempt that retries it."""
         self._bound.pop(trace_id, None)
 
-    def drives(self, trace_id: str) -> bool:
-        """Whether this trace follows its recording verbatim, never sampling live."""
-        return self.verbatim and trace_id in self._bound
+    def plays_back(self, trace_id: str) -> bool:
+        """Whether this trace plays its recording back, never sampling live."""
+        return self.mode == "playback" and trace_id in self._bound
 
     def take(
         self, trace_id: str, prompt: list[Message], tools: list[Tool] | None
     ) -> tuple[Response, ReplayMatch] | None:
-        """The recorded reply to `prompt` and how the prompt matched, or None."""
+        """The recorded reply for `prompt` and how it was matched, or None to sample live."""
         recording = self._bound.get(trace_id)
         if not prompt or recording is None:
             return None
@@ -114,15 +115,14 @@ class Replay:
             for reply in recording.replies.get(key, [])
             if reply not in recording.used
         ]
-        matches = [
-            (match, reply)
-            for reply in candidates
-            if (match := _compare(recording, reply, prompt, tools)) is not None
+        hashes = [graph.message_hash(message) for message in prompt]
+        exact = [
+            r for r in candidates if recording.is_prompt(r, hashes, list(tools or []))
         ]
-        if matches:
-            match, reply = min(matches, key=lambda pair: pair[0] != "exact")
-        elif self.verbatim and candidates:
-            match, reply = "verbatim", candidates[0]
+        if exact:
+            reply, match = exact[0], "exact"
+        elif self.mode == "playback" and candidates:
+            reply, match = candidates[0], "forced"
         else:
             return None
         recording.used.add(reply)
@@ -136,71 +136,4 @@ class Replay:
             finish_reason=call.finish_reason if call else None,
             usage=call.usage if call else None,
         )
-        return response, "verbatim" if self.verbatim else match
-
-
-def _compare(
-    recording: _Recording, reply: int, prompt: list[Message], tools: list[Tool] | None
-) -> Literal["exact", "structural"] | None:
-    """How `prompt` matches the recorded prompt of `reply`, or None when it does not."""
-    nodes = recording.prompt(reply)
-    if len(nodes) != len(prompt):
-        return None
-    recorded_tools = recording.trace.nodes[nodes[0]].tools
-    exact = recorded_tools == list(tools or [])
-    if not exact and _toolset(recorded_tools) != _toolset(tools):
-        return None
-    for node, message in zip(nodes, prompt):
-        if recording.hashes[node] == graph.message_hash(message):
-            continue
-        exact = False
-        recorded = recording.trace.nodes[node].message
-        if (
-            isinstance(message, AssistantMessage)
-            or recorded.role != message.role
-            or (
-                isinstance(message, ToolMessage)
-                and getattr(recorded, "tool_call_id", None) != message.tool_call_id
-            )
-            or _media(recorded) != _media(message)
-            or _volatile_masked(_text(recorded)) != _volatile_masked(_text(message))
-        ):
-            return None
-    return "exact" if exact else "structural"
-
-
-def _text(message: Message) -> str:
-    if isinstance(message.content, str):
-        return message.content
-    return "".join(getattr(part, "text", "") for part in message.content or [])
-
-
-def _media(message: Message) -> list[str]:
-    """A message's non-text parts (images), which must match exactly."""
-    if isinstance(message.content, str):
-        return []
-    return [part.model_dump_json() for part in message.content if part.type != "text"]
-
-
-def _toolset(tools: list[Tool] | None) -> str:
-    """The tools a prompt declares, in any order, with volatile runs masked."""
-    declared = sorted(
-        json.dumps(tool.model_dump(mode="json", exclude_none=True), sort_keys=True)
-        for tool in tools or []
-    )
-    return _volatile_masked("\n".join(declared))
-
-
-_VOLATILE = re.compile(
-    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"  # uuids
-    r"|\b(?=[0-9a-fA-F]*[a-fA-F])(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,}\b"  # hashes, hostnames
-    r"|(?<=[-_/])[0-9a-fA-F]{8,}\b"  # ids in names and paths
-    r"|\b\d+(?:\.\d+)?\s?(?:ns|us|µs|ms|s|secs?|seconds?)\b"  # durations
-    r"|\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b"  # clock times
-    r"|\b\d{10,}\b"  # epoch timestamps
-)
-"""Runs that differ between two runs of one rollout without changing what it observed."""
-
-
-def _volatile_masked(text: str) -> str:
-    return _VOLATILE.sub("#", text)
+        return response, match
