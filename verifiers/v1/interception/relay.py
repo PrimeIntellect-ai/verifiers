@@ -35,16 +35,27 @@ LOOPBACK_DIRECT = (
     "import urllib.request as u; assert not u.getproxies_environment() "
     "or u.proxy_bypass_environment('127.0.0.1')"
 )
+# Prints a python3 >= 3.8; exits 1 if there is none, 2 if a proxy would catch loopback.
 FIND_PYTHON = (
-    "for p in python3 python; do $p -c "
-    + shlex.quote(f"import sys; assert sys.version_info >= (3, 8); {LOOPBACK_DIRECT}")
-    + " 2>/dev/null && command -v $p && exit; done; exit 1"
+    "for p in python3 python; do "
+    "$p -c 'import sys; assert sys.version_info >= (3, 8)' 2>/dev/null || continue; "
+    f"$p -c {shlex.quote(LOOPBACK_DIRECT)} 2>/dev/null || exit 2; "
+    "command -v $p; exit; done; exit 1"
 )
+PROXIED = "a configured proxy would catch the harness's loopback traffic"
 
 
 class Relay:
-    def __init__(self, runtime: Runtime, python: str, files: str, url: str) -> None:
+    def __init__(
+        self,
+        runtime: Runtime,
+        python: str,
+        files: str,
+        url: str,
+        record: Callable[[dict[str, float]], None],
+    ) -> None:
         self.runtime, self.python, self.files, self.url = runtime, python, files, url
+        self.record = record
 
     async def adopt_policy(self) -> bool:
         """Hand the relay the proxy settings programs get once the runtime's network
@@ -53,11 +64,18 @@ class Relay:
         env = f"{self.files}.env"
         save = f"umask 077; env | grep -i '_proxy=' > {env}.tmp; mv {env}.tmp {env}"
         check = shlex.join([self.python, "-c", LOOPBACK_DIRECT])
-        with contextlib.suppress(Exception):
+        try:
             async with asyncio.timeout(30):
                 done = await self.runtime.run(["sh", "-c", f"{save}; {check}"], {})
-                return done.exit_code == 0
-        return False
+            active, reason = done.exit_code == 0, PROXIED
+        except Exception as e:  # noqa: BLE001 - connect directly instead
+            active, reason = False, f"applying the network policy failed: {e!r}"
+        self.record({"relay_active": float(active)})
+        if not active:
+            logger.warning(
+                "interception relay unused (%s); connecting directly", reason
+            )
+        return active
 
 
 @contextlib.asynccontextmanager
@@ -69,11 +87,15 @@ async def serve_relay(
 ) -> AsyncIterator[Relay | None]:
     """Yield the started relay, or None if it didn't start."""
     files = f"/tmp/vf-relay-{uuid.uuid4().hex[:12]}"
-    relay, launched = None, False
-    with contextlib.suppress(Exception):
+    relay, launched, reason = None, False, ""
+    try:
         async with asyncio.timeout(60):
             found = await runtime.run(["sh", "-c", FIND_PYTHON], {})
-            if found.exit_code == 0:
+            if found.exit_code == 2:
+                reason = PROXIED
+            elif found.exit_code != 0:
+                reason = "no python3 >= 3.8 in the runtime"
+            else:
                 await runtime.write(f"{files}.py", RELAY_SOURCE)
                 python = found.stdout.split()[-1]
                 argv = shlex.join(
@@ -84,16 +106,21 @@ async def serve_relay(
                 script = f"echo $$ > {files}.pid; while :; do {argv}; sleep 1; done"
                 launched = True
                 await runtime.run_background(["sh", "-c", script], {}, f"{files}.log")
-                for _ in range(60):
+                while relay is None:
                     with contextlib.suppress(Exception):
                         port = await runtime.read(f"{files}.port", max_bytes=64)
-                        port = int(port.split()[0])
-                        url = f"http://127.0.0.1:{port}"
-                        relay = Relay(runtime, python, files, url)
-                        break
-                    await asyncio.sleep(0.25)
+                        url = f"http://127.0.0.1:{int(port.split()[0])}"
+                        relay = Relay(runtime, python, files, url, record)
+                    await asyncio.sleep(0 if relay else 0.25)
+    except TimeoutError:
+        reason = "it did not start within 60 s"
+    except Exception as e:  # noqa: BLE001 - connect directly instead
+        reason = repr(e)
     if relay is None:
-        logger.warning("interception relay did not start; connecting directly")
+        record({"relay_active": 0.0})
+        logger.warning(
+            "interception relay did not start (%s); connecting directly", reason
+        )
     try:
         yield relay
     finally:
