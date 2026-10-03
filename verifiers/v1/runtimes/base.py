@@ -136,7 +136,7 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Runtime(ABC):
-    __slots__ = ("env", "user")
+    __slots__ = ("env", "home", "user")
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -164,11 +164,14 @@ class Runtime(ABC):
         self.env: dict[str, str] = {}
         self.user: str | None = None
         """Existing user this view runs commands as; None uses the runtime's default."""
+        self.home: str | None = None
+        """`HOME` for `user`'s processes; None leaves the runtime's own."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._mcp_sources: set[str] = set()
         self._mcp_install_lock = asyncio.Lock()
         self._setup_claimed = False
+        self._curl_ready = False
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -210,7 +213,8 @@ class Runtime(ABC):
 
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         """Combine the task's runtime-wide environment with one process's values."""
-        return {**self.env, **env}
+        home = {} if self.home is None else {"HOME": self.home}
+        return {**self.env, **home, **env}
 
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
@@ -220,10 +224,9 @@ class Runtime(ABC):
         runtime.env = dict(env)
         return runtime
 
-    def with_user(self, user: str | None) -> "Runtime":
-        """Share this physical runtime through a view that runs commands as `user`, an
-        existing user in the box (None keeps the default). Only the view runs as `user`:
-        setup, collection, and grading keep using the original runtime."""
+    def with_user(self, user: str | None, home: str | None = None) -> "Runtime":
+        """A view of this runtime whose commands and file I/O run as `user` (an existing
+        user in the box) with `HOME` set to `home`; None returns the default user."""
         if user is not None and not self.supports_user:
             raise ValueError(
                 f"{type(self).__name__} cannot run commands as another user"
@@ -231,6 +234,7 @@ class Runtime(ABC):
         runtime = copy.copy(self)
         runtime.__dict__ = self.__dict__
         runtime.user = user
+        runtime.home = home if user is not None else None
         return runtime
 
     async def alive(self) -> bool:
@@ -283,10 +287,20 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"{self.scripts_dir}/{digest}.py"
-        if digest not in self._uv_interpreters:
-            async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
-                if digest not in self._uv_interpreters:
+        # Each user needs its own writable script dir and uv environment.
+        directory = (
+            self.scripts_dir if self.user is None else f"{self.scripts_dir}-{self.user}"
+        )
+        path = f"{directory}/{digest}.py"
+        if path not in self._uv_interpreters:
+            async with self._uv_script_locks.setdefault(path, asyncio.Lock()):
+                if self.user is not None and not self._curl_ready:
+                    # Only root can install a downloader for the user's uv bootstrap.
+                    curl = await self.with_user(None).run(
+                        ["sh", "-c", _INSTALL_CURL], {}
+                    )
+                    self._curl_ready = curl.exit_code == 0
+                if path not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
@@ -305,10 +319,8 @@ class Runtime(ABC):
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
-                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
-                        -1
-                    ]
-        interpreter = self._uv_interpreters[digest]
+                    self._uv_interpreters[path] = result.stdout.strip().splitlines()[-1]
+        interpreter = self._uv_interpreters[path]
         if not activate:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)

@@ -190,11 +190,39 @@ USER_RUNTIMES = [
     pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
 ]
 
-# Runtimes that can switch users (`Runtime.with_user`).
 AGENT_USER_RUNTIMES = [
     pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
 ]
+
+
+# Boxed harnesses (terminus-2 drives the host tmux; browser-use needs its own image).
+def _agent_user_placements():
+    harnesses = [
+        ("null", "null"),
+        ("bash", "bash"),
+        ("rlm", "rlm"),
+        ("codex", "codex"),
+        ("claude-code", "claude_code"),
+        ("hermes-agent", "hermes_agent"),
+        ({"id": "kimi-code", "transport": "responses"}, "kimi_code"),
+        ({"id": "pi", "transport": "responses"}, "pi"),
+        ("openclaw", "openclaw"),
+        ("mini-swe-agent", None),
+        ("prime-agent", None),
+    ]
+    for harness, harness_mark in harnesses:
+        name = harness if isinstance(harness, str) else harness["id"]
+        for runtime in ("docker", "prime"):
+            if name == "prime-agent" and runtime != "prime":
+                continue
+            marks = [getattr(mark, runtime)]
+            if harness_mark:
+                marks.append(getattr(mark, harness_mark))
+            yield pytest.param(harness, runtime, marks=marks, id=f"{name}-in-{runtime}")
+
+
+AGENT_USER_HARNESS_PLACEMENTS = list(_agent_user_placements())
 
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
@@ -339,26 +367,57 @@ async def test_browser_use(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize(
+    "preinstalled_tools", [False, True], ids=["fresh", "preinstalled"]
+)
 @pytest.mark.parametrize("harness_runtime", AGENT_USER_RUNTIMES, indirect=True)
-async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
-    """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
-    the secret the root-run setup planted and write its own workspace, but every
-    root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
-    denied."""
+async def test_agent_user_cannot_act_as_root(
+    run_v1, harness_runtime, preinstalled_tools, tmp_path
+):
+    """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
+    actions are denied, while its uv script, runtime file I/O, and colocated tool server
+    all act as the user. With `preinstalled_tools`, the tool's package was first installed
+    by the default user, as on a reused runtime."""
     (trace,) = await run_v1(
         "agent-user-v1",
         harness="agent-user-v1",
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
+        taskset_overrides={"preinstalled_tools": preinstalled_tools},
     )
     report = trace.info["agent_user_report"]
-    assert report["user"] == "vf-agent"
-    assert report["secret_exists"] == "ok" and report["write_workdir"] == "ok"
+    for key in ("user", "uv_user", "written_owner", "tool_user"):
+        assert report[key] == "vf-agent", key
+    assert report["secret_exists"] == "ok" and report["write_home"] == "ok"
     root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
     assert {action: report[action] for action in root_actions} == dict.fromkeys(
         root_actions, "denied"
     )
+    assert report["read_secret_api"] == "denied"
+    assert report["tool_uv"] == "ok"
+    assert not report["uv_python"].startswith("/root/")
+    assert report["uv_script"] != report["root_uv_script"]
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "harness,harness_runtime", AGENT_USER_HARNESS_PLACEMENTS, indirect=True
+)
+async def test_agent_user_harness(
+    run_v1, harness, harness_runtime, scripted_model, tmp_path
+):
+    """Each harness installs and runs a turn as a non-root agent user against a scripted
+    upstream, so the run fails only if the harness can't set up or run without root."""
+    (trace,) = await run_v1(
+        "agent-user-harness-v1",
+        harness=harness,
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+        client=scripted_model,
+    )
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.num_turns >= 1
 
 
 @pytest.mark.e2e
