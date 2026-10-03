@@ -220,6 +220,8 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
         special = {m.name for m in members if m.isfifo() or m.ischr() or m.isblk()}
         if not special:
             return archive, []
+        if any(m.issparse() for m in members):
+            raise RuntimeError("cannot filter special files from sparse artifacts")
         dropped = [
             m.name
             for m in members
