@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -133,10 +132,6 @@ class Rollout:
             agent=AgentInfo(config=agent_config, name=agent_name),
         )
         if ctx.replay is not None:
-            if ctx.replay.mode == "playback" and isinstance(
-                ctx.client, TrainClientConfig
-            ):
-                raise ValueError("replay playback cannot run on the train client")
             self.trace.id = ctx.replay.claim(agent_name, task.key, self.trace.id)
         if on_trace is not None:
             on_trace(self.trace)
