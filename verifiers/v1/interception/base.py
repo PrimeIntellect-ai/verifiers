@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from typing import TYPE_CHECKING, Self
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 if TYPE_CHECKING:
@@ -24,6 +25,11 @@ class BaseInterceptionConfig(BaseConfig):
     """Base for the interception types — the discriminated union's common type. Per-type
     fields live on the subclasses (server's `tunnel`, static's `servers`, elastic's
     `multiplex`)."""
+
+    relay_seconds: float | None = Field(None, gt=0)
+    """Opt-in: remote runtimes reach the interception through an in-runtime relay that
+    retries transient network failures for up to this many seconds after one (see
+    `interception.relay`)."""
 
 
 # (base_url, model_secret, state_secret): model inference and task state deliberately use
@@ -37,6 +43,8 @@ class Interception(ABC):
     arms lazy growth), `stop` tears every server (+ its tunnel) down via `stack` — LIFO,
     even if one teardown fails; `async with` wraps the two. Each rollout `acquire`s a slot
     and frees it on exit."""
+
+    config: BaseInterceptionConfig
 
     def __init__(self) -> None:
         self.stack = AsyncExitStack()

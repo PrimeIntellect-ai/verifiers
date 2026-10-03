@@ -400,6 +400,7 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -429,7 +430,12 @@ async def _serve(
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
         state_url = (
-            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
+            # The harness runtime's relay is on its own loopback: not a host-bound URL.
+            f"{relay_base}/state"
+            if relay_base and not exposed
+            else runtime.host_url(f"{state_base.rstrip('/')}/state")
+            if state_base
+            else None
         )
         port = await serve_in_runtime(
             server,
@@ -468,6 +474,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -476,6 +483,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        relay_base=relay_base,
     ) as served:
         yield served.url
 
@@ -583,6 +591,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    relay_base: str | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -623,6 +632,7 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        relay_base=relay_base,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

@@ -89,8 +89,14 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+INTERCEPTION_HEADER = "X-Verifiers-Interception"
+"""Stamped on every response, so a relay can tell this server's answers from a tunnel's or proxy's."""
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+
+
+async def _stamp(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[INTERCEPTION_HEADER] = "1"
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -422,6 +428,7 @@ class InterceptionServer(Interception):
 
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        app.on_response_prepare.append(_stamp)
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
@@ -502,18 +509,32 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
-        body = from_json(await request.read())
+        raw = await request.read()
+        key = _body_digest(raw)
+        prior = session.tool_verdicts.get(key)
+        if prior is not None and is_retried_request(request.headers):
+            await asyncio.wait([prior])
+            if not prior.cancelled():
+                return web.json_response(prior.result())
+        verdict = session.tool_verdicts[key] = (
+            asyncio.get_running_loop().create_future()
+        )
+        body = from_json(raw)
         try:
-            return web.json_response(
-                await session.decide_tool(
-                    str(body.get("tool_call_id", "")),
-                    body.get("name"),
-                    body.get("arguments"),
-                )
+            result = await session.decide_tool(
+                str(body.get("tool_call_id", "")),
+                body.get("name"),
+                body.get("arguments"),
             )
         except RolloutError as error:
+            verdict.cancel()
             session.error = error
             return web.json_response({"error": str(error)}, status=400)
+        except BaseException:
+            verdict.cancel()
+            raise
+        verdict.set_result(result)
+        return web.json_response(result)
 
     def record_call(
         self,
