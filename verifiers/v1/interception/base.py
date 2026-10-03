@@ -27,8 +27,9 @@ class BaseInterceptionConfig(BaseConfig):
     `multiplex`)."""
 
     relay_seconds: float | None = Field(None, gt=0)
-    """Opt-in: remote runtimes reach the interception via a relay that retries tunnel
-    outages for up to this many seconds (see `interception.relay`)."""
+    """Opt-in: remote runtimes reach the interception through an in-runtime relay that
+    retries transient network failures for up to this many seconds after one (see
+    `interception.relay`)."""
 
 
 # (base_url, model_secret, state_secret): model inference and task state deliberately use
