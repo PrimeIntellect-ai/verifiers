@@ -1,5 +1,4 @@
 from verifiers.v1.tasksets.group_grade.taskset import (
-    Axis,
     Candidate,
     CandidateVerdict,
     Evidence,
@@ -15,7 +14,6 @@ from verifiers.v1.tasksets.group_grade.taskset import (
 )
 
 __all__ = [
-    "Axis",
     "Candidate",
     "CandidateVerdict",
     "Evidence",
