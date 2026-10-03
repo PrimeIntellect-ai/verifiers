@@ -50,13 +50,11 @@ async def ensure_installed(
         f"mkdir -p {shlex.quote(directory)} && "
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
-    # Installs may need system packages, so an agent user's runtime installs as the default
-    # user, with uv-managed Python inside `directory` where the agent user can run it.
     if runtime.user is None:
         result = await runtime.run(["sh", "-c", guarded], env)
     else:
-        # Installers may create private files (e.g. a mktemp prefix); open the install
-        # to the agent user, even one an earlier root rollout already left in place.
+        # Install as root (system packages), keeping uv's Python in `directory`, then
+        # open it to the agent user: some installers leave it private.
         python_dir = {"UV_PYTHON_INSTALL_DIR": f"{directory}/python"}
         shareable = f"{guarded} && chmod -R a+rX {shlex.quote(directory)}"
         result = await runtime.with_user(None).run(

@@ -366,7 +366,7 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
-        # The file API reads as the default user, so a user view streams through exec too.
+        # The file API acts as the default user; a user view reads through exec.
         if max_bytes is not None or self.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
             try:
@@ -429,8 +429,7 @@ class PrimeRuntime(Runtime):
             except Exception as e:
                 raise SandboxError(f"write {path!r}: {e}") from e
             return
-        # Uploads land as the default user: stage the bytes privately, then copy them into
-        # place as this view's user so ownership and permission checks are the user's.
+        # Uploads act as the default user: stage the bytes, then copy them in as the user.
         root = self.with_user(None)
         staged = f"/tmp/vf-write-{uuid.uuid4().hex}"
         try:

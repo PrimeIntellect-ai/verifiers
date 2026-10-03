@@ -190,15 +190,13 @@ USER_RUNTIMES = [
     pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
 ]
 
-# Runtimes that can switch users (`Runtime.with_user`).
 AGENT_USER_RUNTIMES = [
     pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
 ]
 
 
-# Every harness that installs and launches in a box, run as a non-root agent user (terminus-2
-# drives the host tmux and browser-use needs its own image). prime-agent is prime-only.
+# Boxed harnesses (terminus-2 drives the host tmux; browser-use needs its own image).
 def _agent_user_placements():
     harnesses = [
         ("null", "null"),
@@ -369,19 +367,23 @@ async def test_browser_use(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize(
+    "preinstalled_tools", [False, True], ids=["fresh", "preinstalled"]
+)
 @pytest.mark.parametrize("harness_runtime", AGENT_USER_RUNTIMES, indirect=True)
-async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
-    """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
-    the secret the root-run setup planted and write its home, but every
-    root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
-    denied. Everything else the harness touches runs as that user too: its uv script
-    (prepared apart from root's copy), runtime file writes and reads, and its colocated
-    tool server."""
+async def test_agent_user_cannot_act_as_root(
+    run_v1, harness_runtime, preinstalled_tools, tmp_path
+):
+    """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
+    actions are denied, while its uv script, runtime file I/O, and colocated tool server
+    all act as the user. With `preinstalled_tools`, the tool's package was first installed
+    by the default user, as on a reused runtime."""
     (trace,) = await run_v1(
         "agent-user-v1",
         harness="agent-user-v1",
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
+        taskset_overrides={"preinstalled_tools": preinstalled_tools},
     )
     report = trace.info["agent_user_report"]
     for key in ("user", "uv_user", "written_owner", "tool_user"):
@@ -405,9 +407,8 @@ async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
 async def test_agent_user_harness(
     run_v1, harness, harness_runtime, scripted_model, tmp_path
 ):
-    """Each harness installs and runs a turn as a non-root agent user, deterministically:
-    a scripted upstream answers "OK" in the harness's own dialect, so the run fails only
-    if the harness can't set up or run without root."""
+    """Each harness installs and runs a turn as a non-root agent user against a scripted
+    upstream, so the run fails only if the harness can't set up or run without root."""
     (trace,) = await run_v1(
         "agent-user-harness-v1",
         harness=harness,

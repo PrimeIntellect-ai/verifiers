@@ -235,8 +235,7 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 
 
 async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
-    # An agent user can't bootstrap uv or write a root-owned workdir: install as the
-    # default user (Python included) and open the result to the user, who runs the server.
+    # Install as root; the agent user only runs the server.
     runtime = agent if agent.user is None else agent.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
@@ -279,8 +278,7 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
                 )
             runtime._mcp_sources.update(pending)
         if agent.user is not None:
-            # uv sits in the default user's home: give the agent's server its own copy and
-            # open the venv to the agent user, including one installed earlier.
+            # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
             share = (
                 'set -e; export PATH="$HOME/.local/bin:$PATH"; '

@@ -225,10 +225,8 @@ class Runtime(ABC):
         return runtime
 
     def with_user(self, user: str | None, home: str | None = None) -> "Runtime":
-        """Share this physical runtime through a view that runs commands and file I/O as
-        `user`, an existing user in the box, with `HOME` set to `home`. None returns the
-        default (privileged) user. Only the view runs as `user`: task setup, collection,
-        and grading keep using the original runtime."""
+        """A view of this runtime whose commands and file I/O run as `user` (an existing
+        user in the box) with `HOME` set to `home`; None returns the default user."""
         if user is not None and not self.supports_user:
             raise ValueError(
                 f"{type(self).__name__} cannot run commands as another user"
@@ -297,8 +295,7 @@ class Runtime(ABC):
         if path not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(path, asyncio.Lock()):
                 if self.user is not None and not self._curl_ready:
-                    # A non-root user can't install a downloader; ensure one as root so
-                    # its own uv bootstrap below can run.
+                    # Only root can install a downloader for the user's uv bootstrap.
                     curl = await self.with_user(None).run(
                         ["sh", "-c", _INSTALL_CURL], {}
                     )

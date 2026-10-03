@@ -279,7 +279,6 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                # The harness and its colocated tools run as the task's agent user.
                 agent = await agent_runtime(runtime, self.task.data.agent_user)
                 self._agent_runtime = agent
                 await self.harness.setup(agent)

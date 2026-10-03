@@ -1,15 +1,10 @@
 """agent-user-v1: a scripted, model-free agent that runs as a non-root user and tries root actions.
 
-Task setup runs as root: it creates the task's `agent_user` (images normally ship one),
-plants a root-only secret, and prepares a uv script; the workdir stays root-owned, like a
-typical image WORKDIR. The scripted harness then runs as that user and records whether:
-- four actions only root may take are denied and two the user may take still work;
-- the same uv script, prepared through the harness's runtime, runs as the user from its own
-  environment rather than root's;
-- a file written through the runtime is the user's, and a root-only file can't be read;
-- its colocated tool server runs as the user too, with uv on its PATH.
-The reward is 1 only if every check holds. Needs a runtime that can switch users (docker or
-prime).
+Root setup creates the task's `agent_user`, plants a root-only secret, and prepares a uv
+script; the workdir stays root-owned, like a typical image WORKDIR. The scripted harness runs
+as that user and records whether root-only actions are denied, whether its own uv script, its
+runtime file I/O, and its colocated tool server all act as the user, and whether that server
+can reach uv. The reward is 1 only if every check holds. Needs docker or prime.
 """
 
 import json
@@ -23,6 +18,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.harness import Harness
+from verifiers.v1.mcp.launch import serve
 from verifiers.v1.runtimes import ProgramResult, Runtime
 
 __all__ = ["AgentUserTaskset", "ScriptedAgentUserHarness"]
@@ -97,7 +93,11 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
         return await runtime.run_program(["sh", "-c", PROBE], {})
 
 
-class AgentUserTask(vf.Task):
+class AgentUserData(vf.TaskData):
+    preinstalled_tools: bool = False
+
+
+class AgentUserTask(vf.Task[AgentUserData]):
     @classmethod
     def toolsets(cls, config: vf.TaskConfig) -> list[vf.Toolset]:
         return [AgentUserToolset(vf.ToolsetConfig(colocated=True))]
@@ -107,6 +107,14 @@ class AgentUserTask(vf.Task):
         if result.exit_code != 0:
             raise RuntimeError(f"root setup failed: {result.stderr}")
         trace.info["root_uv_script"] = (await runtime.prepare_uv_script(UV_SCRIPT))[-1]
+        if self.data.preinstalled_tools:
+            # As an earlier rollout on a reused runtime would: the agent's server then
+            # finds its package already installed by the default user.
+            async with serve(
+                AgentUserToolset(vf.ToolsetConfig(colocated=True)), runtime
+            ):
+                pass
+            await runtime.run(["rm", "-f", TOOL_USER, TOOL_UV], {})
 
     @vf.reward(weight=1.0)
     async def agent_user_contained(self, trace: vf.Trace, runtime: Runtime) -> float:
@@ -128,14 +136,20 @@ class AgentUserTask(vf.Task):
         )
 
 
-class AgentUserTaskset(vf.Taskset[AgentUserTask, vf.TasksetConfig]):
+class AgentUserConfig(vf.TasksetConfig):
+    preinstalled_tools: bool = False
+    """Bring the colocated tool up once as the default user before the agent's run."""
+
+
+class AgentUserTaskset(vf.Taskset[AgentUserTask, AgentUserConfig]):
     def load(self) -> list[AgentUserTask]:
         return [
             AgentUserTask(
-                vf.TaskData(
+                AgentUserData(
                     idx=0,
                     prompt="Scripted: try root-only actions as a non-root user.",
                     agent_user=AGENT_USER,
+                    preinstalled_tools=self.config.preinstalled_tools,
                 )
             )
         ]
