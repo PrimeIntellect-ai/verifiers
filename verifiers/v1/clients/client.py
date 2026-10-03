@@ -11,6 +11,7 @@ from verifiers.v1.configs.client import (
 )
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
+from verifiers.v1.prefix import Prefix, PrefixReplay
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
 SESSION_ID_HEADER = "X-Session-ID"
@@ -37,12 +38,14 @@ class Client(ABC):
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
+        replay: PrefixReplay | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. `body` is the final effective native
         request after overrides and policy mediation: the eval client forwards it unchanged,
         while the train client renders it to token ids using the resolved `sampling` config.
         `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
-        graph-resolved prompt prefix, used by train clients for renderer bridging."""
+        graph-resolved prompt prefix, used by train clients for renderer bridging; `replay`
+        is the rollout's prefix replay, which only the train client supports."""
 
     async def relay(
         self,
@@ -87,3 +90,5 @@ class ModelContext:
     model: str
     client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)
+    prefix: Prefix | None = None
+    """Recorded calls to replay before sampling (`verifiers.v1.prefix`); train client only."""

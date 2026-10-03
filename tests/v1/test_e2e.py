@@ -970,3 +970,111 @@ async def test_replay_round_trip(run_v1, tmp_path):
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw
+
+
+@pytest.mark.e2e
+@pytest.mark.bash
+@pytest.mark.subprocess
+async def test_prefix_replay():
+    """A train-client rollout with a `Prefix` serves the recorded completions for its first
+    calls in order (no `/generate`), runs their tool calls for real, trains only the live
+    calls, and flags replayed calls whose tool output differs from the recording."""
+    import json
+
+    from aiohttp import web
+    from transformers import AutoTokenizer
+
+    import verifiers.v1 as vf
+    from verifiers.v1.clients import ModelContext
+    from verifiers.v1.configs.cli.eval import EvalConfig
+    from verifiers.v1.configs.client import TrainClientConfig
+    from verifiers.v1.utils.loaders import load_environment
+
+    model = "Qwen/Qwen3-0.6B"
+    tok = AutoTokenizer.from_pretrained(model)
+    sampled: list[int] = []  # tool results seen by each sampled call
+    volatile = {"at": None}
+
+    async def generate(request):
+        body = await request.json()
+        turn = tok.decode(body["token_ids"]).count("<tool_response>")
+        sampled.append(turn)
+        cmd = "date +%s%N" if turn == volatile["at"] else f"echo {turn} >> log; cat log"
+        tool_call = json.dumps({"name": "bash", "arguments": {"command": cmd}})
+        text = f"<tool_call>\n{tool_call}\n</tool_call>" if turn < 4 else "Done."
+        ids = tok.encode(f"<think>\n\n</think>\n\n{text}<|im_end|>")
+        logprobs = [{"logprob": -0.1, "token": f"token_id:{i}"} for i in ids]
+        choice = {
+            "token_ids": ids,
+            "finish_reason": "stop",
+            "logprobs": {"content": logprobs},
+        }
+        return web.json_response({"request_id": "r", "choices": [choice]})
+
+    async def models(request):
+        return web.json_response({"data": [{"id": model, "max_model_len": 32768}]})
+
+    app = web.Application(client_max_size=1 << 28)
+    app.router.add_post("/inference/v1/generate", generate)
+    app.router.add_get("/v1/models", models)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    client = TrainClientConfig(
+        base_url=f"http://127.0.0.1:{port}/v1", renderer_model_name=model
+    )
+    env = load_environment(
+        EvalConfig.model_validate(
+            {
+                "env": {
+                    "taskset": {"id": "gsm8k"},
+                    "agent": {
+                        "harness": {"id": "bash"},
+                        "runtime": {"type": "subprocess"},
+                    },
+                }
+            }
+        ).env
+    )
+    task = next(iter(env.taskset))
+
+    async def run(prefix=None):
+        sampled.clear()
+        (slot,) = env.slots(task)
+        episode = await env.run_slot(
+            slot, ModelContext(model=model, client=client, prefix=prefix)
+        )
+        (trace,) = episode.traces
+        return trace
+
+    await env.start()
+    try:
+        source = await run()
+        assert sampled == [0, 1, 2, 3, 4]
+        replay = await run(vf.Prefix.from_trace(source, 3, source={"episode": "src"}))
+        assert sampled == [3, 4]
+        info = replay.info["prefix"]
+        assert info["realized_cut"] == 3 and info["obs_changed"] == [False] * 3
+        assert [m.content for m in replay.tool_messages] == [
+            m.content for m in source.tool_messages
+        ]
+        loss = [sum(replay.nodes[call.node].mask) for call in replay.calls]
+        assert loss[:3] == [0, 0, 0] and all(loss[3:])
+        assert [call.usage is None for call in replay.calls] == [True] * 3 + [False] * 2
+
+        # Blind: a changed tool output does not stop the replay, it is only flagged.
+        volatile["at"] = 1
+        source = await run()
+        replay = await run(vf.Prefix.from_trace(source, 3))
+        assert sampled == [3, 4]
+        assert replay.info["prefix"]["obs_changed"] == [False, False, True]
+        assert replay.metrics["prefix/obs_changed_frac"] == pytest.approx(1 / 3)
+
+        # A recording that covers the whole rollout replays it without sampling.
+        replay = await run(vf.Prefix.from_trace(source, 5))
+        assert sampled == [] and replay.info["prefix"]["realized_cut"] == 5
+    finally:
+        await env.stop()
+        await runner.cleanup()

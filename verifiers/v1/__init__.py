@@ -78,6 +78,7 @@ from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
 )
+from verifiers.v1.prefix import Prefix, PrefixCall
 from verifiers.v1.runtimes import (
     ApptainerConfig,
     DockerConfig,
@@ -231,6 +232,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Trace",
     "TraceTask",
     "WireTrace",
+    "Prefix",
+    "PrefixCall",
     "Reward",
     "EnvInfo",
     "Episode",
