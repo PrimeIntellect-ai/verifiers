@@ -216,6 +216,48 @@ class SamplingMask:
         return cls(ids=ids, counts=counts)
 
 
+class PayloadSegment(BaseModel):
+    """`rows` consecutive rows of one per-token side array (`field`, e.g. `routed_experts`,
+    `sampling_mask`) that the inference server wrote to `file` at byte `offset`, as a
+    C-contiguous `[rows, *shape]` `dtype` array. `pos` is the token position of the first
+    row in whatever sequence holds the segment: the request on `TurnTokens`, the node on
+    `Trace.payload`, the branch on `Branch.payload`. Only the handle travels; the trainer
+    reads the rows."""
+
+    field: str
+    file: str
+    offset: int
+    pos: int
+    rows: int
+    dtype: str
+    shape: list[int]
+
+    @property
+    def end(self) -> int:
+        return self.pos + self.rows
+
+    def clip(self, lo: int, hi: int, shift: int = 0) -> "PayloadSegment | None":
+        """The rows inside positions `[lo, hi)`, moved by `shift`; None when empty."""
+        start, end = max(self.pos, lo), min(self.end, hi)
+        if start >= end:
+            return None
+        row_bytes = np.dtype(self.dtype).itemsize * int(np.prod(self.shape))
+        return self.model_copy(
+            update={
+                "offset": self.offset + (start - self.pos) * row_bytes,
+                "pos": start + shift,
+                "rows": end - start,
+            }
+        )
+
+
+class NodeSegment(BaseModel):
+    """A payload segment attributed to `Trace.nodes[node]`, positions node-local."""
+
+    node: int
+    segment: PayloadSegment
+
+
 class TurnTokens(BaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
@@ -251,6 +293,9 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): by-handle side arrays from `generate`, request-absolute
+    # positions, attributed per node onto `Trace.payload` by the turn's `commit`.
+    payload: list[PayloadSegment] | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
