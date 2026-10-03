@@ -75,17 +75,6 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         system_prompt = "\n\n".join(
             p for p in (BROWSER_SYSTEM_PROMPT, system_prompt) if p
         )
-        # Default resume replays the transcript. If there was no task system
-        # prompt, that transcript already contains this harness prompt.
-        replaying_browser_prompt = (
-            data.system_prompt is None
-            and prompt is not None
-            and not isinstance(prompt, str)
-            and any(
-                message.role == "system" and message.content == BROWSER_SYSTEM_PROMPT
-                for message in prompt
-            )
-        )
         env = {**self.config.resolved_env}
         state = f".vf-browser-{trace.id}"
         args = [
@@ -115,7 +104,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             endpoint,
             secret,
             mcp_urls,
-            None if replaying_browser_prompt else system_prompt,
+            system_prompt,
             prompt,
             extra_args=args,
             env=env,
