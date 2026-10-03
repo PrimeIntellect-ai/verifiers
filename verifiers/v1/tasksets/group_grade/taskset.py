@@ -1,22 +1,24 @@
-"""Group grading: one agent grades a whole group of attempts at one task.
+"""Group grading: one agent grades a whole group of attempts at one task, of any
+taskset.
 
 A trainer mints a `GroupGradeData` row from a finished group (`from_traces`): the inner
 task's wire data plus every attempt as an anonymized `Candidate`. `GroupGradeTask`
-rebuilds the inner task from the inner taskset config (`--env.taskset.task.inner`) and
-sets up one box: the inner task's `setup`, the candidates' workspace (`git_workspace`),
-the inner task's `stage_verifier` (hidden tests), and per candidate
-`/grade/<label>/{patch.diff,turns.json,tests.txt}`. The grading policy and the
-workspace and verdict instructions are `grade_prompt.md`. The grader writes
-`/grade/verdict.json`; `finalize` validates it into `trace.info["group_verdict"]`.
+rebuilds the inner task from the inner taskset config (`--env.taskset.task.inner`) for
+its prompt and runtime env. The grader's own box is generic and holds per candidate
+`/grade/<label>/turns.json`, plus `patch.diff` and `tests.txt` when the attempt recorded
+them. A candidate whose rollout checkpointed its box (`agent.checkpoint_on_finish`) can
+be inspected in that box, restored on demand, through the `candidate_shell` tool
+(`workspaces.py`). The grading policy and the workspace and verdict instructions are
+`grade_prompt.md`. The grader writes `/grade/verdict.json`; `finalize` validates it into
+`trace.info["group_verdict"]`.
 
-The box is framework-only (`network_allow=[]`): setup runs with egress, the grader's
-harness reaches its model through the interception routes, and nothing else is reachable.
+The boxes are framework-only (`network_allow=[]`): the grader's harness reaches its
+model and tools through the interception routes, and nothing else is reachable.
 """
 
 import json
 import random
 import re
-import shlex
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Literal
@@ -25,9 +27,12 @@ from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, model_validat
 
 import verifiers.v1 as vf
 from verifiers.v1.envs.agentic_judge.env import JudgeTaskConfig, TextSource
+from verifiers.v1.tasksets.group_grade.workspaces import (
+    GradeState,
+    Workspaces,
+    WorkspacesConfig,
+)
 from verifiers.v1.types import AssistantMessage, ToolMessage, content_text
-from verifiers.v1.utils.decorators import invoke
-from verifiers.v1.utils.git import resolve_head, snapshot_untracked
 from verifiers.v1.utils.loaders import (
     narrow_plugin_field,
     taskset_class,
@@ -36,7 +41,6 @@ from verifiers.v1.utils.loaders import (
 
 GRADE_DIR = "/grade"
 VERDICT_FILE = f"{GRADE_DIR}/verdict.json"
-SWITCH = "/usr/local/bin/gar-switch"
 GRADE_PROMPT = (Path(__file__).parent / "grade_prompt.md").read_text()
 RESULT_CHARS = 4000
 """Tool results are cut to their head and tail beyond this, everywhere."""
@@ -67,6 +71,9 @@ class Candidate(BaseModel):
     """`transcript_turns` of the attempt's trace; quotes are checked against these."""
     stop_condition: str | None
     num_output_tokens: int
+    checkpoint: str | None = None
+    """The attempt's box as its agent left it (`trace.info["checkpoint"]`), restored
+    on demand by `candidate_shell`; None grades it from its files only."""
 
 
 def _arguments(raw: str) -> str:
@@ -212,8 +219,12 @@ class GroupGradeData(vf.TaskData):
     inner: dict
     """The inner task's wire data, validated by the inner taskset's data type."""
     candidates: list[Candidate]
+    workdir: str | None = GRADE_DIR
     network_allow: list[str] = Field(default_factory=list)
     """Framework-only: the grader reaches its model and nothing else."""
+    box_env: dict[str, str] = Field(default_factory=dict)
+    """Environment of commands in a candidate's box: the inner task's runtime env,
+    set by `GroupGradeTask`."""
 
     @classmethod
     def from_traces(
@@ -242,6 +253,7 @@ class GroupGradeData(vf.TaskData):
                     else elide(transcript_turns(trace)),
                     stop_condition=trace.stop_condition,
                     num_output_tokens=trace.num_output_tokens,
+                    checkpoint=trace.info.get("checkpoint"),
                 )
             )
         inner = traces[0].task.data
@@ -249,9 +261,6 @@ class GroupGradeData(vf.TaskData):
             inner=inner.model_dump(mode="json"),
             candidates=candidates,
             name=inner.name,
-            image=inner.image,
-            workdir=inner.workdir,
-            resources=inner.resources,
         )
         return data, labels
 
@@ -259,7 +268,10 @@ class GroupGradeData(vf.TaskData):
 class GroupGradeTaskConfig(vf.TaskConfig):
     inner: SerializeAsAny[vf.TasksetConfig] = vf.TasksetConfig()
     """The graded taskset's config (`id` plus its own fields); rebuilds the inner task
-    from `GroupGradeData.inner` for `setup` and `stage_verifier`."""
+    from `GroupGradeData.inner` for its prompt and runtime env."""
+    workspaces: WorkspacesConfig | None = WorkspacesConfig()
+    """The `candidate_shell` tool onto checkpointed candidates' boxes; None serves no
+    tools (for a harness without MCP)."""
     prompt: TextSource | None = None
     """Replaces `grade_prompt.md` (grading policy, workspace and verdict instructions);
     inline text or `{ path = "..." }`. The task and the candidate list are always
@@ -273,7 +285,7 @@ class GroupGradeTaskConfig(vf.TaskConfig):
         return data
 
 
-class GroupGradeTask(vf.Task[GroupGradeData, vf.State, GroupGradeTaskConfig]):
+class GroupGradeTask(vf.Task[GroupGradeData, GradeState, GroupGradeTaskConfig]):
     NEEDS_CONTAINER = True
 
     def __init__(
@@ -287,11 +299,16 @@ class GroupGradeTask(vf.Task[GroupGradeData, vf.State, GroupGradeTaskConfig]):
         self.inner = task_cls(
             task_cls.data_type().model_validate(data.inner), inner.task
         )
-        self.compose_prompt = data.prompt is None
-        if self.compose_prompt:
-            self.data = data.model_copy(update={"prompt": self.build_prompt({})})
+        update: dict = {"box_env": self.inner.runtime_env()}
+        if data.prompt is None:
+            update["prompt"] = self.build_prompt()
+        self.data = data.model_copy(update=update)
 
-    def build_prompt(self, patch_notes: dict[str, str]) -> str:
+    @classmethod
+    def toolsets(cls, config: GroupGradeTaskConfig) -> list[vf.Toolset]:
+        return [] if config.workspaces is None else [Workspaces(config.workspaces)]
+
+    def build_prompt(self) -> str:
         policy = self.config.prompt
         body = GRADE_PROMPT if policy is None else JudgeTaskConfig._resolve(policy)
         task = f"## The task the candidates were given\n\n{self.inner.data.prompt_text}"
@@ -300,102 +317,25 @@ class GroupGradeTask(vf.Task[GroupGradeData, vf.State, GroupGradeTaskConfig]):
                 "\n\n## The rules the candidates were given\n\n"
                 f"{self.inner.data.system_prompt}"
             )
+        boxes = self.config.workspaces is not None
         listing = "\n".join(
             f"- {c.label}: {'PASSED' if c.passed else 'FAILED'}, reward {c.reward:g}, "
             f"{len(c.turns)} turns, {c.num_output_tokens} output tokens, "
             f"stopped by {c.stop_condition}"
-            + (f", {patch_notes[c.label]}" if c.label in patch_notes else "")
+            + (f", box: {'yes' if c.checkpoint else 'no'}" if boxes else "")
             for c in self.data.candidates
         )
         return "\n\n".join([body, task, f"## Candidates\n\n{listing}"])
 
-    def runtime_env(self) -> dict[str, str]:
-        return self.inner.runtime_env()
-
-    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        await invoke(self.inner.setup, {"trace": trace, "runtime": runtime})
+    async def setup(self, runtime: vf.Runtime) -> None:
         for c in self.data.candidates:
             folder = f"{GRADE_DIR}/{c.label}"
-            await runtime.write(f"{folder}/patch.diff", (c.patch or "").encode())
             await runtime.write(f"{folder}/turns.json", json.dumps(c.turns).encode())
-            await runtime.write(f"{folder}/tests.txt", (c.test_output or "").encode())
-        patch_notes = await self.git_workspace(runtime)
-        await invoke(self.inner.stage_verifier, {"trace": trace, "runtime": runtime})
-        await self.git_switch(runtime)
-        await self._sh(runtime, f"rm -f {VERDICT_FILE}")
-        if self.compose_prompt:
-            # Whether each patch applies is known only now; the harness reads the
-            # prompt after setup.
-            data = trace.task.data.model_copy(
-                update={"prompt": self.build_prompt(patch_notes)}
-            )
-            trace.task = trace.task.model_copy(update={"data": data})
-
-    async def git_workspace(self, runtime: vf.Runtime) -> dict[str, str]:
-        """Commit each candidate's patch on branch `gar/<label>` off the base commit and
-        leave the base checked out; returns each candidate's patch note."""
-        base = await resolve_head(runtime)
-        if not base:
-            raise RuntimeError("group-grade needs a git repository at the task workdir")
-        # Files the image ships untracked; patches captured without `ignore` carry them.
-        excludes = [f"--exclude={path}" for path in await snapshot_untracked(runtime)]
-        notes = {}
-        for c in self.data.candidates:
-            branch = shlex.quote(f"gar/{c.label}")
-            checkout = f"git checkout -q -f -B {branch} {base}"
-            if not (c.patch or "").strip():
-                notes[c.label] = "no patch"
-                await self._sh(runtime, checkout)
-                continue
-            apply = shlex.join(
-                [
-                    "git",
-                    "apply",
-                    "--index",
-                    "--binary",
-                    *excludes,
-                    f"{GRADE_DIR}/{c.label}/patch.diff",
-                ]
-            )
-            commit = (
-                "git -c user.name=gar -c user.email=gar@localhost commit -q "
-                f"--no-verify --allow-empty -m {shlex.quote(c.label)}"
-            )
-            result = await runtime.run(
-                ["sh", "-c", f"{checkout} && {apply} && {commit}"], {}
-            )
-            if result.exit_code:
-                notes[c.label] = "patch does NOT apply (branch at base commit)"
-                await self._sh(runtime, f"git reset -q --hard && {checkout}")
-            else:
-                notes[c.label] = "patch applied"
-        await self._sh(runtime, f"git checkout -q -f --detach {base}")
-        return notes
-
-    async def git_switch(self, runtime: vf.Runtime) -> None:
-        """Install `gar-switch`, keeping what is untracked now (the staged tests, image
-        files) safe from its `git clean`."""
-        repo = (await runtime.run(["git", "rev-parse", "--show-toplevel"], {})).stdout
-        await self._sh(
-            runtime,
-            "git ls-files --others --exclude-standard --directory | sed 's|^|/|' "
-            '>> "$(git rev-parse --git-path info/exclude)"',
-        )
-        switch = (
-            '#!/bin/sh\nset -e\n[ -n "$1" ] || { echo "usage: gar-switch <label>" >&2; exit 2; }\n'
-            f'cd {shlex.quote(repo.strip())}\ngit checkout -q -f "gar/$1"\ngit clean -fdq\n'
-            'echo "on gar/$1"\n'
-        )
-        await runtime.write(SWITCH, switch.encode())
-        await self._sh(runtime, f"chmod +x {SWITCH}")
-
-    @staticmethod
-    async def _sh(runtime: vf.Runtime, command: str) -> None:
-        result = await runtime.run(["sh", "-c", command], {})
-        if result.exit_code:
-            raise RuntimeError(
-                f"group-grade setup failed: {command!r}: {(result.stderr or '').strip()[-300:]}"
-            )
+            if c.patch:
+                await runtime.write(f"{folder}/patch.diff", c.patch.encode())
+            if c.test_output:
+                await runtime.write(f"{folder}/tests.txt", c.test_output.encode())
+        await runtime.run(["rm", "-f", VERDICT_FILE], {})
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         try:
@@ -409,6 +349,15 @@ class GroupGradeTask(vf.Task[GroupGradeData, vf.State, GroupGradeTaskConfig]):
     @vf.reward
     async def valid(self, trace: vf.Trace) -> float:
         return float("group_verdict" in trace.info)
+
+    @vf.metric
+    async def restores(self, trace: vf.Trace) -> float:
+        return float(len(trace.state.restores))
+
+    @vf.metric
+    async def restore_seconds(self, trace: vf.Trace) -> float:
+        """Total seconds spent restoring candidate boxes."""
+        return sum(trace.state.restores)
 
 
 class GroupGradeConfig(vf.TasksetConfig):
