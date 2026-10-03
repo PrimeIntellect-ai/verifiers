@@ -173,6 +173,9 @@ class ModelCall(BaseModel):
     """Policy mediation applied to the request before this call."""
     acp: ACPInfo | None = None
     """Metadata advertised by the ACP harness for this model request."""
+    replayed: bool = False
+    """Served from a prefix replay (`verifiers.v1.prefix`): recorded without usage, and its
+    completion is context, not trained."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:

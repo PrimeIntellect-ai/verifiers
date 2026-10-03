@@ -24,6 +24,7 @@ import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.episode import WireEpisode
+from verifiers.v1.prefix import Prefix
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
     BaseRequest,
@@ -190,6 +191,7 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        prefix: Prefix | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
@@ -211,6 +213,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                prefix=prefix,
             ),
             RunResponse,
             on_delta=apply,
