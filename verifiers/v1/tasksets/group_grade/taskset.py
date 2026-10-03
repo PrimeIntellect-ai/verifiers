@@ -42,6 +42,10 @@ from verifiers.v1.utils.loaders import (
 GRADE_DIR = "/grade"
 VERDICT_FILE = f"{GRADE_DIR}/verdict.json"
 GRADE_PROMPT = (Path(__file__).parent / "grade_prompt.md").read_text()
+RANKING_RULES = {
+    "rewards": (Path(__file__).parent / "rank_passing.md").read_text(),
+    "advantages": (Path(__file__).parent / "rank_all.md").read_text(),
+}
 RESULT_CHARS = 4000
 """Tool results are cut to their head and tail beyond this, everywhere."""
 EDGE_TURNS = 10
@@ -53,6 +57,8 @@ MARKER = re.compile(r"^\[tool_(call|result)[^\]\n]*\]$", re.MULTILINE)
 """A turn's section headers; the same text written by the candidate is escaped."""
 
 HackLevel = Literal["none", "suspected", "confirmed"]
+Margin = Literal["clear", "slight"]
+Mode = Literal["rewards", "advantages"]
 
 
 class Candidate(BaseModel):
@@ -187,6 +193,9 @@ class GroupVerdict(BaseModel):
     ranking: list[list[str]]
     """Tiers best to worst: a partition of the passing labels not confirmed as hacks.
     A tie expresses an inconclusive difference."""
+    margins: list[Margin] = []
+    """Optional: how much better each tier is than the next, one per gap; empty
+    means every gap is `slight`. Used in the `advantages` mode."""
     notes: str = ""
 
     def check(self, data: "GroupGradeData") -> None:
@@ -213,12 +222,21 @@ class GroupVerdict(BaseModel):
                 f"ranking must partition the passing, non-confirmed labels "
                 f"{sorted(rankable)} into non-empty tiers: got {self.ranking}"
             )
+        if self.margins and len(self.margins) != len(self.ranking) - 1:
+            raise ValueError(
+                f"margins needs one entry per gap between tiers "
+                f"({len(self.ranking) - 1}): got {self.margins}"
+            )
 
 
 class GroupGradeData(vf.TaskData):
     inner: dict
     """The inner task's wire data, validated by the inner taskset's data type."""
     candidates: list[Candidate]
+    mode: Mode = "rewards"
+    """`rewards`: the grader sees rewards and ranks the passing candidates.
+    `advantages`: it sees no rewards and ranks every candidate (`from_traces` marks
+    them all passing), optionally with margins."""
     workdir: str | None = GRADE_DIR
     network_allow: list[str] = Field(default_factory=list)
     """Framework-only: the grader reaches its model and nothing else."""
@@ -228,11 +246,18 @@ class GroupGradeData(vf.TaskData):
 
     @classmethod
     def from_traces(
-        cls, traces: Sequence[vf.Trace], passed: Sequence[bool], rng: random.Random
+        cls,
+        traces: Sequence[vf.Trace],
+        passed: Sequence[bool] | None,
+        rng: random.Random,
     ) -> tuple["GroupGradeData", dict[str, str]]:
         """A row grading `traces` (attempts at one task), shuffled by `rng` and
-        labeled `c01`, `c02`, ...; returns it with the label -> trace id map. The
-        prompt is left unset: the serving task composes it from its config."""
+        labeled `c01`, `c02`, ...; returns it with the label -> trace id map.
+        `passed=None` is the `advantages` mode: every candidate is ranked, on quality
+        alone. The prompt is left unset: the serving task composes it from its
+        config."""
+        mode: Mode = "rewards" if passed is not None else "advantages"
+        passed = [True] * len(traces) if passed is None else passed
         if len(traces) != len(passed):
             raise ValueError(f"{len(traces)} traces but {len(passed)} pass flags")
         order = list(range(len(traces)))
@@ -260,6 +285,7 @@ class GroupGradeData(vf.TaskData):
         data = cls(
             inner=inner.model_dump(mode="json"),
             candidates=candidates,
+            mode=mode,
             name=inner.name,
         )
         return data, labels
@@ -318,14 +344,21 @@ class GroupGradeTask(vf.Task[GroupGradeData, GradeState, GroupGradeTaskConfig]):
                 f"{self.inner.data.system_prompt}"
             )
         boxes = self.config.workspaces is not None
+        rewards = self.data.mode == "rewards"
         listing = "\n".join(
-            f"- {c.label}: {'PASSED' if c.passed else 'FAILED'}, reward {c.reward:g}, "
-            f"{len(c.turns)} turns, {c.num_output_tokens} output tokens, "
+            f"- {c.label}: "
+            + (
+                f"{'PASSED' if c.passed else 'FAILED'}, reward {c.reward:g}, "
+                if rewards
+                else ""
+            )
+            + f"{len(c.turns)} turns, {c.num_output_tokens} output tokens, "
             f"stopped by {c.stop_condition}"
             + (f", box: {'yes' if c.checkpoint else 'no'}" if boxes else "")
             for c in self.data.candidates
         )
-        return "\n\n".join([body, task, f"## Candidates\n\n{listing}"])
+        rules = RANKING_RULES[self.data.mode]
+        return "\n\n".join([body, rules, task, f"## Candidates\n\n{listing}"])
 
     async def setup(self, runtime: vf.Runtime) -> None:
         for c in self.data.candidates:

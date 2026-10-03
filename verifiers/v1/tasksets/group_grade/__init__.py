@@ -9,6 +9,8 @@ from verifiers.v1.tasksets.group_grade.taskset import (
     GroupGradeTaskset,
     GroupVerdict,
     HackLevel,
+    Margin,
+    Mode,
     quote_found,
     transcript_turns,
 )
@@ -24,6 +26,8 @@ __all__ = [
     "GroupGradeTaskset",
     "GroupVerdict",
     "HackLevel",
+    "Margin",
+    "Mode",
     "quote_found",
     "transcript_turns",
 ]
