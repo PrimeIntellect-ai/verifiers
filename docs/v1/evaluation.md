@@ -53,7 +53,21 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 
 ## Resuming evaluations
 
-`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
+`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone. Rollouts the interruption cut off run again from the start; prime-rl's `uv run eval --resume` replays them from their live traces instead.
+
+## Replaying traces
+
+`vf.Replay` answers model calls with the replies in recorded traces. The harness runs every replayed tool call again, so it rebuilds the recorded rollout's files, processes, and tool state. It has two modes:
+
+- `resume` (default): replay while each prompt equals its recorded prompt, then sample live. This continues an interrupted rollout.
+- `playback`: replay every recorded reply whatever the prompt, never sample live, and stop with `replay_ended` when the recording runs out. This reproduces a trace's deliverables, or drives one seat of a multi-agent env.
+
+```python
+async with vf.Agent(config, replay=vf.Replay(traces)) as agent:
+    trace = await agent.run(task)
+```
+
+An env plays back one seat from `setup()`: `agents.solver.ctx = dataclasses.replace(agents.solver.ctx, replay=vf.Replay(traces, mode="playback"))`. `ModelCall.replayed` tags each replayed call: `exact` when its prompt equals the recorded prompt, `forced` when a playback serves it to a prompt that differs. Tool calls run again, side effects included. Replay is for evaluation only: the train client needs token ids.
 
 ## Disabling tools
 
