@@ -425,14 +425,17 @@ async def _serve(
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
-        if relay_base and not exposed:
-            state_base = relay_base  # the harness runtime's relay is on its loopback
         # The shared-state channel: every server reaches the interception at the rollout's
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
         state_url = (
-            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
+            # The harness runtime's relay is on its own loopback: not a host-bound URL.
+            f"{relay_base}/state"
+            if relay_base and not exposed
+            else runtime.host_url(f"{state_base.rstrip('/')}/state")
+            if state_base
+            else None
         )
         port = await serve_in_runtime(
             server,

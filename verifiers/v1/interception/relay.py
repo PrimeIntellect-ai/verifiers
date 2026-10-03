@@ -1,11 +1,14 @@
-"""Opt-in loopback relay in a remote runtime that rides out tunnel outages.
+"""Opt-in loopback relay in a remote runtime that rides out transient network failures.
 
-While the host's tunnel client reconnects, the tunnel URL answers `404 Tunnel not found`
-or refuses connections, and most clients fail on that. The relay (`relay_server.py`,
-stdlib only) forwards requests unchanged and retries, for up to `relay_seconds`, those
-the host never saw, plus lost connections for requests the host dedupes (reads, model
-calls and tool-gate checks). The harness and colocated tool servers reach the host
-through it. Without a usable `python3` the rollout connects directly.
+A remote runtime reaches the host's interception server over the network (a tunnel, a
+proxy, a direct bind). When that path blips, clients see refused or dropped connections,
+or an error from whatever sits in between (a tunnel's "not found", a proxy's 502), and
+most fail the rollout. The harness and colocated tool servers reach the host through the
+relay (`relay_server.py`, stdlib only) instead: it forwards requests unchanged and, for up
+to `relay_seconds` after a failure, retries them. The host stamps every response it sends,
+so any transient-looking error without the stamp is a network failure, whatever its
+wording; repeats are safe because the host dedupes them. Without a usable `python3` the
+rollout connects directly.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
-from verifiers.v1.interception.server import RETRY_COUNT_HEADER
+from verifiers.v1.interception.server import INTERCEPTION_HEADER, RETRY_COUNT_HEADER
 from verifiers.v1.runtimes.base import Runtime
 
 logger = logging.getLogger(__name__)
@@ -75,7 +78,7 @@ async def serve_relay(
                 python = found.stdout.split()[-1]
                 argv = shlex.join(
                     [python, f"{files}.py", upstream, files, str(window)]
-                    + [RETRY_COUNT_HEADER]
+                    + [RETRY_COUNT_HEADER, INTERCEPTION_HEADER]
                 )
                 # Restarted if it exits; a restart binds the same port.
                 script = f"echo $$ > {files}.pid; while :; do {argv}; sleep 1; done"

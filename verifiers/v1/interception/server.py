@@ -89,8 +89,14 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+INTERCEPTION_HEADER = "X-Verifiers-Interception"
+"""Stamped on every response, so a relay can tell this server's answers from a tunnel's or proxy's."""
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+
+
+async def _stamp(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[INTERCEPTION_HEADER] = "1"
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -422,6 +428,7 @@ class InterceptionServer(Interception):
 
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        app.on_response_prepare.append(_stamp)
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
