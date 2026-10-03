@@ -91,7 +91,7 @@ SEARCH_TOOL = {
     "function": {
         "name": "search",
         "description": (
-            "Run a web search via Serper (Google) and return the top organic results as title, "
+            "Run a Google web search and return the top organic results as title, "
             "URL, and snippet. Issue focused queries and call it several times to cover different "
             "angles; use the bash tool (e.g. curl) to read a result page in full."
         ),
@@ -128,8 +128,10 @@ def format_results(results, query: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def run_search(query: str, api_key: str, num_results: int = 5) -> str:
-    """Serper Google web search -> formatted organic results.
+def run_search(
+    query: str, api_key: str, num_results: int = 5, search_url: str = SERPER_URL
+) -> str:
+    """Serper-compatible Google web search -> formatted organic results.
 
     The key arrives as an argument (handed in by the harness over argv, like the interception
     secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
@@ -145,7 +147,7 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         num_results = 5
     try:
         response = httpx.post(
-            SERPER_URL,
+            search_url,
             json={"q": query},
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             timeout=45,
@@ -427,6 +429,7 @@ async def run_chat_loop(
                         tool_args.get("query", ""),
                         args.serper_key,
                         tool_args.get("num_results", 5),
+                        args.search_url,
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
@@ -455,6 +458,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    parser.add_argument("--search-url", default=SERPER_URL)
     return parser.parse_args()
 
 
