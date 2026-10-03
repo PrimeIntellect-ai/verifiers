@@ -126,3 +126,12 @@ async def serve_relay(
                                 pids.append(pid.decode())
                     if pids:
                         await runtime.run(["kill", *pids], {})
+            # Before the task's finalize and scoring: leave nothing behind for a grader to see.
+            leftovers = [
+                f"{files}.{ext}" for ext in ("py", "port", "pid", "json", "env", "log")
+            ]
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(30):
+                    await runtime.run(
+                        ["rm", "-f", *leftovers, *(f"{f}.tmp" for f in leftovers)], {}
+                    )
