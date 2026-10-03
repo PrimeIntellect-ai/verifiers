@@ -602,6 +602,17 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     def response_to_wire(self, response: Response, model: str) -> dict:
         message = response.message
         content = [dict(block) for block in message.provider_state or []]
+        thinks = any(b["type"] in ("thinking", "redacted_thinking") for b in content)
+        if message.reasoning_content and not thinks:
+            # A model without signed thinking (the train client) reasons in plain text.
+            content.insert(
+                0,
+                {
+                    "type": "thinking",
+                    "thinking": message.reasoning_content,
+                    "signature": "",
+                },
+            )
         if message.content:
             content.append({"type": "text", "text": message.content})
         for call in message.tool_calls or []:
@@ -637,6 +648,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
                 raw["usage"]["output_tokens_details"] = {
                     "thinking_tokens": usage.reasoning_tokens
                 }
+        self.validate_response(raw)
         return raw
 
     def stream_events(self, raw: dict) -> list[bytes]:

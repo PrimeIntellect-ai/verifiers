@@ -591,7 +591,9 @@ class ChatDialect(Dialect[ChatCompletion]):
         return response_from_wire(response)
 
     def response_to_wire(self, response: Response, model: str) -> dict:
-        return completion_to_wire(response, model)
+        raw = completion_to_wire(response, model)
+        self.validate_response(raw)
+        return raw
 
     def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
         for native, original, rewritten in zip(
