@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
+import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
@@ -182,8 +183,13 @@ def response_from_generate(
             sampling_mask=SamplingMask.from_sampling_mask(mask)
             if (mask := result.get("sampling_mask"))
             else None,
-            top_logprobs=TopLogprobs.from_rows(
-                top_ids, result["completion_top_logprobs"]
+            # vLLM returns exactly k candidates per completion token.
+            top_logprobs=TopLogprobs(
+                ids=np.asarray(top_ids, dtype=np.int32).ravel(),
+                logprobs=np.asarray(
+                    result["completion_top_logprobs"], dtype=np.float32
+                ).ravel(),
+                counts=np.fromiter(map(len, top_ids), dtype=np.int32),
             )
             if (top_ids := result.get("completion_top_ids")) is not None
             else None,

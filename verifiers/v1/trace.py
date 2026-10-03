@@ -351,24 +351,18 @@ class Branch(BaseModel):
 
     @property
     def top_logprobs(self) -> TopLogprobs | None:
-        """Sampler top-k logprobs aligned to this branch's token ids."""
-        if all(n.top_logprobs is None for n in self.nodes):
+        """Sampler top-k logprobs aligned to this branch's token ids, like `sampling_mask`."""
+        tops = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
+        if not tops:
             return None
-        # Attribution validates each node's rows against its sampled positions.
-        ids_parts: list[np.ndarray] = [np.zeros(0, dtype=np.int32)]
-        logprobs_parts: list[np.ndarray] = [np.zeros(0, dtype=np.float32)]
-        counts_parts: list[np.ndarray] = []
-        for node in self.nodes:
-            counts = np.zeros(len(node.mask), dtype=np.int32)
-            if node.top_logprobs is not None and len(node.top_logprobs.counts):
-                counts[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
-                ids_parts.append(node.top_logprobs.ids)
-                logprobs_parts.append(node.top_logprobs.logprobs)
-            counts_parts.append(counts)
+        counts = [np.zeros(len(n.mask), dtype=np.int32) for n in self.nodes]
+        for node, node_counts in zip(self.nodes, counts):
+            if node.top_logprobs is not None:
+                node_counts[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
         return TopLogprobs(
-            ids=np.concatenate(ids_parts).astype(np.int32, copy=False),
-            logprobs=np.concatenate(logprobs_parts).astype(np.float32, copy=False),
-            counts=np.concatenate(counts_parts),
+            ids=np.concatenate([t.ids for t in tops]).astype(np.int32, copy=False),
+            logprobs=np.concatenate([t.logprobs for t in tops]).astype(np.float32),
+            counts=np.concatenate(counts),
         )
 
     @property

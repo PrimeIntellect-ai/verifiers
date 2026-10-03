@@ -218,33 +218,12 @@ class SamplingMask:
 
 @dataclass
 class TopLogprobs:
-    """Sampler top-k logprobs stored as flat int32 `ids`, float32 `logprobs` and int32
-    `counts` arrays.
-
-    Each row contains the candidate token ids and logprobs the engine returned for one
-    completion token. Row boundaries are recovered from `counts`.
-    """
+    """Sampler top-k logprobs in the `SamplingMask` layout, with float32 `logprobs`
+    parallel to `ids`: one row of candidates per completion token."""
 
     ids: Any
     logprobs: Any
     counts: Any
-
-    @classmethod
-    def from_rows(
-        cls, ids_rows: list[list[int]], logprob_rows: list[list[float]]
-    ) -> "TopLogprobs":
-        counts = np.fromiter(
-            (len(row) for row in ids_rows), dtype=np.int32, count=len(ids_rows)
-        )
-        if int(counts.sum()):
-            ids = np.concatenate([np.asarray(row, dtype=np.int32) for row in ids_rows])
-            logprobs = np.concatenate(
-                [np.asarray(row, dtype=np.float32) for row in logprob_rows]
-            )
-        else:
-            ids = np.empty(0, dtype=np.int32)
-            logprobs = np.empty(0, dtype=np.float32)
-        return cls(ids=ids, logprobs=logprobs, counts=counts)
 
 
 class TurnTokens(BaseModel):
@@ -279,11 +258,9 @@ class TurnTokens(BaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): per-completion-token sampling masks,
-    # attributed to the assistant node by the turn's `commit`, then dropped.
+    # Transient carriers (excluded): per-completion-token sampling masks and top-k
+    # logprobs, attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): per-completion-token top-k logprobs,
-    # attributed to the assistant node by the turn's `commit`, then dropped.
     top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
 
