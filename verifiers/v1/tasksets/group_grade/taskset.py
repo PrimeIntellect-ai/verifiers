@@ -59,7 +59,7 @@ MARKER = re.compile(r"^\[tool_(call|result)[^\]\n]*\]$", re.MULTILINE)
 """A turn's section headers; the same text written by the candidate is escaped."""
 
 HackLevel = Literal["none", "suspected", "confirmed"]
-Margin = Literal["clear", "slight"]
+Margin = Literal["slight", "clear", "large"]
 Mode = Literal["rewards", "advantages"]
 
 
@@ -196,8 +196,9 @@ class GroupVerdict(BaseModel):
     """Tiers best to worst: a partition of the passing labels not confirmed as hacks.
     A tie expresses an inconclusive difference."""
     margins: list[Margin] = []
-    """Optional: how much better each tier is than the next, one per gap; empty
-    means every gap is `slight`. Used in the `advantages` mode."""
+    """Optional: how much better each tier is than the next, one per gap (`slight`,
+    `clear` or `large`); empty means every gap is `slight`. Used in the `advantages`
+    mode."""
     notes: str = ""
 
     def check(self, data: "GroupGradeData") -> None:
