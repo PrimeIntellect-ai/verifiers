@@ -22,6 +22,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.prefix import PrefixReplay
 from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
@@ -159,6 +160,7 @@ class Rollout:
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
+            replay=PrefixReplay(ctx.prefix) if ctx.prefix is not None else None,
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -520,6 +522,8 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
+                if self._session.replay is not None:
+                    self._session.replay.finish(trace)
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None

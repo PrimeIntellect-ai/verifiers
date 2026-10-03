@@ -525,6 +525,7 @@ class InterceptionServer(Interception):
         node: int | None = None,
         finish_reason: "FinishReason" = None,
         usage: "Usage | None" = None,
+        replayed: bool = False,
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
@@ -555,6 +556,7 @@ class InterceptionServer(Interception):
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,
                 usage=usage,
+                replayed=replayed,
                 time=TimeSpan(start=started, end=time.time()),
                 error=None
                 if error is None
@@ -797,6 +799,7 @@ class InterceptionServer(Interception):
                             headers=upstream_headers,
                             session_id=session.trace.id,
                             turn=turn,
+                            replay=session.replay,
                         )
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
@@ -887,7 +890,10 @@ class InterceptionServer(Interception):
                     finish_reason=call_response.finish_reason
                     if call_response
                     else None,
-                    usage=call_response.usage if call_response else None,
+                    usage=call_response.usage
+                    if call_response and not call_response.replayed
+                    else None,
+                    replayed=call_response is not None and call_response.replayed,
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
