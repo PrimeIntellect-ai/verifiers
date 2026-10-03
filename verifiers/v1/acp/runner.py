@@ -180,11 +180,16 @@ def user_content_blocks(contents: list, supports_images: bool) -> list:
     return blocks
 
 
+# A toolset with `TOOL_PREFIX = None` serves its tools unprefixed under an empty server
+# name, which ACP agents reject in `new_session` ("Invalid params"); give it a name there.
+UNNAMED_MCP_SERVER = "tools"
+
+
 def mcp_servers(config: dict) -> list[HttpMcpServer]:
     return [
         HttpMcpServer(
             type="http",
-            name=name,
+            name=name or UNNAMED_MCP_SERVER,
             url=url,
             headers=[
                 HttpHeader(name=key, value=value)
