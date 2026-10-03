@@ -68,13 +68,13 @@ class TaskTimeout(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    setup: float | None = None
+    setup: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the task's setup hook."""
-    agent: float | None = None
+    agent: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the agent's solve attempt."""
-    finalize: float | None = None
+    finalize: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the task's finalize hook."""
-    scoring: float | None = None
+    scoring: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the task's scoring."""
 
 

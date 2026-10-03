@@ -31,7 +31,7 @@ class DebugConfig(BaseConfig):
     """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
     for the debug command/script."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max tasks debugged in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
