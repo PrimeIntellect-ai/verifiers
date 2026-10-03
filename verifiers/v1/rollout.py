@@ -307,11 +307,19 @@ class Rollout:
             if relay_seconds and not runtime.is_local:
                 relay = await self._stack.enter_async_context(
                     serve_relay(
-                        runtime, base_url, relay_seconds, self.trace.record_metrics
+                        runtime,
+                        runtime.host_url(base_url.rstrip("/")),
+                        relay_seconds,
+                        self.trace.record_metrics,
                     )
                 )
-            harness_base = relay.url if relay else base_url
-            self._endpoint = runtime.host_url(f"{harness_base.rstrip('/')}/v1")
+            # The relay is on the runtime's own loopback: its URLs are not host-bound.
+            direct = {
+                route: runtime.host_url(f"{base_url.rstrip('/')}/{route}")
+                for route in ("v1", "tool")
+            }
+            routes = {r: f"{relay.url}/{r}" for r in direct} if relay else direct
+            self._endpoint = routes["v1"]
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -326,12 +334,10 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution(
-                [runtime.host_url(f"{base_url.rstrip('/')}/v1"), *self._urls.values()]
-            )
+            await runtime.prepare_execution([direct["v1"], *self._urls.values()])
             if relay is not None and not await relay.adopt_policy():
-                harness_base = base_url
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                routes = direct
+                self._endpoint = routes["v1"]
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
@@ -378,11 +384,7 @@ class Rollout:
                     )
                 if not self._session.stopped:
                     session_kwargs = (
-                        {
-                            "tool_interception_url": runtime.host_url(
-                                f"{harness_base.rstrip('/')}/tool"
-                            )
-                        }
+                        {"tool_interception_url": routes["tool"]}
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
                             self._session.request_interceptors

@@ -1,25 +1,26 @@
 """Loopback relay to a tunneled host URL, run inside a remote runtime (stdlib only).
 
-python3 relay_server.py UPSTREAM FILES WINDOW_SECONDS RETRY_HEADER
+python3 relay_server.py UPSTREAM FILES WINDOW_SECONDS RETRY_HEADER STAMP_HEADER
 
-FILES is a path prefix: the relay writes FILES.port and FILES.json (counters) and reads
-proxy settings from FILES.env whenever the host rewrites it.
+The host stamps its every response with STAMP_HEADER, so a transient-looking error without
+it came from something in between (a tunnel, proxy, or edge) and is retried, whatever its
+wording. FILES is a path prefix: the relay writes FILES.port and FILES.json (counters) and
+reads proxy settings from FILES.env whenever the host rewrites it.
 """
 
 from __future__ import annotations
 
 import base64
-import gzip
 import http.client
 import json
 import os
 import random
+import socket
 import ssl
 import sys
 import threading
 import time
 import urllib.request
-import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
@@ -44,18 +45,8 @@ def marked(headers: list, name: str, retry: int) -> list:
     return [*kept, (name, str(retry))]
 
 
-def tunnel_dark(response: http.client.HTTPResponse, page: bytes) -> bool:
-    encoding = (response.getheader("Content-Encoding") or "identity").lower()
-    try:
-        if encoding == "gzip":
-            page = gzip.decompress(page)
-        elif encoding == "deflate":
-            page = zlib.decompress(page)
-        elif encoding != "identity":
-            return False
-    except (OSError, EOFError, zlib.error):
-        return False
-    return b"Tunnel not found" in page
+def transient(status: int) -> bool:
+    return status in (404, 408, 429) or status >= 500
 
 
 class Relay(BaseHTTPRequestHandler):
@@ -77,11 +68,13 @@ class Relay(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def repeatable(self) -> bool:
-        # The host answers a marked repeat of these with the original's result.
+        # Safe to repeat: the host answers a marked repeat of a model call or tool-gate
+        # check with the original result; the rest are reads and whole-state replaces.
+        path = urlsplit(self.path).path
         return (
             self.command in ("GET", "HEAD")
-            or self.path.startswith("/v1/")
-            or self.path == "/tool"
+            or path.startswith("/v1/")
+            or path in ("/tool", "/state")
         )
 
     def attempt(self, headers: list, body: bytes, repeatable: bool):
@@ -128,7 +121,7 @@ class Relay(BaseHTTPRequestHandler):
         ]
         headers.append(("Host", self.server.host))
         repeatable = self.repeatable()
-        started, delay, retry = time.monotonic(), 0.5, 0
+        failed_at, delay, retry = 0.0, 0.5, 0
         while True:
             if retry and repeatable:
                 headers = marked(headers, self.server.retry_header, retry)
@@ -138,23 +131,28 @@ class Relay(BaseHTTPRequestHandler):
                 return self.reply(502, f"relay: {e}".encode())
             page = b""
             if response is not None:
-                if response.status != 404:
+                if response.getheader(self.server.stamp) or not transient(
+                    response.status
+                ):
                     break
+                # An error from something between here and the host, which may or may
+                # not have passed the request on.
                 page = response.read(1 << 16)
-                if not tunnel_dark(response, page):
-                    break
                 conn.close()
+                if not repeatable:
+                    return self.reply(response.status, page, response.getheaders())
             elif sent and not repeatable:
                 return self.reply(502, b"relay: connection to host lost")
+            failed_at = failed_at or time.monotonic()
             pause = delay * random.uniform(0.5, 1.5)
-            if time.monotonic() + pause > started + self.server.window:
-                self.server.count(retry, started, rescued=False)
+            if time.monotonic() + pause > failed_at + self.server.window:
+                self.server.count(retry, failed_at, rescued=False)
                 if response is not None:
-                    return self.reply(404, page, response.getheaders())
+                    return self.reply(response.status, page, response.getheaders())
                 return self.reply(502, b"relay: host unreachable")
             time.sleep(pause)
             delay, retry = min(delay * 2, 10.0), retry + 1
-        self.server.count(retry, started, rescued=True)
+        self.server.count(retry, failed_at, rescued=True)
         self.forward(conn, response, page)
 
     def reply(self, status: int, payload: bytes, headers: list = ()) -> None:
@@ -214,7 +212,9 @@ class Relay(BaseHTTPRequestHandler):
 class RelayServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, upstream: str, files: str, window: float, retry_header: str):
+    def __init__(
+        self, upstream: str, files: str, window: float, retry_header: str, stamp: str
+    ):
         try:
             with open(f"{files}.port") as f:
                 port = int(f.read().split()[0])  # a restart keeps the address
@@ -228,6 +228,7 @@ class RelayServer(ThreadingHTTPServer):
         self.base_path = url.path.rstrip("/")
         self.context = ssl.create_default_context() if self.https else None
         self.files, self.window, self.retry_header = files, window, retry_header
+        self.stamp = stamp
         self.env_mtime = 0.0
         self.idle: list = []
         self.lock = threading.Lock()
@@ -287,6 +288,16 @@ class RelayServer(ThreadingHTTPServer):
             conn.set_tunnel(self.hostname, self.port, headers)
         conn.connect()
         conn.sock.settimeout(None)
+        # Model turns can stream for many minutes, so no read timeout; keepalive probes
+        # instead notice a connection that died silently (about 90 s).
+        conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for option, value in (
+            ("TCP_KEEPIDLE", 30),
+            ("TCP_KEEPINTVL", 10),
+            ("TCP_KEEPCNT", 6),
+        ):
+            if hasattr(socket, option):
+                conn.sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, option), value)
         return conn
 
     def handle_error(self, request, client_address) -> None:
@@ -307,8 +318,8 @@ class RelayServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    upstream, files, window, retry_header = sys.argv[1:5]
-    server = RelayServer(upstream, files, float(window), retry_header)
+    upstream, files, window, retry_header, stamp = sys.argv[1:6]
+    server = RelayServer(upstream, files, float(window), retry_header, stamp)
     with open(f"{files}.port.tmp", "w") as f:
         f.write(f"{server.server_address[1]} {os.getpid()}")
     os.replace(f"{files}.port.tmp", f"{files}.port")
