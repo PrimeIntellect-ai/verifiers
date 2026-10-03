@@ -72,12 +72,16 @@ class CompactionFailed(Exception):
     """Every checkpoint attempt failed - the caller ends the run cleanly instead."""
 
 
-def is_context_overflow(error: APIStatusError) -> bool:
-    details = f"{error} {error.body or ''}"
+def reports_context_overflow(status_code: int, details: str) -> bool:
+    """Whether a provider rejection says the prompt exceeds the model's context window."""
     # An overflow is deterministic: a 400, or a 413 for a byte-size cap.
-    return error.status_code in (400, 413) and any(
+    return status_code in (400, 413) and any(
         marker in details.casefold() for marker in CONTEXT_OVERFLOW_MARKERS
     )
+
+
+def is_context_overflow(error: APIStatusError) -> bool:
+    return reports_context_overflow(error.status_code, f"{error} {error.body or ''}")
 
 
 def default_threshold(context_window: int) -> int:

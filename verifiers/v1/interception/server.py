@@ -56,6 +56,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
 )
+from verifiers.v1.harnesses.utils.compaction import reports_context_overflow
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
     PrimeTunnelConfig,
@@ -847,6 +848,8 @@ class InterceptionServer(Interception):
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                    # An overflow goes back in the dialect's own overflow wording, so a harness
+                    # that compacts on it recovers (and its next turn clears the stash).
                     error = e
                     session.error = e
                     logger.warning(
@@ -855,9 +858,15 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
+                    status = getattr(e, "status_code", 502)
+                    overflow = isinstance(
+                        e, ProviderError
+                    ) and reports_context_overflow(status, str(e))
                     return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                        dialect.context_overflow_body(str(e))
+                        if overflow
+                        else dialect.error_body(str(e)),
+                        status=status,
                     )
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
