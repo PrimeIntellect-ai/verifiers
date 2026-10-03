@@ -347,6 +347,12 @@ class HarnessSession:
         self.tool_interception_url = tool_interception_url
         self._closed = False
 
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        """Deliver a user message during a running turn, if supported by the harness."""
+        raise NotImplementedError(
+            f"harness {self.harness.config.id!r} does not support steering"
+        )
+
     async def turn(self, messages: Messages | None = None) -> None:
         """Run one harness segment while retaining session state for the next."""
         if self._closed:

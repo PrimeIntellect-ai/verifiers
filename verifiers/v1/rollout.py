@@ -405,6 +405,13 @@ class Rollout:
         self.trace.notify()
         return not self._session.stopped
 
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed or not self.ok:
+            raise RuntimeError("this rollout is closed or stopped")
+        if self._harness_session is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        return await self._harness_session.steer(message, message_id=message_id)
+
     async def step(self, messages: Messages | None = None) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
