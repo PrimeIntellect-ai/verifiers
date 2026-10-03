@@ -96,8 +96,8 @@ IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
 def _replay_reply(
     session: RolloutSession, dialect: Dialect, request: Request
 ) -> tuple[Response, Literal["exact", "forced"]] | None:
-    """The recorded reply that answers this request, rendered for the harness; None to
-    sample live. Replay only saves work, so a failure in it falls back to the model."""
+    """The recorded reply that answers this request, rendered for the harness; None when
+    there is none, or when the lookup fails (logged)."""
     if session.ctx.replay is None or isinstance(session.ctx.client, TrainClientConfig):
         return None
     try:
