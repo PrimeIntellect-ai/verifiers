@@ -127,10 +127,23 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     assert trace.last_reply == "current partial reply"
 
 
-def test_bare_trace_round_trip():
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        None,
+        {},
+        {"reasoning_effort": "high"},
+        {"temperature": None},
+        {"max_completion_tokens": None},
+        {"extra_body": {"top_k": None}},
+        {"extra_body": None},
+        {"top_k": 10, "extra_body": {"frequency_penalty": 0.5}},
+    ],
+)
+def test_bare_trace_round_trip(sampling):
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=vf.AgentConfig(sampling=sampling)),
         task=vf.TraceTask(
             type="Task",
             data=vf.TaskData(idx=3, prompt="hello"),
@@ -145,6 +158,12 @@ def test_bare_trace_round_trip():
     assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
     assert rt.num_turns == 0 and rt.num_branches == 0
     assert rt.reward == 0.0 and rt.errors == []
+    assert rt.agent.config == tr.agent.config
+    if sampling is not None:
+        assert (
+            rt.agent.config.sampling.model_fields_set
+            == tr.agent.config.sampling.model_fields_set
+        )
 
 
 def test_custom_task_state_round_trip(tmp_path):
