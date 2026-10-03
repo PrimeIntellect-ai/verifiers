@@ -104,6 +104,9 @@ class MessageNode(BaseModel):
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
+    replayed: int = Field(default=0, exclude_if=lambda replayed: not replayed)
+    """Completion tokens served by a prefix replay (`verifiers.v1.prefix`) instead of
+    sampled: context the policy did not generate, so `mask` is False over them."""
     timestamp: float = Field(default_factory=time.time)
     """Wall-clock epoch seconds when this node was created. Nodes materialize at turn commit,
     so a turn's new input nodes and its assistant node carry (near-)identical stamps and the
@@ -489,7 +492,7 @@ class PendingTurn:
         last = self.trace.nodes[self.prefix_node_ids[-1]]
         if not last.sampled:
             return None
-        num_sampled = sum(last.mask)
+        num_sampled = sum(last.mask) or last.replayed
         if not num_sampled:
             return None
 
@@ -933,6 +936,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         renderer_cursor = renderer_end
 
     comp_ids = tokens.completion_ids if tokens else []
+    replayed = len(comp_ids) if response.replayed else 0
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
     renderer_gen_start = (
@@ -945,9 +949,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             tools=turn.tools if parent is None else [],
             message=response.message,
             sampled=True,
+            replayed=replayed,
             token_ids=[*gen_prompt, *comp_ids],
             renderer_token_ids=[*renderer_gen_prompt, *comp_ids],
-            mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
+            mask=[False] * len(gen_prompt) + [not replayed] * len(comp_ids),
             is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
             if has_is_content
             else [],
