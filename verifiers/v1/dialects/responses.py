@@ -739,8 +739,19 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                         ],
                     },
                 )
+            if message.reasoning_content:
+                output.insert(
+                    0,
+                    {
+                        "type": "reasoning",
+                        "id": f"rs_{response.id}",
+                        "summary": [
+                            {"type": "summary_text", "text": message.reasoning_content}
+                        ],
+                    },
+                )
         usage = response.usage
-        return {
+        raw = {
             "id": response.id,
             "object": "response",
             "created_at": response.created,
@@ -767,6 +778,8 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             if usage
             else None,
         }
+        self.validate_response(raw)
+        return raw
 
     def stream_events(self, raw: dict) -> list[bytes]:
         head = {
