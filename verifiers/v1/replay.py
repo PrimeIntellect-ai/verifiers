@@ -16,12 +16,15 @@ request is answered with the recorded reply that followed the prompt's last assi
 message, or that opened a branch when the prompt has none. The harness still runs every tool
 call, so its runtime and program state are rebuilt."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
 from verifiers.v1 import graph
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, Message, Response, Tool
+
+logger = logging.getLogger(__name__)
 
 ReplayMode = Literal["resume", "playback"]
 ReplayMatch = Literal["exact", "forced"]
@@ -66,7 +69,16 @@ class _Recording:
 class Replay:
     def __init__(self, traces: list[Trace], *, mode: ReplayMode = "resume") -> None:
         self.mode = mode
-        self._recordings = [_Recording(trace) for trace in traces]
+        self._recordings: list[_Recording] = []
+        for trace in traces:
+            try:
+                self._recordings.append(_Recording(trace))
+            except Exception:
+                logger.warning(
+                    "skipping a recording that does not load: id=%s",
+                    trace.id,
+                    exc_info=True,
+                )
         self._bound: dict[str, _Recording] = {}
 
     def claim(self, agent: str, task_key: str, trace_id: str) -> str:

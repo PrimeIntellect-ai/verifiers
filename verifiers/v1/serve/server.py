@@ -102,7 +102,14 @@ class EnvServer:
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         if req.replay:
-            traces = [WireTrace.model_validate(trace) for trace in req.replay]
+            traces = []
+            for trace in req.replay:
+                try:
+                    traces.append(WireTrace.model_validate(trace))
+                except ValueError:
+                    logger.warning(
+                        "skipping a recording that does not validate", exc_info=True
+                    )
             ctx = replace(ctx, replay=Replay(traces))
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
