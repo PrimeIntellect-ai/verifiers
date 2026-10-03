@@ -98,8 +98,10 @@ async def discover_threshold(client: AsyncOpenAI, model: str) -> int | None:
         if card.id != model:
             continue
         extra = card.model_extra or {}
+        # Prime Inference nests the window under `specs`.
+        specs = extra.get("specs") if isinstance(extra.get("specs"), dict) else {}
         for field in CONTEXT_WINDOW_FIELDS:
-            value = extra.get(field)
+            value = extra.get(field, specs.get(field))
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return default_threshold(value)
         break
