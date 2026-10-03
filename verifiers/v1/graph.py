@@ -33,7 +33,6 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
-    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -49,7 +48,6 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
-    TopLogprobs,
 )
 
 if TYPE_CHECKING:
@@ -165,9 +163,6 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
-    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
-    """Sampler top-k logprobs for this node's sampled tokens, in the `sampling_mask`
-    layout; recorded when the rollout requested an int `logprobs` k > 1."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -209,23 +204,24 @@ class MessageNode(BaseModel):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("sampling_mask", "top_logprobs")
-    def serialize_rows(self, rows: SamplingMask | TopLogprobs | None) -> dict | None:
-        if rows is None:
+    @field_serializer("sampling_mask")
+    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
+        if mask is None:
             return None
-        return {name: _encode_ndarray(array) for name, array in vars(rows).items()}
+        return {
+            name: _encode_ndarray(array)
+            for name, array in vars(mask).items()
+            if array is not None
+        }
 
-    @field_validator("sampling_mask", "top_logprobs", mode="before")
+    @field_validator("sampling_mask", mode="before")
     @classmethod
-    def deserialize_rows(
-        cls, value: Any, info: ValidationInfo
-    ) -> SamplingMask | TopLogprobs | None:
-        row_type = SamplingMask if info.field_name == "sampling_mask" else TopLogprobs
-        if value is None or isinstance(value, row_type):
+    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
+        if value is None or isinstance(value, SamplingMask):
             return value
         if isinstance(value, dict):
-            return row_type(**{k: _decode_ndarray(v) for k, v in value.items()})
-        raise TypeError(f"cannot build {row_type.__name__} from {type(value).__name__}")
+            return SamplingMask(**{k: _decode_ndarray(v) for k, v in value.items()})
+        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -694,21 +690,20 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_rows(
-    trace: Trace,
-    assistant_id: int,
-    field: str,
-    payload: SamplingMask | TopLogprobs | None,
+def _attribute_sampling_mask(
+    trace: Trace, assistant_id: int, payload: SamplingMask | None
 ) -> None:
-    """Attach completion-aligned rows (sampling mask, top-k logprobs) to the assistant node."""
+    """Attach a completion-aligned sampling mask to the assistant node."""
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
-        payload.ids
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or (payload.logprobs is not None and len(payload.logprobs) != len(payload.ids))
     ):
         return
-    setattr(node, field, payload)
+    node.sampling_mask = payload
 
 
 def _project_prompt_attribution(
@@ -971,11 +966,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
-    # Sampling masks and top-k logprobs are completion-aligned, so only the sampled
-    # node carries them.
-    if tokens is not None:
-        _attribute_rows(trace, assistant_id, "sampling_mask", tokens.sampling_mask)
-        _attribute_rows(trace, assistant_id, "top_logprobs", tokens.top_logprobs)
+    # Sampling masks are completion-aligned, so only the sampled node carries them.
+    _attribute_sampling_mask(
+        trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
 
     return assistant_id
 

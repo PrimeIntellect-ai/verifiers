@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
-import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
@@ -29,7 +28,6 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolCall,
-    TopLogprobs,
     TurnTokens,
     Usage,
 )
@@ -180,18 +178,10 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            sampling_mask=SamplingMask.from_sampling_mask(mask)
-            if (mask := result.get("sampling_mask"))
-            else None,
-            # vLLM returns exactly k candidates per completion token.
-            top_logprobs=TopLogprobs(
-                ids=np.asarray(top_ids, dtype=np.int32).ravel(),
-                logprobs=np.asarray(
-                    result["completion_top_logprobs"], dtype=np.float32
-                ).ravel(),
-                counts=np.fromiter(map(len, top_ids), dtype=np.int32),
+            sampling_mask=SamplingMask.from_sampling_mask(
+                mask, result.get("sampling_mask_logprobs")
             )
-            if (top_ids := result.get("completion_top_ids")) is not None
+            if (mask := result.get("sampling_mask"))
             else None,
         ),
     )

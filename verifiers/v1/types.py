@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import chain
 from typing import Annotated, Any, Literal
 
 import numpy as np
@@ -195,14 +196,20 @@ class SamplingMask:
     """Sampling masks stored as flat int32 `ids` and `counts` arrays.
 
     Each row contains the token ids that survived sampling filters for one completion
-    token. Row boundaries are recovered from `counts`.
+    token. Row boundaries are recovered from `counts`. The optional float32 `logprobs`,
+    parallel to `ids`, are the sampler's renormalized logprobs of those ids.
     """
 
     ids: Any
     counts: Any
+    logprobs: Any = None
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls,
+        sampling_mask: list[list[int]],
+        logprobs: list[list[float]] | None = None,
+    ) -> "SamplingMask":
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -213,17 +220,9 @@ class SamplingMask:
             if int(counts.sum())
             else np.empty(0, dtype=np.int32)
         )
-        return cls(ids=ids, counts=counts)
-
-
-@dataclass
-class TopLogprobs:
-    """Sampler top-k logprobs in the `SamplingMask` layout, with float32 `logprobs`
-    parallel to `ids`: one row of candidates per completion token."""
-
-    ids: Any
-    logprobs: Any
-    counts: Any
+        if logprobs is not None:
+            logprobs = np.fromiter(chain.from_iterable(logprobs), dtype=np.float32)
+        return cls(ids=ids, counts=counts, logprobs=logprobs)
 
 
 class TurnTokens(BaseModel):
@@ -258,10 +257,9 @@ class TurnTokens(BaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carriers (excluded): per-completion-token sampling masks and top-k
-    # logprobs, attributed to the assistant node by the turn's `commit`, then dropped.
+    # Transient carrier (excluded): per-completion-token sampling masks,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
-    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):

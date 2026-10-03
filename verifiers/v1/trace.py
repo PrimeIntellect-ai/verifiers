@@ -31,7 +31,6 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolMessage,
-    TopLogprobs,
     Usage,
     content_text,
 )
@@ -45,7 +44,6 @@ EXCLUDE_FIELDS: dict = {
         "__all__": {
             "routed_experts",
             "sampling_mask",
-            "top_logprobs",
         }
     }
 }
@@ -335,34 +333,28 @@ class Branch(BaseModel):
             return None
         # Attribution validates each mask against the node's sampled positions.
         ids_parts: list[np.ndarray] = []
+        logprobs_parts: list[np.ndarray | None] = []
         counts_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
             if node.sampling_mask is not None and len(node.sampling_mask.counts):
                 counts[np.nonzero(node.mask)[0]] = node.sampling_mask.counts
                 ids_parts.append(node.sampling_mask.ids)
+                logprobs_parts.append(node.sampling_mask.logprobs)
             counts_parts.append(counts)
         ids = (
             np.concatenate(ids_parts).astype(np.int32, copy=False)
             if ids_parts
             else np.zeros(0, dtype=np.int32)
         )
-        return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
-
-    @property
-    def top_logprobs(self) -> TopLogprobs | None:
-        """Sampler top-k logprobs aligned to this branch's token ids, like `sampling_mask`."""
-        tops = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
-        if not tops:
-            return None
-        counts = [np.zeros(len(n.mask), dtype=np.int32) for n in self.nodes]
-        for node, node_counts in zip(self.nodes, counts):
-            if node.top_logprobs is not None:
-                node_counts[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
-        return TopLogprobs(
-            ids=np.concatenate([t.ids for t in tops]).astype(np.int32, copy=False),
-            logprobs=np.concatenate([t.logprobs for t in tops]).astype(np.float32),
-            counts=np.concatenate(counts),
+        # Logprobs only when every mask on the path carries them.
+        logprobs = (
+            np.concatenate([np.zeros(0, np.float32), *logprobs_parts])
+            if all(part is not None for part in logprobs_parts)
+            else None
+        )
+        return SamplingMask(
+            ids=ids, counts=np.concatenate(counts_parts), logprobs=logprobs
         )
 
     @property
