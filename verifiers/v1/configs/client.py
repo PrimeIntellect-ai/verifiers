@@ -48,6 +48,9 @@ class BaseClientConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
+    headers_from_env: dict[str, str] = Field(default_factory=dict)
+    """Header names mapped to environment variables, resolved when building a client.
+    Set environment values override static headers."""
     timeout: ClientTimeoutConfig = ClientTimeoutConfig()
 
     @model_validator(mode="after")
@@ -65,14 +68,6 @@ class BaseClientConfig(BaseConfig):
             and self.base_url == DEFAULT_PRIME_INFERENCE_URL
         ):
             self.base_url = prime_base_url
-        host = urlparse(self.base_url).hostname or ""
-        if host != PRIME_INFERENCE_HOST and not host.endswith(
-            f".{PRIME_INFERENCE_HOST}"
-        ):
-            return self
-        team_id = os.environ.get("PRIME_TEAM_ID") or prime_config.get("team_id")
-        if team_id:
-            self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
 
 
@@ -121,3 +116,25 @@ def resolve_api_key(config: BaseClientConfig) -> str:
     ):
         api_key = load_prime_config().get("api_key")
     return api_key or "EMPTY"
+
+
+def resolve_headers(config: BaseClientConfig) -> dict[str, str]:
+    """Resolve request headers for this destination without storing credentials in config."""
+    headers = {
+        **config.headers,
+        **{
+            name: value
+            for name, variable in config.headers_from_env.items()
+            if (value := os.environ.get(variable)) is not None
+        },
+    }
+    host = urlparse(config.base_url).hostname or ""
+    if (
+        config.api_key_var == "PRIME_API_KEY"
+        and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
+        and PRIME_TEAM_ID_HEADER.lower() not in {name.lower() for name in headers}
+    ):
+        team_id = os.environ.get("PRIME_TEAM_ID") or load_prime_config().get("team_id")
+        if team_id:
+            headers[PRIME_TEAM_ID_HEADER] = team_id
+    return headers
