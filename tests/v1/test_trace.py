@@ -24,6 +24,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -603,10 +604,26 @@ def test_acp_derives_compaction_attempt_branch_trainability():
             ),
         ],
         calls=[
-            vf.ModelCall(node=1, acp=vf.ACPInfo(request_id="work")),
-            vf.ModelCall(node=3, acp=vf.ACPInfo(request_id="rejected")),
-            vf.ModelCall(node=4, acp=vf.ACPInfo(request_id="accepted")),
-            vf.ModelCall(node=6, acp=vf.ACPInfo(request_id="resumed")),
+            vf.ModelCall(
+                node=1,
+                acp=vf.ACPInfo(request_id="work"),
+                usage=vf.Usage(prompt_tokens=0, completion_tokens=10),
+            ),
+            vf.ModelCall(
+                node=3,
+                acp=vf.ACPInfo(request_id="rejected"),
+                usage=vf.Usage(prompt_tokens=0, completion_tokens=20),
+            ),
+            vf.ModelCall(
+                node=4,
+                acp=vf.ACPInfo(request_id="accepted"),
+                usage=vf.Usage(prompt_tokens=0, completion_tokens=30),
+            ),
+            vf.ModelCall(
+                node=6,
+                acp=vf.ACPInfo(request_id="resumed"),
+                usage=vf.Usage(prompt_tokens=0, completion_tokens=40),
+            ),
         ],
     )
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
@@ -677,6 +694,10 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     assert branches["answer"].trainable is True
     assert branches["bad tool call"].nodes[-2] is trace.nodes[2]
     assert branches["accepted summary"].nodes[-2] is trace.nodes[2]
+    # The shared work call and failed compaction are each billed once.
+    assert sum(branch.num_output_tokens for branch in trace.branches) == 110
+    assert trace.num_output_tokens == trace.usage.completion_tokens == 100
+    assert RolloutLimits(max_output_tokens=105).reached(trace) is None
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.nodes[3].sampled is True
@@ -687,6 +708,15 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     }
     assert restored_branches["bad tool call"].trainable is False
     assert restored_branches["accepted summary"].trainable is True
+    assert restored.num_output_tokens == 100
+    # Calls without a graph node still consume the output budget; judges do not.
+    trace.calls.append(
+        vf.ModelCall(usage=vf.Usage(prompt_tokens=0, completion_tokens=5))
+    )
+    trace.calls.append(vf.ModelCall())
+    trace.extra_usage.append(vf.Usage(prompt_tokens=0, completion_tokens=50))
+    assert trace.num_output_tokens == 105
+    assert RolloutLimits(max_output_tokens=105).reached(trace) == "max_output_tokens"
 
 
 def test_semantic_edge_set_rejects_duplicate_and_self_edges_but_accepts_loops():
