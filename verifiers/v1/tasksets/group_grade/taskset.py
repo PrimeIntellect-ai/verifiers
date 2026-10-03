@@ -31,16 +31,18 @@ from verifiers.v1.tasksets.group_grade.workspaces import (
     GradeState,
     Workspaces,
     WorkspacesConfig,
+    build_inner,
+    collect_privileged,
 )
 from verifiers.v1.types import AssistantMessage, ToolMessage, content_text
 from verifiers.v1.utils.loaders import (
     narrow_plugin_field,
-    taskset_class,
     taskset_config_type,
 )
 
 GRADE_DIR = "/grade"
 VERDICT_FILE = f"{GRADE_DIR}/verdict.json"
+PRIVILEGED_DIR = f"{GRADE_DIR}/privileged"
 GRADE_PROMPT = (Path(__file__).parent / "grade_prompt.md").read_text()
 RANKING_RULES = {
     "rewards": (Path(__file__).parent / "rank_passing.md").read_text(),
@@ -240,9 +242,6 @@ class GroupGradeData(vf.TaskData):
     workdir: str | None = GRADE_DIR
     network_allow: list[str] = Field(default_factory=list)
     """Framework-only: the grader reaches its model and nothing else."""
-    box_env: dict[str, str] = Field(default_factory=dict)
-    """Environment of commands in a candidate's box: the inner task's runtime env,
-    set by `GroupGradeTask`."""
 
     @classmethod
     def from_traces(
@@ -321,18 +320,16 @@ class GroupGradeTask(vf.Task[GroupGradeData, GradeState, GroupGradeTaskConfig]):
         inner = self.config.inner
         if not inner.id:
             raise ValueError("group-grade needs the inner taskset: task.inner.id")
-        task_cls = taskset_class(inner.id).task_type()
-        self.inner = task_cls(
-            task_cls.data_type().model_validate(data.inner), inner.task
-        )
-        update: dict = {"box_env": self.inner.runtime_env()}
+        self.inner = build_inner(inner, data.inner)
         if data.prompt is None:
-            update["prompt"] = self.build_prompt()
-        self.data = data.model_copy(update=update)
+            self.data = data.model_copy(update={"prompt": self.build_prompt()})
 
     @classmethod
     def toolsets(cls, config: GroupGradeTaskConfig) -> list[vf.Toolset]:
-        return [] if config.workspaces is None else [Workspaces(config.workspaces)]
+        if config.workspaces is None:
+            return []
+        inner = config.inner.model_dump(mode="json")
+        return [Workspaces(config.workspaces.model_copy(update={"inner": inner}))]
 
     def build_prompt(self) -> str:
         policy = self.config.prompt
@@ -360,7 +357,22 @@ class GroupGradeTask(vf.Task[GroupGradeData, GradeState, GroupGradeTaskConfig]):
         rules = RANKING_RULES[self.data.mode]
         return "\n\n".join([body, rules, task, f"## Candidates\n\n{listing}"])
 
-    async def setup(self, runtime: vf.Runtime) -> None:
+    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        # Ground truth the candidates never saw; only file names and sizes reach the
+        # trace.
+        privileged = await collect_privileged(self.inner, type(runtime.config)())
+        written = {
+            **{f"{PRIVILEGED_DIR}/{p}": c for p, c in privileged.files.items()},
+            **{
+                f"{PRIVILEGED_DIR}/staged/{p.lstrip('/')}": c
+                for p, c in privileged.staged.items()
+            },
+        }
+        if privileged.notes:
+            written[f"{PRIVILEGED_DIR}/NOTES.md"] = privileged.notes.encode()
+        for path, content in written.items():
+            await runtime.write(path, content)
+        trace.info["privileged"] = {path: len(c) for path, c in written.items()}
         for c in self.data.candidates:
             folder = f"{GRADE_DIR}/{c.label}"
             await runtime.write(f"{folder}/turns.json", json.dumps(c.turns).encode())

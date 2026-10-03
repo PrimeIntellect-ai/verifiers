@@ -3,13 +3,23 @@ the checkpoint its rollout took when the agent finished (`agent.checkpoint_on_fi
 
 import asyncio
 import contextlib
+import inspect
+import logging
 import time
 from collections import OrderedDict
+from typing import ClassVar
 
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import PrimeConfig, Runtime, provision_runtime
+from verifiers.v1.runtimes import PrimeConfig, Runtime, RuntimeConfig, provision_runtime
+from verifiers.v1.state import state_cls
+from verifiers.v1.trace import AgentInfo, TraceTask
+from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.loaders import taskset_class, taskset_config_type
+
+logger = logging.getLogger(__name__)
 
 OUTPUT_CHARS = 8000
 """Command output is cut to its head and tail beyond this."""
@@ -19,11 +29,41 @@ COMMAND_SECONDS = 600
 class WorkspacesConfig(vf.ToolsetConfig):
     max_open: int = 4
     """Candidate boxes open at once; opening one more closes the least recently used."""
+    inner: dict = Field(default_factory=dict)
+    """The graded taskset's config, set by `GroupGradeTask`."""
 
 
 class GradeState(vf.State):
     restores: list[float] = Field(default_factory=list)
     """Seconds each candidate box took to restore, in order."""
+
+
+def build_inner(inner: vf.TasksetConfig | dict, data: dict) -> vf.Task:
+    """The graded task, rebuilt from its taskset config and its wire data."""
+    if isinstance(inner, dict):
+        inner = taskset_config_type(inner["id"]).model_validate(inner)
+    task_cls = taskset_class(inner.id).task_type()
+    return task_cls(task_cls.data_type().model_validate(data), inner.task)
+
+
+async def collect_privileged(task: vf.Task, box: RuntimeConfig) -> vf.Privileged:
+    """`task.privileged()`; a hook that requires `runtime` gets a fresh box of the task
+    (from `box`) after its `setup`, torn down after."""
+    param = inspect.signature(task.privileged).parameters.get("runtime")
+    if param is None or param.default is not inspect.Parameter.empty:
+        return await task.privileged()
+    config = resolve_runtime_config(box, task)
+    async with provision_runtime(config, env=dict(task.runtime_env())) as runtime:
+        await runtime.prepare_setup()
+        trace = vf.Trace(
+            task=TraceTask(
+                type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+            ),
+            state=state_cls(type(task))(),
+            agent=AgentInfo(config=vf.AgentConfig()),
+        )
+        await invoke(task.setup, {"trace": trace, "runtime": runtime})
+        return await task.privileged(runtime)
 
 
 def cut(text: str, limit: int = OUTPUT_CHARS) -> str:
@@ -37,6 +77,7 @@ def cut(text: str, limit: int = OUTPUT_CHARS) -> str:
 
 class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
     TOOL_PREFIX = None
+    ENV: ClassVar[tuple[str, ...]] = ("PRIME_API_KEY",)
 
     async def setup(self) -> None:
         self.boxes: OrderedDict[str, tuple[Runtime, contextlib.AsyncExitStack]] = (
@@ -44,16 +85,30 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
         )
         self.locks: dict[str, asyncio.Lock] = {}
         self.restores: list[float] = []
+        self.staging = asyncio.Lock()
+        self.staged: dict[str, bytes] | None = None
         self._exit_stack.push_async_callback(self.close_all)
 
     async def setup_task(self, data) -> None:
         """`data` is the rollout's `GroupGradeData`."""
         self.checkpoints = {c.label: c.checkpoint for c in data.candidates}
-        self.env = data.box_env
-        inner = vf.WireTaskData.model_validate(data.inner)
-        # A restored box keeps the checkpoint's disk.
-        resources = inner.resources.model_dump(exclude_none=True, exclude={"disk"})
-        self.box = PrimeConfig(allow=[], workdir=inner.workdir, **resources)
+        self.task = build_inner(self.config.inner, data.inner)
+        self.box = resolve_runtime_config(PrimeConfig(allow=[]), self.task)
+
+    async def stage(self, runtime: Runtime) -> None:
+        """Write what the task's verification expects in the box (`Privileged.staged`,
+        e.g. hidden tests), collected once per episode."""
+        async with self.staging:
+            if self.staged is None:
+                try:
+                    self.staged = (
+                        await collect_privileged(self.task, PrimeConfig())
+                    ).staged
+                except Exception:
+                    logger.warning("collecting staged files failed", exc_info=True)
+                    self.staged = {}
+        for path, content in self.staged.items():
+            await runtime.write(path, content)
 
     async def close_all(self) -> None:
         await asyncio.gather(
@@ -75,8 +130,9 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
             stack = contextlib.AsyncExitStack()
             try:
                 runtime = await stack.enter_async_context(
-                    provision_runtime(config, env=self.env)
+                    provision_runtime(config, env=dict(self.task.runtime_env()))
                 )
+                await self.stage(runtime)
                 await runtime.prepare_execution([])
             except BaseException:
                 await stack.aclose()

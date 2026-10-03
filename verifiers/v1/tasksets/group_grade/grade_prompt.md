@@ -32,7 +32,9 @@ Network access is blocked. For each candidate, `/grade/<label>/` holds:
 - `patch.diff`: the final patch, if the candidate's task records one.
 - `tests.txt`: the tail of the hidden-test output behind the reward, if recorded.
 
-`candidate_shell(label, command)` runs a shell command in a candidate's own box: its filesystem exactly as it left it when it finished, in the task's working directory. The first call for a candidate takes 10-30 seconds to restore its box; later calls reuse it, and changes you make persist. Candidates listed with `box: no` have no box; grade them from their files. The hidden tests are not in the boxes.
+`candidate_shell(label, command)` runs a shell command in a candidate's own box: its filesystem exactly as it left it when it finished, in the task's working directory. The first call for a candidate takes 10-30 seconds to restore its box; later calls reuse it, and changes you make persist. Candidates listed with `box: no` have no box; grade them from their files.
+
+`/grade/privileged/` holds the task's ground truth, which the candidates never saw: whatever its scoring knows, such as expected answers, reference solutions or gold patches, rubrics, judge prompts, scoring code (`scoring.py`), the hidden tests, and `NOTES.md` on how the task is scored. Use it to verify the candidates' work, not as a model answer to rank by resemblance: a different correct solution is as good. Files under `/grade/privileged/staged/` are what verification expects inside a candidate's box (their path below `staged/` is their path in the box); they are written into each candidate's box when it is restored, so you can re-run the task's checks there.
 
 ## Your verdict
 

@@ -143,6 +143,9 @@ def _uvicorn_server():
 
 
 class ServerBase(Generic[ConfigT, StateT]):
+    ENV: ClassVar[tuple[str, ...]] = ()
+    """Host environment variables a host-side (subprocess) server gets explicitly: the
+    subprocess runtime does not inherit names containing `API_KEY`."""
     TOOL_PREFIX: ClassVar[str | None] = ""
     """The empty value falls back to the snake-cased class name. None advertises the server's
     tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
