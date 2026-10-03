@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
@@ -118,6 +118,7 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
+        self._checkpoint_on_finish = agent_config.checkpoint_on_finish
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -493,6 +494,21 @@ class Rollout:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
 
+    async def _checkpoint(self, runtime: Runtime) -> Awaitable[str] | None:
+        """Cut a filesystem checkpoint of the finished agent's box; None when the
+        runtime has none or the request fails. `close` records its id and the
+        seconds from request to restorable."""
+        self._checkpoint_started = time.time()
+        try:
+            return await runtime.checkpoint()
+        except NotImplementedError:
+            return None
+        except Exception:
+            logger.warning(
+                "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
+            )
+            return None
+
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
         and per-rollout scoring (skipped when the run already failed — but a stopped
@@ -503,6 +519,7 @@ class Rollout:
         self._closed = True
         trace = self.trace
         runtime = self.runtime
+        checkpoint: Awaitable[str] | None = None
         try:
             if self._harness_session is not None:
                 try:
@@ -523,6 +540,8 @@ class Rollout:
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
+                if self._checkpoint_on_finish:
+                    checkpoint = await self._checkpoint(runtime)
                 trace.timing.finalize.start = time.time()
                 try:
                     async with (
@@ -566,6 +585,16 @@ class Rollout:
                     await self._harness_session.close()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
+            if checkpoint is not None:
+                try:
+                    trace.info["checkpoint"] = await checkpoint
+                    trace.info["checkpoint_seconds"] = (
+                        time.time() - self._checkpoint_started
+                    )
+                except Exception:
+                    logger.warning(
+                        "checkpoint failed (rollout %s)", trace.id, exc_info=True
+                    )
             trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()

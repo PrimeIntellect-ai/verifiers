@@ -96,7 +96,14 @@ from verifiers.v1.semantic import (
     SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
+from verifiers.v1.task import (
+    Privileged,
+    Task,
+    TaskData,
+    TaskResources,
+    TaskTimeout,
+    WireTaskData,
+)
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
     TRACE_VERSION,
@@ -223,6 +230,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # task / trace / state
     "Task",
     "TaskData",
+    "Privileged",
     "WireTaskData",
     "TaskResources",
     "TaskTimeout",

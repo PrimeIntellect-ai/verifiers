@@ -128,7 +128,24 @@ def _import_ref(ref: str) -> object:
     return obj
 
 
+def _uvicorn_server():
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame) -> None:
+            # uvicorn re-raises a caught SIGTERM once it stops serving, killing the
+            # process before the server's exit stack frees what its tools hold
+            # (e.g. sandboxes); exit normally instead.
+            super().handle_exit(sig, frame)
+            self._captured_signals.clear()
+
+    return Server
+
+
 class ServerBase(Generic[ConfigT, StateT]):
+    ENV: ClassVar[tuple[str, ...]] = ()
+    """Host environment variables a host-side (subprocess) server gets explicitly: the
+    subprocess runtime does not inherit names containing `API_KEY`."""
     TOOL_PREFIX: ClassVar[str | None] = ""
     """The empty value falls back to the snake-cased class name. None advertises the server's
     tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
@@ -330,7 +347,9 @@ class ServerBase(Generic[ConfigT, StateT]):
                         finally:
                             _request_query_params.reset(token)
 
-                    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+                    server = _uvicorn_server()(
+                        uvicorn.Config(app, log_level="critical")
+                    )
                     await server.serve(sockets=[sock])
             finally:
                 self._state_client = None

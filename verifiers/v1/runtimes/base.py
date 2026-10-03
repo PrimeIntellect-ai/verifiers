@@ -11,7 +11,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
@@ -250,6 +250,13 @@ class Runtime(ABC):
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
+
+    async def checkpoint(self) -> Awaitable[str]:
+        """Snapshot the box's filesystem. Returns once the snapshot is cut (later
+        writes are not in it), with an awaitable of its id that resolves once a box
+        can be restored from it (`PrimeConfig.checkpoint`); the box must stay up
+        until then."""
+        raise NotImplementedError(f"{type(self).__name__} has no checkpoints")
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]

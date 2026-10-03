@@ -78,6 +78,21 @@ class TaskTimeout(BaseModel):
     """Timeout (in seconds) for the task's scoring."""
 
 
+class Privileged(BaseModel):
+    """What a task's scoring knows that its agent was not shown (`Task.privileged`),
+    for a grader of the agent's work. Never given to the agent."""
+
+    files: dict[str, bytes] = Field(default_factory=dict)
+    """Reference files by relative path: expected answers, reference solutions,
+    rubrics, scoring code."""
+    staged: dict[str, bytes] = Field(default_factory=dict)
+    """Files by absolute path that verification expects in the agent's box (e.g.
+    hidden tests, what `stage_verifier` puts there), for re-running the checks in a
+    copy of that box."""
+    notes: str = ""
+    """How the task is scored, in words (e.g. the test command)."""
+
+
 class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -191,6 +206,32 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
+
+    async def privileged(self, runtime: Runtime | None = None) -> Privileged:
+        """Everything this task's scoring knows that the agent was not shown, for a
+        grader: by default the task data's own fields (expected answers, references,
+        rubrics), the plugged judges' configs and prompts, and the source of the task's
+        rewards and metrics. Override to add what lives elsewhere; an override that
+        requires `runtime` gets a fresh box of this task after `setup`."""
+        files: dict[str, bytes] = {}
+        extra = self.data.model_dump(mode="json", exclude=set(TaskData.model_fields))
+        if extra:
+            files["task_data.json"] = json.dumps(extra, indent=2).encode()
+        if self.config.judges:
+            judges = [
+                {"config": judge.config.model_dump(mode="json"), "prompt": judge.prompt}
+                for judge in self.plugged_judges()
+            ]
+            files["judges.json"] = json.dumps(judges, indent=2).encode()
+        sources = []
+        for fn in [*self.hooks("reward"), *self.hooks("metric")]:
+            try:
+                sources.append(inspect.getsource(fn))
+            except (OSError, TypeError):
+                continue
+        if sources:
+            files["scoring.py"] = "\n\n".join(sources).encode()
+        return Privileged(files=files)
 
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""

@@ -7,7 +7,7 @@ import logging
 import math
 import shlex
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -95,6 +95,9 @@ class PrimeConfig(NetworkPolicyConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    checkpoint: str | None = None
+    """Boot from this filesystem checkpoint (`Runtime.checkpoint`) instead of `image`;
+    `disk` comes from the checkpoint."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
@@ -204,13 +207,24 @@ class PrimeRuntime(Runtime):
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
                 async def create_and_capture_id():
+                    source = (
+                        {"docker_image": self.config.image}
+                        if self.config.checkpoint is None
+                        else {
+                            "checkpoint_id": self.config.checkpoint,
+                            "disk_size_gb": None,
+                        }
+                    )
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            docker_image=self.config.image,
                             environment_vars=self.env,
-                            **{k: v for k, v in options.items() if v is not None},
+                            **{
+                                k: v
+                                for k, v in {**options, **source}.items()
+                                if v is not None
+                            },
                         )
                     )
                     self.info.id = sandbox.id
@@ -284,6 +298,23 @@ class PrimeRuntime(Runtime):
             policy.get("allow"),
             policy.get("deny"),
         )
+
+    async def checkpoint(self) -> Awaitable[str]:
+        try:
+            checkpoint = await self._client.checkpoint(self.info.id)
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+        async def durable() -> str:
+            try:
+                await self._client.wait_for_checkpoint(checkpoint.id)
+            except Exception as e:
+                raise SandboxError(
+                    f"prime checkpoint {checkpoint.id} did not become durable: {e}"
+                ) from e
+            return checkpoint.id
+
+        return durable()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
@@ -452,3 +483,34 @@ class PrimeRuntime(Runtime):
                 del _shared_clients[loop]
                 with contextlib.suppress(Exception):
                     await client.aclose()
+
+
+async def delete_checkpoints(ids: list[str]) -> list[str]:
+    """Delete Prime filesystem checkpoints; returns the ids that could not be deleted
+    yet (e.g. 409 while a sandbox restored from one is still running)."""
+    from prime_sandboxes import AsyncSandboxClient
+
+    if not ids:
+        return []
+    client = AsyncSandboxClient()
+    api = client.client
+    try:
+        # The SDK has no delete call; its JSON request helper fails on the empty 204.
+        responses = await asyncio.gather(
+            *(
+                api.client.request(
+                    "DELETE",
+                    f"{api.base_url.rstrip('/')}/api/v1/sandbox/checkpoints/{id}",
+                )
+                for id in ids
+            ),
+            return_exceptions=True,
+        )
+    finally:
+        await client.aclose()
+    return [
+        id
+        for id, response in zip(ids, responses)
+        if isinstance(response, BaseException)
+        or response.status_code not in (200, 202, 204, 404)
+    ]
