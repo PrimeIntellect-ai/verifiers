@@ -40,7 +40,7 @@ def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
         if not raw.get("id"):
             raise ValueError(
                 "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                "`rubric`, or an installed package)"
+                "`rubric`, `decision`, or an installed package)"
             )
         resolved.append(judge_config_type(raw["id"]).model_validate(raw))
     return resolved
@@ -51,7 +51,7 @@ def check_judges(entries: Sequence[JudgeConfig]) -> None:
         if not entry.id:
             raise ValueError(
                 "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                "`rubric`, or an installed package)"
+                "`rubric`, `decision`, or an installed package)"
             )
     keys = [judge_key(entry) for entry in entries]
     if duplicates := {key for key in keys if keys.count(key) > 1}:

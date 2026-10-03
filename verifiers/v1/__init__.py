@@ -66,6 +66,8 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
+    DecisionJudge,
+    DecisionJudgeConfig,
     ReferenceJudge,
     ReferenceJudgeConfig,
     RubricJudge,
@@ -358,6 +360,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Judges",
     "JudgeResponse",
     "JudgeView",
+    "DecisionJudge",
+    "DecisionJudgeConfig",
     "ReferenceJudge",
     "ReferenceJudgeConfig",
     "RubricJudge",
