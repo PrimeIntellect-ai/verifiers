@@ -1,17 +1,21 @@
 """Prefix replay: start a rollout from the first model calls of a finished rollout.
 
 A `Prefix` holds a source trace's first committed calls. The rollout runs normally from
-the task start, but the train client answers its first `len(calls)` model calls with the
-recorded completions, in order, without sampling. The harness executes the recorded
-actions itself, so the sandbox, the task's state and the harness's own process state are
-rebuilt; the model always sees the real tool outputs of this rollout. Replay is blind:
-calls are served by position, whatever the environment returned. Later calls, and every
-call once the recording is exhausted, are sampled. A rollout that ends before the cut
-just ends.
+the task start, but the train client answers those calls with the recorded completions
+without sampling. The harness executes the recorded actions itself, so the sandbox, the
+task's state and the harness's own process state are rebuilt; the model always sees the
+real tool outputs of this rollout.
+
+Replay is blind and per branch: each recorded call continues an earlier recorded call
+(`PrefixCall.parent`) or starts a new branch (a sub-agent, say). A call of this rollout
+is served the next unserved recorded call of its own branch, whatever the environment
+returned; concurrent branches therefore get their own recordings regardless of arrival
+order. A call whose branch has no recorded call left, or that continues a call that was
+not replayed, is sampled. A rollout that ends before the cut just ends.
 
 `PrefixReplay.finish` drops the replayed completions from the loss and records, for
 monitoring only, how many calls were replayed and how many saw an observation (the
-prompt tokens added since the previous call) that differs from the recording.
+prompt tokens added since the call they continue) that differs from the recording.
 """
 
 from __future__ import annotations
@@ -25,15 +29,20 @@ from pydantic import BaseModel, Field
 from verifiers.v1.types import FinishReason
 
 if TYPE_CHECKING:
+    from verifiers.v1.graph import MessageNode, PendingTurn
     from verifiers.v1.trace import Trace
 
 
 def observation_hash(prompt_ids: list[int], previous: list[int]) -> str:
-    """Hash of the prompt tokens added after `previous` (the last call's prompt and
-    completion), or of the whole prompt when it does not extend `previous`."""
+    """Hash of the prompt tokens added after `previous` (the continued call's prompt
+    and completion), or of the whole prompt when it does not extend `previous`."""
     if previous and prompt_ids[: len(previous)] == previous:
         prompt_ids = prompt_ids[len(previous) :]
     return hashlib.sha256(array("i", prompt_ids).tobytes()).hexdigest()
+
+
+def sampled_ids(node: MessageNode) -> tuple[int, ...]:
+    return tuple(token for token, sampled in zip(node.token_ids, node.mask) if sampled)
 
 
 class PrefixCall(BaseModel):
@@ -41,6 +50,8 @@ class PrefixCall(BaseModel):
     finish_reason: FinishReason = None
     observation_hash: str
     """`observation_hash` of the source call's prompt, compared (not gated) on replay."""
+    parent: int | None = None
+    """Index of the recorded call this one continues; None starts a branch."""
 
 
 class Prefix(BaseModel):
@@ -59,22 +70,29 @@ class Prefix(BaseModel):
         committed = [call for call in trace.calls if call.node is not None]
         if cut is not None and not 0 <= cut <= len(committed):
             raise ValueError(f"cut {cut} outside the trace's {len(committed)} calls")
-        calls, previous = [], []
+        index_of = {call.node: index for index, call in enumerate(committed)}
+        calls: list[PrefixCall] = []
+        full_ids: list[list[int]] = []
         for call in committed[:cut]:
-            parts, current = [], call.node
+            node = call.node
+            parts, parent, current = [], None, node
             while current is not None:
                 parts.append(trace.nodes[current].token_ids)
+                if parent is None and current != node and current in index_of:
+                    parent = index_of[current]
                 current = trace.nodes[current].parent
             ids = [token for part in reversed(parts) for token in part]
-            prompt_len = len(ids) - sum(trace.nodes[call.node].mask)
+            prompt_len = len(ids) - sum(trace.nodes[node].mask)
+            previous = full_ids[parent] if parent is not None else []
             calls.append(
                 PrefixCall(
                     completion_ids=ids[prompt_len:],
                     finish_reason=call.finish_reason,
                     observation_hash=observation_hash(ids[:prompt_len], previous),
+                    parent=parent,
                 )
             )
-            previous = ids
+            full_ids.append(ids)
         return cls(calls=calls, source=source or {})
 
 
@@ -83,17 +101,38 @@ class PrefixReplay:
 
     def __init__(self, prefix: Prefix) -> None:
         self.prefix = prefix
+        self.unserved = list(range(len(prefix.calls)))
+        self.served: dict[tuple[int, ...], int] = {}
+        """Recorded index of each served completion, to find the call a prompt continues."""
+        self.full_ids: dict[int, list[int]] = {}
         self.obs_changed: list[bool] = []
-        self.previous: list[int] = []
 
-    def take(self, prompt_ids: list[int]) -> PrefixCall | None:
-        """The recorded call to serve next, or None once the recording is exhausted."""
-        if len(self.obs_changed) == len(self.prefix.calls):
+    def take(
+        self, prompt_ids: list[int], turn: PendingTurn | None
+    ) -> PrefixCall | None:
+        """The recorded call to serve next on this prompt's branch, or None to sample."""
+        if not self.unserved:
             return None
-        call = self.prefix.calls[len(self.obs_changed)]
-        obs = observation_hash(prompt_ids, self.previous)
+        parent = None
+        for node_id in reversed(turn.prefix_node_ids if turn is not None else []):
+            node = turn.trace.nodes[node_id]
+            if node.sampled:
+                parent = self.served.get(sampled_ids(node))
+                if parent is None:
+                    return None  # continues a live call
+                break
+        calls = self.prefix.calls
+        branch = [index for index in self.unserved if calls[index].parent == parent]
+        if not branch:
+            return None
+        obs = observation_hash(prompt_ids, self.full_ids.get(parent, []))
+        # Concurrent new branches (sub-agents) prefer the recording they reproduce exactly.
+        index = next((i for i in branch if calls[i].observation_hash == obs), branch[0])
+        call = calls[index]
+        self.unserved.remove(index)
+        self.served.setdefault(tuple(call.completion_ids), index)
+        self.full_ids[index] = [*prompt_ids, *call.completion_ids]
         self.obs_changed.append(obs != call.observation_hash)
-        self.previous = [*prompt_ids, *call.completion_ids]
         return call
 
     def finish(self, trace: Trace) -> None:

@@ -462,7 +462,7 @@ class TrainClient(Client):
                 prompt_ids = rendered.token_ids
                 prompt_attribution = rendered
 
-            recorded = replay.take(prompt_ids) if replay is not None else None
+            recorded = replay.take(prompt_ids, turn) if replay is not None else None
             if recorded is not None:
                 result = replayed_result(
                     renderer, prompt_ids, prompt_attribution, wire_tools, recorded
