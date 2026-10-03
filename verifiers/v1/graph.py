@@ -48,6 +48,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
 )
 
 if TYPE_CHECKING:
@@ -163,6 +164,13 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Sampler top-k logprobs for this node's sampled tokens, recorded when the rollout
+    requested `logprobs=k > 1`.
+
+    `ids`/`logprobs` store the flat candidates and `counts` stores each token's row size.
+    Assistant nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -224,6 +232,29 @@ class MessageNode(BaseModel):
                 counts=_decode_ndarray(value["counts"]),
             )
         raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+
+    @field_serializer("top_logprobs")
+    def serialize_top_logprobs(self, top: TopLogprobs | None) -> dict | None:
+        if top is None:
+            return None
+        return {
+            "ids": _encode_ndarray(top.ids),
+            "logprobs": _encode_ndarray(top.logprobs),
+            "counts": _encode_ndarray(top.counts),
+        }
+
+    @field_validator("top_logprobs", mode="before")
+    @classmethod
+    def deserialize_top_logprobs(cls, value: Any) -> TopLogprobs | None:
+        if value is None or isinstance(value, TopLogprobs):
+            return value
+        if isinstance(value, dict):
+            return TopLogprobs(
+                ids=_decode_ndarray(value["ids"]),
+                logprobs=_decode_ndarray(value["logprobs"]),
+                counts=_decode_ndarray(value["counts"]),
+            )
+        raise TypeError(f"cannot build TopLogprobs from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -706,6 +737,22 @@ def _attribute_sampling_mask(
     node.sampling_mask = payload
 
 
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach completion-aligned top-k logprobs to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        return
+    node.top_logprobs = payload
+
+
 def _project_prompt_attribution(
     renderer_prompt_ids: list[int],
     prompt_ids: list[int],
@@ -966,9 +1013,13 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
-    # Sampling masks are completion-aligned, so only the sampled node carries them.
+    # Sampling masks and top-k logprobs are completion-aligned, so only the sampled node
+    # carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id
