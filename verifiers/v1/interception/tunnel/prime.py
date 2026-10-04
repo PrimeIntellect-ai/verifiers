@@ -18,19 +18,19 @@ from verifiers.v1.utils.scope import run_scope
 logger = logging.getLogger(__name__)
 
 
-class FrpcRelay(logging.Handler):
-    """Relay frpc warnings, errors, and (re)logins to this module's logger."""
+class TunnelRelay(logging.Handler):
+    """Relay tunnel warnings, errors, and (re)logins to this module's logger."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        message = record.getMessage()
+        message = record.getMessage().removeprefix("frpc ")
         if record.levelno >= logging.WARNING or "login to server success" in message:
-            logger.log(record.levelno, "%s", message)
+            logger.log(record.levelno, "tunnel %s", message)
 
 
-frpc_logger = logging.getLogger("prime_tunnel.frpc")
-frpc_logger.addHandler(FrpcRelay())
-frpc_logger.setLevel(logging.INFO)
-frpc_logger.propagate = False
+tunnel_logger = logging.getLogger("prime_tunnel.frpc")
+tunnel_logger.addHandler(TunnelRelay())
+tunnel_logger.setLevel(logging.INFO)
+tunnel_logger.propagate = False
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
