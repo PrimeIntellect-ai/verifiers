@@ -319,6 +319,42 @@ class Rollout:
                 boundary(HarnessError, "opening harness session"),
             ):
                 harness_data = self.trace.task.data
+                policy = self._session.network_policy
+                if policy.network_restricted:
+                    if not policy.allow:
+                        network_prompt = "External network access is disabled."
+                    elif policy.block:
+                        network_prompt = (
+                            "External network access is allowed except for these blocked "
+                            f"destinations: {', '.join(policy.block)}."
+                        )
+                    else:
+                        network_prompt = (
+                            "External network access is limited to these destinations: "
+                            f"{', '.join(policy.allow)}. "
+                            "Do not circumvent this selection of domains."
+                        )
+                    network_prompt = "\n\n".join(
+                        text
+                        for text in (harness_data.system_prompt, network_prompt)
+                        if text
+                    )
+                    # Keep transcript system messages intact when the harness resumes.
+                    if harness_data.system_prompt is None and isinstance(
+                        harness_data.prompt, list
+                    ):
+                        harness_data = harness_data.model_copy(
+                            update={
+                                "prompt": [
+                                    SystemMessage(content=network_prompt),
+                                    *harness_data.prompt,
+                                ]
+                            }
+                        )
+                    else:
+                        harness_data = harness_data.model_copy(
+                            update={"system_prompt": network_prompt}
+                        )
                 if (
                     self._session.request_interceptors
                     and harness_data.prompt is not None
