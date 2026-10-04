@@ -11,6 +11,7 @@ build clients from these. `ClientConfig` is the CLI-selectable discriminated uni
 """
 
 import os
+from itertools import chain
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
@@ -120,19 +121,23 @@ def resolve_api_key(config: BaseClientConfig) -> str:
 
 def resolve_headers(config: BaseClientConfig) -> dict[str, str]:
     """Resolve request headers for this destination without storing credentials in config."""
-    headers = {
-        **config.headers,
-        **{
-            name: value
+    # Keep original spelling for SDKs that merge default headers case-sensitively.
+    names: dict[str, str] = {}
+    headers: dict[str, str] = {}
+    for name, value in chain(
+        config.headers.items(),
+        (
+            (name, value)
             for name, variable in config.headers_from_env.items()
             if (value := os.environ.get(variable)) is not None
-        },
-    }
+        ),
+    ):
+        headers[names.setdefault(name.lower(), name)] = value
     host = urlparse(config.base_url).hostname or ""
     if (
         config.api_key_var == "PRIME_API_KEY"
         and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
-        and PRIME_TEAM_ID_HEADER.lower() not in {name.lower() for name in headers}
+        and PRIME_TEAM_ID_HEADER.lower() not in names
     ):
         team_id = os.environ.get("PRIME_TEAM_ID") or load_prime_config().get("team_id")
         if team_id:
