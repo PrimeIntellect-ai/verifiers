@@ -5,6 +5,7 @@ pool scales with."""
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from typing import Literal
 
@@ -13,6 +14,25 @@ from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
+
+logger = logging.getLogger(__name__)
+
+
+class FrpcRelay(logging.Handler):
+    """Re-emit `prime_tunnel`'s frpc output under this module's logger, so any app that
+    routes `verifiers.v1` sees a tunnel drop and its recovery. frpc logs routine events at
+    INFO for every tunnel; only warnings, errors, and the (re)login are relayed."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if record.levelno >= logging.WARNING or "login to server success" in message:
+            logger.log(record.levelno, "%s", message)
+
+
+frpc_logger = logging.getLogger("prime_tunnel.frpc")
+frpc_logger.addHandler(FrpcRelay())
+frpc_logger.setLevel(logging.INFO)
+frpc_logger.propagate = False
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped

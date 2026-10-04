@@ -588,7 +588,20 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         session.adopt(asyncio.current_task())
-        raw = await request.read()
+        started = time.monotonic()
+        try:
+            raw = await request.read()
+        except ConnectionError:
+            # The harness (or a tunnel hop in front of it) dropped mid-upload; aiohttp
+            # reports only a bare traceback, with no rollout or progress.
+            logger.warning(
+                "intercept: request body cut off: id=%s received=%d/%s bytes after=%.1fs",
+                session.trace.id,
+                request.content.total_bytes,
+                request.content_length or "?",
+                time.monotonic() - started,
+            )
+            raise
         try:
             body = from_json(raw)
         except ValueError:
