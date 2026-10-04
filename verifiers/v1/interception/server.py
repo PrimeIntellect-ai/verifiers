@@ -510,16 +510,24 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         raw = await request.read()
-        key = _body_digest(raw)
+        body = from_json(raw)
+        # A retry never spans a model turn, while another turn's call can repeat this body.
+        key = (session.trace.num_turns, _body_digest(raw))
+        for stale in [k for k in session.tool_verdicts if k[0] != key[0]]:
+            del session.tool_verdicts[stale]
         prior = session.tool_verdicts.get(key)
-        if prior is not None and is_retried_request(request.headers):
+        # A stopped rollout answers "stop", not a verdict given before the stop.
+        if (
+            prior is not None
+            and is_retried_request(request.headers)
+            and not session.stopped
+        ):
             await asyncio.wait([prior])
             if not prior.cancelled():
                 return web.json_response(prior.result())
         verdict = session.tool_verdicts[key] = (
             asyncio.get_running_loop().create_future()
         )
-        body = from_json(raw)
         try:
             result = await session.decide_tool(
                 str(body.get("tool_call_id", "")),
