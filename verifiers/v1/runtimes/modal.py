@@ -37,7 +37,10 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
+from verifiers.v1.volumes import VolumeConfig
+from verifiers.v1.volumes.huggingface import HuggingFaceVolumeConfig
 from verifiers.v1.volumes.modal import ModalVolume, ModalVolumeConfig
+from verifiers.v1.volumes.s3 import S3VolumeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +107,37 @@ class ModalConfig(NetworkPolicyConfig):
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it)."""
-    mounts: dict[str, ModalVolumeConfig] = Field(default_factory=dict)
-    """Guest paths mapped to existing named Modal v2 Volumes. Read-only by default.
-    Use the same volume in the agent and grader.
+    mounts: dict[str, VolumeConfig] = Field(default_factory=dict)
+    """Guest paths mapped to existing Modal v2 Volumes, S3 buckets, or read-only
+    Hugging Face Storage Buckets. Use the same storage in the agent and grader.
+    Bucket credentials come from each mount's modal_secret, not the sandbox env.
     Artifact roots must be outside mounts or entirely inside writable mounts.
     Harbor Compose is unsupported."""
 
     _validate_mounts = field_validator("mounts")(validate_mounts)
+
+    @model_validator(mode="after")
+    def _validate_bucket_mounts(self) -> "ModalConfig":
+        for mount in self.mounts.values():
+            if isinstance(mount, ModalVolumeConfig):
+                continue
+            if isinstance(mount, S3VolumeConfig):
+                if mount.region is not None or mount.profile is not None:
+                    raise ValueError(
+                        "S3 region/profile configure host mounts; use AWS_REGION in modal_secret for Modal"
+                    )
+                if mount.anonymous:
+                    if mount.modal_secret is not None:
+                        raise ValueError("anonymous S3 mounts cannot use modal_secret")
+                    continue
+            elif not mount.read_only:
+                raise ValueError(
+                    "Hugging Face mounts on Modal must be read-only; "
+                    "Modal cannot configure the gateway's upload checksum requirements"
+                )
+            if mount.modal_secret is None:
+                raise ValueError(f"{mount.type} mounts on Modal require modal_secret")
+        return self
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "ModalConfig":
@@ -237,9 +264,32 @@ class ModalRuntime(Runtime):
 
         volumes = {}
         for target, config in self.config.mounts.items():
-            volume = ModalVolume(config)
-            await volume.start()
-            volumes[target] = volume.handle
+            if isinstance(config, ModalVolumeConfig):
+                volume = ModalVolume(config)
+                await volume.start()
+                volumes[target] = volume.handle
+            else:
+                bucket = config.bucket
+                endpoint = None
+                required_keys = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+                if isinstance(config, HuggingFaceVolumeConfig):
+                    namespace, bucket = config.bucket.split("/", 1)
+                    endpoint = f"https://s3.hf.co/{namespace}"
+                    required_keys.append("AWS_REGION")
+                volumes[target] = modal.CloudBucketMount(
+                    bucket_name=bucket,
+                    bucket_endpoint_url=endpoint,
+                    force_path_style=endpoint is not None,
+                    key_prefix=config.prefix or None,
+                    read_only=config.read_only,
+                    secret=(
+                        modal.Secret.from_name(
+                            config.modal_secret, required_keys=required_keys
+                        )
+                        if config.modal_secret is not None
+                        else None
+                    ),
+                )
 
         # Modal requires both allowlist types at creation before they can be updated.
         # Trusted setup runs open; prepare_execution removes the broad CIDR grant.
@@ -272,7 +322,9 @@ class ModalRuntime(Runtime):
     async def commit_volumes(self) -> None:
         """Commit writable v2 mounts before another sandbox reads their contents."""
         targets = [
-            path for path, mount in self.config.mounts.items() if not mount.read_only
+            path
+            for path, mount in self.config.mounts.items()
+            if isinstance(mount, ModalVolumeConfig) and not mount.read_only
         ]
         if targets:
             result = await self.run(["sync", *targets], {})
@@ -282,8 +334,11 @@ class ModalRuntime(Runtime):
                 )
 
     async def reload_volumes(self) -> None:
-        """Refresh this sandbox's mounted snapshots; close all volume files first."""
-        if self.config.mounts:
+        """Refresh named Modal snapshots, not bucket caches; close volume files first."""
+        if any(
+            isinstance(mount, ModalVolumeConfig)
+            for mount in self.config.mounts.values()
+        ):
             try:
                 await self._sandbox.reload_volumes.aio()
             except Exception as error:
@@ -471,7 +526,7 @@ class ModalRuntime(Runtime):
             await self.commit_volumes()
         finally:
             try:
-                # Await Modal's final snapshot before a fresh grader mounts it.
+                # Wait for shutdown and final native-volume snapshots before grading.
                 await sandbox.terminate.aio(wait=bool(self.config.mounts))
             except Exception as e:
                 if self.config.mounts:

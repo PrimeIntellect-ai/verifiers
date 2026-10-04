@@ -23,12 +23,42 @@ container engines require provisioning on their Linux host, not on the evaluator
 
 Modal uses native attachments, without host FUSE clients::
 
-    from verifiers.v1 import ModalConfig, ModalVolumeConfig
+    from verifiers.v1 import (
+        HuggingFaceVolumeConfig, ModalConfig, ModalVolumeConfig, S3VolumeConfig,
+    )
 
-    config = ModalConfig(mounts={"/data": ModalVolumeConfig(name="my-data")})
+    config = ModalConfig(mounts={
+        "/data": ModalVolumeConfig(name="my-data"),
+        "/outputs": S3VolumeConfig(
+            bucket="my-outputs", prefix="run-123/", read_only=False,
+            modal_secret="aws-storage",
+        ),
+        "/hf": HuggingFaceVolumeConfig(
+            bucket="my-org/my-data", modal_secret="hf-storage",
+        ),
+    })
+
+Bucket mounts resolve on Modal's host through CloudBucketMount. Named Secrets
+are used only by the storage mount, not injected into sandbox process environments;
+evaluator credentials are not forwarded. Private S3 mounts require a Secret with
+AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, plus AWS_SESSION_TOKEN when needed.
+Set AWS_REGION in that Secret when region detection is unsuitable. The S3 config's
+host region/profile options are rejected on Modal; public buckets use anonymous=True.
+
+Hugging Face mounts use https://s3.hf.co/<namespace> with path-style addressing.
+Their Secret requires Hugging Face-generated S3 access keys under the same AWS
+key names and AWS_REGION=us-east-1; HF_TOKEN cannot authenticate to this gateway.
+Hugging Face mounts are read-only because Modal exposes no control for the
+gateway's upload checksum requirements. See https://huggingface.co/docs/hub/storage-buckets-s3.
+
+Close/fsync S3 files before handing them to a grader; bucket mounts do not use
+Modal's snapshot commit/reload operations. Freshness follows the bucket client's
+cache, so use a fresh grader sandbox after the writer closes its files. Mount I/O
+runs outside sandbox execution networking and grants access under the configured
+storage credentials. Use bucket permissions to constrain that access.
 
 `provision_volume(ModalVolumeConfig(...))` also provides a reusable `volume.mount`.
-The named volume must already exist and use v2. Writable mounts
+Named Modal volumes must already exist and use v2. Writable Modal volumes
 commit before artifact collection and sandbox teardown. Use
 `await writer.commit_volumes()` before starting another reader while the writer
 is still running; an existing reader needs `await reader.reload_volumes()` with
