@@ -18,3 +18,15 @@ async with agent.interaction(task) as interaction:
 
 trace = interaction.trace
 ```
+
+`agent.with_config(**update)` is a copy of the agent with config fields replaced, for
+what one run needs that its config cannot say ahead. Inside an env, the copy of an
+episode's agent is still that episode's agent: its traces join the episode.
+
+```python
+async def run(self, task, agents):
+    harness = agents.solver.config.harness.model_copy(
+        update={"mcp_header_env": {"world": {"Authorization": per_run_variable}}}
+    )
+    await agents.solver.with_config(harness=harness).run(task)
+```

@@ -8,11 +8,12 @@ what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
 
 import asyncio
+import copy
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
-from typing import Generic, Literal, Self, cast
+from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -516,6 +517,21 @@ class Agent:
         *,
         interception: Interception | None = None,
     ) -> None:
+        self._configure(config)
+        self._closed = False
+        self.interception = interception
+        # Env episode agents replace this with the episode's agent semaphore
+        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
+        # lifecycle work, never while awaiting the caller between segments.
+        self._gate: asyncio.Semaphore | None = None
+        # Env-owned standing, not config: `Env.setup` marks fixed agents
+        # untrainable and traces are stamped from here; inert outside an env.
+        self.trainable: bool = True
+        self._entered = False
+        self._server: InterceptionServer | None = None
+        self._warned_resources: set[tuple[str, str]] = set()
+
+    def _configure(self, config: AgentConfig) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
         if config.model is None:
@@ -538,9 +554,7 @@ class Agent:
             client=config.client or EvalClientConfig(),
             sampling=config.sampling,
         )
-        self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime
-        self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
@@ -548,16 +562,18 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env episode agents replace this with the episode's agent semaphore
-        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
-        # lifecycle work, never while awaiting the caller between segments.
-        self._gate: asyncio.Semaphore | None = None
-        # Env-owned standing, not config: `Env.setup` marks fixed agents
-        # untrainable and traces are stamped from here; inert outside an env.
-        self.trainable: bool = True
-        self._entered = False
-        self._server: InterceptionServer | None = None
-        self._warned_resources: set[tuple[str, str]] = set()
+
+    def with_config(self, **update: Any) -> Self:
+        """A copy whose config has `update` applied (`harness=`, `runtime=`,
+        `timeout=`, ...), keeping everything else this agent was given: its
+        injected interception and its standing — an env's agent stays its
+        episode's, its traces joining the episode. For what one run needs that
+        its config cannot say ahead, e.g. a harness config naming a per-run
+        credential. The copy starts un-entered and owns no interception server."""
+        clone = copy.copy(self)
+        clone._configure(self.config.model_copy(update=update))
+        clone._entered, clone._server = False, None
+        return clone
 
     async def __aenter__(self) -> Self:
         if self._entered:
