@@ -18,9 +18,13 @@ from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
+from verifiers.v1.configs.runtime import (
+    NetworkPolicyConfig,
+    parse_network_rule,
+    validate_mounts,
+)
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -31,7 +35,9 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
+from verifiers.v1.volumes.modal import ModalVolume, ModalVolumeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +104,13 @@ class ModalConfig(NetworkPolicyConfig):
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced run-wide across every
     env-server worker process (None/<= 0 disables it)."""
+    mounts: dict[str, ModalVolumeConfig] = Field(default_factory=dict)
+    """Guest paths mapped to existing named Modal v2 Volumes. Read-only by default.
+    Use the same volume in the agent and grader.
+    Artifact roots must be outside mounts or entirely inside writable mounts.
+    Harbor Compose is unsupported."""
+
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "ModalConfig":
@@ -204,6 +217,8 @@ class ModalRuntime(Runtime):
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
             await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
+            if await validate_runtime_mounts(self, []):
+                await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
@@ -220,6 +235,12 @@ class ModalRuntime(Runtime):
         """
         import modal
 
+        volumes = {}
+        for target, config in self.config.mounts.items():
+            volume = ModalVolume(config)
+            await volume.start()
+            volumes[target] = volume.handle
+
         # Modal requires both allowlist types at creation before they can be updated.
         # Trusted setup runs open; prepare_execution removes the broad CIDR grant.
         self._sandbox = await modal.Sandbox.create.aio(
@@ -233,6 +254,7 @@ class ModalRuntime(Runtime):
             image=modal.Image.from_registry(self.config.image).entrypoint([]),
             workdir=self.config.workdir,
             env=self.env,
+            volumes=volumes,
             cpu=self.config.cpu,
             memory=int(self.config.memory * 1024),  # Modal memory is MB
             gpu=self.config.gpu,
@@ -246,6 +268,26 @@ class ModalRuntime(Runtime):
             encrypted_ports=[SERVICE_PORT],
             experimental_options={"vm_runtime": True} if self.config.vm else {},
         )
+
+    async def commit_volumes(self) -> None:
+        """Commit writable v2 mounts before another sandbox reads their contents."""
+        targets = [
+            path for path, mount in self.config.mounts.items() if not mount.read_only
+        ]
+        if targets:
+            result = await self.run(["sync", *targets], {})
+            if result.exit_code:
+                raise SandboxError(
+                    f"modal volume commit failed: {result.stderr.strip()}"
+                )
+
+    async def reload_volumes(self) -> None:
+        """Refresh this sandbox's mounted snapshots; close all volume files first."""
+        if self.config.mounts:
+            try:
+                await self._sandbox.reload_volumes.aio()
+            except Exception as error:
+                raise SandboxError(f"modal volume reload failed: {error}") from error
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply TLS domain filtering after setup, retaining framework endpoints.
@@ -413,7 +455,7 @@ class ModalRuntime(Runtime):
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is not None:  # keep info.id available after teardown
             with contextlib.suppress(Exception):
-                sandbox.terminate()
+                sandbox.terminate(wait=bool(self.config.mounts))
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly
@@ -426,7 +468,16 @@ class ModalRuntime(Runtime):
         if sandbox is None:
             return
         try:
-            await sandbox.terminate.aio()
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("modal: failed to terminate sandbox %s: %s", self.info.id, e)
-        self._sandbox = None
+            await self.commit_volumes()
+        finally:
+            try:
+                # Await Modal's final snapshot before a fresh grader mounts it.
+                await sandbox.terminate.aio(wait=bool(self.config.mounts))
+            except Exception as e:
+                if self.config.mounts:
+                    raise SandboxError(f"modal volume shutdown failed: {e}") from e
+                logger.warning(
+                    "modal: failed to terminate sandbox %s: %s", self.info.id, e
+                )
+            else:
+                self._sandbox = None

@@ -207,6 +207,10 @@ class Runtime(ABC):
         """Combine the task's runtime-wide environment with one process's values."""
         return {**self.env, **env}
 
+    async def commit_volumes(self) -> None:
+        """Publish writes from snapshot-based mounts before another runtime reads
+        them. Directly shared mounts need no separate commit operation."""
+
     def with_env(self, env: dict[str, str]) -> "Runtime":
         """Share this physical runtime through a view with its own process environment."""
         runtime = copy.copy(self)
