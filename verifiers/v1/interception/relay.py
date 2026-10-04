@@ -3,9 +3,11 @@
 A remote runtime reaches the host's interception server over the network (a tunnel, a
 proxy, a direct bind). When that path blips, clients see refused or dropped connections,
 or an error from whatever sits in between (a tunnel's "not found", a proxy's 502), and
-most fail the rollout. The harness and colocated tool servers reach the host through the
-relay (`relay_server.py`, stdlib only) instead: it forwards requests unchanged and, for up
-to `relay_seconds` after a failure, retries them. The host stamps every response it sends,
+most fail the rollout. The harness reaches the host through the relay
+(`relay_server.py`, stdlib only) instead: it forwards requests unchanged and, for up to
+`relay_seconds` after a failure, retries them. Tool servers keep the direct URL: they may
+run as a more privileged user than the agent, and their state secret shouldn't pass
+through a port an agent could take over. The host stamps every response it sends,
 so any transient-looking error without the stamp is a network failure, whatever its
 wording; repeats are safe because the host dedupes them. Without a usable `python3` the
 rollout connects directly.
@@ -35,9 +37,11 @@ STATS = ("relay_retried_requests", "relay_rescued_requests", "relay_retry_second
 # directory or site-packages, which an agent may control.
 ISOLATED = ("-I", "-S")
 # Prints the real path of an interpreter fit to run the relay, which runs it again on
-# every restart: Python >= 3.8 with all it imports, that only root or this user can
-# change. Exits 10 if a configured proxy would catch the harness's loopback traffic, or
-# is one the relay can't use (it speaks plain HTTP to http:// proxies only).
+# every restart: Python >= 3.8 with all it imports, whose files (the executable, the
+# modules and the libraries it loads) and their directories only root or this user can
+# change, and a sticky /tmp. Exits 10 if a configured proxy would catch the harness's
+# loopback traffic, or is one the relay can't use (it speaks plain HTTP to http://
+# proxies only).
 CHECK = """import os, sys
 assert sys.version_info >= (3, 8)
 import base64, hashlib, http.client, http.server, json, math, random, re, select
@@ -47,15 +51,21 @@ if p and not u.proxy_bypass_environment("127.0.0.1"):
     sys.exit(10)
 if "all" in p or any(not p[k].lower().startswith("http://") for k in ("http", "https") if k in p):
     sys.exit(10)
-exe = path = os.path.realpath(sys.executable)
-while True:
-    s = os.stat(path)
-    group = s.st_mode & 0o020 and s.st_gid not in (0, os.getgid())
-    assert s.st_uid in (0, os.getuid()) and not s.st_mode & 0o002 and not group
-    if path == os.path.dirname(path):
-        break
-    path = os.path.dirname(path)
-print(exe)
+assert sys.executable and os.stat("/tmp").st_mode & 0o1000
+files = {sys.executable} | {getattr(m, "__file__", None) for m in list(sys.modules.values())}
+with open("/proc/self/maps") as maps:
+    files |= {line.split()[5] for line in maps if line.count(" ") >= 5 and " /" in line}
+checked = set()
+for path in filter(None, files):
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):  # a deleted mapping, a device: nothing to change
+        continue
+    while path not in checked:
+        checked.add(path)
+        s = os.stat(path)
+        assert s.st_uid in (0, os.getuid()) and not s.st_mode & 0o022
+        path = os.path.dirname(path)
+print(os.path.realpath(sys.executable))
 """
 # Prints such an interpreter after creating the relay's private directory $1; exits 1 if
 # there is none, 2 if a proxy would catch loopback, 3 if $1 can't be created.
@@ -149,7 +159,7 @@ async def serve_relay(
                 elif found.exit_code != 0 or not found.stdout.strip():
                     reason = "no python3 >= 3.8 with ssl that only root or this user can change"
                 else:
-                    python = found.stdout.strip()
+                    python = found.stdout.strip().splitlines()[-1]
                     await runtime.write(f"{files}.py", RELAY_SOURCE)
                     args = shlex.join(
                         [*ISOLATED, f"{files}.py", upstream, files, str(window)]

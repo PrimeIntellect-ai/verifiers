@@ -325,7 +325,7 @@ class RelayServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Relay)
         url = urlsplit(upstream)
         self.https = url.scheme == "https"
-        self.hostname, self.host = url.hostname, url.netloc
+        self.hostname, self.host = url.hostname, url.netloc.rpartition("@")[2]
         self.port = url.port or (443 if self.https else 80)
         self.base_path = url.path.rstrip("/")
         self.context = ssl.create_default_context() if self.https else None

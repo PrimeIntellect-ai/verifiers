@@ -338,16 +338,11 @@ class Rollout:
                     state_secret=state_secret,
                     state_route=self.trace.id,
                     state_base=base_url,
-                    relay_base=relay and relay.url,
                 )
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            # Named like colocated tool servers' routes (localhost).
-            relayed = [relay.url.replace("127.0.0.1", "localhost", 1)] if relay else []
-            await runtime.prepare_execution(
-                [direct["v1"], *relayed, *self._urls.values()]
-            )
+            await runtime.prepare_execution([direct["v1"], *self._urls.values()])
             if relay is not None and not await relay.adopt_policy(spare()):
                 routes = direct
                 self._endpoint = routes["v1"]
