@@ -523,7 +523,7 @@ class InterceptionServer(Interception):
             and not session.stopped
         ):
             await asyncio.wait([prior])
-            if not prior.cancelled():
+            if not prior.cancelled() and not session.stopped:
                 return web.json_response(prior.result())
         verdict = session.tool_verdicts[key] = (
             asyncio.get_running_loop().create_future()

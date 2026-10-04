@@ -304,6 +304,14 @@ class Rollout:
             relay_seconds = (
                 self._interception and self._interception.config.relay_seconds
             )
+
+            # The relay gets at most half the setup time left, so going direct
+            # still fits in it.
+            def spare() -> float | None:
+                if setup_deadline is None:
+                    return None
+                return max(0.0, (setup_deadline - loop.time()) / 2)
+
             if relay_seconds and not runtime.is_local:
                 relay = await self._stack.enter_async_context(
                     serve_relay(
@@ -311,6 +319,7 @@ class Rollout:
                         runtime.host_url(base_url.rstrip("/")),
                         relay_seconds,
                         self.trace.record_metrics,
+                        spare(),
                     )
                 )
             # The relay is on the runtime's own loopback: its URLs are not host-bound.
@@ -334,11 +343,12 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            relayed = [relay.url] if relay else []
+            # Named like colocated tool servers' routes (localhost).
+            relayed = [relay.url.replace("127.0.0.1", "localhost", 1)] if relay else []
             await runtime.prepare_execution(
                 [direct["v1"], *relayed, *self._urls.values()]
             )
-            if relay is not None and not await relay.adopt_policy():
+            if relay is not None and not await relay.adopt_policy(spare()):
                 routes = direct
                 self._endpoint = routes["v1"]
             async with (

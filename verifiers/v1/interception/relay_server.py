@@ -17,6 +17,7 @@ import base64
 import hashlib
 import http.client
 import json
+import math
 import os
 import random
 import re
@@ -70,6 +71,16 @@ def unrecoverable(error: Exception) -> bool:
     return isinstance(error, ssl.SSLCertVerificationError) or bool(
         refused and not transient(int(refused.group(1)))
     )
+
+
+def final(response: http.client.HTTPResponse, method: str) -> http.client.HTTPResponse:
+    """Skip interim responses (say, an edge's 103 Early Hints); the final one follows."""
+    while 102 <= response.status < 200:
+        fp, response.fp = response.fp, None
+        reader = types.SimpleNamespace(makefile=lambda *args, fp=fp: fp)
+        response = http.client.HTTPResponse(reader, method=method)
+        response.begin()
+    return response
 
 
 class Relay(BaseHTTPRequestHandler):
@@ -170,14 +181,7 @@ class Relay(BaseHTTPRequestHandler):
             conn.endheaders(body or None)
         except OSError:
             pass  # the host may have answered (say, a 413) before taking it all
-        response = conn.getresponse()
-        # Skip interim responses (say, an edge's 103 Early Hints); the final one follows.
-        while 102 <= response.status < 200:
-            fp, response.fp = response.fp, None
-            reader = types.SimpleNamespace(makefile=lambda *args, fp=fp: fp)
-            response = http.client.HTTPResponse(reader, method=self.command)
-            response.begin()
-        return response
+        return final(conn.getresponse(), self.command)
 
     def relay(self) -> None:
         server = self.server
@@ -203,7 +207,7 @@ class Relay(BaseHTTPRequestHandler):
             return self.reply(400, b"relay: malformed request")
         headers.append(("Host", server.host))
         repeatable = self.repeatable()
-        held, delay, retry = 0.0, 0.5, 0
+        held, delay, retry, arrived = 0.0, 0.5, 0, time.monotonic()
         key = hashlib.sha256(f"{self.command} {self.path} ".encode() + body).digest()
         try:
             while True:
@@ -214,7 +218,10 @@ class Relay(BaseHTTPRequestHandler):
                 try:
                     conn, response, sent = self.attempt(headers, body)
                 except Unrecoverable as e:
-                    return self.reply(502, f"relay: {e}".encode())
+                    print(f"relay: {e!r}", file=sys.stderr, flush=True)
+                    server.count(retry, held, rescued=False)
+                    self.close_connection = True  # as a direct connection would fail
+                    return
                 if response is not None and (
                     response.getheader(server.stamp) or not transient(response.status)
                 ):
@@ -223,9 +230,11 @@ class Relay(BaseHTTPRequestHandler):
                 left = held + server.window - time.monotonic()
                 # The harness retrying a request that just outlasted the window fails
                 # fast, so a longer outage ends the rollout as an error, not a timeout.
-                if left <= 0 or server.gave_up.get(key, 0) > time.monotonic():
+                if left <= 0:
                     server.give_up(key)
-                elif repeatable or not (response is not None or sent):
+                elif not server.failed_before(key, arrived) and (
+                    repeatable or not (response is not None or sent)
+                ):
                     if response is not None:
                         conn.close()
                     self.hold(min(delay * random.uniform(0.5, 1.5), left))
@@ -305,14 +314,14 @@ class RelayServer(ThreadingHTTPServer):
     request_queue_size = 1024
 
     def __init__(
-        self, upstream: str, files: str, window: float, retry_header: str, stamp: str
+        self,
+        port: int,
+        upstream: str,
+        files: str,
+        window: float,
+        retry_header: str,
+        stamp: str,
     ):
-        try:
-            with open(f"{files}.port") as f:
-                port = int(f.read())  # a restart keeps the address
-        except (OSError, ValueError):
-            port = 0
-        self.restarted = bool(port)
         super().__init__(("127.0.0.1", port), Relay)
         url = urlsplit(upstream)
         self.https = url.scheme == "https"
@@ -407,12 +416,18 @@ class RelayServer(ThreadingHTTPServer):
             conn.sock.settimeout(30)
             headers = {"Host": self.host}
             conn.request("GET", f"{self.base_path}/v1/models", headers=headers)
-            response = conn.getresponse()
+            response = final(conn.getresponse(), "GET")
             if response.getheader(self.stamp) or transient(response.status):
                 return ""
             return f"its address answered {response.status} without the host's stamp"
+        except ssl.SSLError as e:
+            # Any TLS failure but a dropped connection: this relay won't get through.
+            dropped = isinstance(e, (ssl.SSLEOFError, ssl.SSLZeroReturnError))
+            return "" if dropped else repr(e)
         except (OSError, http.client.HTTPException) as e:
             return repr(e) if unrecoverable(e) else ""
+        except Exception as e:  # noqa: BLE001 - a bad setting, not the network
+            return repr(e)
         finally:
             if conn is not None:
                 conn.close()
@@ -420,11 +435,19 @@ class RelayServer(ThreadingHTTPServer):
     def give_up(self, key: bytes, recovered: bool = False) -> None:
         with self.lock:
             now = time.monotonic()
-            self.gave_up = {k: t for k, t in self.gave_up.items() if t > now}
+            self.gave_up = {
+                k: t for k, t in self.gave_up.items() if t > now - self.window
+            }
             if recovered:
                 self.gave_up.pop(key, None)
             else:
-                self.gave_up.setdefault(key, now + self.window)
+                self.gave_up[key] = now
+
+    def failed_before(self, key: bytes, arrived: float) -> bool:
+        """Whether this request outlasted the window shortly before this copy of it
+        arrived: the harness retrying it."""
+        gave_up = self.gave_up.get(key, math.inf)
+        return arrived - self.window < gave_up <= arrived
 
     def handle_error(self, request, client_address) -> None:
         print(f"relay: {sys.exc_info()[1]!r}", file=sys.stderr, flush=True)
@@ -448,12 +471,24 @@ class RelayServer(ThreadingHTTPServer):
 
 def main() -> None:
     upstream, files, window, retry_header, stamp = sys.argv[1:6]
-    server = RelayServer(upstream, files, float(window), retry_header, stamp)
-    # Check the way to the host once, on first start; a restart serves at once, while
-    # connections wait in the listen queue.
-    refused = "" if server.restarted else server.check()
+    try:
+        with open(f"{files}.port") as f:
+            port = int(f.read())  # a restart keeps the address
+    except (OSError, ValueError):
+        port = 0
+    try:
+        server = RelayServer(port, upstream, files, float(window), retry_header, stamp)
+        # Check the way to the host on first start; a restart serves at once, while
+        # connections wait in the listen queue.
+        refused = "" if port else server.check()
+    except Exception as e:
+        if port:
+            raise  # the loop tries again
+        refused = f"crashed: {e!r}"
     with open(f"{files}.port.tmp", "w") as f:
-        f.write(f"refused: {refused}" if refused else str(server.server_address[1]))
+        f.write(
+            f"refused: {refused[:400]}" if refused else str(server.server_address[1])
+        )
     os.replace(f"{files}.port.tmp", f"{files}.port")
     if refused:
         threading.Event().wait()  # the host goes direct and stops this

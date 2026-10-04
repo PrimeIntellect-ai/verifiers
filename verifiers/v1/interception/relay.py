@@ -31,24 +31,42 @@ logger = logging.getLogger(__name__)
 
 RELAY_SOURCE = Path(__file__).with_name("relay_server.py").read_bytes()
 STATS = ("relay_retried_requests", "relay_rescued_requests", "relay_retry_seconds")
-# Fails when a configured proxy would catch the harness's traffic to the relay, or needs
-# TLS to reach (the relay speaks plain HTTP to proxies).
-LOOPBACK_DIRECT = (
-    "import urllib.request as u; p = u.getproxies_environment(); "
-    "assert not p or u.proxy_bypass_environment('127.0.0.1'); "
-    "assert not any(v.lower().startswith('https://') for v in p.values())"
-)
-# Prints a python3 >= 3.8 after creating the relay's private directory $1; exits 1 if
-# there is no python, 2 if a proxy would catch loopback, 3 if $1 can't be created.
+# Python runs isolated (-I -S): never importing from the environment, the working
+# directory or site-packages, which an agent may control.
+ISOLATED = ("-I", "-S")
+# Prints the real path of an interpreter fit to run the relay, which runs it again on
+# every restart: Python >= 3.8 with all it imports, that only root or this user can
+# change. Exits 10 if a configured proxy would catch the harness's loopback traffic, or
+# is one the relay can't use (it speaks plain HTTP to http:// proxies only).
+CHECK = """import os, sys
+assert sys.version_info >= (3, 8)
+import base64, hashlib, http.client, http.server, json, math, random, re, select
+import socket, ssl, threading, time, types, urllib.request as u
+p = u.getproxies_environment()
+if p and not u.proxy_bypass_environment("127.0.0.1"):
+    sys.exit(10)
+if "all" in p or any(not p[k].lower().startswith("http://") for k in ("http", "https") if k in p):
+    sys.exit(10)
+exe = path = os.path.realpath(sys.executable)
+while True:
+    s = os.stat(path)
+    group = s.st_mode & 0o020 and s.st_gid not in (0, os.getgid())
+    assert s.st_uid in (0, os.getuid()) and not s.st_mode & 0o002 and not group
+    if path == os.path.dirname(path):
+        break
+    path = os.path.dirname(path)
+print(exe)
+"""
+# Prints such an interpreter after creating the relay's private directory $1; exits 1 if
+# there is none, 2 if a proxy would catch loopback, 3 if $1 can't be created.
 FIND_PYTHON = (
-    "for p in python3 python; do "
-    "$p -c 'import sys, ssl, http.server; assert sys.version_info >= (3, 8)' "
-    "2>/dev/null || continue; "
-    f"$p -c {shlex.quote(LOOPBACK_DIRECT)} 2>/dev/null || exit 2; "
-    'mkdir -m 700 "$1" || exit 3; '
-    "command -v $p; exit; done; exit 1"
+    "for p in python3 python /usr/local/bin/python3 /usr/bin/python3; do "
+    f"exe=$($p -I -S -c {shlex.quote(CHECK)} 2>/dev/null); c=$?; "
+    "[ $c = 10 ] && exit 2; [ $c = 0 ] || continue; "
+    '(umask 077 && mkdir -- "$1") || exit 3; '
+    'echo "$exe"; exit; done; exit 1'
 )
-PROXIED = "a configured proxy would catch loopback traffic, or needs TLS"
+PROXIED = "a configured proxy would catch loopback traffic, or isn't plain HTTP"
 # Kills every process running the relay under directory argv[1], then removes it.
 STOP = """import os, shutil, signal, sys
 mark = (sys.argv[1] + "/relay.py").encode()
@@ -76,16 +94,22 @@ class Relay:
         self.runtime, self.python, self.files, self.url = runtime, python, files, url
         self.record = record
 
-    async def adopt_policy(self) -> bool:
+    async def adopt_policy(self, limit: float | None = None) -> bool:
         """Hand the relay the proxy settings programs get once the runtime's network
         policy applies (it started before the policy did). False if those settings
-        would send the harness's loopback traffic to a proxy: connect it directly."""
-        env = f"{self.files}.env"
-        save = f"umask 077; env | grep -i '_proxy=' > {env}.tmp; mv {env}.tmp {env}"
-        check = shlex.join([self.python, "-c", LOOPBACK_DIRECT])
+        would send the harness's loopback traffic to a proxy: connect it directly.
+        `limit` caps the seconds this may take."""
+        env, tmp = (
+            shlex.quote(f"{self.files}.env"),
+            shlex.quote(f"{self.files}.env.tmp"),
+        )
+        save = f"umask 077; env | grep -i '_proxy=' > {tmp}; mv {tmp} {env}"
+        check = shlex.join([self.python, *ISOLATED, "-c", CHECK])
         try:
-            async with asyncio.timeout(120):
-                done = await self.runtime.run(["sh", "-c", f"{check} && {save}"], {})
+            async with asyncio.timeout(120 if limit is None else min(120, limit)):
+                done = await self.runtime.run(
+                    ["sh", "-c", f"{check} > /dev/null && {save}"], {}
+                )
             active, reason = done.exit_code == 0, PROXIED
         except Exception as e:  # noqa: BLE001 - connect directly instead
             active, reason = False, f"applying the network policy failed: {e!r}"
@@ -103,40 +127,46 @@ async def serve_relay(
     upstream: str,
     window: float,
     record: Callable[[dict[str, float]], None],
+    limit: float | None = None,
 ) -> AsyncIterator[Relay | None]:
-    """Yield the started relay, or None if it didn't start."""
+    """Yield the started relay, or None if it didn't start within `limit` seconds
+    (at most 300)."""
     # All of the relay's files live in a directory only the runtime's user can enter, so
     # an agent running as another user can't plant links there or read the proxy settings.
     home = f"/tmp/vf-relay-{uuid.uuid4().hex}"
     files = f"{home}/relay"
-    relay, found, python, reason = None, None, None, ""
+    relay, found, python, reason, stopped = None, None, None, "", False
+    # Generous: sandbox commands slow down when thousands of rollouts start at once.
+    budget = 300 if limit is None else min(300, limit)
     try:
         try:
-            # Generous: sandbox commands slow down when thousands of rollouts start at once.
-            async with asyncio.timeout(300):
+            async with asyncio.timeout(budget):
                 found = await runtime.run(["sh", "-c", FIND_PYTHON, "sh", home], {})
                 if found.exit_code == 2:
                     reason = PROXIED
                 elif found.exit_code == 3:
                     reason = f"could not create {home}"
-                elif found.exit_code != 0:
-                    reason = "no python3 >= 3.8 with ssl in the runtime"
+                elif found.exit_code != 0 or not found.stdout.strip():
+                    reason = "no python3 >= 3.8 with ssl that only root or this user can change"
                 else:
-                    python = found.stdout.split()[-1]
+                    python = found.stdout.strip()
                     await runtime.write(f"{files}.py", RELAY_SOURCE)
                     args = shlex.join(
-                        [f"{files}.py", upstream, files, str(window)]
+                        [*ISOLATED, f"{files}.py", upstream, files, str(window)]
                         + [RETRY_COUNT_HEADER, INTERCEPTION_HEADER]
                     )
                     # Restarted at once if it exits (after a pause if it keeps
                     # crashing), on the same port. The interpreter comes from the
-                    # environment, so `pkill -f python3` spares the loop.
+                    # environment, so `pkill -f python3` spares the loop, and so does
+                    # a fixed PATH, so an agent's directories can't shadow `date`.
                     script = (
                         f'while :; do t=$(date +%s); "$VF_RELAY_BIN" {args}; '
                         "[ $(($(date +%s) - t)) -lt 5 ] && sleep 1; done"
                     )
                     await runtime.run_background(
-                        ["sh", "-c", script], {"VF_RELAY_BIN": python}, f"{files}.log"
+                        ["sh", "-c", script],
+                        {"VF_RELAY_BIN": python, "PATH": "/usr/bin:/bin"},
+                        f"{files}.log",
                     )
                     # The relay first checks its way to the host: one that can't reach
                     # it (say, a Python without the CA certificates the harness ships)
@@ -146,15 +176,16 @@ async def serve_relay(
                         with contextlib.suppress(Exception):
                             port = await runtime.read(f"{files}.port", max_bytes=512)
                             if port.startswith(b"refused: "):
-                                reason = f"it can't reach the host: {port[9:].decode()}"
-                            else:
+                                why = port[9:].decode(errors="replace")
+                                reason = f"it can't reach the host: {why!r}"
+                            elif 0 < int(port) < 65536 and port.strip().isdigit():
                                 url = f"http://127.0.0.1:{int(port)}"
                                 relay = Relay(runtime, python, files, url, record)
                         if relay is None and not reason:
                             await asyncio.sleep(poll)
                             poll = min(poll * 2, 2)
         except TimeoutError:
-            reason = "it did not start within 300 s"
+            reason = f"it did not start within {budget:.0f} s"
         except Exception as e:  # noqa: BLE001 - connect directly instead
             reason = repr(e)
         if relay is None:
@@ -162,11 +193,15 @@ async def serve_relay(
             logger.warning(
                 "interception relay did not start (%s); connecting directly", reason
             )
+            # Stopped now, so a relay that keeps crashing doesn't run on meanwhile.
+            if found is None or found.exit_code == 0:
+                await run_shielded(_stop(runtime, python, home, None, record))
+            stopped = True
         yield relay
     finally:
         # Even when cancelled, and before the task's finalize and scoring: leave
         # nothing behind for a grader to see.
-        if python is not None or found is None:
+        if not stopped and (found is None or found.exit_code == 0):
             await run_shielded(_stop(runtime, python, home, relay, record))
 
 
@@ -186,12 +221,14 @@ async def _stop(
                 )
                 record(
                     {
-                        key: float(stats[key])
-                        for key in STATS
-                        if math.isfinite(float(stats.get(key, "nan")))
+                        key: float(value)
+                        for key, value in stats.items()
+                        if key in STATS
+                        and type(value) in (int, float)
+                        and 0 <= value < math.inf
                     }
                 )
     with contextlib.suppress(Exception):
         async with asyncio.timeout(120):
-            stop = [python, "-c", STOP, home] if python else ["rm", "-rf", "--", home]
-            await runtime.run(stop, {})
+            stop = [python, *ISOLATED, "-c", STOP, home]
+            await runtime.run(stop if python else ["rm", "-rf", "--", home], {})
