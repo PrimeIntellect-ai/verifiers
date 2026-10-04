@@ -33,15 +33,12 @@ logger = logging.getLogger(__name__)
 
 RELAY_SOURCE = Path(__file__).with_name("relay_server.py").read_bytes()
 STATS = ("relay_retried_requests", "relay_rescued_requests", "relay_retry_seconds")
-# Python runs isolated (-I -S): never importing from the environment, the working
-# directory or site-packages, which an agent may control.
+# Python runs isolated (-I -S), so a task's PYTHONPATH or working directory can't
+# shadow the standard library it needs.
 ISOLATED = ("-I", "-S")
-# Prints the real path of an interpreter fit to run the relay, which runs it again on
-# every restart: Python >= 3.8 with all it imports, whose files (the executable, the
-# modules and the libraries it loads) and their directories only root or this user can
-# change, and a sticky /tmp. Exits 10 if a configured proxy would catch the harness's
-# loopback traffic, or is one the relay can't use (it speaks plain HTTP to http://
-# proxies only).
+# Prints the real path of an interpreter fit to run the relay: Python >= 3.8 with all it
+# imports. Exits 10 if a configured proxy would catch the harness's loopback traffic, or
+# is one the relay can't use (it speaks plain HTTP to http:// proxies only).
 CHECK = """import os, sys
 assert sys.version_info >= (3, 8)
 import base64, email.errors, hashlib, http.client, http.server, json, math, random
@@ -54,20 +51,7 @@ if "all" in p and not {"http", "https"} <= p.keys():
     sys.exit(10)
 if any(not v.lower().startswith("http://") for k, v in p.items() if k != "all"):
     sys.exit(10)
-assert sys.executable and os.stat("/tmp").st_mode & 0o1000
-files = {sys.executable} | {getattr(m, "__file__", None) for m in list(sys.modules.values())}
-with open("/proc/self/maps") as maps:
-    files |= {line.split()[5] for line in maps if line.count(" ") >= 5 and " /" in line}
-checked = set()
-for path in filter(None, files):
-    path = os.path.realpath(path)
-    if not os.path.isfile(path):  # a deleted mapping, a device: nothing to change
-        continue
-    while path not in checked:
-        checked.add(path)
-        s = os.stat(path)
-        assert s.st_uid in (0, os.getuid()) and not s.st_mode & 0o022
-        path = os.path.dirname(path)
+assert sys.executable
 print(os.path.realpath(sys.executable))
 """
 # Prints such an interpreter after creating the relay's private directory $1; exits 1 if
@@ -153,8 +137,7 @@ async def serve_relay(
         )
         yield None
         return
-    # All of the relay's files live in a directory only the runtime's user can enter, so
-    # an agent running as another user can't plant links there or read the proxy settings.
+    # Its files live in a private directory.
     home = f"/tmp/vf-relay-{uuid.uuid4().hex}"
     files = f"{home}/relay"
     relay, found, python, reason, stopped = None, None, None, "", False
@@ -170,7 +153,7 @@ async def serve_relay(
                 elif found.exit_code == 3:
                     reason = f"could not create {home}"
                 elif found.exit_code != 0 or not found.stdout.strip():
-                    reason = "no python3 >= 3.8 with ssl that only root or this user can change"
+                    reason = "no python3 >= 3.8 with ssl in the runtime"
                 else:
                     python = found.stdout.strip().splitlines()[-1]
                     await runtime.write(f"{files}.py", RELAY_SOURCE)
@@ -182,8 +165,7 @@ async def serve_relay(
                     # crashing), on the same port, until its files are gone. One that
                     # dies before it can say why is reported as refusing. The
                     # interpreter comes from the environment, so `pkill -f python3`
-                    # spares the loop, and a fixed PATH, so an agent's directories
-                    # can't shadow `date`.
+                    # spares the loop.
                     source, port = (
                         shlex.quote(f"{files}.py"),
                         shlex.quote(f"{files}.port"),
@@ -196,7 +178,7 @@ async def serve_relay(
                     )
                     await runtime.run_background(
                         ["sh", "-c", script],
-                        {"VF_RELAY_BIN": python, "PATH": "/usr/bin:/bin"},
+                        {"VF_RELAY_BIN": python},
                         f"{files}.log",
                     )
                     # The relay first checks its way to the host: one that can't reach

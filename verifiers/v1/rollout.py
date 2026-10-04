@@ -312,10 +312,16 @@ class Rollout:
                     return None
                 return max(0.0, (setup_deadline - loop.time()) / 2)
 
+            # The relay runs as the agent: it is the harness's own helper, and
+            # carries nothing the agent can't already reach.
+            harness_runtime: Runtime | None = None
             if relay_seconds and not runtime.is_local:
+                harness_runtime = await agent_runtime(
+                    runtime, self.trace.task.data.agent_user
+                )
                 relay = await self._stack.enter_async_context(
                     serve_relay(
-                        runtime,
+                        harness_runtime,
                         runtime.host_url(base_url.rstrip("/")),
                         relay_seconds,
                         self.trace.record_metrics,
@@ -403,7 +409,8 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        await agent_runtime(runtime, harness_data.agent_user),
+                        harness_runtime
+                        or await agent_runtime(runtime, harness_data.agent_user),
                         self._endpoint,
                         self._secret,
                         self._urls,
