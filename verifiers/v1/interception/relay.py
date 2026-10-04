@@ -65,7 +65,7 @@ class Relay:
         save = f"umask 077; env | grep -i '_proxy=' > {env}.tmp; mv {env}.tmp {env}"
         check = shlex.join([self.python, "-c", LOOPBACK_DIRECT])
         try:
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(120):
                 done = await self.runtime.run(["sh", "-c", f"{save}; {check}"], {})
             active, reason = done.exit_code == 0, PROXIED
         except Exception as e:  # noqa: BLE001 - connect directly instead
@@ -89,7 +89,8 @@ async def serve_relay(
     files = f"/tmp/vf-relay-{uuid.uuid4().hex[:12]}"
     relay, launched, reason = None, False, ""
     try:
-        async with asyncio.timeout(60):
+        # Generous: sandbox commands slow down when thousands of rollouts start at once.
+        async with asyncio.timeout(300):
             found = await runtime.run(["sh", "-c", FIND_PYTHON], {})
             if found.exit_code == 2:
                 reason = PROXIED
@@ -98,22 +99,28 @@ async def serve_relay(
             else:
                 await runtime.write(f"{files}.py", RELAY_SOURCE)
                 python = found.stdout.split()[-1]
-                argv = shlex.join(
-                    [python, f"{files}.py", upstream, files, str(window)]
+                args = shlex.join(
+                    [f"{files}.py", upstream, files, str(window)]
                     + [RETRY_COUNT_HEADER, INTERCEPTION_HEADER]
                 )
-                # Restarted if it exits; a restart binds the same port.
-                script = f"echo $$ > {files}.pid; while :; do {argv}; sleep 1; done"
+                # Restarted if it exits; a restart binds the same port. The interpreter
+                # comes from the environment, so `pkill -f python3` spares the loop.
+                script = f'echo $$ > {files}.pid; while :; do "$VF_RELAY_BIN" {args}; sleep 1; done'
                 launched = True
-                await runtime.run_background(["sh", "-c", script], {}, f"{files}.log")
+                await runtime.run_background(
+                    ["sh", "-c", script], {"VF_RELAY_BIN": python}, f"{files}.log"
+                )
+                poll = 0.25
                 while relay is None:
                     with contextlib.suppress(Exception):
                         port = await runtime.read(f"{files}.port", max_bytes=64)
                         url = f"http://127.0.0.1:{int(port.split()[0])}"
                         relay = Relay(runtime, python, files, url, record)
-                    await asyncio.sleep(0 if relay else 0.25)
+                    if relay is None:
+                        await asyncio.sleep(poll)
+                        poll = min(poll * 2, 2)
     except TimeoutError:
-        reason = "it did not start within 60 s"
+        reason = "it did not start within 300 s"
     except Exception as e:  # noqa: BLE001 - connect directly instead
         reason = repr(e)
     if relay is None:
@@ -126,7 +133,7 @@ async def serve_relay(
     finally:
         if relay is not None:
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(120):
                     # The agent can write this file: keep only the relay's own counters.
                     stats = json.loads(
                         await runtime.read(f"{files}.json", max_bytes=4096)
@@ -140,7 +147,7 @@ async def serve_relay(
                     )
         if launched:
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(120):
                     # The supervising loop first, so it can't restart the relay. Both
                     # files are agent-writable: only plain pids reach `kill`.
                     pids = []
@@ -158,7 +165,7 @@ async def serve_relay(
                 f"{files}.{ext}" for ext in ("py", "port", "pid", "json", "env", "log")
             ]
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(120):
                     await runtime.run(
                         ["rm", "-f", *leftovers, *(f"{f}.tmp" for f in leftovers)], {}
                     )
