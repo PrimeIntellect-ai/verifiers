@@ -42,7 +42,21 @@ async def invoke_all(
     fns: list[Callable[..., Any]], available: dict[str, Any]
 ) -> list[Any]:
     """Invoke scoring handlers concurrently, including empty and singleton lists."""
-    return await asyncio.gather(*(invoke(fn, available) for fn in fns))
+
+    async def run(fn: Callable[..., Any]) -> Any:
+        result = invoke(fn, available)
+        # Handlers may be plain sync functions — hook boundaries tolerate them.
+        return await result if inspect.isawaitable(result) else result
+
+    # If one fails, cancel the siblings so its error doesn't keep billing the rest.
+    tasks = [asyncio.ensure_future(run(fn)) for fn in fns]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def seed(scores: dict[str, Any], names: Iterable[str]) -> None:
