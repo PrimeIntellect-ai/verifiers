@@ -140,7 +140,7 @@ class RubricJudgeConfig(JudgeConfig):
     output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Transient HTTP failures are already retried by the OpenAI client."""
+    handle either. Transient transport/server/rate-limit failures are retried by `Judge.complete`."""
 
 
 class CriterionVerdict(BaseModel):
