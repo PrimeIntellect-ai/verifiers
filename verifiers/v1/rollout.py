@@ -326,22 +326,25 @@ class Rollout:
                     elif policy.block:
                         network_prompt = (
                             "External network access is allowed except for these blocked "
-                            f"destinations: {', '.join(policy.block)}."
+                            f"destinations: {', '.join(policy.block)}. "
+                            "Do not circumvent this selection of domains."
                         )
                     else:
                         network_prompt = (
                             "External network access is limited to these destinations: "
-                            f"{', '.join(policy.allow)}. "
-                            "Do not circumvent this selection of domains."
+                            f"{', '.join(policy.allow)}."
                         )
                     network_prompt = "\n\n".join(
                         text
                         for text in (harness_data.system_prompt, network_prompt)
                         if text
                     )
-                    # Keep transcript system messages intact when the harness resumes.
-                    if harness_data.system_prompt is None and isinstance(
-                        harness_data.prompt, list
+                    # Keep existing transcript system messages intact on resume;
+                    # user-only lists must stay user-only for ACP harnesses.
+                    if (
+                        harness_data.system_prompt is None
+                        and isinstance(harness_data.prompt, list)
+                        and any(m.role == "system" for m in harness_data.prompt)
                     ):
                         harness_data = harness_data.model_copy(
                             update={
