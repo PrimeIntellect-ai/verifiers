@@ -334,7 +334,10 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([direct["v1"], *self._urls.values()])
+            relayed = [relay.url] if relay else []
+            await runtime.prepare_execution(
+                [direct["v1"], *relayed, *self._urls.values()]
+            )
             if relay is not None and not await relay.adopt_policy():
                 routes = direct
                 self._endpoint = routes["v1"]

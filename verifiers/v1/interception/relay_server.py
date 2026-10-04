@@ -14,6 +14,7 @@ whenever the host rewrites it.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import json
 import os
@@ -25,6 +26,7 @@ import ssl
 import sys
 import threading
 import time
+import types
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
@@ -45,6 +47,7 @@ HOP_BY_HOP = {
 }
 TARGET = re.compile(r"/[!-~]*")  # origin-form, visible ASCII
 LENGTH = re.compile(r"[0-9]{1,15}")
+MAX_BODY = 1 << 30  # the host's own limit
 CHUNK = re.compile(rb"([0-9a-fA-F]{1,15})(;[^\r\n]*)?\r?\n")
 FOLD = re.compile(r"\r?\n[ \t]+")
 
@@ -61,8 +64,17 @@ def transient(status: int) -> bool:
     return status in (404, 408, 429) or status >= 500
 
 
+def unrecoverable(error: Exception) -> bool:
+    """A bad certificate, or a proxy refusing the host for good: retrying can't help."""
+    refused = re.match(r"Tunnel connection failed: (\d+)", str(error))
+    return isinstance(error, ssl.SSLCertVerificationError) or bool(
+        refused and not transient(int(refused.group(1)))
+    )
+
+
 class Relay(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    disable_nagle_algorithm = True
     server: RelayServer
 
     def log_message(self, format: str, *args: object) -> None:
@@ -71,16 +83,16 @@ class Relay(BaseHTTPRequestHandler):
     def read_body(self) -> bytes | None:
         """The request body, or None if its framing is invalid or the client left mid-body."""
         lengths = self.headers.get_all("Content-Length") or []
-        coding = self.headers.get("Transfer-Encoding")
-        if coding is None:
+        codings = self.headers.get_all("Transfer-Encoding")
+        if not codings:
             if len(set(lengths)) > 1 or not all(LENGTH.fullmatch(n) for n in lengths):
                 return None
             size = int(lengths[0]) if lengths else 0
-            body = self.rfile.read(size)
+            body = self.rfile.read(size) if size <= MAX_BODY else b""
             return body if len(body) == size else None
-        if lengths or coding.strip().lower() != "chunked":
+        if lengths or ",".join(codings).replace(" ", "").lower() != "chunked":
             return None
-        chunks = []
+        chunks, total = [], 0
         while True:
             line = CHUNK.fullmatch(self.rfile.readline(1 << 16))
             if line is None:
@@ -88,6 +100,9 @@ class Relay(BaseHTTPRequestHandler):
             size = int(line.group(1), 16)
             if not size:
                 break
+            total += size
+            if total > MAX_BODY:
+                return None
             chunks.append(self.rfile.read(size))
             if len(chunks[-1]) != size or self.rfile.readline(3) not in (
                 b"\r\n",
@@ -113,15 +128,10 @@ class Relay(BaseHTTPRequestHandler):
 
     def hold(self, seconds: float) -> None:
         """Wait between attempts; raise Gone if the client hangs up meanwhile."""
-        deadline = time.monotonic() + seconds
-        try:
-            ready = select.select([self.connection], [], [], seconds)[0]
-            if ready and not self.connection.recv(1, socket.MSG_PEEK):
-                raise Gone
-        except OSError:
-            raise Gone from None
-        # Readable but not closed: the client sent its next request early.
-        time.sleep(max(0.0, deadline - time.monotonic()))
+        poll = select.poll()
+        poll.register(self.connection, getattr(select, "POLLRDHUP", 0))
+        if poll.poll(seconds * 1000):  # hang-ups and errors only, not new requests
+            raise Gone
 
     def attempt(self, headers: list, body: bytes):
         """(connection, response, sent). On failure the first two are None, and `sent`
@@ -135,21 +145,15 @@ class Relay(BaseHTTPRequestHandler):
             if response.status < 200:  # 101: nothing here asked to switch protocols
                 raise http.client.HTTPException(f"unexpected {response.status}")
             return conn, response, sent
-        except ssl.SSLCertVerificationError as e:
-            if conn is not None:
-                conn.close()
-            raise Unrecoverable(e) from e
+        except Gone:
+            conn.close()
+            raise
         except (OSError, http.client.HTTPException) as e:
             if conn is not None:
                 conn.close()
-            refused = re.match(r"Tunnel connection failed: (\d+)", str(e))
-            if refused and not transient(int(refused.group(1))):
+            if unrecoverable(e):
                 raise Unrecoverable(e) from e
             return None, None, sent
-        except Gone:
-            if conn is not None:
-                conn.close()
-            raise
 
     def send(self, conn, headers: list, body: bytes) -> http.client.HTTPResponse:
         conn.putrequest(
@@ -169,11 +173,10 @@ class Relay(BaseHTTPRequestHandler):
         response = conn.getresponse()
         # Skip interim responses (say, an edge's 103 Early Hints); the final one follows.
         while 102 <= response.status < 200:
-            final = http.client.HTTPResponse(conn.sock, method=self.command)
-            final.fp.close()
-            final.fp, response.fp = response.fp, None
-            final.begin()
-            response = final
+            fp, response.fp = response.fp, None
+            reader = types.SimpleNamespace(makefile=lambda *args, fp=fp: fp)
+            response = http.client.HTTPResponse(reader, method=self.command)
+            response.begin()
         return response
 
     def relay(self) -> None:
@@ -193,6 +196,7 @@ class Relay(BaseHTTPRequestHandler):
         if (
             body is None
             or not TARGET.fullmatch(self.path)
+            or self.headers.defects  # a malformed line ends the headers early
             or any("\r" in value or "\n" in value for _, value in headers)
         ):
             self.close_connection = True
@@ -200,6 +204,7 @@ class Relay(BaseHTTPRequestHandler):
         headers.append(("Host", server.host))
         repeatable = self.repeatable()
         held, delay, retry = 0.0, 0.5, 0
+        key = hashlib.sha256(f"{self.command} {self.path} ".encode() + body).digest()
         try:
             while True:
                 if retry and repeatable:
@@ -214,31 +219,30 @@ class Relay(BaseHTTPRequestHandler):
                     response.getheader(server.stamp) or not transient(response.status)
                 ):
                     break
-                if response is None and sent and not repeatable:
-                    return self.reply(502, b"relay: connection to host lost")
                 held = held or time.monotonic()
-                pause = delay * random.uniform(0.5, 1.5)
-                if time.monotonic() + pause > held + server.window:
-                    # Failures soon after fail fast too, so the harness's own retries
-                    # don't each wait out the window: a longer outage ends the rollout
-                    # as an error, not a timeout.
-                    server.fail_fast_until = time.monotonic() + server.window
-                if time.monotonic() < server.fail_fast_until or (
-                    response is not None and not repeatable
-                ):
-                    server.count(retry, held, rescued=False)
+                left = held + server.window - time.monotonic()
+                # The harness retrying a request that just outlasted the window fails
+                # fast, so a longer outage ends the rollout as an error, not a timeout.
+                if left <= 0 or server.gave_up.get(key, 0) > time.monotonic():
+                    server.give_up(key)
+                elif repeatable or not (response is not None or sent):
                     if response is not None:
-                        return self.forward(conn, response)
-                    return self.reply(502, b"relay: host unreachable")
+                        conn.close()
+                    self.hold(min(delay * random.uniform(0.5, 1.5), left))
+                    delay, retry = min(delay * 2, 10.0), retry + 1
+                    continue
+                server.count(retry, held, rescued=False)
                 if response is not None:
-                    conn.close()
-                self.hold(pause)
-                delay, retry = min(delay * 2, 10.0), retry + 1
+                    return self.forward(conn, response)
+                # As a direct connection would have seen it: no answer at all.
+                self.close_connection = True
+                return
         except Gone:
             server.count(retry, held, rescued=False)
             self.close_connection = True
             return
-        server.fail_fast_until = 0.0
+        if key in server.gave_up:
+            server.give_up(key, recovered=True)
         server.count(retry, held, rescued=True)
         self.forward(conn, response)
 
@@ -253,12 +257,12 @@ class Relay(BaseHTTPRequestHandler):
 
     def forward(self, conn, response: http.client.HTTPResponse) -> None:
         no_body = self.command == "HEAD" or response.status in (204, 304)
-        length = response.getheader("Content-Length")
-        chunked = (
-            not no_body
-            and (response.chunked or length is None)
-            and self.request_version != "HTTP/1.0"
-        )
+        # Framed as http.client reads the body, not as the upstream's headers claim.
+        length = response.length
+        if no_body:
+            length = response.getheader("Content-Length", "")
+            length = int(length) if LENGTH.fullmatch(length) else None
+        chunked = not no_body and length is None and self.request_version == "HTTP/1.1"
         if not no_body and not chunked and length is None:
             self.close_connection = True  # the body ends when the connection does
         self.send_response_only(response.status, response.reason)
@@ -267,8 +271,8 @@ class Relay(BaseHTTPRequestHandler):
                 self.send_header(name, value)
         if chunked:
             self.send_header("Transfer-Encoding", "chunked")
-        elif length is not None and not response.chunked:
-            self.send_header("Content-Length", length)
+        elif length is not None:
+            self.send_header("Content-Length", str(length))
         if self.close_connection:
             self.send_header("Connection", "close")
         self.end_headers()
@@ -288,6 +292,7 @@ class Relay(BaseHTTPRequestHandler):
                     self.wfile.write(b"0\r\n\r\n")
                 complete = True
         finally:
+            response.close()
             conn.close()
             if not complete:
                 self.close_connection = True
@@ -297,6 +302,7 @@ class Relay(BaseHTTPRequestHandler):
 
 class RelayServer(ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 1024
 
     def __init__(
         self, upstream: str, files: str, window: float, retry_header: str, stamp: str
@@ -306,6 +312,7 @@ class RelayServer(ThreadingHTTPServer):
                 port = int(f.read())  # a restart keeps the address
         except (OSError, ValueError):
             port = 0
+        self.restarted = bool(port)
         super().__init__(("127.0.0.1", port), Relay)
         url = urlsplit(upstream)
         self.https = url.scheme == "https"
@@ -316,7 +323,7 @@ class RelayServer(ThreadingHTTPServer):
         self.files, self.window, self.retry_header = files, window, retry_header
         self.stamp = stamp
         self.env_mtime = 0.0
-        self.fail_fast_until = 0.0
+        self.gave_up: dict = {}
         self.lock = threading.Lock()
         self.stats = {
             "relay_retried_requests": 0,
@@ -391,6 +398,34 @@ class RelayServer(ThreadingHTTPServer):
                 conn.sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, option), value)
         return conn
 
+    def check(self) -> str:
+        """Why requests through here can't reach the host: "" if they can, or if the
+        network is just down (retries handle that)."""
+        conn = None
+        try:
+            conn = self.connect()
+            conn.sock.settimeout(30)
+            headers = {"Host": self.host}
+            conn.request("GET", f"{self.base_path}/v1/models", headers=headers)
+            response = conn.getresponse()
+            if response.getheader(self.stamp) or transient(response.status):
+                return ""
+            return f"its address answered {response.status} without the host's stamp"
+        except (OSError, http.client.HTTPException) as e:
+            return repr(e) if unrecoverable(e) else ""
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def give_up(self, key: bytes, recovered: bool = False) -> None:
+        with self.lock:
+            now = time.monotonic()
+            self.gave_up = {k: t for k, t in self.gave_up.items() if t > now}
+            if recovered:
+                self.gave_up.pop(key, None)
+            else:
+                self.gave_up.setdefault(key, now + self.window)
+
     def handle_error(self, request, client_address) -> None:
         print(f"relay: {sys.exc_info()[1]!r}", file=sys.stderr, flush=True)
 
@@ -414,9 +449,14 @@ class RelayServer(ThreadingHTTPServer):
 def main() -> None:
     upstream, files, window, retry_header, stamp = sys.argv[1:6]
     server = RelayServer(upstream, files, float(window), retry_header, stamp)
+    # Check the way to the host once, on first start; a restart serves at once, while
+    # connections wait in the listen queue.
+    refused = "" if server.restarted else server.check()
     with open(f"{files}.port.tmp", "w") as f:
-        f.write(str(server.server_address[1]))
+        f.write(f"refused: {refused}" if refused else str(server.server_address[1]))
     os.replace(f"{files}.port.tmp", f"{files}.port")
+    if refused:
+        threading.Event().wait()  # the host goes direct and stops this
     server.serve_forever()
 
 

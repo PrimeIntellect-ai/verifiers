@@ -49,17 +49,6 @@ FIND_PYTHON = (
     "command -v $p; exit; done; exit 1"
 )
 PROXIED = "a configured proxy would catch loopback traffic, or needs TLS"
-# One request through the relay: fails unless the host itself answers (any status), or
-# nothing answers in time (the network is down, not the relay broken).
-PROBE = """import socket, sys, urllib.error, urllib.request
-try:
-    r = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[1], timeout=30)
-except urllib.error.HTTPError as e:
-    r = e
-except (TimeoutError, socket.timeout):
-    sys.exit(0)
-sys.exit(0 if r.headers.get(sys.argv[2]) else 4)
-"""
 # Kills every process running the relay under directory argv[1], then removes it.
 STOP = """import os, shutil, signal, sys
 mark = (sys.argv[1] + "/relay.py").encode()
@@ -96,7 +85,7 @@ class Relay:
         check = shlex.join([self.python, "-c", LOOPBACK_DIRECT])
         try:
             async with asyncio.timeout(120):
-                done = await self.runtime.run(["sh", "-c", f"{save}; {check}"], {})
+                done = await self.runtime.run(["sh", "-c", f"{check} && {save}"], {})
             active, reason = done.exit_code == 0, PROXIED
         except Exception as e:  # noqa: BLE001 - connect directly instead
             active, reason = False, f"applying the network policy failed: {e!r}"
@@ -139,32 +128,31 @@ async def serve_relay(
                         [f"{files}.py", upstream, files, str(window)]
                         + [RETRY_COUNT_HEADER, INTERCEPTION_HEADER]
                     )
-                    # Restarted if it exits; a restart binds the same port. The
-                    # interpreter comes from the environment, so `pkill -f python3`
-                    # spares the loop.
-                    script = f'while :; do "$VF_RELAY_BIN" {args}; sleep 1; done'
+                    # Restarted at once if it exits (after a pause if it keeps
+                    # crashing), on the same port. The interpreter comes from the
+                    # environment, so `pkill -f python3` spares the loop.
+                    script = (
+                        f'while :; do t=$(date +%s); "$VF_RELAY_BIN" {args}; '
+                        "[ $(($(date +%s) - t)) -lt 5 ] && sleep 1; done"
+                    )
                     await runtime.run_background(
                         ["sh", "-c", script], {"VF_RELAY_BIN": python}, f"{files}.log"
                     )
-                    url, poll = None, 0.25
-                    while url is None:
+                    # The relay first checks its way to the host: one that can't reach
+                    # it (say, a Python without the CA certificates the harness ships)
+                    # would be worse than going direct.
+                    poll = 0.25
+                    while relay is None and not reason:
                         with contextlib.suppress(Exception):
-                            port = await runtime.read(f"{files}.port", max_bytes=64)
-                            url = f"http://127.0.0.1:{int(port)}"
-                        if url is None:
+                            port = await runtime.read(f"{files}.port", max_bytes=512)
+                            if port.startswith(b"refused: "):
+                                reason = f"it can't reach the host: {port[9:].decode()}"
+                            else:
+                                url = f"http://127.0.0.1:{int(port)}"
+                                relay = Relay(runtime, python, files, url, record)
+                        if relay is None and not reason:
                             await asyncio.sleep(poll)
                             poll = min(poll * 2, 2)
-                    # A relay that can't reach the host (say, a Python without the CA
-                    # certificates the harness ships) would be worse than going direct.
-                    probe = await runtime.run(
-                        [python, "-c", PROBE, f"{url}/v1/models", INTERCEPTION_HEADER],
-                        {},
-                    )
-                    if probe.exit_code == 0:
-                        relay = Relay(runtime, python, files, url, record)
-                    else:
-                        error = probe.stderr.strip().splitlines()[-1:] or ["no stamp"]
-                        reason = f"it could not reach the host ({error[0][:200]})"
         except TimeoutError:
             reason = "it did not start within 300 s"
         except Exception as e:  # noqa: BLE001 - connect directly instead
