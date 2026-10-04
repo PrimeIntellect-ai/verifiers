@@ -105,3 +105,30 @@ jobs:
       - name: Run live v1 E2Es
         run: |
           uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal" --cov=verifiers --cov-report=xml --cov-report=term
+
+  delivery-behaviors:
+    name: Nano-RLM delivery behaviors
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Install Verifiers and nano-rlm
+        run: |
+          uv sync
+          uv tool install --python 3.12 'git+https://github.com/PrimeIntellect-ai/nano-rlm.git@c38e20b60c90bbf625274d3fde2b2a384f390a66'
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+      - name: Run scripted delivery behaviors without model credentials
+        env:
+          VF_DELIVERY_BEHAVIORS: "1"
+          VF_DELIVERY_OUTPUT: delivery-traces
+        run: uv run pytest tests/v1/test_delivery_behaviors.py -k rlm -v -n 2
+      - name: Upload timelines and traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nano-rlm-delivery-traces
+          path: delivery-traces/

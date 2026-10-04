@@ -3,6 +3,7 @@
 Put `rlm`, `claude-agent-acp`, `claude`, and `node` on PATH, then run:
     VF_DELIVERY_BEHAVIORS=1 uv run pytest tests/v1/test_delivery_behaviors.py -v -s
 
+For nano-rlm alone, add `-k rlm`; neither subset needs PRIME_API_KEY.
 VF_DELIVERY_OUTPUT optionally selects a directory for timeline.json and normal
 Verifiers traces.jsonl files (one run per case). No model API key is required.
 `idle` sends A after the opening turn finishes, then B during A's resumed work.
@@ -35,7 +36,6 @@ from verifiers.v1.harnesses.rlm.harness import RLMHarness, RLMHarnessConfig
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.e2e,
     pytest.mark.skipif(
         os.environ.get("VF_DELIVERY_BEHAVIORS") != "1",
         reason="opt-in real-harness behavioral examples",
@@ -56,7 +56,7 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
     commands = ["rlm"] if kind == "rlm" else ["node", "claude-agent-acp", "claude"]
     bins = {command: shutil.which(command) for command in commands}
     if not all(bins.values()):
-        pytest.skip(f"install these harness executables first: {commands}")
+        pytest.fail(f"install these harness executables first: {commands}")
     scenario = Scenario(kind, state, hold_call=2 if state.startswith("idle") else 1)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -127,14 +127,14 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
         async with asyncio.timeout(50), agent, agent.interaction(task) as interaction:
             real_step = interaction._run.step
 
-            async def step(messages=None):
+            async def step(messages=None, **kwargs):
                 scenario.record(
                     "turn_started",
                     messages=labels(
                         [m.model_dump() for m in messages] if messages else []
                     ),
                 )
-                result = await real_step(messages)
+                result = await real_step(messages, **kwargs)
                 scenario.record("turn_yielded")
                 return result
 
@@ -158,7 +158,28 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
                 await opening
                 scenario.record("agent_idle")
                 sends.append(asyncio.create_task(send(0)))
+                # A sequential caller can await the wake-up receipt and still
+                # steer the next message into the held, resumed turn.
+                receipt = await sends[0]
+                assert (
+                    await interaction.send(
+                        LABELS[0], mode=modes[0], message_id=LABELS[0]
+                    )
+                    == receipt
+                )
                 await scenario.model_entered.wait()
+                assert not scenario.model_release.is_set()
+                assert not any(
+                    e["event"] == "turn_yielded"
+                    for e in scenario.events[
+                        next(
+                            e["index"]
+                            for e in scenario.events
+                            if e["event"] == "agent_idle"
+                        )
+                        + 1 :
+                    ]
+                )
                 sends.append(asyncio.create_task(send(1)))
             else:
                 if state == "model":
@@ -177,6 +198,10 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
             scenario.tool_release.set()
             await opening
             receipts = await asyncio.gather(*sends)
+            # Delivery receipts no longer wait for completion. Keep the session
+            # open until its owned turns finish so the trace includes the replies.
+            if interaction._message_drain is not None:
+                await interaction._message_drain
             assert all(r["outcome"] == "injected" for r in receipts)
             assert set(scenario.calls[-1]["messages"]) == set(LABELS)
             for label, mode in zip(LABELS, modes, strict=True):
@@ -191,7 +216,10 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
                     if e["event"] == "model_request" and label in e["messages"]
                 )
                 assert seen > submitted
-                if mode == "steer" and not state.startswith("idle"):
+                if mode == "steer" and (
+                    not state.startswith("idle")
+                    or (state == "idle" and label == LABELS[1])
+                ):
                     assert not any(
                         e["event"] == "turn_yielded"
                         for e in scenario.events[submitted:seen]

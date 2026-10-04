@@ -221,9 +221,10 @@ class Interaction:
         wait tool inside the active turn. Messages arriving after the batch is
         drained wait for the following turn.
         Both resume an idle session. Queue mode also works without ACP steering.
-        Queued sends and idle wake-ups return after their turn finishes; active
-        steering returns when the harness accepts it. Cancellation withdraws a
-        queued message that has not started. After a batch starts, cancelling
+        Unsupported steering raises; it never silently changes to queue mode.
+        Sends return on acceptance, not turn completion. For queued sends and
+        idle wake-ups, the first model request acknowledges the resumed input.
+        Cancellation withdraws a queued message that has not started. After a batch starts, cancelling
         a sender does not cancel the shared turn. Callers must await or schedule
         this coroutine to submit input; closing the interaction cancels any
         outstanding delivery tasks.
@@ -399,8 +400,21 @@ class Interaction:
                                 "reason": "noRunningTurn",
                             }
                         else:
+
+                            def accepted(batch: list[_PendingMessage] = batch) -> None:
+                                for item in batch:
+                                    item.receipt = {"outcome": "injected"}
+                                    if item.message_id is not None:
+                                        self._steering_receipts[item.message_id] = (
+                                            item.text,
+                                            dict(item.receipt),
+                                        )
+                                        self._pending_by_id.pop(item.message_id, None)
+                                    item.done.set()
+
                             segment = await self._turn(
-                                [UserMessage(content=item.text) for item in batch]
+                                [UserMessage(content=item.text) for item in batch],
+                                on_input=accepted,
                             )
                             receipt = (
                                 {
@@ -411,6 +425,8 @@ class Interaction:
                                 else {"outcome": "injected"}
                             )
                         for item in batch:
+                            if item.done.is_set():
+                                continue
                             item.receipt = receipt
                             if (
                                 receipt.get("outcome") == "injected"
@@ -422,7 +438,8 @@ class Interaction:
                                 )
                     except BaseException as error:
                         for item in batch:
-                            item.error = error
+                            if not item.done.is_set():
+                                item.error = error
                         raise
                     finally:
                         for item in batch:
@@ -442,7 +459,12 @@ class Interaction:
         async with self._lock, self._gate or nullcontext():
             return await self._turn(message)
 
-    async def _turn(self, message: str | Messages | None) -> Segment:
+    async def _turn(
+        self,
+        message: str | Messages | None,
+        *,
+        on_input: Callable[[], None] | None = None,
+    ) -> Segment:
         if self._closing or self._run.closed:
             raise RuntimeError("this interaction is closed")
         if self._over:
@@ -471,7 +493,7 @@ class Interaction:
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
-        await self._run.step(messages)
+        await self._run.step(messages, on_input=on_input)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.
@@ -772,7 +794,6 @@ class Agent:
             await run.abort()
             raise
         finally:
-            await interaction._cancel_deliveries()
             trace = run.trace if run.closed else await interaction.close()
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None

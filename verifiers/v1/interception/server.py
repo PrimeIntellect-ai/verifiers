@@ -752,6 +752,9 @@ class InterceptionServer(Interception):
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
         session.trace.preview(turn, turn.tail)
+        if session.on_turn_input is not None:
+            on_input, session.on_turn_input = session.on_turn_input, None
+            on_input()
 
         def serve(response: Response, events: bytes | None) -> web.Response:
             if streaming:
