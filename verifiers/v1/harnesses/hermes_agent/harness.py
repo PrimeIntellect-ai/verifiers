@@ -62,7 +62,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
         if self.config.disabled_tools:
@@ -89,6 +88,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
         config = {
             "model": model,
+            "mcp_servers": data.mcp_servers,
+            # Allow the tool timeout for discovery before Hermes snapshots tools.
+            "mcp_discovery_timeout": self.config.tool_timeout,
             # The ACP client already approves tool requests. Avoid routing Hermes'
             # redundant smart-approval model calls through interception as turns.
             "approvals": {"mode": "off"},
@@ -109,6 +111,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env=env,
+            # Hermes loads MCP from its native config before starting ACP.
+            mcp_servers={},
             command=[
                 f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
                 "-P",  # Keep task files from shadowing installed Hermes modules.

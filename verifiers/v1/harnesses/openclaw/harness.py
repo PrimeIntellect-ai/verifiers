@@ -155,7 +155,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
@@ -201,12 +200,11 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             "mcp": {
                 "servers": {
                     name: {
-                        "url": url,
-                        "transport": "streamable-http",
+                        **server,
                         "connectionTimeoutMs": 60_000,
                         "requestTimeoutMs": int(self.config.tool_timeout * 1000),
                     }
-                    for name, url in mcp_urls.items()
+                    for name, server in data.mcp_servers.items()
                 }
             },
         }
@@ -235,7 +233,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             env=env,
             command=OPENCLAW_COMMAND,
             prompt=prompt,
-            mcp_urls={},
+            mcp_servers={},
             system_prompt=system_prompt,
         )
 

@@ -32,21 +32,22 @@ class HarnessConfig(BaseConfig):
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
     mcp_header_env: dict[str, dict[str, str]] = Field(default_factory=dict)
-    """ACP MCP headers by server name: header values are read from host env vars."""
+    """MCP headers by server name: header values are read from host env vars."""
 
-    def resolve_mcp_headers(self, servers: dict[str, str]) -> dict[str, dict[str, str]]:
-        resolved = {}
+    def resolve_mcp_servers(self, servers: dict[str, dict]) -> dict[str, dict]:
+        """Resolve header secrets on execution copies, keeping task declarations intact."""
+        resolved = {name: dict(server) for name, server in servers.items()}
         for name, headers in self.mcp_header_env.items():
-            if name not in servers:
+            if name not in resolved:
                 continue
-            resolved[name] = {}
+            values = resolved[name]["headers"] = dict(resolved[name].get("headers", {}))
             for header, variable in headers.items():
                 value = os.environ.get(variable)
                 if not value:
                     raise ValueError(
                         f"MCP header environment variable {variable!r} is missing"
                     )
-                resolved[name][header] = value
+                values[header] = value
         return resolved
 
     tool_timeout: FiniteFloat = Field(600.0, gt=0)

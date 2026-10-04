@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import shutil
 import signal
 import sys
 import traceback
@@ -19,6 +20,7 @@ from acp import (
     PROTOCOL_VERSION,
     Client,
     RequestError,
+    default_environment,
     image_block,
     spawn_agent_process,
     text_block,
@@ -28,10 +30,13 @@ from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
     DeniedOutcome,
+    EnvVariable,
     HttpHeader,
     HttpMcpServer,
+    McpServerStdio,
     PermissionOption,
     RequestPermissionResponse,
+    SseMcpServer,
     TextContentBlock,
 )
 
@@ -180,19 +185,44 @@ def user_content_blocks(contents: list, supports_images: bool) -> list:
     return blocks
 
 
-def mcp_servers(config: dict) -> list[HttpMcpServer]:
-    return [
-        HttpMcpServer(
-            type="http",
-            name=name,
-            url=url,
-            headers=[
-                HttpHeader(name=key, value=value)
-                for key, value in config.get("mcp_headers", {}).get(name, {}).items()
-            ],
+def mcp_servers(config: dict, capabilities: Any) -> list:
+    servers = []
+    for name, spec in config["mcp_servers"].items():
+        kind = spec.get(
+            "transport", "stdio" if "command" in spec else "streamable-http"
         )
-        for name, url in config["mcp_urls"].items()
-    ]
+        if kind == "stdio":
+            env = {**default_environment(), **spec.get("env", {})}
+            servers.append(
+                McpServerStdio(
+                    name=name,
+                    command=shutil.which(spec["command"], path=env.get("PATH"))
+                    or spec["command"],
+                    args=spec.get("args", []),
+                    env=[EnvVariable(name=k, value=v) for k, v in env.items()],
+                )
+            )
+            continue
+        capability = "http" if kind == "streamable-http" else kind
+        if kind not in {"streamable-http", "sse"} or not getattr(
+            capabilities.mcp_capabilities, capability, False
+        ):
+            raise ValueError(
+                f"ACP agent does not support MCP transport {kind!r} for {name!r}"
+            )
+        cls = SseMcpServer if kind == "sse" else HttpMcpServer
+        servers.append(
+            cls(
+                type=capability,
+                name=name,
+                url=spec["url"],
+                headers=[
+                    HttpHeader(name=k, value=v)
+                    for k, v in spec.get("headers", {}).items()
+                ],
+            )
+        )
+    return servers
 
 
 async def prompt(
@@ -269,7 +299,7 @@ class ACPSession:
             ).get("supported") is True
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
-                mcp_servers=mcp_servers(config),
+                mcp_servers=mcp_servers(config, self.capabilities),
                 **config["session_meta"],
             )
         except BaseException:
