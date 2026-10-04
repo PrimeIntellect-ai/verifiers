@@ -27,10 +27,7 @@ class TunnelRelay(logging.Handler):
             logger.log(record.levelno, "tunnel %s", message)
 
 
-tunnel_logger = logging.getLogger("prime_tunnel.frpc")
-tunnel_logger.addHandler(TunnelRelay())
-tunnel_logger.setLevel(logging.INFO)
-tunnel_logger.propagate = False
+logging.getLogger("prime_tunnel.frpc").addHandler(TunnelRelay())
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
