@@ -592,8 +592,7 @@ class InterceptionServer(Interception):
         try:
             raw = await request.read()
         except ConnectionError:
-            # The harness (or a tunnel hop in front of it) dropped mid-upload; aiohttp
-            # reports only a bare traceback, with no rollout or progress.
+            # Client dropped mid-upload.
             logger.warning(
                 "intercept: request body cut off: id=%s received=%d/%s bytes after=%.1fs",
                 session.trace.id,

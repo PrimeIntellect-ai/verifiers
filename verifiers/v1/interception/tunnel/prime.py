@@ -19,9 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class FrpcRelay(logging.Handler):
-    """Re-emit `prime_tunnel`'s frpc output under this module's logger, so any app that
-    routes `verifiers.v1` sees a tunnel drop and its recovery. frpc logs routine events at
-    INFO for every tunnel; only warnings, errors, and the (re)login are relayed."""
+    """Relay frpc warnings, errors, and (re)logins to this module's logger."""
 
     def emit(self, record: logging.LogRecord) -> None:
         message = record.getMessage()
