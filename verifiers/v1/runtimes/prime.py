@@ -45,6 +45,9 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_TRANSFER_TIMEOUT_SECONDS = 600
+"""Deadline for one file upload or download; the SDK's 300s default is too short for
+large archives when many sandboxes transfer at once."""
 
 
 BASE_LABELS: list[str] = []
@@ -402,7 +405,12 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await self._client.download_file(
+                    self.info.id,
+                    target,
+                    str(download),
+                    timeout=_TRANSFER_TIMEOUT_SECONDS,
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -417,7 +425,11 @@ class PrimeRuntime(Runtime):
         )
         try:
             await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
+                self.info.id,
+                target,
+                data,
+                filename=PurePosixPath(target).name,
+                timeout=_TRANSFER_TIMEOUT_SECONDS,
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
