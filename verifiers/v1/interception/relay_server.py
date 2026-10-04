@@ -14,6 +14,7 @@ whenever the host rewrites it.
 from __future__ import annotations
 
 import base64
+import email.errors
 import hashlib
 import http.client
 import json
@@ -51,6 +52,14 @@ LENGTH = re.compile(r"[0-9]{1,15}")
 MAX_BODY = 1 << 30  # the host's own limit
 CHUNK = re.compile(rb"([0-9a-fA-F]{1,15})(;[^\r\n]*)?\r?\n")
 FOLD = re.compile(r"\r?\n[ \t]+")
+# What the header parser reports for a malformed header block (not, say, a multipart
+# body it can't see).
+MALFORMED = (
+    email.errors.MissingHeaderBodySeparatorDefect,
+    email.errors.FirstHeaderLineIsContinuationDefect,
+    email.errors.MisplacedEnvelopeHeaderDefect,
+    email.errors.InvalidHeaderDefect,
+)
 
 
 class Gone(Exception):
@@ -190,8 +199,10 @@ class Relay(BaseHTTPRequestHandler):
         body = self.read_body()
         connection = {
             token.strip().lower()
-            for token in (self.headers.get("Connection") or "").split(",")
+            for token in ",".join(self.headers.get_all("Connection") or []).split(",")
         }
+        if "close" in connection:
+            self.close_connection = True
         headers = [
             (name, FOLD.sub(" ", value))
             for name, value in self.headers.items()
@@ -200,7 +211,8 @@ class Relay(BaseHTTPRequestHandler):
         if (
             body is None
             or not TARGET.fullmatch(self.path)
-            or self.headers.defects  # a malformed line ends the headers early
+            # A malformed line ends the headers early.
+            or any(isinstance(d, MALFORMED) for d in self.headers.defects)
             or any("\r" in value or "\n" in value for _, value in headers)
         ):
             self.close_connection = True
@@ -209,6 +221,9 @@ class Relay(BaseHTTPRequestHandler):
         repeatable = self.repeatable()
         held, delay, retry, arrived = 0.0, 0.5, 0, time.monotonic()
         key = hashlib.sha256(f"{self.command} {self.path} ".encode() + body).digest()
+        # Its identical copy outlasted the window shortly before this one arrived: the
+        # harness retrying it.
+        retried = server.gave_up.get(key, -math.inf) > arrived - server.window
         try:
             while True:
                 if retry and repeatable:
@@ -232,9 +247,7 @@ class Relay(BaseHTTPRequestHandler):
                 # fast, so a longer outage ends the rollout as an error, not a timeout.
                 if left <= 0:
                     server.give_up(key)
-                elif not server.failed_before(key, arrived) and (
-                    repeatable or not (response is not None or sent)
-                ):
+                elif not retried and (repeatable or not (response is not None or sent)):
                     if response is not None:
                         conn.close()
                     self.hold(min(delay * random.uniform(0.5, 1.5), left))
@@ -442,12 +455,6 @@ class RelayServer(ThreadingHTTPServer):
                 self.gave_up.pop(key, None)
             else:
                 self.gave_up[key] = now
-
-    def failed_before(self, key: bytes, arrived: float) -> bool:
-        """Whether this request outlasted the window shortly before this copy of it
-        arrived: the harness retrying it."""
-        gave_up = self.gave_up.get(key, math.inf)
-        return arrived - self.window < gave_up <= arrived
 
     def handle_error(self, request, client_address) -> None:
         print(f"relay: {sys.exc_info()[1]!r}", file=sys.stderr, flush=True)

@@ -44,12 +44,15 @@ ISOLATED = ("-I", "-S")
 # proxies only).
 CHECK = """import os, sys
 assert sys.version_info >= (3, 8)
-import base64, hashlib, http.client, http.server, json, math, random, re, select
-import socket, ssl, threading, time, types, urllib.request as u
-p = u.getproxies_environment()
+import base64, email.errors, hashlib, http.client, http.server, json, math, random
+import re, select, socket, ssl, threading, time, types, urllib.request as u
+p = {k: v if "://" in v else "http://" + v
+     for k, v in u.getproxies_environment().items() if k in ("http", "https", "all")}
 if p and not u.proxy_bypass_environment("127.0.0.1"):
     sys.exit(10)
-if "all" in p or any(not p[k].lower().startswith("http://") for k in ("http", "https") if k in p):
+if "all" in p and not {"http", "https"} <= p.keys():
+    sys.exit(10)
+if any(not v.lower().startswith("http://") for k, v in p.items() if k != "all"):
     sys.exit(10)
 assert sys.executable and os.stat("/tmp").st_mode & 0o1000
 files = {sys.executable} | {getattr(m, "__file__", None) for m in list(sys.modules.values())}
@@ -118,7 +121,7 @@ class Relay:
         try:
             async with asyncio.timeout(120 if limit is None else min(120, limit)):
                 done = await self.runtime.run(
-                    ["sh", "-c", f"{check} > /dev/null && {save}"], {}
+                    ["sh", "-c", f"{check} > /dev/null && {{ {save}; }}"], {}
                 )
             active, reason = done.exit_code == 0, PROXIED
         except Exception as e:  # noqa: BLE001 - connect directly instead
@@ -141,6 +144,15 @@ async def serve_relay(
 ) -> AsyncIterator[Relay | None]:
     """Yield the started relay, or None if it didn't start within `limit` seconds
     (at most 300)."""
+    if limit is not None and limit < 10:
+        record({"relay_active": 0.0})
+        logger.warning(
+            "interception relay skipped (%.0f s of setup time to spare); "
+            "connecting directly",
+            limit,
+        )
+        yield None
+        return
     # All of the relay's files live in a directory only the runtime's user can enter, so
     # an agent running as another user can't plant links there or read the proxy settings.
     home = f"/tmp/vf-relay-{uuid.uuid4().hex}"
@@ -148,6 +160,7 @@ async def serve_relay(
     relay, found, python, reason, stopped = None, None, None, "", False
     # Generous: sandbox commands slow down when thousands of rollouts start at once.
     budget = 300 if limit is None else min(300, limit)
+    deadline = asyncio.get_running_loop().time() + budget
     try:
         try:
             async with asyncio.timeout(budget):
@@ -166,11 +179,19 @@ async def serve_relay(
                         + [RETRY_COUNT_HEADER, INTERCEPTION_HEADER]
                     )
                     # Restarted at once if it exits (after a pause if it keeps
-                    # crashing), on the same port. The interpreter comes from the
-                    # environment, so `pkill -f python3` spares the loop, and so does
-                    # a fixed PATH, so an agent's directories can't shadow `date`.
+                    # crashing), on the same port, until its files are gone. One that
+                    # dies before it can say why is reported as refusing. The
+                    # interpreter comes from the environment, so `pkill -f python3`
+                    # spares the loop, and a fixed PATH, so an agent's directories
+                    # can't shadow `date`.
+                    source, port = (
+                        shlex.quote(f"{files}.py"),
+                        shlex.quote(f"{files}.port"),
+                    )
                     script = (
-                        f'while :; do t=$(date +%s); "$VF_RELAY_BIN" {args}; '
+                        f"while [ -e {source} ]; do t=$(date +%s); "
+                        f'"$VF_RELAY_BIN" {args}; c=$?; '
+                        f'[ -e {port} ] || echo "refused: exited $c" > {port}; '
                         "[ $(($(date +%s) - t)) -lt 5 ] && sleep 1; done"
                     )
                     await runtime.run_background(
@@ -203,10 +224,14 @@ async def serve_relay(
             logger.warning(
                 "interception relay did not start (%s); connecting directly", reason
             )
-            # Stopped now, so a relay that keeps crashing doesn't run on meanwhile.
-            if found is None or found.exit_code == 0:
-                await run_shielded(_stop(runtime, python, home, None, record))
-            stopped = True
+            # Stopped now, within what's left of the budget, so a relay that keeps
+            # crashing doesn't run on meanwhile; teardown tries again if this can't.
+            stopped = not (found is None or found.exit_code == 0)
+            left = deadline - asyncio.get_running_loop().time()
+            if not stopped and left > 0:
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(left):
+                        stopped = await _stop(runtime, python, home, None, record)
         yield relay
     finally:
         # Even when cancelled, and before the task's finalize and scoring: leave
@@ -221,7 +246,7 @@ async def _stop(
     home: str,
     relay: Relay | None,
     record: Callable[[dict[str, float]], None],
-) -> None:
+) -> bool:
     if relay is not None:
         with contextlib.suppress(Exception):
             async with asyncio.timeout(120):
@@ -238,7 +263,15 @@ async def _stop(
                         and 0 <= value < math.inf
                     }
                 )
+    # Removing the directory also ends the restart loop, should the interpreter fail.
+    script = f'"$0" {" ".join(ISOLATED)} -c "$1" "$2" || rm -rf -- "$2"'
+    stop = (
+        ["sh", "-c", script, python, STOP, home]
+        if python
+        else ["rm", "-rf", "--", home]
+    )
     with contextlib.suppress(Exception):
         async with asyncio.timeout(120):
-            stop = [python, *ISOLATED, "-c", STOP, home]
-            await runtime.run(stop if python else ["rm", "-rf", "--", home], {})
+            await runtime.run(stop, {})
+            return True
+    return False
