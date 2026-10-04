@@ -190,13 +190,51 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
-        return await runtime.read(path, max_bytes=budget)
+        archive, dropped = _drop_special_files(
+            await runtime.read(path, max_bytes=budget)
+        )
+        if dropped:
+            logger.warning(
+                "artifact %r: dropped %d FIFO or device node(s), e.g. %s",
+                artifact.source,
+                len(dropped),
+                dropped[:3],
+            )
+        return archive
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
             await runtime.run(["rm", "-f", path], {})
         except Exception:
             logger.debug("failed to remove %s", path, exc_info=True)
+
+
+def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
+    """Remove FIFOs and device nodes, plus hard links to them, from a collected archive.
+
+    They carry no content, and `restore` refuses them, so one an agent leaves in its
+    workspace (e.g. a named pipe it made to test streaming input) would otherwise fail
+    the whole restore. Returns the archive and the dropped member names."""
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        members = source.getmembers()
+        special = {m.name for m in members if m.isfifo() or m.ischr() or m.isblk()}
+        if not special:
+            return archive, []
+        if any(m.issparse() for m in members):
+            raise RuntimeError("cannot filter special files from sparse artifacts")
+        dropped = [
+            m.name
+            for m in members
+            if m.name in special or (m.islnk() and m.linkname in special)
+        ]
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode="w:", format=source.format) as target:
+            for member in members:
+                if member.name in dropped:
+                    continue
+                content = source.extractfile(member) if member.isfile() else None
+                target.addfile(member, content)
+    return out.getvalue(), dropped
 
 
 def _validate_restore(root: str, archive: bytes | None) -> None:

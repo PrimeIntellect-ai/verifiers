@@ -16,20 +16,21 @@ one without `indirect=True` fails loudly.
 
 Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
-    uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
+    uv run pytest tests/v1 -n auto                                # everything (needs remote setup)
     uv run pytest tests/v1 -n auto -m "not e2e"                   # deterministic CI matrix
-    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal"  # live CI job
+    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal and not e2b"  # live CI job
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
+    uv run pytest tests/v1 -n auto -m e2b                         # only e2b (real sandboxes; local)
 
-Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal`, placement `colocated`,
+Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal` / `e2b`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `openclaw` / `codex` /
 `claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
-prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
+prime/modal/e2b provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
 CI runs deterministic tests across the Python matrix and the remaining live E2Es once.
 """
 
@@ -156,8 +157,11 @@ def _eval_config(
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
     retries = {
-        "max_retries": 2,
-        "include": ["ProviderError", "InterceptionError", "HarnessError"],
+        "max_retries": 0,
+        "rules": [
+            {"type": error_type, "max_retries": 2}
+            for error_type in ("ProviderError", "InterceptionError", "HarnessError")
+        ],
     }
     env_cfg.setdefault("retries", retries)
     # Per-run caps live on the seats: resolve the env's declared roles and cap

@@ -25,7 +25,7 @@ uv run vf-eval <MY_ENV>
 uv run vf-eval <MY_ENV> --dry-run
 ```
 
-2. Run model-free gold validation when the taskset implements `validate`:
+2. Run model-free validation. Each task gets two checks in independent runtimes: gold (`setup`, then `validate` applies and checks the reference answer; unchecked when the task has no `validate`) and noop (`setup`, then `finalize` and the task's full scoring, configured judges included, on the untouched task; invalid when its reward already reaches 1.0, unchecked when it has no reward). `--only-gold` / `--only-noop` run one; `--only-setup` only checks that `setup` completes:
 
 ```bash
 uv run vf-validate <MY_ENV> --runtime.type subprocess
@@ -146,14 +146,28 @@ uv run vf-eval @ configs/my-eval.toml
 
 ## Retries
 
-Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
+Whole-rollout retry is off by default (`max_retries = 0`). Each retry starts a fresh rollout. Setting only `max_retries` retries any captured error up to that cap. Use `env.retries` for whole-episode retries or `env.agent.retries` for the agent alone.
 
-```bash
-uv run vf-eval my-task-v1 \
-  --env.agent.retries.max-retries 2 \
-  --env.agent.retries.include SandboxError ProviderError \
-  --env.agent.retries.exclude TaskError
+Ordered rules override the default budget for matching errors. With a zero default, only explicitly enabled errors retry. For example:
+
+```toml
+[env.agent.retries]
+max_retries = 0
+
+[[env.agent.retries.rules]]
+type = "ProviderError"
+status_code = [429, "5xx"]
+max_retries = 3
+
+[[env.agent.retries.rules]]
+type = "SandboxError"
+message = 'temporarily unavailable|connection reset'
+max_retries = 2
 ```
+
+Fields within a rule must all match. `type` matches the exact recorded exception name, `status_code` matches any listed status or status class, and `message` is a regex search (plain text matches a substring). Invalid regexes fail config validation. Omitted match fields match anything. Each rule must explicitly provide `max_retries`; an omitted budget fails validation.
+
+The first matching rule wins for each error; zero retries excludes it, and exhausted rules never fall through. Unmatched errors share the default `max_retries` budget. Each retry consumes only the matching rule's budget, or the default budget when no rule matches. Budgets persist across the entire run; the default is not a global cap. An empty rules list uses only the default budget. When an attempt captures multiple errors, the first eligible error triggers the retry; a denied error does not veto other errors. Successful traces' recovered errors do not trigger episode retries.
 
 ## Output and resume
 
