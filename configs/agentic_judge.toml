@@ -1,4 +1,5 @@
-num_tasks = 2
+[select]
+limit = 2
 
 [env]
 id = "agentic-judge"

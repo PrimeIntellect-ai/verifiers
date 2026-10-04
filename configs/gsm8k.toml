@@ -1,8 +1,10 @@
 # gsm8k — grade-school math, bash harness; a few tasks with several rollouts each.
 #
 #   uv run vf-eval gsm8k @ configs/gsm8k.toml
-num_tasks = 5
 num_rollouts = 3
+
+[select]
+limit = 5
 
 [env.taskset]
 id = "gsm8k"

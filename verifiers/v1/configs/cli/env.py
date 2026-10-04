@@ -1,5 +1,6 @@
 """Run-config plumbing around the `[env]` block: narrowing the `env` field of
-every config that owns one.
+every config that owns one. `merge_defaults` (`utils/generic.py`) layers shared env
+defaults under it.
 
 A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
 `[serve]` (how it's hosted, `configs/serve.py`) — plus its own fields. Nothing here is a base class: the eval

@@ -393,6 +393,21 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                     safe_input.append(item)
                     continue
                 kind = item.get("type")
+                if (
+                    kind == "reasoning"
+                    and not item.get("encrypted_content")
+                    and isinstance(content := item.get("content"), list)
+                    and content
+                    and all(
+                        isinstance(part, dict)
+                        and part.get("type") == "reasoning_text"
+                        and isinstance(part.get("text"), str)
+                        for part in content
+                    )
+                    and any(part["text"] for part in content)
+                ):
+                    # Inline reasoning needs no provider-side history lookup.
+                    item.pop("id", None)
                 if kind in ("additional_tools", "tool_search_output"):
                     if blocked := request_filter.blocked(
                         {**item, "tools": []}, item_path

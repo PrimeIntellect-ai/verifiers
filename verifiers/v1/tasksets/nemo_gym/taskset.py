@@ -107,7 +107,6 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
                 request = dialect.parse_request(row["responses_create_params"])
                 yield NeMoGymTask(
                     NeMoGymData(
-                        idx=idx,
                         name=f"{path.stem}:{idx}",
                         prompt=request.messages,
                         row=row,

@@ -2,8 +2,8 @@
 
 Placement coverage is pairwise (see tests/v1/conftest.py): each list below names the
 combinations a test runs — every axis value at least once plus the cross-boundary pairs
-with distinct networking — instead of fanning the full cross product. prime/modal rows
-are local-only (their marks are excluded in CI)."""
+with distinct networking — instead of fanning the full cross product. prime/modal/e2b
+rows are local-only (their marks are excluded in CI)."""
 
 import shutil
 import subprocess
@@ -142,6 +142,7 @@ CHAT_PLACEMENTS = [
     ),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
+    pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
@@ -176,6 +177,7 @@ AGENTIC_PLACEMENTS = [
         marks=[mark.bash, mark.modal],
         id="bash-harness-in-modal-framework-only",
     ),
+    pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -185,6 +187,13 @@ USER_RUNTIMES = [
     pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
     pytest.param("modal", marks=[mark.modal], id="harness-in-modal"),
+    pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
+]
+
+# Runtimes that can switch users (`Runtime.with_user`).
+AGENT_USER_RUNTIMES = [
+    pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
+    pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
 ]
 
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
@@ -218,6 +227,13 @@ ACP_RESUME_PLACEMENTS = [
     ),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    # Give RLM 2 GB for ACP session startup.
+    pytest.param(
+        "rlm",
+        {"type": "e2b", "memory": 2.0},
+        marks=[mark.rlm, mark.e2b],
+        id="rlm-acp-in-e2b",
+    ),
     pytest.param(
         "prime-agent",
         "prime",
@@ -247,6 +263,8 @@ TOOL_PLACEMENTS = [
     pair("prime", "colocated", "harness-in-prime-with-tool-colocated"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
     pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
+    pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
+    pair("subprocess", "e2b", "harness-in-subprocess-with-tool-in-e2b"),
 ]
 
 # The state channel rides the same reachability as TOOL_PLACEMENTS; cover each axis
@@ -256,6 +274,7 @@ TOOL_STATE_PLACEMENTS = [
     pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
+    pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
 ]
 
 # Shared servers always run in their own runtime (colocation is per-rollout, shared is
@@ -265,6 +284,7 @@ SHARED_TOOL_PLACEMENTS = [
     pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
+    pair("e2b", "e2b", "harness-in-e2b-with-tool-in-e2b"),
 ]
 
 
@@ -315,6 +335,29 @@ async def test_browser_use(run_v1, tmp_path):
         max_turns=2,
     )
     assert trace.ok
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness_runtime", AGENT_USER_RUNTIMES, indirect=True)
+async def test_agent_user_cannot_act_as_root(run_v1, harness_runtime, tmp_path):
+    """A scripted, model-free agent runs as the task's non-root `agent_user`: it can see
+    the secret the root-run setup planted and write its own workspace, but every
+    root-only action (read the secret, write /etc, chmod the secret, signal PID 1) is
+    denied."""
+    (trace,) = await run_v1(
+        "agent-user-v1",
+        harness="agent-user-v1",
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+    )
+    report = trace.info["agent_user_report"]
+    assert report["user"] == "vf-agent"
+    assert report["secret_exists"] == "ok" and report["write_workdir"] == "ok"
+    root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
+    assert {action: report[action] for action in root_actions} == dict.fromkeys(
+        root_actions, "denied"
+    )
     assert trace.reward == 1.0
 
 
@@ -389,7 +432,9 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime=harness_runtime
+        if isinstance(harness_runtime, dict)
+        else {"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
@@ -740,8 +785,8 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
-    from verifiers.v1.cli.output import read_episodes
     from verifiers.v1.trace import WireTrace
+    from verifiers.v1.utils.trace_store import read_episodes
 
     (record,) = read_episodes(tmp_path, WireTrace)
     assert {t.agent.name for t in record.traces} == {"assistant", "user"}

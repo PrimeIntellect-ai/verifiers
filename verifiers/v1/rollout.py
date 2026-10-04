@@ -14,6 +14,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
+    SandboxError,
     TaskError,
     ToolsetError,
     boundary,
@@ -50,6 +51,39 @@ class RolloutTimeouts:
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
+
+
+_HOME_PROBE = (
+    "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
+    'echo "$home"; test -n "$home" && test -d "$home"'
+)
+
+
+async def agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
+    """The runtime the harness runs on: `runtime` itself, or a view running as `user`
+    with `HOME` set to its home. `user` must exist with a home directory it can write
+    (task authors ship it in the image), and the view must really run as it, so a
+    runtime ignoring the user never runs the agent as root."""
+    if user is None:
+        return runtime
+    lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user], {})
+    home = lookup.stdout.strip()
+    if not home:
+        raise TaskError(f"agent_user {user!r} does not exist in the image")
+    if lookup.exit_code != 0:
+        raise TaskError(f"agent_user {user!r} has no home directory ({home})")
+    view = runtime.with_user(user)
+    view = view.with_env({**view.env, "HOME": home})
+    probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
+    effective, *rest = probe.stdout.split() or [""]
+    if effective != user:
+        raise SandboxError(
+            f"{type(runtime).__name__} ran as {effective!r} instead of agent_user "
+            f"{user!r}; refusing to run the agent"
+        )
+    if rest != ["writable"]:
+        raise TaskError(f"agent_user {user!r} cannot write its home directory ({home})")
+    return view
 
 
 class Rollout:
@@ -174,6 +208,12 @@ class Rollout:
         self._failure = error
         self.trace.record_error(error)
 
+    def timeout(self, stage: str) -> None:
+        """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
+        a failure — no further segments run, but finalize and scoring still do."""
+        logger.info("rollout %s: %s timeout", self.trace.id, stage)
+        self.trace.record_timeout(stage)
+
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
         (or borrow) the runtime, run task + harness setup, bring up the
@@ -202,6 +242,8 @@ class Rollout:
             self.harness.config.name,
             self.runtime_config.type,
         )
+        loop = asyncio.get_running_loop()
+        setup_timeout: asyncio.Timeout | None = None
         try:
             runtime_env = dict(self.task.runtime_env())
             if self._borrowed_runtime is None:
@@ -226,16 +268,16 @@ class Rollout:
             setup_deadline = (
                 None
                 if self._timeouts.setup is None
-                else asyncio.get_running_loop().time() + self._timeouts.setup
+                else loop.time() + self._timeouts.setup
             )
             async with (
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(TaskError, "task setup"),
-                asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
             async with (
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
-                asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
@@ -273,8 +315,8 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
             async with (
+                asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
-                asyncio.timeout_at(setup_deadline),
             ):
                 harness_data = self.trace.task.data
                 if (
@@ -333,13 +375,21 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        runtime,
+                        await agent_runtime(runtime, harness_data.agent_user),
                         self._endpoint,
                         self._secret,
                         self._urls,
                         harness_data,
                         **session_kwargs,
                     )
+        except TimeoutError as e:
+            # Only an expired setup context owns the timeout; I/O between these
+            # contexts can time out independently after the deadline passes.
+            if setup_timeout is not None and setup_timeout.expired():
+                self.timeout("setup")
+            else:
+                self.fail(e)
+            return False
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -355,7 +405,19 @@ class Rollout:
         self.trace.notify()
         return not self._session.stopped
 
-    async def step(self, messages: Messages | None = None) -> bool:
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed or not self.ok:
+            raise RuntimeError("this rollout is closed or stopped")
+        if self._harness_session is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        return await self._harness_session.steer(message, message_id=message_id)
+
+    async def step(
+        self,
+        messages: Messages | None = None,
+        *,
+        on_input: Callable[[], None] | None = None,
+    ) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
@@ -388,18 +450,14 @@ class Rollout:
                     self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
+                self._session.on_turn_input = on_input
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
-            # An expired rollout deadline is the agent breaking its time budget —
-            # an agent failure, never a clean stop. A TimeoutError from the
-            # harness's own I/O with no expired deadline stays the raw failure.
+            # An expired rollout deadline is the agent breaking its time budget: a
+            # timeout stop. A TimeoutError from the harness's own I/O with no
+            # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.fail(
-                    HarnessError(
-                        f"agent timeout: rollout exceeded its "
-                        f"{self._timeouts.agent:g}s budget"
-                    )
-                )
+                self.timeout("agent")
             else:
                 self.fail(e)
             return False
@@ -414,6 +472,7 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:
@@ -479,8 +538,11 @@ class Rollout:
             if not self._failed and self._opened:
                 assert runtime is not None
                 trace.timing.finalize.start = time.time()
-                async with boundary(TaskError, "task finalize"):
-                    async with asyncio.timeout(self._timeouts.finalize):
+                try:
+                    async with (
+                        asyncio.timeout(self._timeouts.finalize),
+                        boundary(TaskError, "task finalize"),
+                    ):
                         await invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         )
@@ -490,19 +552,24 @@ class Rollout:
                                 self.task.data.artifacts,
                                 max_bytes=self.task.data.artifact_max_bytes,
                             )
+                except TimeoutError:
+                    self.timeout("finalize")
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
                 trace.notify()
-                async with boundary(TaskError, "scoring"):
-                    # Cross-trace judgement runs later, after the runtime is gone.
-                    await asyncio.wait_for(
-                        asyncio.gather(
+                try:
+                    async with (
+                        asyncio.timeout(self._timeouts.scoring),
+                        boundary(TaskError, "scoring"),
+                    ):
+                        # Cross-trace judgement runs later, after the runtime is gone.
+                        await asyncio.gather(
                             self.task.score(trace, runtime),
                             self.harness.score(trace, runtime),
-                        ),
-                        self._timeouts.scoring,
-                    )
+                        )
+                except TimeoutError:
+                    self.timeout("scoring")
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure

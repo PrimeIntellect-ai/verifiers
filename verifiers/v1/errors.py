@@ -42,6 +42,11 @@ class ProviderError(RolloutError):
         self.status_code = status_code
 
 
+MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
+"""Reserved harness exit code for an exhausted model transport failure.
+`Harness._check_result` maps it to `InterceptionError`."""
+
+
 class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
@@ -65,7 +70,7 @@ class TaskError(RolloutError):
 
 
 class InterceptionError(RolloutError):
-    """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
+    """Communication with the host interception server failed."""
 
 
 class TunnelError(InterceptionError):
@@ -77,8 +82,9 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
     """Run a framework→code boundary, attributing any error escaping it to `error_cls`. An
     already-typed `RolloutError` passes through unchanged — it crossed a more specific boundary
     first (e.g. a `SandboxError` from `runtime.run` inside a reward stays a `SandboxError`). A
-    `TimeoutError` (the stage exceeded its budget) becomes `error_cls` too. `what` names the
-    boundary in the error message."""
+    `TimeoutError` the code raises itself (its own I/O) becomes `error_cls` too; a stage
+    deadline wraps the boundary from outside, so its expiry is a timeout, not an error.
+    `what` names the boundary in the error message."""
     try:
         yield
     except RolloutError:
@@ -87,6 +93,14 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
         raise error_cls(f"{what} timed out") from e
     except Exception as e:
         raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
+
+
+def stop_condition(error: BaseException) -> str:
+    """The stop condition a recorded error leaves on the trace: `<boundary>_error` for
+    a typed rollout error (`SandboxError` -> `sandbox_error`), `error` for any other."""
+    if isinstance(error, RolloutError):
+        return f"{type(error).__name__.removesuffix('Error').lower()}_error"
+    return "error"
 
 
 def _provider_status(e: OpenAIError | str) -> int:

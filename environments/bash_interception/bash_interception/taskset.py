@@ -86,6 +86,6 @@ class BashInterceptionTaskset(vf.Taskset[BashInterceptionTask]):
             ),
         )
         return [
-            BashInterceptionTask(vf.TaskData(idx=i, prompt=prompt), self.config.task)
-            for i, prompt in enumerate(prompts)
+            BashInterceptionTask(vf.TaskData(prompt=prompt), self.config.task)
+            for prompt in prompts
         ]

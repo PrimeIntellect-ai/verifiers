@@ -162,5 +162,5 @@ class KuhnPokerTaskset(vf.Taskset[KuhnPokerTask, KuhnPokerConfig]):
     def load(self) -> Iterator[KuhnPokerTask]:
         for i in count():
             yield KuhnPokerTask(
-                KuhnPokerData(idx=i, name=f"hand#{i}", prompt=None, info={"seed": i})
+                KuhnPokerData(name=f"hand#{i}", prompt=None, info={"seed": i})
             )

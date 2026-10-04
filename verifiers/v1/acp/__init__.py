@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, InterceptionError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
@@ -231,6 +231,10 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_tail = bytearray()
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self._responses: dict[int, asyncio.Future] = {}
+        self._request_id = 0
+        self._response_task: asyncio.Task | None = None
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -242,7 +246,56 @@ class ACPHarnessSession(HarnessSession):
         process = await self.runtime.open_process(program, self.config.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)
+        self._response_task = asyncio.create_task(self._read_responses(self._reader))
         self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
+
+    async def _read_responses(self, reader: _PacketReader) -> None:
+        try:
+            while True:
+                response = await reader.read()
+                future = self._responses.get(response.get("id"))
+                if future is not None and not future.done():
+                    future.set_result(response)
+        except BaseException as error:  # noqa: BLE001 - settle callers on disconnect or shutdown
+            for future in self._responses.values():
+                if not future.done():
+                    future.set_exception(
+                        RuntimeError(f"ACP connection closed: {error}")
+                    )
+
+    async def _request(self, operation: str, **payload: Any) -> JsonObject:
+        process = self._process
+        if process is None or self._response_task is None or self._response_task.done():
+            raise RuntimeError("ACP process is not running")
+        self._request_id += 1
+        request_id = self._request_id
+        future = asyncio.get_running_loop().create_future()
+        self._responses[request_id] = future
+        try:
+            async with self._write_lock:
+                await process.write(
+                    _packet({"id": request_id, "operation": operation, **payload})
+                )
+            return await future
+        finally:
+            self._responses.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed:
+            raise RuntimeError("ACP session is closed")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("steering requires a nonempty user message")
+        if self._process is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        response = await self._request("steer", message=message, message_id=message_id)
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error") or "ACP steering failed")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise TypeError("invalid ACP steering receipt")
+        return result
 
     async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
         async for chunk in stream:
@@ -295,10 +348,7 @@ class ACPHarnessSession(HarnessSession):
             assert self._reader is not None
             calls_before = len(self.trace.calls)
             try:
-                await self._process.write(
-                    _packet({"operation": "prompt", "config": config})
-                )
-                response = await self._reader.read()
+                response = await self._request("prompt", config=config)
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
@@ -308,6 +358,12 @@ class ACPHarnessSession(HarnessSession):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+            error_data = response.get("error_data")
+            if (
+                isinstance(error_data, dict)
+                and error_data.get("kind") == "model_transport"
+            ):
+                raise InterceptionError(detail)
             raise RuntimeError(detail)
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
@@ -317,17 +373,18 @@ class ACPHarnessSession(HarnessSession):
         return result
 
     async def _stop(self, *, graceful: bool) -> dict[str, Any]:
-        process, self._process = self._process, None
-        reader, self._reader = self._reader, None
+        process = self._process
+        response_task = self._response_task
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
             return {}
         response_metadata: dict[str, Any] = {}
         try:
-            if graceful and reader is not None:
+            if graceful:
                 with contextlib.suppress(BaseException):
-                    await process.write(_packet({"operation": "shutdown"}))
-                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    response = await asyncio.wait_for(
+                        self._request("shutdown"), timeout=10
+                    )
                     result = response.get("result")
                     if response.get("ok") and isinstance(result, dict):
                         metadata = result.get("response_metadata")
@@ -347,6 +404,13 @@ class ACPHarnessSession(HarnessSession):
                 except TimeoutError:
                     continue
         finally:
+            self._process = None
+            self._reader = None
+            self._response_task = None
+            if response_task is not None:
+                response_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await response_task
             if stderr_task is not None:
                 if not stderr_task.done():
                     stderr_task.cancel()

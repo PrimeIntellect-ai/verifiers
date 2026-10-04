@@ -81,9 +81,9 @@ def format_cost_usd(cost_usd: float) -> str:
 def _seat_value(config: EvalConfig, read):
     """A cap as the overview shows it: the declared seats' shared value, the
     string 'per-seat' when they disagree (caps live on the seats)."""
-    from verifiers.v1.configs.env import _declared_agent_configs
+    from verifiers.v1.configs.agent import agent_config_fields
 
-    values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
+    values = {read(spec) for spec in agent_config_fields(config.env).values()}
     return values.pop() if len(values) == 1 else "per-seat"
 
 

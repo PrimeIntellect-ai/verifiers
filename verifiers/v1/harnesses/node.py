@@ -21,8 +21,50 @@ if [ -f /etc/alpine-release ]; then
     ln -sf "$(command -v node)" "$node/bin/node"
     ln -sf "$(command -v npm)" "$node/bin/npm"
 else
-    command -v curl >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    if ! command -v curl >/dev/null 2>&1 \
+        && ! (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null); then
+        (
+            # Task images can have source-only repositories. Bootstrap from signed
+            # distro repositories with temporary sources and indexes, leaving the task's intact.
+            . /etc/os-release
+            case "$ID" in
+                debian)
+                    mirror=http://deb.debian.org/debian
+                    security_mirror=http://security.debian.org/debian-security ;;
+                ubuntu)
+                    case "$(dpkg --print-architecture)" in
+                        amd64|i386)
+                            mirror=http://archive.ubuntu.com/ubuntu
+                            security_mirror=http://security.ubuntu.com/ubuntu ;;
+                        *)
+                            mirror=http://ports.ubuntu.com/ubuntu-ports
+                            security_mirror=$mirror ;;
+                    esac ;;
+                *) echo "cannot bootstrap curl on $ID" >&2; exit 1 ;;
+            esac
+            apt_dir=$(mktemp -d)
+            trap 'rm -rf "$apt_dir"' EXIT
+            chmod 755 "$apt_dir"
+            mkdir -p "$apt_dir/lists/partial"
+            set -- -o "Dir::Etc::sourcelist=$apt_dir/sources.list" -o Dir::Etc::sourceparts=- \
+                -o "Dir::State::lists=$apt_dir/lists" -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache=
+            suites=${VERSION_CODENAME:?}
+            # Testing and unstable share os-release; sid may be needed to match installed libcurl.
+            if [ "$ID" = debian ] && [ -z "${VERSION_ID:-}" ]; then suites="$suites sid"; fi
+            for suite in $suites; do
+                printf 'deb %s %s main\n' "$mirror" "$suite" > "$apt_dir/sources.list"
+                # Release images can already have libcurl from updates/security.
+                if [ -n "${VERSION_ID:-}" ]; then
+                    printf 'deb %s %s main\n' "$mirror" "$suite-updates" \
+                        "$security_mirror" "$suite-security" >> "$apt_dir/sources.list"
+                fi
+                apt-get "$@" update -qq \
+                    && apt-get "$@" install -y -qq --no-install-recommends curl ca-certificates >/dev/null \
+                    && exit 0
+            done
+            exit 1
+        )
+    fi
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_NODE_VERSION" ]; then
         case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac

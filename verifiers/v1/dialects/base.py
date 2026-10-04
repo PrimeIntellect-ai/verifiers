@@ -16,6 +16,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from glob import has_magic
+from ipaddress import ip_address
 from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
@@ -129,10 +130,10 @@ class RequestFilter:
 def provider_domains(
     policy: NetworkPolicyConfig, requested: object = None
 ) -> list[str]:
-    """Translate allow/block rules to provider filters without changing their scope.
+    """Translate host rules to the provider's native domain filters.
 
-    Provider filters include subdomains, so exact hosts need a covering wildcard rule.
-    Empty results mean the policy cannot be represented; never send an empty filter.
+    Strip leading wildcards and let the provider define domain/subdomain scope.
+    Empty results mean unsupported rules; never send an empty filter.
     """
     rules = policy.block or policy.allow
     if requested is not None and not isinstance(requested, list):
@@ -149,9 +150,7 @@ def provider_domains(
                 url, host, port = parse_network_rule(rule)
             except ValueError:
                 return []
-            if is_filter and (
-                url.username is not None or url.path or url.query or url.fragment
-            ):
+            if url.username is not None or url.path or url.query or url.fragment:
                 return []
             domain = host if is_filter else host.removeprefix("*.")
             if (
@@ -162,17 +161,12 @@ def provider_domains(
                 or not domain.isascii()
             ):
                 return []
-            output.append(host)
-    for host in hosts:
-        if not host.startswith("*.") and not (
-            policy.block
-            and any(
-                wildcard.startswith("*.")
-                and intersect_network_hosts(wildcard, host) == host
-                for wildcard in hosts
-            )
-        ):
-            return []
+            try:
+                ip_address(domain)
+            except ValueError:
+                output.append(host)
+            else:
+                return []
     domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
     if requested is None:
         return domains

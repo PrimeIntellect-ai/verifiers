@@ -107,7 +107,6 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         for i in itertools.count():
             yield TextArenaTask(
                 TextArenaData(
-                    idx=i,
                     name=f"{self.config.game}#{i}",
                     prompt=observation(i) if seed_specific else first,
                     system_prompt=SYSTEM_PROMPT,

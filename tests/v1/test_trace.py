@@ -10,7 +10,6 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
-from verifiers.v1.cli.output import write_episode
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
@@ -26,6 +25,7 @@ from verifiers.v1.semantic import (
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.trace_store import write_episode
 
 
 class MyTask(vf.TaskData):
@@ -487,7 +487,7 @@ def test_semantic_edge_uses_last_committed_retry_node():
     assert tr.nodes[3].semantic_parents == [vf.ParentLink(node=2, type="continuation")]
 
 
-def test_semantic_edge_cycle_is_rejected_without_partial_mutation():
+def test_semantic_edge_loops_attach_and_invalid_sets_do_not_partially_mutate():
     tr = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
@@ -507,20 +507,20 @@ def test_semantic_edge_cycle_is_rejected_without_partial_mutation():
         ],
     )
 
-    with pytest.raises(ValueError, match="cycle in the message graph"):
-        tr.add_semantic_edges(
-            vf.SemanticEdgeSet(
-                edges=[
-                    vf.SemanticEdge(
-                        source_request_id="second",
-                        target_request_id="first",
-                        type="custom",
-                    )
-                ]
-            )
-        )
-
+    loop = vf.SemanticEdge(
+        source_request_id="second", target_request_id="first", type="subagent_cancel"
+    )
+    unknown = vf.SemanticEdge(
+        source_request_id="first", target_request_id="missing", type="custom"
+    )
+    with pytest.raises(ValueError, match="has no committed message node"):
+        tr.add_semantic_edges(vf.SemanticEdgeSet(edges=[loop, unknown]))
     assert all(not node.semantic_parents for node in tr.nodes)
+
+    tr.add_semantic_edges(vf.SemanticEdgeSet(edges=[loop]))
+    assert tr.nodes[1].semantic_parents == [
+        vf.ParentLink(node=3, type="subagent_cancel")
+    ]
 
 
 def test_acp_info_is_validated_and_stripped():
@@ -689,7 +689,7 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     assert restored_branches["accepted summary"].trainable is True
 
 
-def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():
+def test_semantic_edge_set_rejects_duplicate_and_self_edges_but_accepts_loops():
     edge_set = _semantic_edge_set().model_dump(mode="json")
     edge_set["edges"].append(edge_set["edges"][0])
     with pytest.raises(ValueError, match="duplicate semantic edge"):
@@ -708,16 +708,18 @@ def test_semantic_edge_set_rejects_duplicate_self_and_cyclic_edges():
             }
         )
 
+    # A parent cancels the child whose report it just read: the cancel lands on that child turn.
     edge_set = _semantic_edge_set().model_dump(mode="json")
     edge_set["edges"].append(
         {
             "source_request_id": "root-after",
-            "target_request_id": "root-turn",
-            "type": "custom",
+            "target_request_id": "child-turn",
+            "type": "subagent_cancel",
         }
     )
-    with pytest.raises(ValueError, match="semantic edge cycle"):
-        vf.SemanticEdgeSet.model_validate(edge_set)
+    assert len(vf.SemanticEdgeSet.model_validate(edge_set).edges) == len(
+        edge_set["edges"]
+    )
 
 
 def test_semantic_edge_set_accepts_deep_acyclic_chain():

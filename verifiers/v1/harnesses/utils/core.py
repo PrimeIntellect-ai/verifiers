@@ -5,12 +5,20 @@ import asyncio
 import json
 import logging
 import subprocess
+import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import certifi
 import httpx
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncOpenAI,
+    DefaultAsyncHttpxClient,
+    omit,
+)
 from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
@@ -31,6 +39,10 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+
+# Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
+# this bundled script cannot import verifiers.
+MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
 
@@ -253,25 +265,32 @@ async def chat(
         kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    async for attempt in AsyncRetrying(
-        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
-        stop=stop_after_attempt(client.max_retries + 1),
-        wait=wait_random_exponential(multiplier=0.5, max=8.0),
-        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
-        reraise=True,
-    ):
-        # Reuse the interception server's body-digest replay guard on stream retries.
-        retry_count = attempt.retry_state.attempt_number - 1
-        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-        raw_stream = await client.chat.completions.create(
-            **kwargs,
-            stream=True,
-            stream_options={"include_usage": True},
-            extra_headers=headers,
-        )
-        # The SDK retries request setup; only stream consumption is retried here.
-        with attempt:
-            return await _read_chat_completion(raw_stream)
+    try:
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+            stop=stop_after_attempt(client.max_retries + 1),
+            wait=wait_random_exponential(multiplier=0.5, max=8.0),
+            before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+            reraise=True,
+        ):
+            # Reuse the interception server's body-digest replay guard on stream retries.
+            retry_count = attempt.retry_state.attempt_number - 1
+            headers = (
+                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
+            )
+            raw_stream = await client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_headers=headers,
+            )
+            # The SDK retries request setup; only stream consumption is retried here.
+            with attempt:
+                return await _read_chat_completion(raw_stream)
+    except (APIConnectionError, httpx.TransportError) as error:
+        # Preserve the original transport error in stderr for the host's diagnostic.
+        traceback.print_exc()
+        raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
 
 
 async def _read_chat_completion(raw_stream):
@@ -447,10 +466,12 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
+    # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
         timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
+        http_client=DefaultAsyncHttpxClient(verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))

@@ -133,6 +133,9 @@ class PrimeProcess(RuntimeProcess):
     async def wait(self) -> int:
         return await self._process.wait()
 
+    async def poll(self) -> int | None:
+        return self._process.returncode
+
     async def terminate(self) -> None:
         await self._process.terminate()
 
@@ -141,6 +144,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeRuntime(Runtime):
+    supports_user: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -185,12 +189,14 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        scope = run_scope()
+        labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
             async with (
                 creation_limiter(
                     (self.config.creates_per_min or 0) / 60,
                     "prime-sandbox",
-                    run_scope(),
+                    scope,
                 )
                 or contextlib.nullcontext()
             ):
@@ -201,9 +207,7 @@ class PrimeRuntime(Runtime):
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
-                            labels=list(
-                                dict.fromkeys([*BASE_LABELS, *self.config.labels])
-                            ),
+                            labels=list(dict.fromkeys(labels)),
                             docker_image=self.config.image,
                             environment_vars=self.env,
                             **{k: v for k, v in options.items() if v is not None},
@@ -289,6 +293,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
             delay = 0.1
             output_retries = 0
@@ -332,6 +337,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
@@ -353,6 +359,7 @@ class PrimeRuntime(Runtime):
                 command,
                 working_dir=self.config.workdir,
                 env=self.process_env(env),
+                user=self.user,
             )
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
@@ -367,6 +374,7 @@ class PrimeRuntime(Runtime):
                     f"head -c {max_bytes} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
                     env=self.process_env({}),
+                    user=self.user,
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:

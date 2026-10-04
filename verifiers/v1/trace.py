@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
-from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -17,7 +16,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError
+from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -43,7 +42,6 @@ TRACE_VERSION = 1
 EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
-            "multi_modal_data",
             "routed_experts",
             "sampling_mask",
         }
@@ -310,30 +308,13 @@ class Branch(BaseModel):
         return weights
 
     @property
-    def multi_modal_data(self) -> MultiModalData | None:
-        """Node image data concatenated in token order for training; never persisted."""
-        merged = MultiModalData()
-        found = False
-        for node in self.nodes:
-            mmd = node.multi_modal_data
-            if mmd is None or mmd.is_empty():
-                continue
-            found = True
-            for modality, items in mmd.mm_items.items():
-                merged.mm_items.setdefault(modality, []).extend(items)
-            for modality, hashes in mmd.mm_hashes.items():
-                merged.mm_hashes.setdefault(modality, []).extend(hashes)
-        return merged if found else None
-
-    @property
     def mm_token_type_ids(self) -> list[int] | None:
         """Per-token modality markers aligned to `token_ids` (0 = text, 1 = image
-        placeholder, 2 = video placeholder), driving the trainer's vision-encoder
-        slicing; None for branches carrying no multimodal data."""
-        if self.multi_modal_data is None:
+        placeholder, 2 = video placeholder); None when none are present."""
+        if not self.mm_token_type_id_map:
             return None
-        mapping = self.mm_token_type_id_map
-        return [mapping.get(t, 0) for t in self.token_ids]
+        token_types = [self.mm_token_type_id_map.get(t, 0) for t in self.token_ids]
+        return token_types if any(token_types) else None
 
     @property
     def routed_experts(self) -> np.ndarray | None:
@@ -444,6 +425,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    is_timeout: bool = False
+    """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
@@ -585,7 +568,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
         resolved_identities: set[tuple[int, int, str]] = set()
         additions: list[tuple[int, ParentLink]] = []
-        pending_parents: dict[int, list[ParentLink]] = {}
         for edge in edge_set.edges:
             endpoints: list[int] = []
             for request_id in (
@@ -609,28 +591,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if link in self.nodes[target].semantic_parents:
                 continue
 
-            # Adding source -> target creates a cycle exactly when target is already an
-            # ancestor of source. Walk parent links directly so existing nodes and links
-            # are never rebuilt as cumulative ACP edge sets arrive.
-            stack = [source]
-            visited: set[int] = set()
-            while stack:
-                node_id = stack.pop()
-                if node_id == target:
-                    raise ValueError(
-                        "semantic edges create a cycle in the message graph"
-                    )
-                if node_id in visited:
-                    continue
-                visited.add(node_id)
-                node = self.nodes[node_id]
-                if node.parent is not None:
-                    stack.append(node.parent)
-                stack.extend(parent.node for parent in node.semantic_parents)
-                stack.extend(parent.node for parent in pending_parents.get(node_id, ()))
-
             additions.append((target, link))
-            pending_parents.setdefault(target, []).append(link)
 
         for target, link in additions:
             self.nodes[target].semantic_parents.append(link)
@@ -755,10 +716,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def stop(self, condition: str) -> None:
-        """Stop the trace, optionally with a stop condition."""
+    def stop(self, condition: str, override: bool = False) -> None:
+        """Stop the trace with a stop condition. The first condition wins unless
+        `override` replaces it."""
         self.is_completed = True
-        if self.stop_condition is None:
+        if override or self.stop_condition is None:
             self.stop_condition = condition
 
     def split_agent_time(self) -> None:
@@ -770,8 +732,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
 
+    def record_timeout(self, stage: str) -> None:
+        """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
+        The deadline is what ended the trace, so it replaces any earlier stop
+        condition (a finalize deadline can expire after `agent_completed`)."""
+        self.is_timeout = True
+        self.stop(f"{stage}_timeout", override=True)
+
     def record_error(self, error: Exception) -> None:
-        """Record an error, and stop the trace as failed."""
+        """Record an error, and stop the trace as failed: `<boundary>_error` for a
+        typed rollout error (`errors.stop_condition`), `error` for any other."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
@@ -785,7 +755,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         )
         self.ok = False
-        self.stop("error")
+        self.stop(stop_condition(error))
 
     def to_record(
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS

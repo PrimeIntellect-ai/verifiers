@@ -49,12 +49,11 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
         return [
             ReverseTextTask(
                 ReverseTextData(
-                    idx=i,
                     prompt=row["prompt"],
                     system_prompt=SYSTEM,
                     answer=row["prompt"][::-1],
                 ),
                 self.config.task,
             )
-            for i, row in enumerate(rows)
+            for row in rows
         ]
