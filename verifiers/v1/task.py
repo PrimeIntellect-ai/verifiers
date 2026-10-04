@@ -107,6 +107,11 @@ class TaskData(BaseModel):
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
 
+    mcp_servers: dict[str, dict] = Field(default_factory=dict)
+    """MCP connections by name, consumed inside the task runtime: command/args for
+    stdio, or url with transport='sse' or 'streamable-http'. The task owns deployment.
+    The harness's execution view also includes framework-launched tool servers."""
+
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
     allowlist unchanged; concrete lists intersect with the runtime's rules. Unsupported

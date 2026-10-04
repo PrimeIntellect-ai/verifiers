@@ -228,7 +228,7 @@ async def main() -> None:
     tools = [BROWSER_TOOL]
     reserved = {"browser"}
     async with AsyncExitStack() as mcp_stack:
-        mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
+        mcp_tools, dispatch = await connect_mcp(config, mcp_stack, reserved)
         tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
@@ -269,7 +269,7 @@ async def main() -> None:
                     )
                     continue
                 if name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
+                    content = await call_mcp(dispatch, name, tool_args)
                 elif name == "browser":
                     content = await asyncio.to_thread(
                         run_browser,

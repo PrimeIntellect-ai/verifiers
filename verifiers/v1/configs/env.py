@@ -41,6 +41,11 @@ class SharedEnvConfig(BaseConfig):
 
     taskset: SharedTasksetConfig = SharedTasksetConfig()
     """The taskset knobs every taskset has."""
+    mcp_packages: list[str] = Field(default_factory=list)
+    """Package references or absolute wheel/sdist paths for native sandbox tool servers.
+    Include the desired Verifiers build and the tool/task packages; their metadata
+    supplies dependencies. Empty uses the image's preinstalled Python environment.
+    Build local projects with `uv build --sdist` before starting the run."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a

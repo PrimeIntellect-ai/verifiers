@@ -55,7 +55,7 @@ class ACPConfig:
     env: dict[str, str]
     command: list[str]
     prompt: str | Messages | None
-    mcp_urls: dict[str, str] | None = None
+    mcp_servers: dict[str, dict] | None = None
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
@@ -100,7 +100,6 @@ class ACPHarness(Harness[ConfigT]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
         pass
@@ -112,7 +111,6 @@ class ACPHarness(Harness[ConfigT]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
@@ -120,9 +118,7 @@ class ACPHarness(Harness[ConfigT]):
             raise HarnessError(
                 f"harness {self.config.id!r} requires a runtime with live process support"
             )
-        config = await self.prepare_acp(
-            ctx, trace, runtime, endpoint, secret, mcp_urls, data
-        )
+        config = await self.prepare_acp(ctx, trace, runtime, endpoint, secret, data)
         if tool_interception_url is not None:
             await self.gate_tools(config, runtime, tool_interception_url, secret)
         return ACPHarnessSession(
@@ -132,7 +128,6 @@ class ACPHarness(Harness[ConfigT]):
             runtime,
             endpoint,
             secret,
-            mcp_urls if config.mcp_urls is None else config.mcp_urls,
             data,
             config,
             tool_interception_url,
@@ -145,7 +140,6 @@ class ACPHarness(Harness[ConfigT]):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
         raise HarnessError(
@@ -209,7 +203,6 @@ class ACPHarnessSession(HarnessSession):
         runtime: Runtime,
         endpoint: str,
         secret: str,
-        mcp_urls: dict[str, str],
         data: TaskData,
         config: ACPConfig,
         tool_interception_url: str | None = None,
@@ -221,7 +214,6 @@ class ACPHarnessSession(HarnessSession):
             runtime,
             endpoint,
             secret,
-            mcp_urls,
             data,
             tool_interception_url,
         )
@@ -322,11 +314,15 @@ class ACPHarnessSession(HarnessSession):
                 for message in prompt
             ]
         )
+        mcp_servers = (
+            self.data.mcp_servers
+            if self.config.mcp_servers is None
+            else self.harness.config.resolve_mcp_servers(self.config.mcp_servers)
+        )
         config = {
             "command": self.config.command,
             "user_contents": user_contents,
-            "mcp_urls": self.mcp_urls,
-            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
+            "mcp_servers": mcp_servers,
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
