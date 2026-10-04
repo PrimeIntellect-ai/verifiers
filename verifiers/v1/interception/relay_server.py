@@ -6,7 +6,8 @@ Each request goes to UPSTREAM on a fresh connection and its response streams bac
 host stamps its every response with STAMP_HEADER, so a transient-looking error without it
 came from something in between (a tunnel, proxy, or edge). Those, and failed connections,
 are retried for up to WINDOW_SECONDS. A request that may have reached the host is only
-repeated on routes the host dedupes, marked with RETRY_HEADER. FILES is a path prefix: the
+repeated on routes the host dedupes (model calls and tool-gate checks), marked with
+RETRY_HEADER. FILES is a path prefix: the
 relay writes FILES.port and FILES.json (counters) and reads proxy settings from FILES.env
 whenever the host rewrites it.
 """
@@ -102,7 +103,7 @@ class Relay(BaseHTTPRequestHandler):
 
     def read_body(self) -> bytes | None:
         """The request body, or None if its framing is invalid or the client left mid-body."""
-        lengths = self.headers.get_all("Content-Length") or []
+        lengths = [n.strip(" \t") for n in self.headers.get_all("Content-Length") or []]
         codings = self.headers.get_all("Transfer-Encoding")
         if not codings:
             if len(set(lengths)) > 1 or not all(LENGTH.fullmatch(n) for n in lengths):
@@ -137,14 +138,10 @@ class Relay(BaseHTTPRequestHandler):
                 return None
 
     def repeatable(self) -> bool:
-        # Safe to repeat: the host answers a marked repeat of a model call or tool-gate
-        # check with the original result; the rest are reads and whole-state replaces.
+        # The host answers a marked repeat of a model call or tool-gate check with the
+        # original result.
         path = self.path.partition("?")[0]
-        return (
-            self.command in ("GET", "HEAD")
-            or path.startswith("/v1/")
-            or path in ("/tool", "/state")
-        )
+        return path.startswith("/v1/") or path == "/tool"
 
     def hold(self, seconds: float) -> None:
         """Wait between attempts; raise Gone if the client hangs up meanwhile."""
@@ -194,14 +191,12 @@ class Relay(BaseHTTPRequestHandler):
 
     def relay(self) -> None:
         server = self.server
-        if self.request_version != "HTTP/1.1":
-            self.close_connection = True
         body = self.read_body()
         connection = {
             token.strip().lower()
             for token in ",".join(self.headers.get_all("Connection") or []).split(",")
         }
-        if "close" in connection:
+        if "close" in connection or self.request_version != "HTTP/1.1":
             self.close_connection = True
         headers = [
             (name, FOLD.sub(" ", value))
@@ -215,67 +210,49 @@ class Relay(BaseHTTPRequestHandler):
             or any(isinstance(d, MALFORMED) for d in self.headers.defects)
             or any("\r" in value or "\n" in value for _, value in headers)
         ):
-            self.close_connection = True
-            return self.reply(400, b"relay: malformed request")
+            return self.send_error(400, explain="relay: malformed request")
         headers.append(("Host", server.host))
         repeatable = self.repeatable()
-        held, delay, retry, arrived = 0.0, 0.5, 0, time.monotonic()
         key = hashlib.sha256(f"{self.command} {self.path} ".encode() + body).digest()
-        # Its identical copy outlasted the window shortly before this one arrived: the
-        # harness retrying it.
-        retried = server.gave_up.get(key, -math.inf) > arrived - server.window
+        # Its identical copy just outlasted the window: the harness retrying it fails
+        # fast, so a longer outage ends the rollout as an error, not a timeout.
+        retried = server.gave_up.get(key, -math.inf) > time.monotonic() - server.window
+        held, delay, retry, ok = 0.0, 0.5, 0, False
         try:
             while True:
                 if retry and repeatable:
                     name = server.retry_header
                     headers = [(k, v) for k, v in headers if k.lower() != name.lower()]
                     headers.append((name, str(retry)))
-                try:
-                    conn, response, sent = self.attempt(headers, body)
-                except Unrecoverable as e:
-                    print(f"relay: {e!r}", file=sys.stderr, flush=True)
-                    server.count(retry, held, rescued=False)
-                    self.close_connection = True  # as a direct connection would fail
-                    return
+                conn, response, sent = self.attempt(headers, body)
                 if response is not None and (
                     response.getheader(server.stamp) or not transient(response.status)
                 ):
+                    ok = True
                     break
                 held = held or time.monotonic()
                 left = held + server.window - time.monotonic()
-                # The harness retrying a request that just outlasted the window fails
-                # fast, so a longer outage ends the rollout as an error, not a timeout.
                 if left <= 0:
                     server.give_up(key)
-                elif not retried and (repeatable or not (response is not None or sent)):
-                    if response is not None:
-                        conn.close()
-                    self.hold(min(delay * random.uniform(0.5, 1.5), left))
-                    delay, retry = min(delay * 2, 10.0), retry + 1
-                    continue
-                server.count(retry, held, rescued=False)
+                    break
+                if retried or not (repeatable or (response is None and not sent)):
+                    break
                 if response is not None:
-                    return self.forward(conn, response)
-                # As a direct connection would have seen it: no answer at all.
-                self.close_connection = True
-                return
+                    conn.close()
+                self.hold(min(delay * random.uniform(0.5, 1.5), left))
+                delay, retry = min(delay * 2, 10.0), retry + 1
+        except Unrecoverable as e:
+            print(f"relay: {e!r}", file=sys.stderr, flush=True)
+            response = None
         except Gone:
-            server.count(retry, held, rescued=False)
-            self.close_connection = True
-            return
-        if key in server.gave_up:
+            response = None
+        server.count(retry, held, rescued=ok)
+        if ok and key in server.gave_up:
             server.give_up(key, recovered=True)
-        server.count(retry, held, rescued=True)
-        self.forward(conn, response)
-
-    def reply(self, status: int, payload: bytes) -> None:
-        self.send_response_only(status)
-        self.send_header("Content-Length", str(len(payload)))
-        if self.close_connection:
-            self.send_header("Connection", "close")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(payload)
+        if response is None:
+            self.close_connection = True  # no answer, as a direct connection would see
+        else:
+            self.forward(conn, response)
 
     def forward(self, conn, response: http.client.HTTPResponse) -> None:
         no_body = self.command == "HEAD" or response.status in (204, 304)
@@ -494,7 +471,9 @@ def main() -> None:
         refused = f"crashed: {e!r}"
     with open(f"{files}.port.tmp", "w") as f:
         f.write(
-            f"refused: {refused[:400]}" if refused else str(server.server_address[1])
+            f"refused: {ascii(refused)[:400]}"
+            if refused
+            else str(server.server_address[1])
         )
     os.replace(f"{files}.port.tmp", f"{files}.port")
     if refused:

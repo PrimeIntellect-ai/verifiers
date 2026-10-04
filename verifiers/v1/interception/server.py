@@ -534,14 +534,12 @@ class InterceptionServer(Interception):
                 body.get("name"),
                 body.get("arguments"),
             )
+            verdict.set_result(result)
         except RolloutError as error:
-            verdict.cancel()
             session.error = error
             return web.json_response({"error": str(error)}, status=400)
-        except BaseException:
-            verdict.cancel()
-            raise
-        verdict.set_result(result)
+        finally:
+            verdict.cancel()  # no-op once it has a result
         return web.json_response(result)
 
     def record_call(

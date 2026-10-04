@@ -107,7 +107,12 @@ class Relay:
                 done = await self.runtime.run(
                     ["sh", "-c", f"{check} > /dev/null && {{ {save}; }}"], {}
                 )
-            active, reason = done.exit_code == 0, PROXIED
+            active = done.exit_code == 0
+            reason = (
+                PROXIED
+                if done.exit_code == 10
+                else f"its check exited {done.exit_code}"
+            )
         except Exception as e:  # noqa: BLE001 - connect directly instead
             active, reason = False, f"applying the network policy failed: {e!r}"
         self.record({"relay_active": float(active)})
@@ -126,8 +131,8 @@ async def serve_relay(
     record: Callable[[dict[str, float]], None],
     limit: float | None = None,
 ) -> AsyncIterator[Relay | None]:
-    """Yield the started relay, or None if it didn't start within `limit` seconds
-    (at most 300)."""
+    """Yield the started relay, or None if it isn't usable or didn't start within
+    `limit` seconds (at most 300)."""
     if limit is not None and limit < 10:
         record({"relay_active": 0.0})
         logger.warning(
@@ -173,7 +178,7 @@ async def serve_relay(
                     script = (
                         f"while [ -e {source} ]; do t=$(date +%s); "
                         f'"$VF_RELAY_BIN" {args}; c=$?; '
-                        f'[ -e {port} ] || echo "refused: exited $c" > {port}; '
+                        f'[ -e {port} ] || echo "refused: relay exited with status $c" > {port}; '
                         "[ $(($(date +%s) - t)) -lt 5 ] && sleep 1; done"
                     )
                     await runtime.run_background(
@@ -190,7 +195,7 @@ async def serve_relay(
                             port = await runtime.read(f"{files}.port", max_bytes=512)
                             if port.startswith(b"refused: "):
                                 why = port[9:].decode(errors="replace")
-                                reason = f"it can't reach the host: {why!r}"
+                                reason = f"it refused: {why.strip()!r}"
                             elif 0 < int(port) < 65536 and port.strip().isdigit():
                                 url = f"http://127.0.0.1:{int(port)}"
                                 relay = Relay(runtime, python, files, url, record)

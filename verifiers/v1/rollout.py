@@ -328,13 +328,10 @@ class Rollout:
                         spare(),
                     )
                 )
-            # The relay is on the runtime's own loopback: its URLs are not host-bound.
             direct = {
                 route: runtime.host_url(f"{base_url.rstrip('/')}/{route}")
                 for route in ("v1", "tool")
             }
-            routes = {r: f"{relay.url}/{r}" for r in direct} if relay else direct
-            self._endpoint = routes["v1"]
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -350,8 +347,10 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([direct["v1"], *self._urls.values()])
             if relay is not None and not await relay.adopt_policy(spare()):
-                routes = direct
-                self._endpoint = routes["v1"]
+                relay = None
+            # The relay is on the runtime's own loopback: its URLs are not host-bound.
+            routes = {r: f"{relay.url}/{r}" for r in direct} if relay else direct
+            self._endpoint = routes["v1"]
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
