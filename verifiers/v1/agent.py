@@ -196,7 +196,7 @@ class Interaction:
             WeakValueDictionary()
         )
         self._steering_receipts: dict[str, tuple[str, dict]] = {}
-        self._steering_tasks: dict[str, tuple[str, asyncio.Task[dict]]] = {}
+        self._steering_tasks: dict[object, tuple[str, asyncio.Task[dict]]] = {}
         self._pending_messages: list[_PendingMessage] = []
         self._pending_by_id: dict[str, _PendingMessage] = {}
         self._message_drain: asyncio.Task[None] | None = None
@@ -302,10 +302,9 @@ class Interaction:
             return receipt
 
     async def _deliver_steer(self, message: str, message_id: str | None) -> dict:
-        if message_id is None:
-            return await self._run.steer(message)
-        if message_id in self._steering_tasks:
-            previous, task = self._steering_tasks[message_id]
+        key = message_id if message_id is not None else object()
+        if key in self._steering_tasks:
+            previous, task = self._steering_tasks[key]
             if previous != message:
                 raise ValueError("steering message ID reused with different content")
         else:
@@ -313,16 +312,16 @@ class Interaction:
             async def deliver() -> dict:
                 try:
                     receipt = await self._run.steer(message, message_id=message_id)
-                    if receipt.get("outcome") == "injected":
+                    if receipt.get("outcome") == "injected" and message_id is not None:
                         self._steering_receipts[message_id] = (message, dict(receipt))
                     return receipt
                 finally:
-                    self._steering_tasks.pop(message_id, None)
+                    self._steering_tasks.pop(key, None)
 
             # The harness may already have accepted input when the caller is
             # cancelled. Finish and cache that delivery before allowing retries.
             task = asyncio.create_task(deliver())
-            self._steering_tasks[message_id] = (message, task)
+            self._steering_tasks[key] = (message, task)
             task.add_done_callback(
                 lambda done: None if done.cancelled() else done.exception()
             )
