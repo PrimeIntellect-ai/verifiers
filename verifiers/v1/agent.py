@@ -17,7 +17,7 @@ from typing import Generic, Self, cast
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients import (
-    EvalClientConfig,
+    ClientConfig,
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
@@ -288,7 +288,7 @@ class Agent:
         self.harness = load_harness(config.harness)
         self.ctx = ModelContext(
             model=config.model,
-            client=config.client or EvalClientConfig(),
+            client=config.client or ClientConfig(),
             sampling=config.sampling,
         )
         self._closed = False
