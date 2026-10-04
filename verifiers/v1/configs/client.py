@@ -60,7 +60,10 @@ class BaseClientConfig(BaseConfig):
             or prime_config.get("inference_url")
             or DEFAULT_PRIME_INFERENCE_URL
         )
-        if "base_url" not in self.model_fields_set:
+        if (
+            "base_url" not in self.model_fields_set
+            and self.base_url == DEFAULT_PRIME_INFERENCE_URL
+        ):
             self.base_url = prime_base_url
         host = urlparse(self.base_url).hostname or ""
         if host != PRIME_INFERENCE_HOST and not host.endswith(

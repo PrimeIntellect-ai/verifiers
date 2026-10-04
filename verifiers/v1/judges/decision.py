@@ -22,9 +22,8 @@ from verifiers.v1.types import ID, Usage
 class DecisionJudgeConfig(JudgeConfig):
     id: ID = "decision"
     model: str = "typesafe-ai/jev"
-    endpoint: str = "/evaluations"
-    """Path relative to `base_url`. Direct TypeSafe and Workers AI endpoints
-    require their own URL, path, model, and API key settings."""
+    base_url: str = "https://api.pinference.ai/api/v1/evaluations"
+    """Full URL to POST evaluation requests to."""
     levels: list[str] = Field(
         default_factory=lambda: ["Incorrect", "Correct"], min_length=2, max_length=10
     )
@@ -59,7 +58,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
         }
         async with build_async_openai(self.config) as client:
             raw = await client.post(
-                self.config.endpoint, cast_to=dict[str, Any], body=request
+                self.config.base_url, cast_to=dict[str, Any], body=request
             )
         result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
         response = JudgeResponse[float](text=json.dumps(raw))
