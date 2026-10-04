@@ -951,7 +951,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept models: id=%s", session.trace.id)
         config = session.ctx.client
-        headers = resolve_headers(config)
+        headers = httpx.Headers(resolve_headers(config))
         headers.update(dialect.auth_headers(resolve_api_key(config)))
         try:
             # Finite read timeout: a hung provider must not stall threshold discovery
