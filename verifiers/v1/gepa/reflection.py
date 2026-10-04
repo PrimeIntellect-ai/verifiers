@@ -20,6 +20,8 @@ def build_reflection_lm(config: GEPAConfig) -> Callable[[str], str]:
             base_url=client.base_url,
             api_key_var=client.api_key_var,
             headers=client.headers,
+            headers_from_env=client.headers_from_env,
+            timeout=client.timeout,
         )
     )
 
