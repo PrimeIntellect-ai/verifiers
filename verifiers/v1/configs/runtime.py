@@ -40,7 +40,7 @@ def validate_mounts(mounts: dict[str, Mount]) -> dict[str, Mount]:
             path.is_relative_to(other) or other.is_relative_to(path) for other in paths
         ):
             raise ValueError(f"mount target {target!r} overlaps another mount")
-        if path == PurePosixPath("/tmp"):
+        if path.is_relative_to("/tmp"):
             raise ValueError("/tmp is reserved for runtime and artifact staging")
         paths[path] = mount
     return {str(path): mount for path, mount in paths.items()}
