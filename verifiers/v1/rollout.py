@@ -405,7 +405,19 @@ class Rollout:
         self.trace.notify()
         return not self._session.stopped
 
-    async def step(self, messages: Messages | None = None) -> bool:
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed or not self.ok:
+            raise RuntimeError("this rollout is closed or stopped")
+        if self._harness_session is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        return await self._harness_session.steer(message, message_id=message_id)
+
+    async def step(
+        self,
+        messages: Messages | None = None,
+        *,
+        on_input: Callable[[], None] | None = None,
+    ) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
@@ -438,6 +450,7 @@ class Rollout:
                     self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
+                self._session.on_turn_input = on_input
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
@@ -459,6 +472,7 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:

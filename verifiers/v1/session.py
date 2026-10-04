@@ -148,6 +148,8 @@ class RolloutSession:
     response_interceptors: list[Callable] = field(default_factory=list)
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
+    on_turn_input: Callable[[], None] | None = None
+    """One-shot acknowledgement when a resumed harness reaches model inference."""
     gates_tools: bool = False
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
