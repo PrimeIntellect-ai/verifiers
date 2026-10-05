@@ -174,3 +174,5 @@ def test_parse_judge_choice_precedence() -> None:
         ("Yes, mostly.\nVerdict: no", "no"),
     ]:
         assert vf.parse_judge_choice(reply, choices=("yes", "no")) == expected
+    # A single-letter label opening a reply is an article, not a leading verdict.
+    assert vf.parse_judge_choice("A better choice is B.", choices=("A", "B")) == "B"
