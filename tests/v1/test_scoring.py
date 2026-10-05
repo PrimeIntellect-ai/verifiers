@@ -126,7 +126,7 @@ def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
     }
 
 
-def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
+def test_parse_judge_choice_precedence() -> None:
     assert (
         vf.parse_judge_choice(
             "Draft: \\boxed{A}\nFinal Judgment: B", choices=("A", "B")
@@ -162,3 +162,15 @@ def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
     assert (
         vf.parse_judge_choice("Draft: \\boxed{A}\nAnswer: B", choices=("A", "B")) == "A"
     )
+    # A leading verdict beats label words in its explanation; without one, the last
+    # mention decides, and an explicit verdict line still wins.
+    for reply, expected in [
+        ("Yes. The response gives 42; no other value is stated.", "yes"),
+        ("No. The reference is 42. Yes, if rounded, they'd be close.", "no"),
+        ("No, the candidate says yes but is incorrect", "no"),
+        ("**Yes** — the response matches; no discrepancy.", "yes"),
+        ("Yes\nThere is no discrepancy.", "yes"),
+        ("No discrepancy found, so: yes", "yes"),
+        ("Yes, mostly.\nVerdict: no", "no"),
+    ]:
+        assert vf.parse_judge_choice(reply, choices=("yes", "no")) == expected
