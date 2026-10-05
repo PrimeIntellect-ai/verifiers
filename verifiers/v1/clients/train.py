@@ -443,9 +443,14 @@ class TrainClient(Client):
                     prompt_ids = bridged.token_ids
                     prompt_attribution = bridged
                     bridged_turn = turn
-                    sampling_params["routed_experts_prompt_start"] = max(
-                        turn.path_len - 1, 0
-                    )
+                    # Reuse the prefix's recorded routing only when every prefix node has it
+                    # (replayed calls never reached the engine); otherwise route the whole
+                    # prompt so the commit can fill the gaps.
+                    nodes = [turn.trace.nodes[nid] for nid in turn.prefix_node_ids]
+                    if all(n.routed_experts is not None for n in nodes if n.token_ids):
+                        sampling_params["routed_experts_prompt_start"] = max(
+                            turn.path_len - 1, 0
+                        )
 
             # Render here (encode-side, so through the slot) rather than inside `generate`:
             # handed prebuilt prompt_ids, generate's own renderer touches are decode-side

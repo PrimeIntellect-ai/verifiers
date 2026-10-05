@@ -980,6 +980,7 @@ async def test_prefix_replay():
     completions (no `/generate`), runs their tool calls for real, trains only the live
     calls, and flags replayed calls whose tool output differs from the recording."""
     import asyncio
+    import base64
     import json
     import multiprocessing as mp
 
@@ -995,6 +996,7 @@ async def test_prefix_replay():
     model = "Qwen/Qwen3-0.6B"
     tok = AutoTokenizer.from_pretrained(model)
     sampled: list[int] = []  # tool results seen by each sampled call
+    starts: list[int] = []  # each sampled call's requested routing start
     volatile = {"at": None}
 
     async def generate(request):
@@ -1006,10 +1008,15 @@ async def test_prefix_replay():
         text = f"<tool_call>\n{tool_call}\n</tool_call>" if turn < 4 else "Done."
         ids = tok.encode(f"<think>\n\n</think>\n\n{text}<|im_end|>")
         logprobs = [{"logprob": -0.1, "token": f"token_id:{i}"} for i in ids]
+        start = body["sampling_params"].get("routed_experts_prompt_start") or 0
+        starts.append(start)
+        rows = len(body["token_ids"]) + len(ids) - 1 - start
+        routed = {"data": base64.b64encode(bytes(rows)).decode(), "shape": [rows, 1, 1]}
         choice = {
             "token_ids": ids,
             "finish_reason": "stop",
             "logprobs": {"content": logprobs},
+            "routed_experts": {**routed, "start": start},
         }
         return web.json_response({"request_id": "r", "choices": [choice]})
 
@@ -1055,6 +1062,7 @@ async def test_prefix_replay():
 
     async def run(prefix=None):
         sampled.clear()
+        starts.clear()
         episode = await env.run(
             client=client,
             model=model,
@@ -1080,6 +1088,11 @@ async def test_prefix_replay():
         assert [sum(node.mask) for node in nodes][:3] == [0, 0, 0]
         assert all(sum(node.mask) == len(node.logprobs) > 0 for node in nodes[3:])
         assert [call.usage is None for call in replay.calls] == [True] * 3 + [False] * 2
+        # Replayed calls carry no routing: the first live call routes its whole prompt to
+        # fill them in, and the next reuses it.
+        assert starts[0] == 0 < starts[1]
+        (branch,) = replay.branches
+        assert branch.routed_experts.shape[0] == len(branch.token_ids)
 
         # Blind: a changed tool output does not stop the replay, it is only flagged.
         volatile["at"] = 1

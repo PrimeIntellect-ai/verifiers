@@ -668,7 +668,8 @@ def _attribute_routed_experts(
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
     the routing attributed when they were first created, except for the one position this turn
-    corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
+    corrects (see `_replace_placeholder_routing_row`); those that never had any take this turn's
+    rows for their positions. A node whose slice falls outside the
     array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
     if payload is None:
@@ -677,7 +678,16 @@ def _attribute_routed_experts(
     arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
         payload["shape"]
     )
-    off = path_len - int(payload.get("start", 0) or 0)
+    start = int(payload.get("start", 0) or 0)
+    off = path_len - start
+    # Prefix nodes without routing (prefix-replayed calls) take theirs from this prompt.
+    pos = -start
+    for nid in prefix_node_ids:
+        node = trace.nodes[nid]
+        n = len(node.token_ids)
+        if node.routed_experts is None and n and 0 <= pos and pos + n <= arr.shape[0]:
+            node.routed_experts = arr[pos : pos + n].copy()
+        pos += n
     _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
