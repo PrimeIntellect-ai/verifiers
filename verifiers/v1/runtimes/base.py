@@ -234,6 +234,12 @@ class Runtime(ABC):
         return runtime
 
     @property
+    def restored(self) -> bool:
+        """Whether this box started from a checkpoint (`restore_config`) rather than its
+        image: it already holds a past run's files, but none of its processes."""
+        return False
+
+    @property
     def supports_checkpoint(self) -> bool:
         """Whether `checkpoint()` is implemented for this runtime instance."""
         return type(self).checkpoint is not Runtime.checkpoint
