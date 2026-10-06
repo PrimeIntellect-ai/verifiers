@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import secrets
 import shlex
 import shutil
@@ -323,6 +324,9 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
+        env.update(
+            {name: os.environ[name] for name in server.ENV if name in os.environ}
+        )
     if exposed and runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
