@@ -47,8 +47,11 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
-    compaction: CompactionConfig | None = None
-    """Context compaction policy. Set an empty config to use automatic thresholds."""
+    compaction: CompactionConfig | None = CompactionConfig()
+    """Context compaction policy. On by default: compact when 16k tokens remain below
+    the model's advertised context window. A `[compaction]` section pins
+    `summarize_at_tokens` instead; `null` (`compaction = "None"` in TOML) disables
+    compaction, and an overflowing rollout then ends with its transcript so far."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
