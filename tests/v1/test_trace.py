@@ -744,19 +744,21 @@ def test_sampling_mask_from_packed_matches_lists():
 
     from verifiers.v1.types import SamplingMask
 
-    rows = [[4, 7], [], [9]]
-    ids, counts = np.array([4, 7, 9], np.int32), np.array([2, 0, 1], np.int32)
-    packed = {
-        name: {
+    def pack(a):
+        return {
             "data": base64.b64encode(a.tobytes()).decode(),
             "shape": list(a.shape),
-            "dtype": "int32",
+            "dtype": a.dtype.name,
         }
-        for name, a in (("ids", ids), ("counts", counts))
-    }
+
+    rows, row_logprobs = [[4, 7], [], [9]], [[-0.5, -1.0], [], [0.0]]
+    ids, counts = np.array([4, 7, 9], np.int32), np.array([2, 0, 1], np.int32)
+    logprobs = np.array([-0.5, -1.0, 0.0], np.float32)
+    packed = {"ids": pack(ids), "counts": pack(counts)}
     for mask in (
-        SamplingMask.from_sampling_mask(rows),
-        SamplingMask.from_sampling_mask(packed),
+        SamplingMask.from_sampling_mask(rows, row_logprobs),
+        SamplingMask.from_sampling_mask(packed, pack(logprobs)),
     ):
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)
+        np.testing.assert_array_equal(mask.logprobs, logprobs)
