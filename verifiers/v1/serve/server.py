@@ -105,6 +105,9 @@ class EnvServer:
                 [client_id, request_id, b"delta", pack(delta)], copy=False
             )
 
+        slot.resume = req.resume
+        slot.on_save = lambda state: send_delta({"save_point": state})
+
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.

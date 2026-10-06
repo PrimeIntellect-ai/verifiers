@@ -48,6 +48,8 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    resume: dict | None = None
+    """A save point of an interrupted run of this episode to continue from."""
 
 
 class RunResponse(BaseResponse):

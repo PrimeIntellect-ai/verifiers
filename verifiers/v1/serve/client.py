@@ -190,17 +190,25 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        resume: dict | None = None,
+        on_save_point: Callable[[dict], None] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. `on_save_point` sees
+        each save point the episode records (`save_point`); passing one back as
+        `resume` relaunches the episode from it."""
         assembly = EpisodeAssembly()
 
         def apply(data: bytes) -> None:
             delta = unpack(data)
+            if "save_point" in delta:
+                if on_save_point is not None:
+                    on_save_point(delta["save_point"])
+                return
             assembly.apply(delta)
             if on_delta is not None:
                 on_delta(delta)
@@ -211,6 +219,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                resume=resume,
             ),
             RunResponse,
             on_delta=apply,

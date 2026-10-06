@@ -35,7 +35,7 @@ from verifiers.v1.configs.task import (
     TaskConfig,
 )
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
-from verifiers.v1.env import Env
+from verifiers.v1.env import Env, restored, save_point
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import (
     EnvInfo,
@@ -318,6 +318,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ApptainerConfig",
     "PrimeConfig",
     "Env",
+    "save_point",
+    "restored",
     "SingleAgentEnv",
     "EnvConfig",
     "SharedEnvConfig",

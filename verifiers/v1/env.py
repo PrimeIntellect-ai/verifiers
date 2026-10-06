@@ -6,6 +6,7 @@ import logging
 import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import (
     Generic,
@@ -62,6 +63,10 @@ class RunSlot:
     episode: Episode | None = None
     done: bool = False
     started: float | None = None
+    resume: dict | None = None
+    """The episode's latest save point (`save_point`), or the one it was relaunched from."""
+    on_save: Callable[[dict], Awaitable[None]] | None = None
+    """Persists each save point, so a relaunched episode can resume from it."""
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -71,6 +76,27 @@ class RunSlot:
             episode=episode,
             done=True,
         )
+
+
+_slot: ContextVar[RunSlot | None] = ContextVar("vf_run_slot", default=None)
+
+
+async def save_point(state: dict) -> None:
+    """Save the running episode's progress from inside `Env.run`: a JSON-able `state`
+    that replaces the previous one. An episode relaunched after an interruption, or
+    retried, reads the latest with `restored()` and continues from there."""
+    slot = _slot.get()
+    if slot is None:
+        raise RuntimeError("save_point() is called from inside Env.run()")
+    slot.resume = state
+    if slot.on_save is not None:
+        await slot.on_save(state)
+
+
+def restored() -> dict | None:
+    """The save point this episode continues from, or None when it starts fresh."""
+    slot = _slot.get()
+    return None if slot is None else slot.resume
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
@@ -333,13 +359,17 @@ class Env(ABC, Generic[ConfigT]):
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
 
-            async with semaphore or contextlib.nullcontext():
-                return await self.run_episode(
-                    slot.task,
-                    ctx,
-                    on_trace=minted,
-                    on_discard=discard,
-                )
+            token = _slot.set(slot)
+            try:
+                async with semaphore or contextlib.nullcontext():
+                    return await self.run_episode(
+                        slot.task,
+                        ctx,
+                        on_trace=minted,
+                        on_discard=discard,
+                    )
+            finally:
+                _slot.reset(token)
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
         slot.traces = list(episode.traces)
