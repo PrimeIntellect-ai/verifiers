@@ -233,6 +233,7 @@ class Rollout:
                 "placed into the box"
             )
         runtime = self.runtime
+        self._session.runtime = runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info
         logger.info(
@@ -250,7 +251,7 @@ class Rollout:
                 runtime.env = runtime_env
             else:
                 runtime = runtime.with_env(runtime_env)
-                self.runtime = runtime
+                self.runtime = self._session.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "

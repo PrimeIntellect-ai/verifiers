@@ -814,7 +814,7 @@ class InterceptionServer(Interception):
                             call_response,
                             response_rewrites,
                             stopped,
-                        ) = await session.rewrite_response(call_response)
+                        ) = await session.rewrite_response(call_response, model_request)
                         if response_rewrites:
                             events = None
                             assert call_response.raw is not None

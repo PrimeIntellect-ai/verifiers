@@ -32,6 +32,7 @@ from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.runtimes.base import Runtime
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -48,18 +49,22 @@ logger = logging.getLogger(__name__)
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
-    """Select a hook boundary solely from its annotated parameters."""
+    """Select a hook boundary solely from its annotated parameters. A `Response` hook
+    may also take the `Request` it answers."""
     hints = get_type_hints(handler)
     annotations = [
         get_origin(hints[name]) or hints[name]
         for name in inspect.signature(handler).parameters
         if name in hints
     ]
-    boundaries = [kind for kind in annotations if kind in (Request, Response)]
-    if len(boundaries) == 1 and annotations.count(Trace) <= 1:
-        return boundaries[0]
-    if not boundaries and allow_trace and annotations.count(Trace) == 1:
-        return Trace
+    requests, responses = annotations.count(Request), annotations.count(Response)
+    if annotations.count(Trace) <= 1:
+        if responses == 1 and requests <= 1:
+            return Response
+        if requests == 1 and responses == 0:
+            return Request
+        if allow_trace and requests == responses == 0 and Trace in annotations:
+            return Trace
     expected = "Request, Response, or Trace" if allow_trace else "Request or Response"
     raise TypeError(f"{handler.__name__} must have exactly one {expected} parameter")
 
@@ -148,6 +153,8 @@ class RolloutSession:
     response_interceptors: list[Callable] = field(default_factory=list)
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
+    runtime: Runtime | None = None
+    """The rollout's box once it is up, for hooks that take a `Runtime`."""
     gates_tools: bool = False
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
@@ -279,7 +286,8 @@ class RolloutSession:
                 for handler in self.request_interceptors if active else []:
                     candidate = current.model_copy(deep=True)
                     result = await call_hook(
-                        handler, {Request: candidate, Trace: self.trace}
+                        handler,
+                        {Request: candidate, Trace: self.trace, Runtime: self.runtime},
                     )
                     if result is None:
                         continue
@@ -327,7 +335,8 @@ class RolloutSession:
                 for stop in stops:
                     candidate = current.model_copy(deep=True)
                     result = await call_hook(
-                        stop, {Request: candidate, Trace: self.trace}
+                        stop,
+                        {Request: candidate, Trace: self.trace, Runtime: self.runtime},
                     )
                     if not isinstance(result, bool):
                         raise TypeError(
@@ -383,15 +392,22 @@ class RolloutSession:
         return Request(messages=tail), records
 
     async def rewrite_response(
-        self, response: Response
+        self, response: Response, request: Request
     ) -> tuple[Response, list[InterceptRecord], str | None]:
-        """Run typed response interceptors and stops before harness delivery."""
+        """Run typed response interceptors and stops before harness delivery. They may
+        also read the `request` the response answers."""
         records: list[InterceptRecord] = []
         try:
             for handler in self.response_interceptors:
                 candidate = response.model_copy(deep=True)
                 result = await call_hook(
-                    handler, {Response: candidate, Trace: self.trace}
+                    handler,
+                    {
+                        Response: candidate,
+                        Request: request.model_copy(deep=True),
+                        Trace: self.trace,
+                        Runtime: self.runtime,
+                    },
                 )
                 if result is None:
                     continue
@@ -422,7 +438,15 @@ class RolloutSession:
 
             for stop in self.response_stops:
                 candidate = response.model_copy(deep=True)
-                result = await call_hook(stop, {Response: candidate, Trace: self.trace})
+                result = await call_hook(
+                    stop,
+                    {
+                        Response: candidate,
+                        Request: request.model_copy(deep=True),
+                        Trace: self.trace,
+                        Runtime: self.runtime,
+                    },
+                )
                 if not isinstance(result, bool):
                     raise TypeError(
                         f"@stop must return bool, got {type(result).__name__}"
@@ -595,7 +619,7 @@ class RolloutSession:
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit
         for stop in self.trace_stops:
-            result = await call_hook(stop, {Trace: self.trace})
+            result = await call_hook(stop, {Trace: self.trace, Runtime: self.runtime})
             if not isinstance(result, bool):
                 raise TaskError(f"@stop must return bool, got {type(result).__name__}")
             if result:
