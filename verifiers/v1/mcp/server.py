@@ -128,6 +128,20 @@ def _import_ref(ref: str) -> object:
     return obj
 
 
+def _uvicorn_server():
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame) -> None:
+            # uvicorn re-raises a caught SIGTERM once it stops serving, killing the
+            # process before the server's exit stack frees what its tools hold
+            # (e.g. sandboxes); exit normally instead.
+            super().handle_exit(sig, frame)
+            self._captured_signals.clear()
+
+    return Server
+
+
 class ServerBase(Generic[ConfigT, StateT]):
     TOOL_PREFIX: ClassVar[str | None] = ""
     """The empty value falls back to the snake-cased class name. None advertises the server's
@@ -330,7 +344,9 @@ class ServerBase(Generic[ConfigT, StateT]):
                         finally:
                             _request_query_params.reset(token)
 
-                    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+                    server = _uvicorn_server()(
+                        uvicorn.Config(app, log_level="critical")
+                    )
                     await server.serve(sockets=[sock])
             finally:
                 self._state_client = None
