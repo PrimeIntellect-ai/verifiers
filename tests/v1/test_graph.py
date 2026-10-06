@@ -190,6 +190,82 @@ def test_routed_experts_none_when_absent():
     assert trace.branches[-1].routed_experts is None
 
 
+def _two_turn_sampling_mask_trace(masks: list[vf.SamplingMask]) -> vf.Trace:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="u1")
+    turns = [
+        ([user], [10, 11, 12], [20, 21], [(0, 2)]),
+        (
+            [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
+            [10, 11, 12, 20, 21, 30, 31],
+            [40, 41],
+            [(0, 2), None, (5, 7)],
+        ),
+    ]
+    for i, ((messages, prompt_ids, completion_ids, spans), mask) in enumerate(
+        zip(turns, masks)
+    ):
+        graph.prepare_turn(trace, messages).commit(
+            vf.Response(
+                id=str(i),
+                created=0,
+                model="t",
+                message=vf.AssistantMessage(content=f"a{i + 1}"),
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=prompt_ids,
+                    completion_ids=completion_ids,
+                    message_spans=spans,
+                    sampling_mask=mask,
+                ),
+            )
+        )
+    return trace
+
+
+def _mask(
+    rows: list[list[int]], logprobs: list[float] | None = None
+) -> vf.SamplingMask:
+    mask = vf.SamplingMask.from_sampling_mask(rows)
+    if logprobs is not None:
+        mask.logprobs = np.array(logprobs, np.float32)
+    return mask
+
+
+def test_sampling_mask_logprobs_attributed_aggregated_and_round_tripped():
+    """Optional sampler logprobs ride along with the mask ids: concatenated on the branch,
+    kept by the wire round trip, and dropped (None) when any turn lacks them. A mask whose
+    logprobs do not match its ids is not attributed."""
+    first = _mask([[20, 5], [21]], [-0.1, -2.4, 0.0])
+    second = _mask([[40], [41, 7, 8]], [0.0, -0.5, -1.0, -3.0])
+    trace = _two_turn_sampling_mask_trace([first, second])
+
+    branch_mask = trace.branches[-1].sampling_mask
+    assert branch_mask is not None
+    assert len(branch_mask.counts) == len(trace.branches[-1].token_ids)
+    assert branch_mask.ids.tolist() == [20, 5, 21, 40, 41, 7, 8]
+    assert branch_mask.logprobs.tolist() == pytest.approx(
+        [-0.1, -2.4, 0.0, 0.0, -0.5, -1.0, -3.0]
+    )
+    restored = type(trace).model_validate(trace.model_dump()).branches[-1].sampling_mask
+    assert restored is not None
+    for name in ("ids", "counts", "logprobs"):
+        np.testing.assert_array_equal(
+            getattr(restored, name), getattr(branch_mask, name)
+        )
+
+    mixed = _two_turn_sampling_mask_trace([first, _mask([[40], [41, 7, 8]])])
+    assert mixed.branches[-1].sampling_mask.logprobs is None
+    assert mixed.branches[-1].sampling_mask.ids.tolist() == branch_mask.ids.tolist()
+
+    mismatched = _mask([[40], [41, 7, 8]], [0.0, -0.5])
+    trace = _two_turn_sampling_mask_trace([first, mismatched])
+    assert trace.nodes[-1].sampling_mask is None
+
+
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     left = vf.AssistantMessage(
         content=None,
