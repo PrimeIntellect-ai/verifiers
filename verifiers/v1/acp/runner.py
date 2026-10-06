@@ -55,7 +55,13 @@ class ToolGate:
     """The rollout's `/tool` gate, asked before every tool call the agent wants to run."""
 
     def __init__(self, url: str, secret: str, failed: str | None = None) -> None:
-        self.url = url
+        # The rollout may set the retry window in the fragment, which is never sent.
+        self.url, _, fragment = url.partition("#")
+        self.retry_seconds = float(
+            fragment.removeprefix("retry=")
+            if fragment.startswith("retry=")
+            else RETRY_SECONDS
+        )
         self.failed = failed
         """A file the agent's own gate hook writes when it couldn't ask the gate."""
         self.error: str | None = None
@@ -89,7 +95,7 @@ class ToolGate:
     async def ask(self, payload: dict) -> dict:
         """Retry what a tunnel or proxy dropped or answered, marked so the rollout
         answers a repeat with its first verdict."""
-        deadline = time.monotonic() + RETRY_SECONDS
+        deadline = time.monotonic() + self.retry_seconds
         delay, retry = 0.5, 0
         while True:
             try:
@@ -108,7 +114,9 @@ class ToolGate:
             except httpx.TransportError as error:
                 failure = repr(error)
             if time.monotonic() + delay > deadline:
-                raise RuntimeError(f"unreachable for {RETRY_SECONDS:.0f}s: {failure}")
+                raise RuntimeError(
+                    f"unreachable for {self.retry_seconds:.0f}s: {failure}"
+                )
             await asyncio.sleep(delay * random.uniform(0.5, 1.5))
             delay, retry = min(delay * 2, 10.0), retry + 1
 

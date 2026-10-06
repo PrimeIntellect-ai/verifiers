@@ -21,6 +21,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
+from verifiers.v1.interception.relay import serve_relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     ModalConfig,
@@ -299,7 +300,35 @@ class Rollout:
                     self._shared_tools,
                 )
             )
-            self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+            endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+            # The relay runs as the agent: it is the harness's own helper, and carries
+            # nothing the agent can't already reach. It gets at most half the setup
+            # time left, so going direct still fits.
+            harness_runtime: Runtime | None = None
+            relay = None
+            relay_seconds = (
+                self._interception and self._interception.config.relay_seconds
+            )
+            if relay_seconds and not runtime.is_local:
+                async with (
+                    asyncio.timeout_at(setup_deadline) as setup_timeout,
+                    boundary(HarnessError, "opening harness session"),
+                ):
+                    harness_runtime = await agent_runtime(
+                        runtime, self.trace.task.data.agent_user
+                    )
+                relay = await self._stack.enter_async_context(
+                    serve_relay(
+                        harness_runtime,
+                        runtime.host_url(base_url.rstrip("/")),
+                        relay_seconds,
+                        self.trace.record_metrics,
+                        None
+                        if setup_deadline is None
+                        else max(0.0, (setup_deadline - loop.time()) / 2),
+                    )
+                )
+            self._endpoint = f"{relay}/v1" if relay else endpoint
             self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
@@ -309,11 +338,12 @@ class Rollout:
                     state_secret=state_secret,
                     state_route=self.trace.id,
                     state_base=base_url,
+                    retry_seconds=relay_seconds or None,
                 )
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            await runtime.prepare_execution([endpoint, *self._urls.values()])
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
@@ -361,9 +391,12 @@ class Rollout:
                 if not self._session.stopped:
                     session_kwargs = (
                         {
+                            # The gate's clients hold through network failures as
+                            # long as the relay does (the fragment is never sent).
                             "tool_interception_url": runtime.host_url(
                                 f"{base_url.rstrip('/')}/tool"
                             )
+                            + (f"#retry={relay_seconds}" if relay_seconds else "")
                         }
                         if self.harness.SUPPORTS_TOOL_INTERCEPTION
                         and (
@@ -375,7 +408,8 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        await agent_runtime(runtime, harness_data.agent_user),
+                        harness_runtime
+                        or await agent_runtime(runtime, harness_data.agent_user),
                         self._endpoint,
                         self._secret,
                         self._urls,

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # State calls may cross a tunnel, so allow transient startup failures without hanging forever.
 STATE_TIMEOUT = 30.0  # seconds per request
-STATE_RETRY_SECONDS = 300.0
+STATE_RETRY_SECONDS = 300.0  # unless VF_STATE_RETRY_SECONDS says otherwise
 
 
 async def _channel_request(
@@ -76,7 +76,9 @@ async def _channel_request(
             return resp
 
     return await AsyncRetrying(
-        stop=stop_after_delay(STATE_RETRY_SECONDS),
+        stop=stop_after_delay(
+            float(os.environ.get("VF_STATE_RETRY_SECONDS") or STATE_RETRY_SECONDS)
+        ),
         wait=wait_exponential_jitter(initial=0.5, max=10),
         retry=retry_if_exception(transient),
         reraise=True,
