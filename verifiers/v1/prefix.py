@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from verifiers.v1.types import FinishReason
 
 if TYPE_CHECKING:
-    from verifiers.v1.graph import MessageNode, PendingTurn
+    from verifiers.v1.graph import PendingTurn
     from verifiers.v1.trace import Trace
 
 
@@ -40,12 +40,6 @@ def observation_hash(prompt_ids: list[int], previous: list[int]) -> str:
     if previous and prompt_ids[: len(previous)] == previous:
         prompt_ids = prompt_ids[len(previous) :]
     return hashlib.sha256(array("i", prompt_ids).tobytes()).hexdigest()
-
-
-def completion_ids(node: MessageNode) -> tuple[int, ...]:
-    """An assistant node's sampled or replayed completion tokens."""
-    count = sum(node.mask) or node.replayed
-    return tuple(node.token_ids[len(node.token_ids) - count :])
 
 
 class PrefixCall(BaseModel):
@@ -107,9 +101,8 @@ class PrefixReplay:
     def __init__(self, prefix: Prefix) -> None:
         self.prefix = prefix
         self.unserved = list(range(len(prefix.calls)))
-        self.served: dict[tuple[int, ...], int] = {}
-        """Recorded index of each served completion, to find the call a prompt continues."""
         self.full_ids: dict[int, list[int]] = {}
+        """Prompt and completion tokens of each served call, by recorded index."""
         self.obs_changed: list[bool] = []
 
     def take(
@@ -119,12 +112,17 @@ class PrefixReplay:
         if not self.unserved:
             return None
         parent = None
-        for node_id in reversed(turn.prefix_node_ids if turn is not None else []):
-            node = turn.trace.nodes[node_id]
+        path = turn.prefix_node_ids if turn is not None else []
+        for end in range(len(path), 0, -1):
+            node = turn.trace.nodes[path[end - 1]]
             if node.sampled:
-                parent = self.served.get(completion_ids(node))
-                if parent is None:
+                if not node.replayed:
                     return None  # continues a live call
+                # The served call that produced this node: the one whose tokens are its path.
+                ids = [t for nid in path[:end] for t in turn.trace.nodes[nid].token_ids]
+                parent = next((i for i, f in self.full_ids.items() if f == ids), None)
+                if parent is None:
+                    return None
                 break
         calls = self.prefix.calls
         branch = [index for index in self.unserved if calls[index].parent == parent]
@@ -135,7 +133,6 @@ class PrefixReplay:
         index = next((i for i in branch if calls[i].observation_hash == obs), branch[0])
         call = calls[index]
         self.unserved.remove(index)
-        self.served.setdefault(tuple(call.completion_ids), index)
         self.full_ids[index] = [*prompt_ids, *call.completion_ids]
         self.obs_changed.append(obs != call.observation_hash)
         return call
