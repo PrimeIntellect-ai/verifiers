@@ -320,7 +320,7 @@ class Rollout:
             ):
                 harness_data = self.trace.task.data
                 policy = self._session.network_policy
-                if policy.network_restricted:
+                if self.trace.agent.config.network_notice and policy.network_restricted:
                     if not policy.allow:
                         network_prompt = "External network access is disabled."
                     elif policy.block:

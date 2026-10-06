@@ -54,6 +54,9 @@ class AgentConfig(BaseConfig):
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
 
+    network_notice: bool = True
+    """Include the runtime's network restrictions in the agent's prompt."""
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
