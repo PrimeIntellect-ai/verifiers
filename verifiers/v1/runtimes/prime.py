@@ -126,6 +126,9 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
     a first-use auto-build ran while this sandbox waited to start."""
+    checkpoints: list[str] = Field(default_factory=list)
+    """Checkpoints taken of this sandbox (`checkpoint()`), oldest first. Each is recorded
+    as soon as it is requested, so one is never lost to a cancelled wait."""
 
 
 class PrimeProcess(RuntimeProcess):
@@ -363,9 +366,16 @@ class PrimeRuntime(Runtime):
 
     async def checkpoint(self) -> str:
         try:
-            requested = await self._client.checkpoint(self.info.id)
+            # Shielded through the id capture, as in start(): a cancel that aborts the
+            # POST mid-flight would leave a durable checkpoint nobody has the id of.
+            async def request_and_capture_id() -> str:
+                requested = await self._client.checkpoint(self.info.id)
+                self.info.checkpoints.append(requested.id)
+                return requested.id
+
+            checkpoint_id = await run_shielded(request_and_capture_id())
             durable = await self._client.wait_for_checkpoint(
-                requested.id, timeout_seconds=_CHECKPOINT_DEADLINE_SECONDS
+                checkpoint_id, timeout_seconds=_CHECKPOINT_DEADLINE_SECONDS
             )
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
