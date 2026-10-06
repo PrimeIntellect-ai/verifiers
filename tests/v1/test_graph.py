@@ -649,3 +649,60 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
     assert trace.assistant_messages == [response]
+
+
+def test_payload_segments_attributed_per_node_and_rebased_per_branch():
+    """By-handle rows tile the nodes a turn creates. A bridged turn's first row belongs to the
+    prior sampled turn's final token; a reused non-sampled prefix row is dropped. Each branch
+    rebases its nodes' segments onto its own token positions."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="u1")
+
+    def commit(messages, content, prompt_ids, spans, pos, rows):
+        segment = vf.PayloadSegment(
+            field="routed_experts",
+            file="f",
+            offset=pos * 2,
+            pos=pos,
+            rows=rows,
+            dtype="uint8",
+            shape=[2],
+        )
+        graph.prepare_turn(trace, messages).commit(
+            vf.Response(
+                id=content,
+                created=0,
+                model="t",
+                message=vf.AssistantMessage(content=content),
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=prompt_ids,
+                    completion_ids=[40, 41],
+                    message_spans=spans,
+                    payload=[segment],
+                ),
+            )
+        )
+
+    def rows(branch):
+        return [(s.pos, s.rows, s.offset) for s in branch.payload]
+
+    commit([user], "a1", [10, 11, 12], [(0, 3)], 0, 4)
+    # Bridged: request row 4 is a1's unforwarded final token.
+    commit(
+        [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
+        "a2",
+        [10, 11, 12, 40, 41, 30, 31],
+        [(0, 3), None, (5, 7)],
+        4,
+        4,
+    )
+    # Fork off the shared user prompt: re-forwarded rows 0-2 are dropped.
+    commit([user], "b1", [10, 11, 12], [(0, 3)], 0, 4)
+
+    a2, b1 = (b for b in trace.branches if len(b.token_ids) in (9, 5))
+    assert rows(a2) == [(0, 3, 0), (3, 1, 6), (4, 1, 8), (5, 2, 10), (7, 1, 14)]
+    assert rows(b1) == [(0, 3, 0), (3, 1, 6)]
