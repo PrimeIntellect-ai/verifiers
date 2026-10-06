@@ -105,8 +105,10 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        restored: bool = False,
     ) -> None:
         self.task = task
+        self._restored = restored
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
@@ -270,11 +272,13 @@ class Rollout:
                 if self._timeouts.setup is None
                 else loop.time() + self._timeouts.setup
             )
+            # A box restored from a checkpoint already holds setup's files.
+            setup = self.task.restore if self._restored else self.task.setup
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(TaskError, "task setup"),
+                boundary(TaskError, "task restore" if self._restored else "task setup"),
             ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+                await invoke(setup, {"trace": self.trace, "runtime": runtime})
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),

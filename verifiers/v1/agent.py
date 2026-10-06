@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
+from pydantic import BaseModel
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients import (
@@ -43,6 +44,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     Messages,
     Sampling,
+    SystemMessage,
     ToolMessage,
     UserMessage,
 )
@@ -164,6 +166,23 @@ class Segment:
         return ""
 
 
+RESTORE_NOTICE = (
+    "This session was restored from a filesystem checkpoint. Files are as they were; "
+    "running processes, background jobs, shell state and REPL variables are gone. "
+    "Restart anything you still need."
+)
+"""The user message a reopened interaction sends ahead of its first turn."""
+
+
+class InteractionSnapshot(BaseModel):
+    """An interaction saved between turns: the filesystem checkpoint of its box and
+    its conversation. `agent.interaction(task, resume=snapshot)` reopens it in a new
+    box; reopening one snapshot several times forks it."""
+
+    checkpoint: str
+    messages: Messages
+
+
 @dataclass
 class _PendingMessage:
     text: str
@@ -187,11 +206,19 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
+    def __init__(
+        self,
+        run: "Rollout",
+        gate: asyncio.Semaphore | None = None,
+        restored: Messages | None = None,
+    ) -> None:
         self._run = run
         self._gate = gate
         self._over = False  # a terminated segment was already delivered
-        self._started = False  # a segment has run (the exchange is under way)
+        # A reopened exchange is under way before its first segment runs.
+        self._started = restored is not None
+        self._restored = restored
+        """A reopened snapshot's conversation, sent with the first turn."""
         self._lock = asyncio.Lock()
         self._steering_locks: WeakValueDictionary[str, asyncio.Lock] = (
             WeakValueDictionary()
@@ -472,7 +499,7 @@ class Interaction:
                 "the exchange is over (the run ended); read interaction.trace"
             )
         prompted = not self._started and self.trace.task.data.prompt is not None
-        if message is None and not prompted:
+        if message is None and not prompted and self._restored is None:
             raise ValueError(
                 "nothing to run a turn on: a bare turn() takes a prompted task's "
                 "opening reply; this exchange takes its next user message"
@@ -490,6 +517,21 @@ class Interaction:
             # A turn's messages may arrive typed or as wire dicts (env code naturally
             # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
             messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        if self._restored is not None:
+            # The harness relaunches on the whole conversation; it re-emits the
+            # task's own system prompt, so the saved one is dropped.
+            keep_system = self.trace.task.data.system_prompt is None
+            history = [
+                m
+                for m in self._restored
+                if keep_system or not isinstance(m, SystemMessage)
+            ]
+            messages = [
+                *history,
+                UserMessage(content=RESTORE_NOTICE),
+                *(messages or []),
+            ]
+            self._restored = None
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
@@ -511,6 +553,25 @@ class Interaction:
             )
         self._over = True
         return Segment(messages=[], terminated=True)
+
+    async def snapshot(self) -> InteractionSnapshot:
+        """Save the exchange between turns: checkpoint the box's filesystem and keep
+        the conversation so far. Running processes are not saved."""
+        async with self._lock:
+            if self._closing or self._run.closed or self._over:
+                raise RuntimeError("this interaction is closed")
+            runtime = self._run.runtime
+            if runtime is None or not runtime.supports_checkpoint:
+                raise ValueError(
+                    "snapshot needs a runtime with filesystem checkpoints (prime)"
+                )
+            checkpoint = await runtime.checkpoint()
+            if self._restored is not None:
+                messages = list(self._restored)
+            else:
+                branches = self.trace.branches
+                messages = branches[-1].messages if branches else []
+            return InteractionSnapshot(checkpoint=checkpoint, messages=messages)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
@@ -750,6 +811,7 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
+        resume: InteractionSnapshot | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -765,9 +827,12 @@ class Agent:
         caller's to hide: hand the interaction a task whose `data.prompt` is None
         and keep the scenario on a scoring-side field (the user-sim env's contract).
 
-        `runtime` and `tools` borrow live resources from their owners, and
-        `checkpoint` provisions the box from a checkpoint, just as they do for `run()`; an env supplies its taskset's shared tools
-        automatically for tasks loaded from that taskset.
+        `runtime`, `tools` and `checkpoint` work as they do for `run()`; an env
+        supplies its taskset's shared tools automatically for tasks loaded from
+        that taskset. `resume` reopens an `Interaction.snapshot()` instead of
+        starting fresh: the box starts from its checkpoint, `Task.restore` runs in
+        place of `Task.setup`, and the first turn carries the saved conversation
+        plus a notice that running processes are gone.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
@@ -779,14 +844,31 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
+        if resume is not None:
+            if runtime is not None or checkpoint is not None:
+                raise ValueError(
+                    "resume starts its own box; drop `runtime` and `checkpoint`"
+                )
+            if not self.harness.SUPPORTS_RESUME:
+                raise ValueError(
+                    f"harness {self.harness.config.id!r} cannot reopen a snapshot: "
+                    "reopening relaunches the program on the saved conversation "
+                    "(SUPPORTS_RESUME)"
+                )
+            checkpoint = resume.checkpoint
         params = self._rollout_params(task, runtime, dict(tools or {}), checkpoint)
         run = Rollout(
             task=task,
             has_user=True,
             on_trace=on_trace,
+            restored=resume is not None,
             **params,
         )
-        interaction = Interaction(run, gate=self._gate)
+        interaction = Interaction(
+            run,
+            gate=self._gate,
+            restored=None if resume is None else list(resume.messages),
+        )
         async with self._gate or nullcontext():
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
@@ -969,6 +1051,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
+        resume: InteractionSnapshot | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -991,6 +1074,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
                 checkpoint=checkpoint,
+                resume=resume,
             ) as interaction:
                 yield interaction
         finally:
