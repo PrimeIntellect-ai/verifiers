@@ -46,6 +46,10 @@ _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
 
+_CHECKPOINT_DEADLINE_SECONDS = 900
+"""Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
+the first of a box holding several GB can take minutes."""
+
 
 BASE_LABELS: list[str] = []
 
@@ -351,6 +355,16 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
         return PrimeProcess(process)
+
+    async def checkpoint(self) -> str:
+        try:
+            requested = await self._client.checkpoint(self.info.id)
+            durable = await self._client.wait_for_checkpoint(
+                requested.id, timeout_seconds=_CHECKPOINT_DEADLINE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+        return durable.id
 
     async def expose(self, port: int) -> str:
         raise SandboxError(
