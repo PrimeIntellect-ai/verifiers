@@ -18,12 +18,12 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.eval.hint import PRIME_RL_HINT
 from verifiers.v1.cli.output import output_path, save_config
-from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode, EvalRunInfo
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.eval import plan_rollouts
 from verifiers.v1.utils.platform import (
     PushState,
     abort_run,
@@ -89,40 +89,34 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         )
     tasks = list(taskset)
     out = output_path(config)
-    # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
-    plan = [(task, config.num_rollouts) for task in tasks]
-    # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
-    finished: list[Episode] = []
     if config.resume:
-        keys = [task.hash for task in tasks]
         # the env's own keep-verdict decides what resumes
-        loaded, owed = resume.load(
+        plan = resume.load(
             out,
-            keys,
+            tasks,
             config.num_rollouts,
             lambda episode: env.complete(cast(Episode, episode)),
         )
-        finished = [cast(Episode, episode) for episode in loaded]
-        if not owed:  # already complete - report it and exit successfully
+        if not any(n for _, _, n in plan):
             print(
                 f"nothing to resume in {out}: all {len(tasks)}x{config.num_rollouts} "
                 "rollouts already completed without error"
             )
             raise SystemExit(0)
-        counts = distribute(keys, owed, config.num_rollouts)
-        plan = [(task, n) for task, n in zip(tasks, counts) if n]
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
-            len(plan),
-            sum(owed.values()),
+            sum(n > 0 for _, _, n in plan),
+            sum(n for _, _, n in plan),
         )
     else:
+        plan = plan_rollouts(tasks, config.num_rollouts)
         save_config(config, out)
         logger.info(
             "running %dx%d rollouts on %s", len(plan), config.num_rollouts, config.model
         )
         logger.info(PRIME_RL_HINT)
+    finished = [cast(Episode, episode) for _, kept, _ in plan for episode in kept]
     start = time.time()
     logger.info("results: %s", out)
 
@@ -148,7 +142,7 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
     try:
         async with _in_process(env, config, semaphore, on_complete) as run_slot:
             # the env's own slots: it fills their live traces as the rollouts run
-            planned = [slot for task, n in plan for slot in env.slots(task, n)]
+            planned = [slot for task, _, n in plan if n for slot in env.slots(task, n)]
             slots = [RunSlot.finished(episode) for episode in finished] + planned
             display = (
                 dashboard(slots, config, start, push=push_state)
