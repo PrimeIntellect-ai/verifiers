@@ -94,7 +94,10 @@ class PrimeConfig(NetworkPolicyConfig):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
-    """Disk in GB."""
+    """Disk in GB. Unused with ``checkpoint``: a sandbox keeps its checkpoint's disk."""
+    checkpoint: str | None = None
+    """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
+    ``checkpoint`` and ``wait_for_checkpoint``)."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
@@ -182,13 +185,19 @@ class PrimeRuntime(Runtime):
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
-            "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
             "timeout_minutes": -1,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if self.config.checkpoint:
+            source = {"checkpoint_id": self.config.checkpoint}
+        else:
+            source = {
+                "docker_image": self.config.image,
+                "disk_size_gb": self.config.disk,
+            }
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -208,7 +217,7 @@ class PrimeRuntime(Runtime):
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            docker_image=self.config.image,
+                            **source,
                             environment_vars=self.env,
                             **{k: v for k, v in options.items() if v is not None},
                         )
