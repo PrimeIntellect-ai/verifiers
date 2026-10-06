@@ -49,12 +49,24 @@ _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
 
+_LIVENESS_INTERVAL_SECONDS = 60
+"""How often a running job is checked for a dead wrapper. The SDK's wrapper writes the
+exit file; if a command inside the box kills the wrapper (`pkill -f`, `killall sh`),
+the file never appears and polling alone would wait forever."""
+_LIVENESS_MISSES = 2
+"""Consecutive checks that must find the job dead before it is reported dead, so the
+moment between the job's output closing and its exit file appearing is never one."""
+
 _CHECKPOINT_DEADLINE_SECONDS = 900
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
 the first of a box holding several GB can take minutes."""
 
 
 BASE_LABELS: list[str] = []
+
+
+class _JobDied(Exception):
+    """A background job's wrapper died before it wrote the job's exit status."""
 
 
 @dataclass
@@ -314,6 +326,9 @@ class PrimeRuntime(Runtime):
             delay = 0.1
             output_retries = 0
             missing = None
+            loop = asyncio.get_running_loop()
+            next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
+            misses = 0
             while True:
                 result = await self._client.get_background_job(
                     self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
@@ -328,8 +343,20 @@ class PrimeRuntime(Runtime):
                     break
                 if result.completed:
                     output_retries += 1
+                elif loop.time() >= next_check:
+                    next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
+                    alive = await self._job_alive(job)
+                    misses = 0 if alive is not False else misses + 1
+                    if misses >= _LIVENESS_MISSES:
+                        raise _JobDied(
+                            f"job {job.job_id} died without an exit status: nothing "
+                            "holds its output open and no exit file was written (a "
+                            "command in the box likely killed the job's wrapper)"
+                        )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
+        except _JobDied as e:
+            raise SandboxError(f"prime exec failed: {e}") from None
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -343,6 +370,26 @@ class PrimeRuntime(Runtime):
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
+
+    async def _job_alive(self, job: Any) -> bool | None:
+        """Whether a job without an exit file still runs: some process holds its output
+        open, or the exit file has appeared since. None when the check itself failed.
+        Runs as the job's user, who can read the job's own file descriptors."""
+        log = shlex.quote(job.stdout_log_file)
+        command = (
+            f"if [ -e {shlex.quote(job.exit_file)} ] || "
+            f"ls -l /proc/[0-9]*/fd 2>/dev/null | grep -qF -- ' -> '{log}; "
+            "then echo alive; else echo dead; fi"
+        )
+        try:
+            result = await self._client.execute_command(
+                self.info.id, command, timeout=60, user=self.user
+            )
+        except Exception as e:
+            logger.debug("prime: liveness check of job %s failed: %s", job.job_id, e)
+            return None
+        verdict = (result.stdout or "").strip()
+        return {"alive": True, "dead": False}.get(verdict)
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
