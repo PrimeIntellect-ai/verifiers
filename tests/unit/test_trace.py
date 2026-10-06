@@ -241,3 +241,28 @@ def test_transcript(make_full_trace):
     assert "[tool search]\nTOOL RESULT: Paris is the capital." in transcript
     assert "It is Paris." in transcript
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
+
+
+def test_sampling_mask_from_packed_matches_lists():
+    import base64
+
+    import numpy as np
+
+    from verifiers.v1.types import SamplingMask
+
+    rows = [[4, 7], [], [9]]
+    ids, counts = np.array([4, 7, 9], np.int32), np.array([2, 0, 1], np.int32)
+    packed = {
+        name: {
+            "data": base64.b64encode(a.tobytes()).decode(),
+            "shape": list(a.shape),
+            "dtype": "int32",
+        }
+        for name, a in (("ids", ids), ("counts", counts))
+    }
+    for mask in (
+        SamplingMask.from_sampling_mask(rows),
+        SamplingMask.from_sampling_mask(packed),
+    ):
+        np.testing.assert_array_equal(mask.ids, ids)
+        np.testing.assert_array_equal(mask.counts, counts)
