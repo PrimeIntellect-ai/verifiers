@@ -233,6 +233,18 @@ class Runtime(ABC):
         runtime.user = user
         return runtime
 
+    @property
+    def supports_checkpoint(self) -> bool:
+        """Whether `checkpoint()` is implemented for this runtime instance."""
+        return type(self).checkpoint is not Runtime.checkpoint
+
+    async def checkpoint(self) -> str:
+        """Save the box's filesystem and return the checkpoint's id once it can be
+        restored (`restore_config`). Files survive; running processes do not."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no filesystem checkpoints"
+        )
+
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
         the box is gone — some surface it as `exec`'s own non-zero result,
