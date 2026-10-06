@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
@@ -29,6 +29,9 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
+
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +129,6 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
     a first-use auto-build ran while this sandbox waited to start."""
-    checkpoints: list[str] = Field(default_factory=list)
-    """Checkpoints taken of this sandbox (`checkpoint()`), oldest first. Each is recorded
-    as soon as it is requested, so one is never lost to a cancelled wait."""
 
 
 class PrimeProcess(RuntimeProcess):
@@ -364,13 +364,14 @@ class PrimeRuntime(Runtime):
         # the same test start() uses to pick the checkpoint over the image
         return bool(self.config.checkpoint)
 
-    async def checkpoint(self) -> str:
+    async def checkpoint(self, trace: "Trace | None" = None) -> str:
         try:
             # Shielded through the id capture, as in start(): a cancel that aborts the
             # POST mid-flight would leave a durable checkpoint nobody has the id of.
             async def request_and_capture_id() -> str:
                 requested = await self._client.checkpoint(self.info.id)
-                self.info.checkpoints.append(requested.id)
+                if trace is not None:
+                    trace.record_checkpoint(requested.id)
                 return requested.id
 
             checkpoint_id = await run_shielded(request_and_capture_id())

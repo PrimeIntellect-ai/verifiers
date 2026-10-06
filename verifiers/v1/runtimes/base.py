@@ -14,13 +14,16 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
+
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -244,9 +247,11 @@ class Runtime(ABC):
         """Whether `checkpoint()` is implemented for this runtime instance."""
         return type(self).checkpoint is not Runtime.checkpoint
 
-    async def checkpoint(self) -> str:
+    async def checkpoint(self, trace: "Trace | None" = None) -> str:
         """Save the box's filesystem and return the checkpoint's id once it can be
-        restored (`restore_config`). Files survive; running processes do not."""
+        restored (`restore_config`). Files survive; running processes do not. With
+        `trace`, the checkpoint is recorded on it (`Trace.checkpoints`) at the run's
+        current turn."""
         raise NotImplementedError(
             f"{type(self).__name__} has no filesystem checkpoints"
         )

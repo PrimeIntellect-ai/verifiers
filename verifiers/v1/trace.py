@@ -132,6 +132,13 @@ class InterceptRecord(BaseModel):
     handler: str
 
 
+class Checkpoint(BaseModel):
+    id: str
+    """The runtime's checkpoint id, to start a box from (`checkpoint=`)."""
+    turns: int
+    """Model turns the run had completed when the checkpoint was taken."""
+
+
 class Reward(BaseModel):
     score: float
     weight: float = 1.0
@@ -403,6 +410,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    """Checkpoints of the run's box taken for this trace (`Runtime.checkpoint(trace)`),
+    in order."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -441,6 +451,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
+
+    def record_checkpoint(self, checkpoint_id: str) -> None:
+        """Record a checkpoint of the run's box taken now, at the current turn."""
+        self.checkpoints.append(Checkpoint(id=checkpoint_id, turns=self.num_turns))
+        self.notify()
 
     def notify(self) -> None:
         """The trace just changed shape (a phase span, a committed turn)."""
