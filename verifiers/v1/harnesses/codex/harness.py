@@ -42,7 +42,8 @@ GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 GATE_HANDLER = {
     "type": "command",
     "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
-    "timeout": 120,
+    # Past the hook's own retries (gate.mjs), so it always answers before Codex gives up.
+    "timeout": 600,
     "async": False,
 }
 
@@ -138,10 +139,12 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> None:
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
+        config.gate_failed = f"{config.env['CODEX_HOME']}/vf-gate-failed"
         await runtime.write(
             f"{config.env['CODEX_HOME']}/vf-gate.mjs",
             GATE_HOOK.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
+            .replace("__FAILED__", json.dumps(config.gate_failed))
             .encode(),
         )
         # Codex keys hook trust by the config's canonical path, resolving symlinks.
