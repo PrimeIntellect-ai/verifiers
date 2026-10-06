@@ -48,10 +48,8 @@ class BashHarnessConfig(HarnessConfig):
     the agent's `bash` subprocesses don't inherit it."""
 
     compaction: CompactionConfig | None = CompactionConfig()
-    """Context compaction policy. On by default: compact when 16k tokens remain below
-    the model's advertised context window. A `[compaction]` section pins
-    `summarize_at_tokens` instead; `null` (`compaction = "None"` in TOML) disables
-    compaction, and an overflowing rollout then ends with its transcript so far."""
+    """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
+    for a fixed threshold, and `null` (`"None"` in TOML) to disable it."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
