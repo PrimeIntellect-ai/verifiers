@@ -289,8 +289,13 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    # Publish with link(2), which fails if the path exists, so a file that
+                    # another worker may be executing is never replaced. Replacing it via
+                    # rename(2) makes concurrent execs fail with ENOENT on shared filesystems.
                     command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"ln {shlex.quote(tmp)} {shlex.quote(path)} 2>/dev/null; "
+                        f"rm -f {shlex.quote(tmp)}; "
+                        f"test -f {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
@@ -337,8 +342,9 @@ class Runtime(ABC):
         workspace: uv keys its per-script environment by the script's full path, so a
         unique path per call would mint a fresh env every rollout. A path derived from the
         content means identical scripts share one path → uv reuses one env, bounded by the
-        number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read."""
+        number of distinct scripts. Published from a unique temp file via an atomic hard link
+        that never replaces an existing file, so concurrent rollouts never read a half-written
+        script and never see the path vanish while another worker runs it."""
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
