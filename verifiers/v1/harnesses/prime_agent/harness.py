@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -19,10 +19,23 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
+# Two release shapes: `0.9.5` is the npm-era TS bundle (four npm tarballs,
+# installed by commit), and from the Rust rewrite on, releases are one platform
+# tarball per OS (the `prime-agent` binary, the `prime-agent-runtime/` kernel
+# sidecar, `models.bundled.json`, `mcp-services.bundled.json`, and the built-in
+# skills, all flat at the archive root).
+TS_VERSION = "0.9.5"
+TS_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
     "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
 )
-PRIME_AGENT_VERSION = "0.9.5"
+RUST_VERSION = "0.9.9-beta.45"
+# The v0.9.9-beta.45 release SHA256SUMS rows for the published tarballs.
+RUST_RELEASE_SHA256: dict[str, str] = {
+    "linux-x64": "729350e11d002046b37326c992a8cc7e980e612d48ac119348bd5d228692a3a9",
+    "linux-arm64": "abd73f046dab5f0f49e187497ad662272b471d6a3fe1cd61e809015e8ba3ae8e",
+    "darwin-x64": "b1208b8d8c037ca918ba21daa4244d54c8438672b93fe38d18ca7d8cd3227d29",
+    "darwin-arm64": "42ab61a0f7bedf67f06d9c0cdb94c259def605007dc041eae69224531110daab",
+}
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -31,7 +44,7 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 
-INSTALL = r"""
+TS_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
@@ -85,10 +98,87 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
 [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
 """
 
+RUST_INSTALL = r"""
+set -e
+prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_RELEASE_VERSION"
+[ -x "$prefix/prime-agent" ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ] && exit 0
+release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$VF_PRIME_AGENT_PLATFORM.tar.gz"
+download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+trap 'rm -rf "$download_dir"' EXIT
+# Slim task images may not carry curl; the download needs it.
+if ! command -v curl >/dev/null 2>&1; then
+    (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null) \
+        || apk add --no-cache curl ca-certificates >/dev/null \
+        || { echo "prime-agent install needs curl" >&2; exit 1; }
+fi
+curl -fsSL --retry 5 --retry-all-errors \
+    "$release_url/$tarball" -o "$download_dir/$tarball"
+printf '%s  %s\n' "$VF_PRIME_AGENT_RELEASE_SHA256" "$tarball" \
+    > "$download_dir/SHA256SUMS"
+(cd "$download_dir" && sha256sum -c SHA256SUMS)
+mkdir -p "$prefix"
+tar -xzf "$download_dir/$tarball" -C "$prefix"
+chmod +x "$prefix/prime-agent"
+# The kernel bootstrap provisions the venv's Python and packages through uv;
+# the binary looks for uv on PATH and at ~/.local/bin/uv.
+if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+    curl -fsSL --retry 5 --retry-all-errors \
+        https://astral.sh/uv/install.sh -o "$download_dir/uv-install.sh"
+    UV_INSTALL_DIR="$HOME/.local/bin" sh "$download_dir/uv-install.sh" >/dev/null
+    [ -x "$HOME/.local/bin/uv" ]
+fi
+# The release installer's own pre-warm: run the install-time bootstrap entry
+# so the first session starts with the kernel venv already built.
+PATH="$HOME/.local/bin:$PATH" "$prefix/prime-agent" --prime-agent-bootstrap
+[ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
+"""
+
+
+class ReleasePlan(NamedTuple):
+    """How one Prime Agent release is installed and launched."""
+
+    install: str
+    bin: str
+    launch_path: str
+
+
+def release_plan(version: str, platform: str) -> ReleasePlan:
+    """Choose the install script, binary path, and launch PATH dirs for one
+    release version: the 0.9.x npm era keeps the TS bundle, the Rust rewrite's
+    versions install the platform tarball."""
+    if version == TS_VERSION:
+        return ReleasePlan(
+            TS_INSTALL,
+            f"{PRIME_AGENT_DIR}/{TS_COMMIT}/bin/prime-agent",
+            f"{NODE_BIN_DIR}:$HOME/.local/bin",
+        )
+    if version == RUST_VERSION:
+        if platform not in RUST_RELEASE_SHA256:
+            raise ValueError(
+                f"prime-agent {version} has no pinned {platform} tarball "
+                f"(pinned: {', '.join(sorted(RUST_RELEASE_SHA256))})"
+            )
+        return ReleasePlan(
+            RUST_INSTALL,
+            f"{PRIME_AGENT_DIR}/{version}/prime-agent",
+            "$HOME/.local/bin",
+        )
+    raise ValueError(
+        f"prime-agent {version} has no pinned install "
+        f"(known: {TS_VERSION} npm era, {RUST_VERSION} Rust tarball)"
+    )
+
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = PRIME_AGENT_COMMIT
-    """Prime Agent release commit to install."""
+    version: Literal["0.9.5", "0.9.9-beta.45"] = RUST_VERSION
+    """Prime Agent release to install: the Rust platform tarball, or `0.9.5`
+    for the npm-era TS bundle."""
+
+    platform: Literal["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"] = (
+        "linux-x64"
+    )
+    """Platform suffix of the Rust release tarball to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -154,18 +244,28 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
-        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
+        plan = release_plan(self.config.version, self.config.platform)
+        if self.config.version == TS_VERSION:
+            await ensure_node(runtime)
+        logger.info(
+            "prime-agent: ensuring release %s (%s) is installed",
+            self.config.version,
+            self.config.platform,
+        )
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
-            install=INSTALL,
+            install=plan.install,
             env={
                 **self.config.resolved_env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
-                "PRIME_AGENT_COMMIT": self.config.commit,
-                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_COMMIT": TS_COMMIT,
+                "PRIME_AGENT_RELEASE_VERSION": self.config.version,
+                "VF_PRIME_AGENT_PLATFORM": self.config.platform,
+                "VF_PRIME_AGENT_RELEASE_SHA256": RUST_RELEASE_SHA256.get(
+                    self.config.platform, ""
+                ),
             },
             label="prime-agent",
         )
@@ -236,8 +336,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             )
 
         system_prompt, prompt = self.resolve_prompt(data)
+        plan = release_plan(self.config.version, self.config.platform)
         args = [
-            self._bin(),
+            plan.bin,
             "--mode",
             "acp",
             "--provider",
@@ -262,7 +363,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "/bin/sh",
                 "-eu",
                 "-c",
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                f'export PATH="{plan.launch_path}:$PATH"; exec "$@"',
                 "prime-agent",
                 *args,
             ],
@@ -272,9 +373,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self._root(trace)
         await remove_dir(runtime, root, "prime-agent state")
-
-    def _bin(self) -> str:
-        return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
 
     @staticmethod
     def _root(trace: Trace) -> str:
