@@ -358,7 +358,8 @@ class PrimeRuntime(Runtime):
 
     @property
     def restored(self) -> bool:
-        return self.config.checkpoint is not None
+        # the same test start() uses to pick the checkpoint over the image
+        return bool(self.config.checkpoint)
 
     async def checkpoint(self) -> str:
         try:
