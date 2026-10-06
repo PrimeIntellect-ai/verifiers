@@ -356,6 +356,10 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime live process failed to start: {e}") from e
         return PrimeProcess(process)
 
+    @property
+    def restored(self) -> bool:
+        return self.config.checkpoint is not None
+
     async def checkpoint(self) -> str:
         try:
             requested = await self._client.checkpoint(self.info.id)
