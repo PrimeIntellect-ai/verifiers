@@ -5,6 +5,7 @@ pool scales with."""
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from typing import Literal
 
@@ -13,6 +14,21 @@ from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
+
+logger = logging.getLogger(__name__)
+
+
+class TunnelLogHandler(logging.Handler):
+    """Forward tunnel warnings and errors to this module's logger — and, when the app
+    enables INFO on `prime_tunnel`, the login after a reconnect."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage().removeprefix("frpc ")
+        if record.levelno >= logging.WARNING or "login to server success" in message:
+            logger.log(record.levelno, "tunnel %s", message)
+
+
+logging.getLogger("prime_tunnel.frpc").addHandler(TunnelLogHandler())
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
