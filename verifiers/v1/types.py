@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -208,7 +209,20 @@ class SamplingMask:
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls, sampling_mask: list[list[int]] | dict[str, Any]
+    ) -> "SamplingMask":
+        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        if isinstance(sampling_mask, dict):
+            ids, counts = (
+                np.frombuffer(
+                    base64.b64decode(sampling_mask[key]["data"]),
+                    dtype=sampling_mask[key]["dtype"],
+                ).astype(np.int32, copy=False)
+                for key in ("ids", "counts")
+            )
+            return cls(ids=ids, counts=counts)
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
