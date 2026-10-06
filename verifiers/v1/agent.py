@@ -560,6 +560,10 @@ class Interaction:
         async with self._lock:
             if self._closing or self._run.closed or self._over:
                 raise RuntimeError("this interaction is closed")
+            if not self._started:
+                raise RuntimeError(
+                    "nothing to snapshot before the first turn; reopen the task itself"
+                )
             runtime = self._run.runtime
             if runtime is None or not runtime.supports_checkpoint:
                 raise ValueError(
