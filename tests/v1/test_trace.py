@@ -147,6 +147,30 @@ def test_bare_trace_round_trip():
     assert rt.reward == 0.0 and rt.errors == []
 
 
+def test_trace_with_legacy_retry_type_lists_loads():
+    # Records saved before retry rules carry `include`/`exclude` type lists on the agent config.
+    data = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0), key="k", hash="h"),
+    ).model_dump(mode="json")
+    data["agent"]["config"]["retries"] = {
+        "max_retries": 3,
+        "include": ["ProviderError", "SandboxError"],
+        "exclude": ["HarnessError"],
+    }
+    retries = vf.WireTrace.model_validate(data).agent.config.retries
+    assert retries.max_retries == 0
+    assert [(r.type, r.max_retries) for r in retries.rules] == [
+        ("HarnessError", 0),
+        ("ProviderError", 3),
+        ("SandboxError", 3),
+    ]
+    denied = vf.RetryConfig.model_validate({"max_retries": 2, "exclude": ["X"]})
+    assert denied.max_retries == 2 and denied.rules[0].max_retries == 0
+    with pytest.raises(ValueError, match="cannot be combined"):
+        vf.RetryConfig.model_validate({"include": ["X"], "rules": []})
+
+
 def test_custom_task_state_round_trip(tmp_path):
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
