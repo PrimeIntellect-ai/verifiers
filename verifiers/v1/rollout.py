@@ -332,7 +332,8 @@ class Rollout:
                     else:
                         network_prompt = (
                             "External network access is limited to these destinations: "
-                            f"{', '.join(policy.allow)}."
+                            f"{', '.join(policy.allow)}. "
+                            "Do not circumvent this selection of domains."
                         )
                     network_prompt = "\n\n".join(
                         text
