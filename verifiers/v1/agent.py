@@ -760,9 +760,9 @@ class Agent:
         caller's to hide: hand the interaction a task whose `data.prompt` is None
         and keep the scenario on a scoring-side field (the user-sim env's contract).
 
-        `runtime` and `tools` borrow live resources from their owners, and
-        `checkpoint` provisions the box from a checkpoint, just as they do for `run()`; an env supplies its taskset's shared tools
-        automatically for tasks loaded from that taskset.
+        `runtime`, `tools` and `checkpoint` work as they do for `run()`; an env
+        supplies its taskset's shared tools automatically for tasks loaded from
+        that taskset.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
