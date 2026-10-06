@@ -10,8 +10,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import (
     Generic,
+    Self,
     TypeVar,
 )
+
+from pydantic import BaseModel
 
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
@@ -64,9 +67,9 @@ class RunSlot:
     done: bool = False
     started: float | None = None
     resume: dict | None = None
-    """The episode's latest save point (`save_point`), or the one it was relaunched from."""
+    """The episode's latest saved `EpisodeState`, or the one it was relaunched from."""
     on_save: Callable[[dict], Awaitable[None]] | None = None
-    """Persists each save point, so a relaunched episode can resume from it."""
+    """Persists each saved state, so a relaunched episode can continue from it."""
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -81,22 +84,30 @@ class RunSlot:
 _slot: ContextVar[RunSlot | None] = ContextVar("vf_run_slot", default=None)
 
 
-async def save_point(state: dict) -> None:
-    """Save the running episode's progress from inside `Env.run`: a JSON-able `state`
-    that replaces the previous one. An episode relaunched after an interruption, or
-    retried, reads the latest with `restored()` and continues from there."""
+def _running_slot() -> RunSlot:
     slot = _slot.get()
     if slot is None:
-        raise RuntimeError("save_point() is called from inside Env.run()")
-    slot.resume = state
-    if slot.on_save is not None:
-        await slot.on_save(state)
+        raise RuntimeError("an EpisodeState is loaded and saved from inside Env.run()")
+    return slot
 
 
-def restored() -> dict | None:
-    """The save point this episode continues from, or None when it starts fresh."""
-    slot = _slot.get()
-    return None if slot is None else slot.resume
+class EpisodeState(BaseModel):
+    """An episode's progress, saved so an interrupted episode can continue. Subclass
+    it with what `Env.run` needs to pick up where it left off: inside `run`, `load()`
+    returns the latest saved state (a fresh one for a new episode) and `save()`
+    records it, replacing the previous save. A relaunched or retried episode loads
+    the state its interrupted attempt saved last."""
+
+    @classmethod
+    def load(cls) -> Self:
+        slot = _running_slot()
+        return cls() if slot.resume is None else cls.model_validate(slot.resume)
+
+    async def save(self) -> None:
+        slot = _running_slot()
+        slot.resume = self.model_dump(mode="json")
+        if slot.on_save is not None:
+            await slot.on_save(slot.resume)
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)

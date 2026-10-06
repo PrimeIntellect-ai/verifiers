@@ -199,8 +199,8 @@ class EnvClient:
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
         episode returned is assembled from the same deltas. `on_save_point` sees
-        each save point the episode records (`save_point`); passing one back as
-        `resume` relaunches the episode from it."""
+        each `EpisodeState` the episode saves; passing one back as `resume`
+        relaunches the episode from it."""
         assembly = EpisodeAssembly()
 
         def apply(data: bytes) -> None:

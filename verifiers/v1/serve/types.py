@@ -49,7 +49,7 @@ class RunRequest(BaseRequest):
     model: str
     sampling: SamplingConfig
     resume: dict | None = None
-    """A save point of an interrupted run of this episode to continue from."""
+    """The last `EpisodeState` an interrupted run of this episode saved, to continue from."""
 
 
 class RunResponse(BaseResponse):
