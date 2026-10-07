@@ -6,10 +6,7 @@ The task is then set up with a fresh controller in a fresh runtime, its artifact
 are restored, and its ordinary metrics and rewards run there onto the solver's trace.
 """
 
-import asyncio
-import copy
 import logging
-from contextlib import AsyncExitStack
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -17,11 +14,9 @@ from pydantic import Field, SerializationInfo, field_serializer
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import resolve_rollout_timeouts
-from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_runtime
+from verifiers.v1.runtimes import Runtime, RuntimeConfig
 from verifiers.v1.utils.compile import resolve_runtime_config
-from verifiers.v1.utils.decorators import invoke
-from verifiers.v1.utils.retries import backoff
+from verifiers.v1.utils.verify import grade_in_fresh_runtime, score_task, stage_task
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +106,10 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     async def stage_verifier(
         self, task: vf.Task, solution: vf.Trace, runtime: Runtime
     ) -> None:
-        artifacts = dict(solution.state.artifacts)
-        async with boundary(TaskError, "verifier task setup"):
-            await invoke(task.setup, {"trace": solution, "runtime": runtime})
-        await vf.restore(runtime, artifacts)
-        async with boundary(TaskError, "verifier staging"):
-            await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
+        await stage_task(task, solution, runtime)
 
     async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
-        await task.score(solution, runtime)
+        await score_task(task, solution, runtime)
 
     async def grade(
         self,
@@ -129,54 +119,14 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         *,
         scoring_timeout_covers_attempt: bool = False,
     ) -> tuple[Any, vf.Trace]:
-        timeouts = resolve_rollout_timeouts(self.config.agent.timeout, task)
-        last: Exception | None = None
-        for attempt in range(self.config.verifier.retries + 1):
-            if attempt:
-                delay = backoff(attempt - 1)
-                logger.warning(
-                    "isolated verifier attempt %d/%d failed (%s); retrying in %.1fs",
-                    attempt,
-                    self.config.verifier.retries + 1,
-                    last,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-            try:
-                # Teardown is outside the stage deadlines: a completed score must
-                # survive a slow cleanup of the verifier runtime.
-                async with (
-                    AsyncExitStack() as boxes,
-                    asyncio.timeout(
-                        timeouts.scoring if scoring_timeout_covers_attempt else None
-                    ),
-                ):
-                    async with asyncio.timeout(timeouts.setup):
-                        # Failed setup or scoring must not alter the next attempt.
-                        # Only the successful controller and trace leave this scope.
-                        verifier_task = copy.deepcopy(task)
-                        verifier_solution = copy.deepcopy(solution)
-                        runtime = await boxes.enter_async_context(
-                            provision_runtime(
-                                config,
-                                env=(
-                                    verifier_task.runtime_env()
-                                    if self.config.verifier.env is None
-                                    else self.config.verifier.env
-                                ),
-                            )
-                        )
-                        await runtime.prepare_setup()
-                        await self.stage_verifier(
-                            verifier_task, verifier_solution, runtime
-                        )
-                        await runtime.prepare_execution([])
-                    async with asyncio.timeout(timeouts.scoring):
-                        result = await self.verify(
-                            verifier_task, verifier_solution, runtime
-                        )
-                    return result, verifier_solution
-            except Exception as error:  # noqa: BLE001 - retry the whole fresh box
-                last = error
-        assert last is not None
-        raise last
+        return await grade_in_fresh_runtime(
+            config,
+            task,
+            solution,
+            timeouts=resolve_rollout_timeouts(self.config.agent.timeout, task),
+            retries=self.config.verifier.retries,
+            env=self.config.verifier.env,
+            stage=self.stage_verifier,
+            verify=self.verify,
+            scoring_timeout_covers_attempt=scoring_timeout_covers_attempt,
+        )
