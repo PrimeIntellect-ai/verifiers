@@ -2,8 +2,8 @@
 
 Placement coverage is pairwise (see tests/v1/conftest.py): each list below names the
 combinations a test runs — every axis value at least once plus the cross-boundary pairs
-with distinct networking — instead of fanning the full cross product. prime/modal/e2b
-rows are local-only (their marks are excluded in CI)."""
+with distinct networking — instead of fanning the full cross product.
+prime/modal/e2b/vercel rows are local-only (their marks are excluded in CI)."""
 
 import shutil
 import subprocess
@@ -143,6 +143,7 @@ CHAT_PLACEMENTS = [
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
     pair("bash", "e2b", "bash-harness-in-e2b"),
+    pair("bash", "vercel", "bash-harness-in-vercel"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
@@ -178,6 +179,7 @@ AGENTIC_PLACEMENTS = [
         id="bash-harness-in-modal-framework-only",
     ),
     pair("bash", "e2b", "bash-harness-in-e2b"),
+    pair("bash", "vercel", "bash-harness-in-vercel"),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
@@ -188,6 +190,7 @@ USER_RUNTIMES = [
     pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
     pytest.param("modal", marks=[mark.modal], id="harness-in-modal"),
     pytest.param("e2b", marks=[mark.e2b], id="harness-in-e2b"),
+    pytest.param("vercel", marks=[mark.vercel], id="harness-in-vercel"),
 ]
 
 # Runtimes that can switch users (`Runtime.with_user`).
@@ -234,6 +237,7 @@ ACP_RESUME_PLACEMENTS = [
         marks=[mark.rlm, mark.e2b],
         id="rlm-acp-in-e2b",
     ),
+    pair("rlm", "vercel", "rlm-acp-in-vercel"),
     pytest.param(
         "prime-agent",
         "prime",
@@ -265,6 +269,8 @@ TOOL_PLACEMENTS = [
     pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
     pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
     pair("subprocess", "e2b", "harness-in-subprocess-with-tool-in-e2b"),
+    pair("vercel", "colocated", "harness-in-vercel-with-tool-colocated"),
+    pair("subprocess", "vercel", "harness-in-subprocess-with-tool-in-vercel"),
 ]
 
 # The state channel rides the same reachability as TOOL_PLACEMENTS; cover each axis
@@ -275,6 +281,7 @@ TOOL_STATE_PLACEMENTS = [
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
     pair("e2b", "colocated", "harness-in-e2b-with-tool-colocated"),
+    pair("vercel", "colocated", "harness-in-vercel-with-tool-colocated"),
 ]
 
 # Shared servers always run in their own runtime (colocation is per-rollout, shared is
@@ -285,6 +292,7 @@ SHARED_TOOL_PLACEMENTS = [
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
     pair("e2b", "e2b", "harness-in-e2b-with-tool-in-e2b"),
+    pair("vercel", "vercel", "harness-in-vercel-with-tool-in-vercel"),
 ]
 
 
