@@ -305,6 +305,7 @@ async def serve_in_runtime(
     exposed: bool,
     state_url: str | None = None,
     state_secret: str = "",
+    retry_seconds: float | None = None,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -319,6 +320,8 @@ async def serve_in_runtime(
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
     }
+    if retry_seconds:
+        env["VF_STATE_RETRY_SECONDS"] = str(retry_seconds)
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
@@ -400,6 +403,7 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    retry_seconds: float | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -437,6 +441,7 @@ async def _serve(
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
+            retry_seconds=retry_seconds,
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read
@@ -468,6 +473,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    retry_seconds: float | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -476,6 +482,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        retry_seconds=retry_seconds,
     ) as served:
         yield served.url
 
@@ -583,6 +590,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    retry_seconds: float | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -591,7 +599,8 @@ async def serve_tools(
     running eval-level (see `serve_shared`) — join under their per-rollout state tag.
     `state_secret` is private to task-scoped servers; shared servers keep an
     eval-level service secret and receive only signed `state_route` coordinates.
-    `state_base` is universally reachable from either placement."""
+    `state_base` is universally reachable from either placement. `retry_seconds` is how
+    long task-scoped servers retry network failures on that channel."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
@@ -623,6 +632,7 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        retry_seconds=retry_seconds,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

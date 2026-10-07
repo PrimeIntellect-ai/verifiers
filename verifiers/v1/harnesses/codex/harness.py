@@ -39,13 +39,6 @@ touch {ready}
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
-GATE_HANDLER = {
-    "type": "command",
-    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
-    # Past the hook's own retries (gate.mjs), so it always answers before Codex gives up.
-    "timeout": 600,
-    "async": False,
-}
 
 
 class CodexHarnessConfig(HarnessConfig):
@@ -156,14 +149,23 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"could not resolve Codex home: {home.stderr}")
         path = f"{home.stdout.strip()}/config.toml"
         settings = tomllib.loads((await runtime.read(path)).decode())
+        # Past the hook's own retries (gate.mjs: the URL's retry window plus one more
+        # attempt), so it always answers before Codex gives up on it.
+        window = float(url.partition("#retry=")[2] or 300)
+        handler = {
+            "type": "command",
+            "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+            "timeout": int(window) + 300,
+            "async": False,
+        }
         # User hooks require a hash of Codex's normalized definition. Keeping the
         # definition and its trust entry in this rollout's home avoids shared state.
-        identity = {"event_name": "pre_tool_use", "hooks": [GATE_HANDLER]}
+        identity = {"event_name": "pre_tool_use", "hooks": [handler]}
         digest = hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         settings["hooks"] = {
-            "PreToolUse": [{"hooks": [GATE_HANDLER]}],
+            "PreToolUse": [{"hooks": [handler]}],
             "state": {f"{path}:pre_tool_use:0:0": {"trusted_hash": f"sha256:{digest}"}},
         }
         await runtime.write(path, tomli_w.dumps(settings).encode())

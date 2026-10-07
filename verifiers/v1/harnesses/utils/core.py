@@ -349,6 +349,11 @@ async def gate_tool_call(
         arguments = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError:
         arguments = call.function.arguments
+    # The rollout may set the retry window in the fragment, which is never sent.
+    url, _, fragment = url.partition("#")
+    window = (
+        float(fragment.removeprefix("retry=")) if fragment.startswith("retry=") else 300
+    )
     payload = {
         "tool_call_id": call.id,
         "name": call.function.name,
@@ -358,7 +363,7 @@ async def gate_tool_call(
     # answers), marked so the rollout answers a repeat with its first verdict.
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_unanswered),
-        stop=stop_after_delay(300),
+        stop=stop_after_delay(window),
         wait=wait_random_exponential(multiplier=0.5, max=10.0),
         reraise=True,
     ):

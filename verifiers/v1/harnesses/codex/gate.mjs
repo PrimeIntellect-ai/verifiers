@@ -19,8 +19,11 @@ const retryable = (response) =>
 
 // Retry what a tunnel or proxy dropped or answered, marked so the rollout answers a
 // repeat with its first verdict.
+// The rollout may set the retry window in the URL's fragment, which fetch never sends.
+const WINDOW = Number(new URL(__URL__).hash.match(/^#retry=([0-9.]+)$/)?.[1] ?? 300);
+
 async function ask(body) {
-  const deadline = Date.now() + 300_000;
+  const deadline = Date.now() + 1000 * WINDOW;
   for (let retry = 0, delay = 500; ; retry++, delay = Math.min(2 * delay, 10_000)) {
     const failure = await fetch(__URL__, {
       method: "POST",
@@ -40,7 +43,7 @@ async function ask(body) {
       (error) => String(error),
     );
     if (typeof failure !== "string") return failure.decision;
-    if (Date.now() + delay > deadline) throw new Error(`unreachable for 300s: ${failure}`);
+    if (Date.now() + delay > deadline) throw new Error(`unreachable for ${WINDOW}s: ${failure}`);
     await new Promise((resolve) => setTimeout(resolve, delay * (0.5 + Math.random())));
   }
 }
