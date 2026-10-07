@@ -5,10 +5,11 @@ python3 -I -S relay.pyz UPSTREAM FILES WINDOW_SECONDS
 Runs inside the runtime from a zip that bundles h11 (see `relay.py`). Each request goes to
 UPSTREAM on a fresh connection and its response streams back. The host stamps every
 response, so a 404, 408, 429 or 5xx without the stamp came from a tunnel or proxy in
-between: those and failed connections are retried for up to WINDOW_SECONDS, marked so the
-host answers a repeat with the original result. Then the relay gives up as a direct
-connection would: it forwards the last answer, or closes. FILES is a path prefix for
-FILES.port (the port, or why it refused) and FILES.rescued (a byte per rescued request).
+between: those, failed connections and a host gone silent are retried for up to
+WINDOW_SECONDS, marked so the host answers a repeat with the original result. Then the
+relay gives up as a direct connection would: it forwards the last answer, or closes. FILES
+is a path prefix for FILES.port (the port, or why it refused) and FILES.rescued (a byte per
+rescued request).
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ HOP_BY_HOP = {
     b"upgrade",
 }
 MAX_BODY = 1 << 30  # the host's own limit
+# The host answers within a minute and then keeps a stream alive every few seconds, so this
+# long without a byte means the way to it died (a tunnel can hold a connection open while
+# nothing gets through). A repeated buffered call just rejoins the original on the host.
+SILENCE = 120
 
 
 def transient(response: h11.Response) -> bool:
@@ -72,7 +77,7 @@ class Upstream:
         target: bytes,
         headers: list,
         body: bytes,
-        timeout: float | None = None,
+        timeout: float = SILENCE,
     ):
         """Send one request on a fresh connection: (socket, connection, response).
         Raises OSError or h11.ProtocolError if it got no response."""
@@ -80,8 +85,8 @@ class Upstream:
         try:
             if self.tls:
                 sock = self.tls.wrap_socket(sock, server_hostname=self.hostname)
-            # Model turns can stream for many minutes, so no read timeout. Keepalive
-            # probes, and a cap on unacknowledged sends, notice a connection that died.
+            # Keepalive probes, and a cap on unacknowledged sends, notice a connection
+            # that died; the timeout, one that stays open while nothing comes through.
             sock.settimeout(timeout)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             for option, value in (
@@ -100,8 +105,11 @@ class Upstream:
             )
             try:
                 sock.sendall(conn.send(request))
-                for data in conn.send_with_data_passthrough(h11.Data(data=body)):
-                    sock.sendall(data)
+                view = memoryview(body)
+                for start in range(0, len(body), 1 << 20):  # the timeout is per sendall
+                    chunk = h11.Data(data=view[start : start + (1 << 20)])
+                    for data in conn.send_with_data_passthrough(chunk):
+                        sock.sendall(data)
                 sock.sendall(conn.send(h11.EndOfMessage()))
             except OSError:
                 pass  # it may have answered (say, a 413) before taking it all
