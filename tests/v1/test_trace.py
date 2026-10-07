@@ -133,6 +133,7 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
         None,
         {},
         {"reasoning_effort": "high"},
+        {"temperature": 0.7, "max_tokens": 128, "reasoning_effort": "high"},
         {"temperature": None},
         {"max_completion_tokens": None},
         {"extra_body": {"top_k": None}},
@@ -153,7 +154,12 @@ def test_bare_trace_round_trip(sampling, tmp_path):
     )
     write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
     (episode,) = read_episodes(tmp_path, vf.Trace)
-    for rt in (vf.Trace.model_validate(tr.model_dump()), episode.traces[0]):
+    for rt in (
+        vf.Trace.model_validate(tr.model_dump()),
+        vf.Trace.model_validate(tr.to_record()),
+        episode.traces[0],
+        vf.Episode.model_validate(episode.to_record()).traces[0],
+    ):
         assert rt.id == tr.id
         assert rt.task.type == "Task"
         assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
