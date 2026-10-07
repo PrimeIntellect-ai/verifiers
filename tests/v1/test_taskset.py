@@ -6,7 +6,7 @@ import logging
 import random
 
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import ValidationError
 
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import PrimeConfig
@@ -242,13 +242,24 @@ def test_task_config_network_replaces_each_tasks_own() -> None:
     ]
 
 
-def test_replaced_network_fields_are_refused() -> None:
-    with pytest.raises(ValueError, match="network=NetworkPolicyConfig"):
-        vf.TaskData(network_allow=[])
-    with pytest.raises(TypeError, match="network=NetworkPolicyConfig"):
+def test_harbor_verifier_keeps_its_declared_policy() -> None:
+    from verifiers.v1.tasksets.harbor.taskset import (
+        HarborData,
+        HarborTask,
+        VerifierConfig,
+        verifier_box_data,
+    )
 
-        class Legacy(vf.TaskData):
-            network_block: list[str] = Field(default_factory=list)
-
-    # A recorded trace from before the rename still reads.
-    assert vf.WireTaskData(network_allow=[]).network is None
+    closed = vf.NetworkPolicyConfig(allow=[])
+    data = HarborData(
+        prompt="x",
+        network=closed,
+        verifier_network=vf.NetworkPolicyConfig(allow=["pypi.org"]),
+        verifier=VerifierConfig(network=vf.NetworkPolicyConfig(allow=["pypi.org"])),
+    )
+    # The run's override reaches the solver, not the separate verifier box, which
+    # the harbor env builds from the verifier declaration with a default config.
+    solver = HarborTask(data, HarborTask.config_type()(network=closed))
+    assert resolve_runtime_config(PrimeConfig(), solver).allow == []
+    grader = HarborTask(verifier_box_data(data))
+    assert resolve_runtime_config(PrimeConfig(), grader).allow == ["pypi.org"]

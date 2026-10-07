@@ -17,7 +17,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
@@ -79,9 +79,6 @@ class TaskTimeout(BaseModel):
     """Timeout (in seconds) for the task's scoring."""
 
 
-REPLACED_NETWORK_FIELDS = frozenset({"network_allow", "network_block"})
-
-
 class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -129,26 +126,6 @@ class TaskData(BaseModel):
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_replaced_network_fields(cls, data):
-        """A policy under the old field names must not silently become an open box."""
-        if isinstance(data, dict) and (data.keys() & REPLACED_NETWORK_FIELDS):
-            raise ValueError(
-                "TaskData.network_allow/network_block were replaced by "
-                "network=NetworkPolicyConfig(allow=..., block=...)"
-            )
-        return data
-
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs):
-        super().__pydantic_init_subclass__(**kwargs)
-        for name in REPLACED_NETWORK_FIELDS & cls.model_fields.keys():
-            raise TypeError(
-                f"{cls.__name__}.{name}: declare the task's policy as "
-                "network=NetworkPolicyConfig(allow=..., block=...) instead"
-            )
-
     @property
     def prompt_text(self) -> str:
         if isinstance(self.prompt, str):
@@ -161,12 +138,6 @@ class WireTaskData(TaskData):
     """Wire form that preserves task-specific fields without importing the task class."""
 
     model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_replaced_network_fields(cls, data):
-        """Override: a record read keeps whatever an older trace carried."""
-        return data
 
 
 DataT = TypeVar("DataT", bound=TaskData)

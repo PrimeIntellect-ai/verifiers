@@ -53,27 +53,19 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 
 ## Network access
 
-The `prime`, `docker` and `modal` runtimes enforce an egress policy on the agent's box; `subprocess` has none. The policy is one `allow`/`block` object (`NetworkPolicyConfig`) that comes from two places:
+The `prime`, `docker` and `modal` runtimes can enforce an egress policy on the agent's box. A policy is one `NetworkPolicyConfig` with two lists of destinations:
 
-1. `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI replaces every task's policy.
-2. Otherwise a task's own `TaskData.network`, set by the taskset (a closed-book benchmark sets `allow = []`); open when unset.
+- `allow`: what the box may reach. Each entry is a host pattern (`github.com`, `*.github.com`, with `fnmatch` wildcards) or a URL origin (`https://api.github.com:443`, whose scheme and port must then match). `["*"]` is unrestricted and `[]` reaches nothing beyond the framework's own routes (the model endpoint and tool servers).
+- `block`: what the box may not reach. A bare domain blocks its subdomains too; `*.example.com` blocks the subdomains but not the domain itself; `*` blocks everything beyond the framework, which is the same as `allow = []`.
 
-The runtime's own `allow`/`block` (`[env.agent.runtime]`) then intersects with the result, so a runtime restriction is never widened by a task.
+A request is permitted when it matches no `block` entry and some `allow` entry. A concrete allowlist cannot be combined with a non-empty blocklist (the config is rejected); use `allow = ["*"]` with `block` for a denylist, or `allow` alone for an allowlist.
 
-```toml
-[env.taskset.task.network]
-allow = []              # framework-only: no internet
-# allow = ["github.com"]  # an allowlist
-# block = ["example.com"] # a denylist
-```
+A box's policy comes from two sources:
 
-Whenever the resolved policy restricts egress, the model's system prompt ends with one of these notes (after a blank line, following the task's own system prompt; a transcript prompt that already carries system messages gets it as a leading system message instead):
+- The task. Its data declares it (`TaskData.network`; a closed-book benchmark declares `allow = []`), and the run's task config replaces that declaration: `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI.
+- The runtime (`[env.agent.runtime]`). Its `allow`/`block` intersect with the task's resolved policy, so the runtime always narrows and never widens.
 
-- `allow = []`: "External network access is disabled."
-- an allowlist: "External network access is limited to these destinations: github.com. Do not circumvent this selection of domains."
-- a denylist: "External network access is allowed except for these blocked destinations: example.com. Do not circumvent this selection of domains."
-
-Turn the note off per seat with `--env.agent.no-network-notice` (`network_notice = false` under `[env.agent]`).
+Before a rollout starts, verifiers appends a note about the restriction to the system prompt, so the model treats a failing connection as intended. `network_notice = false` under `[env.agent]` disables it.
 
 ## Resuming evaluations
 

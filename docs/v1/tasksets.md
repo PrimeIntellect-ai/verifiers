@@ -110,7 +110,7 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
-A task's execution-time egress policy is `TaskData.network`, the same `allow`/`block` object the runtimes carry (`NetworkPolicyConfig`); None is open. A closed-book benchmark sets it on its task data, and a run can replace it from config with `[env.taskset.task.network]` or `--env.taskset.task.network.allow` (see [Network access](evaluation.md#network-access)):
+A task's egress policy is `TaskData.network` (`NetworkPolicyConfig`, see [Network access](evaluation.md#network-access)); None is open. A closed-book benchmark declares it on its task data:
 
 ```python
 class ClosedBookData(vf.TaskData):
