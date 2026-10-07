@@ -22,9 +22,8 @@ class SharedTasksetConfig(BaseConfig):
     network: NetworkPolicyConfig | None = None
     """Execution-time egress policy for every task of this taskset — the same
     `allow`/`block` object the runtimes carry. Set from TOML/CLI (`[env.taskset.network]`,
-    `--env.taskset.network.allow`) it replaces each task's own policy and the taskset's
-    default (`Taskset.network`); None leaves those in place. The runtime's own rules
-    still intersect."""
+    `--env.taskset.network.allow`) it replaces each task's own policy; None leaves
+    that in place. The runtime's own rules still intersect."""
 
 
 class TasksetConfig(SharedTasksetConfig):
