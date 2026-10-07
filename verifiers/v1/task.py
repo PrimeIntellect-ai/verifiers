@@ -17,10 +17,11 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -78,6 +79,9 @@ class TaskTimeout(BaseModel):
     """Timeout (in seconds) for the task's scoring."""
 
 
+REPLACED_NETWORK_FIELDS = frozenset({"network_allow", "network_block"})
+
+
 class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -107,14 +111,13 @@ class TaskData(BaseModel):
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
 
-    network_allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; concrete lists intersect with the runtime's rules. Unsupported
-    intersections are rejected. Prime runtimes accept host-level entries."""
-    network_block: list[str] = Field(default_factory=list)
-    """Execution-time destinations denied by this task and combined with runtime
-    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
-    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
+    network: NetworkPolicyConfig | None = None
+    """This task's execution-time egress policy — the same `allow`/`block` object the
+    runtimes carry. A taskset config `network` set from TOML/CLI replaces it; otherwise
+    it wins over the taskset's declared default, and None falls back to that default
+    (open when there is none). The runtime's own rules still intersect with the result:
+    unsupported intersections are rejected, Prime runtimes accept host-level entries,
+    and Docker framework routes take precedence over blocks."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
@@ -126,6 +129,26 @@ class TaskData(BaseModel):
 
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_replaced_network_fields(cls, data):
+        """A policy under the old field names must not silently become an open box."""
+        if isinstance(data, dict) and (data.keys() & REPLACED_NETWORK_FIELDS):
+            raise ValueError(
+                "TaskData.network_allow/network_block were replaced by "
+                "network=NetworkPolicyConfig(allow=..., block=...)"
+            )
+        return data
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        super().__pydantic_init_subclass__(**kwargs)
+        for name in REPLACED_NETWORK_FIELDS & cls.model_fields.keys():
+            raise TypeError(
+                f"{cls.__name__}.{name}: declare the task's policy as "
+                "network=NetworkPolicyConfig(allow=..., block=...) instead"
+            )
 
     @property
     def prompt_text(self) -> str:
@@ -139,6 +162,12 @@ class WireTaskData(TaskData):
     """Wire form that preserves task-specific fields without importing the task class."""
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_replaced_network_fields(cls, data):
+        """Override: a record read keeps whatever an older trace carried."""
+        return data
 
 
 DataT = TypeVar("DataT", bound=TaskData)

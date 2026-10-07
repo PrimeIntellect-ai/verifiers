@@ -6,7 +6,7 @@ import logging
 import random
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 import verifiers.v1 as vf
 
@@ -199,3 +199,45 @@ def test_select_bounds_an_infinite_taskset() -> None:
     # The shuffle comes before the limit, so the limit cannot bound it.
     with pytest.raises(ValueError, match="infinite"):
         infinite().select(vf.SelectConfig(shuffle=True, limit=5))
+
+
+# Network policy
+
+
+class ClosedBookTaskset(vf.Taskset[CountTask, vf.TasksetConfig]):
+    network = vf.NetworkPolicyConfig(allow=[])
+
+    def load(self):
+        tasks = [count_task(i) for i in range(3)]
+        tasks[1] = tasks[1].with_data(
+            network=vf.NetworkPolicyConfig(allow=["pypi.org"])
+        )
+        return tasks
+
+
+def policies(taskset) -> list[list[str] | None]:
+    return [None if t.data.network is None else t.data.network.allow for t in taskset]
+
+
+def test_network_policy_resolves_config_over_task_over_taskset_default() -> None:
+    assert policies(finite()) == [None] * 10
+    # The taskset's default fills in; a task's own policy wins over it.
+    assert policies(ClosedBookTaskset(vf.TasksetConfig())) == [[], ["pypi.org"], []]
+    # A policy set from config replaces both, whatever its value.
+    for allow in (["*"], []):
+        config = vf.TasksetConfig.model_validate({"network": {"allow": allow}})
+        assert policies(ClosedBookTaskset(config)) == [allow] * 3
+        reloaded = vf.TasksetConfig.model_validate(config.model_dump(mode="json"))
+        assert policies(ClosedBookTaskset(reloaded)) == [allow] * 3
+
+
+def test_replaced_network_fields_are_refused() -> None:
+    with pytest.raises(ValueError, match="network=NetworkPolicyConfig"):
+        vf.TaskData(network_allow=[])
+    with pytest.raises(TypeError, match="network=NetworkPolicyConfig"):
+
+        class Legacy(vf.TaskData):
+            network_block: list[str] = Field(default_factory=list)
+
+    # A recorded trace from before the rename still reads.
+    assert vf.WireTaskData(network_allow=[]).network is None

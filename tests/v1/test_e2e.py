@@ -602,6 +602,83 @@ async def test_rubric_judge(run_v1, tmp_path):
     assert trace.info["judge_calls"]  # the call was recorded onto the trace
 
 
+# The execution network policy: every runtime that enforces one (subprocess has none),
+# on the bash harness. Local-only remote rows as elsewhere.
+NETWORK_RUNTIMES = [
+    pytest.param("docker", marks=[mark.bash, mark.docker], id="bash-harness-in-docker"),
+    pytest.param("prime", marks=[mark.bash, mark.prime], id="bash-harness-in-prime"),
+    pytest.param("modal", marks=[mark.bash, mark.modal], id="bash-harness-in-modal"),
+]
+
+ALLOWED_URL, BLOCKED_URL = "https://example.com/", "https://pypi.org/"
+
+# (taskset network policy, network_notice, the note's expected text or None,
+#  whether each URL gets through)
+NETWORK_POLICIES = [
+    pytest.param({}, True, None, {ALLOWED_URL: True, BLOCKED_URL: True}, id="open"),
+    pytest.param(
+        {"network": {"allow": []}},
+        True,
+        "External network access is disabled.",
+        {ALLOWED_URL: False, BLOCKED_URL: False},
+        id="framework-only",
+    ),
+    pytest.param(
+        {"network": {"allow": ["example.com"]}},
+        True,
+        "External network access is limited to these destinations: example.com.",
+        {ALLOWED_URL: True, BLOCKED_URL: False},
+        id="allowlist",
+    ),
+    pytest.param(
+        {"network": {"allow": ["example.com"]}},
+        False,
+        None,
+        {ALLOWED_URL: True, BLOCKED_URL: False},
+        id="allowlist-without-notice",
+    ),
+]
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("harness_runtime", NETWORK_RUNTIMES, indirect=True)
+@pytest.mark.parametrize("policy,notice,note,reachable", NETWORK_POLICIES)
+async def test_network_policy(
+    run_v1, harness_runtime, policy, notice, note, reachable, tmp_path
+):
+    """The taskset's network policy reaches the box and the model: a restricted policy
+    puts the note at the end of the system prompt unless `network_notice` is off, and
+    the probe the model runs gets through to allowed destinations only."""
+    from fetch_v1 import outcomes
+
+    (trace,) = await run_v1(
+        "fetch-v1",
+        harness="bash",
+        runtime={"type": harness_runtime},
+        taskset_overrides=policy,
+        env={"agent": {"network_notice": notice}},
+        output_dir=tmp_path,
+        max_turns=4,
+    )
+    assert trace.ok
+    assert trace.reward == 1.0, outcomes(trace)
+    system = trace.messages[0]
+    assert system.role == "system"
+    assert isinstance(system.content, str)
+    if note is None:
+        assert "External network access" not in system.content
+    else:
+        assert system.content.endswith(
+            "Do not circumvent this selection of domains."
+            if "limited" in note
+            else "External network access is disabled."
+        )
+        assert note in system.content
+    results = outcomes(trace)
+    for url, expected in reachable.items():
+        assert (results[url] == "200") is expected, results
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize("harness,harness_runtime", AGENTIC_PLACEMENTS, indirect=True)
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):

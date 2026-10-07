@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self
 
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
@@ -51,6 +52,10 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
     """Whether `load()` yields tasks forever. A view can still bound the iteration
     (see `bounded`)."""
 
+    network: NetworkPolicyConfig | None = None
+    """The taskset's default execution-time egress policy, for tasks whose data sets
+    none (a closed-book benchmark declares `NetworkPolicyConfig(allow=[])`). A config
+    `network` replaces both; None here leaves such tasks open."""
     transform: Transform | None = None
     """Iteration transform carried by the views (see `_view`)."""
     _bounded: bool | None = None
@@ -73,15 +78,25 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return not self.INFINITE if self._bounded is None else self._bounded
 
     def __iter__(self) -> Iterator[TaskT]:
-        """Lazily iterate `load()` with each task's `idx` set to its position and the
-        config-layer system prompt applied, then the views' transform. The views see
-        the final task data, so a `keys` match compares the keys that traces record.
-        This is the read path; `load` is the subclass hook."""
+        """Lazily iterate `load()` with each task's `idx` set to its position, the
+        config-layer system prompt and the resolved network policy applied (a config
+        `network` replaces, else the task's own, else the taskset class's `network`),
+        then the views' transform. The views see the final task data, so a `keys` match
+        compares the keys that traces record. This is the read path; `load` is the
+        subclass hook."""
         update = (
             {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
+        override, default = self.config.network, self.network
+
+        def policy(task: TaskT) -> NetworkPolicyConfig | None:
+            if override is not None:
+                return override
+            return task.data.network if task.data.network is not None else default
+
         tasks: Iterator[TaskT] = (
-            task.with_data(idx=idx, **update) for idx, task in enumerate(self.load())
+            task.with_data(idx=idx, network=policy(task), **update)
+            for idx, task in enumerate(self.load())
         )
         return tasks if self.transform is None else self.transform(tasks)
 
