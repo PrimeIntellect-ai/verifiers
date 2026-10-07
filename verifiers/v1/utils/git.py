@@ -15,6 +15,8 @@ agent commits.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -35,6 +37,20 @@ PATCH_CAP_BYTES = 2_000_000
 # rollout forever.
 _FULL = "/tmp/vf_agent_patch_full"
 _CAPPED = "/tmp/vf_agent_patch"
+
+# Untracked names cross the sandbox boundary base64-encoded. A shell's stdout and the
+# runtime transports decode as text with `errors="replace"`, so a name that is not valid
+# UTF-8 would come back with U+FFFD in place of the offending bytes, never match the real
+# file again, and let `git add -A` credit the agent with an image file. Base64 is ASCII,
+# so the original bytes survive the trip and are decoded (strictly) on the host.
+_LIST_UNTRACKED = (
+    "p=$(mktemp); "
+    'git ls-files --others --exclude-standard -z > "$p"; '
+    "rc=$?; "
+    'if [ "$rc" -eq 0 ]; then base64 -w0 < "$p"; fi; '
+    'rm -f "$p"; '
+    'exit "$rc"'
+)
 
 # `git reset -q` must run even when staging or diffing fails, or the error path
 # leaves the tree staged and can break scoring's later checkouts. Every step
@@ -95,12 +111,36 @@ async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[
     filesystem, the pre-agent untracked set falls out of the diff with no setup-side
     bookkeeping in any taskset. Drop this then.
     """
-    result = await runtime.run(
-        ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
-    )
+    result = await runtime.run(["sh", "-c", _LIST_UNTRACKED], env or {})
     if result.exit_code != 0:
         return []
-    return [path for path in (result.stdout or "").split("\0") if path]
+    try:
+        raw = base64.b64decode((result.stdout or "").strip(), validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise SandboxError(
+            f"snapshot_untracked: `git ls-files` output did not decode: {e}"
+        ) from e
+    names = [path for path in raw.split(b"\0") if path]
+    try:
+        # Decode the host-side copy strictly: a name that cannot round-trip through the
+        # runtime's text contract would come back as a different path and stop matching
+        # its file, so failing setup is better than capturing a wrong patch.
+        return [path.decode("utf-8") for path in names]
+    except UnicodeDecodeError as e:
+        raise SandboxError(
+            "snapshot_untracked: `git ls-files` returned a filename that is not valid "
+            "UTF-8. It cannot round-trip through the runtime's text decoding, so the "
+            "pre-agent untracked set would be wrong. Rename the offending file in the "
+            "image or exclude it via .gitignore."
+        ) from e
+
+
+def _literal_pathspecs(paths: list[str]) -> list[str]:
+    """`paths` as literal git pathspecs. An ignore entry is an untracked filename taken
+    from the image, so it must match that file and nothing else: without `:(literal)`,
+    `*.py` unstages every python file the agent touched (emptying the patch), a leading
+    `:` is read as pathspec magic, and a `[` is read as a character class."""
+    return [f":(literal){path}" for path in paths]
 
 
 async def capture_patch(
@@ -114,10 +154,10 @@ async def capture_patch(
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
     `ignore` names paths to leave out — pass `snapshot_untracked`'s list from setup, or
-    `git add -A` credits the agent with untracked files the image shipped. R2E-Gym boxes
-    ship three (`datasets`, `install.sh`, `run_tests.sh`), and a patch carrying them
-    fails `git apply` in a fresh container of that very image — which is what an
-    isolated grading box is.
+    `git add -A` credits the agent with untracked files the image shipped. Each entry is
+    a literal filename, not a pathspec pattern. R2E-Gym boxes ship three (`datasets`,
+    `install.sh`, `run_tests.sh`), and a patch carrying them fails `git apply` in a fresh
+    container of that very image — which is what an isolated grading box is.
 
     Two failure modes, attributed differently, because they deserve different outcomes.
 
@@ -144,7 +184,13 @@ async def capture_patch(
     cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
     try:
         result = await runtime.run(
-            ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
+            [
+                "sh",
+                "-c",
+                cmd,
+                "vf-capture-patch",
+                *_literal_pathspecs(ignore or []),
+            ],
             {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
