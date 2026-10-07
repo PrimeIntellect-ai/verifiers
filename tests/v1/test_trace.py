@@ -10,8 +10,10 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode, prepare_turn
 from verifiers.v1.harnesses.rlm.harness import (
     RLM_SESSION_METADATA_KEY,
@@ -735,3 +737,63 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+@pytest.mark.parametrize(
+    ("dialect", "event", "message", "status"),
+    [
+        # A vllm/openrouter mid-stream failure: HTTP 200, an error payload, then [DONE]
+        # (or an anthropic `message_stop`). It must raise instead of committing the
+        # partial message as a successful "stop" turn.
+        (
+            ChatDialect(),
+            b'{"error": {"message": "engine died", "code": 500}}',
+            "engine died",
+            500,
+        ),
+        (
+            ChatDialect(),
+            b'{"error": {"message": "slow down", "code": "429"}}',
+            "slow down",
+            429,
+        ),
+        (ChatDialect(), b'{"error": "engine died"}', "engine died", 502),
+        (
+            ChatDialect(),
+            b'{"choices": [{"index": 0, "finish_reason": "error",'
+            b' "error": {"message": "died", "code": 503}}]}',
+            "died",
+            503,
+        ),
+        (
+            AnthropicDialect(),
+            b'{"type": "error", "error": {"type": "request_too_large", "message": "too big"}}',
+            "too big",
+            413,
+        ),
+        (
+            AnthropicDialect(),
+            b'{"type": "error", "error": {"type": "rate_limit_error", "message": "busy"}}',
+            "busy",
+            429,
+        ),
+        (
+            ResponsesDialect(),
+            b'{"type": "error", "error": {"message": "boom", "code": "rate_limit_exceeded"}}',
+            "boom",
+            429,
+        ),
+    ],
+)
+def test_stream_error_event_is_a_provider_failure(dialect, event, message, status):
+    """The status is what the harness sdk retries on, so a deterministic 4xx must not
+    arrive as a retryable 5xx."""
+    parser = dialect.stream_parser()
+    parser.feed(
+        b'data: {"id": "x", "choices": [{"index": 0,'
+        b' "delta": {"content": "partial"}, "finish_reason": null}]}\n\n'
+    )
+    with pytest.raises(ProviderError) as raised:
+        parser.feed(b"data: " + event + b"\n\n")
+    assert raised.value.status_code == status
+    assert message in str(raised.value)

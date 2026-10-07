@@ -24,6 +24,7 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_domains,
 )
+from verifiers.v1.errors import stream_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -50,6 +51,19 @@ STOP_REASONS: dict[str, FinishReason] = {
     "max_tokens": "length",
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
+}
+# Anthropic `error` event type -> the http status the harness sdk should see. It retries
+# 5xx and 429 and does not retry a 4xx, so a deterministic request failure must not fall
+# back to a retryable status. Names follow the anthropic sdk's exception classes.
+STREAM_ERROR_STATUSES = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 502,
+    "overloaded_error": 503,
 }
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
@@ -393,6 +407,16 @@ class AnthropicStreamParser(StreamParser):
                 **(self.message.get("usage") or {}),
                 **(event.get("usage") or {}),
             }
+        elif kind == "error":
+            # A stream that fails midway sends a named `error` event. Raise here: a
+            # following `message_stop` would otherwise commit the partial message.
+            error = event.get("error")
+            raise stream_error(
+                error if error is not None else event,
+                status_code=STREAM_ERROR_STATUSES.get(
+                    str(error.get("type")) if isinstance(error, dict) else ""
+                ),
+            )
 
     def finish(self) -> Response:
         for index, fields in self.block_parts.items():

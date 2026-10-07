@@ -26,6 +26,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     parse_sse_event,
 )
+from verifiers.v1.errors import model_error, stream_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -293,12 +294,24 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        if not isinstance(chunk, dict):
+            raise model_error(f"malformed stream chunk: {str(chunk)[:200]}")
+        # An upstream that fails mid-stream keeps HTTP 200 and sends an error payload
+        # (then usually `[DONE]`) -- vLLM's chat stream generator and OpenRouter both do
+        # this. Surface it as the provider failure it is: otherwise `[DONE]` satisfies
+        # the terminal check and the partial turn commits as a successful "stop".
+        if chunk.get("error") is not None:
+            raise stream_error(chunk["error"])
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
         for choice in chunk.get("choices") or []:
             if choice.get("index", 0) != 0:
                 continue
+            if choice.get("finish_reason") == "error":
+                raise stream_error(
+                    choice.get("error") or (choice.get("delta") or {}).get("error")
+                )
             self.finish_reason = choice.get("finish_reason") or self.finish_reason
             delta = choice.get("delta") or {}
             for key in ("content", "reasoning_content", "reasoning"):

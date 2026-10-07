@@ -22,7 +22,7 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from openai import OpenAIError
 
@@ -115,6 +115,59 @@ def _provider_status(e: OpenAIError | str) -> int:
     if isinstance(e, APIConnectionError):
         return 503
     return 502
+
+
+def _status_from_code(code: object) -> int:
+    """The HTTP status an upstream's error `code` field implies, or a retryable 502 when it
+    gave nothing usable. Providers spell the code as either an HTTP status (`500`) or a
+    string (`"rate_limit_exceeded"`, `"429"`, `"request_too_large"`): take the number when
+    there is one, otherwise match the documented string codes, so a deterministic client
+    error is not surfaced as a retryable transient one."""
+    if isinstance(code, bool):
+        return 502
+    if isinstance(code, (int, float)):
+        return int(code) if 400 <= int(code) < 600 else 502
+    if isinstance(code, str):
+        text = code.strip()
+        if text.isdigit():
+            return _status_from_code(int(text))
+        lowered = text.lower()
+        if "rate_limit" in lowered or "overloaded" in lowered:
+            return 429
+        if any(
+            marker in lowered
+            for marker in ("invalid_prompt", "context_length", "too_large", "too_many")
+        ):
+            return 413
+        if "not_found" in lowered:
+            return 404
+        if "permission" in lowered:
+            return 403
+        if "auth" in lowered:
+            return 401
+        if "invalid" in lowered or "bad_request" in lowered:
+            return 400
+    return 502
+
+
+def stream_error(payload: object, *, status_code: int | None = None) -> ProviderError:
+    """Map an `error` chunk/event an upstream sent mid-stream (HTTP 200, then an error
+    payload and usually a terminal event) to the `ProviderError` it is. The provider
+    usually keeps its status in the payload's `code`/`status`; `status_code` overrides it
+    when the dialect recognizes the native error type itself."""
+    if isinstance(payload, Mapping):
+        message = payload.get("message") or payload.get("detail") or payload
+        if status_code is None:
+            status_code = _status_from_code(
+                payload.get("code")
+                if payload.get("code") is not None
+                else payload.get("status")
+            )
+    else:
+        message = payload
+    return model_error(
+        str(message) or "upstream reported an error mid-stream", status_code=status_code
+    )
 
 
 def model_error(
