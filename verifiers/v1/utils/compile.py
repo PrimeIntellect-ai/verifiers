@@ -42,7 +42,7 @@ def resolve_runtime_config(
         and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    policy = task.data.network
+    policy = task.network
     if policy is not None and policy.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(

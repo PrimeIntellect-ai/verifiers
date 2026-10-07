@@ -74,21 +74,14 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def __iter__(self) -> Iterator[TaskT]:
         """Lazily iterate `load()` with each task's `idx` set to its position and the
-        config-layer system prompt and network policy applied (a config `network`
-        replaces each task's own), then the views' transform. The views see the final
-        task data, so a `keys` match compares the keys that traces record. This is the
-        read path; `load` is the subclass hook."""
+        config-layer system prompt applied, then the views' transform. The views see
+        the final task data, so a `keys` match compares the keys that traces record.
+        This is the read path; `load` is the subclass hook."""
         update = (
             {} if self.system_prompt is None else {"system_prompt": self.system_prompt}
         )
-        override = self.config.network
         tasks: Iterator[TaskT] = (
-            task.with_data(
-                idx=idx,
-                network=override if override is not None else task.data.network,
-                **update,
-            )
-            for idx, task in enumerate(self.load())
+            task.with_data(idx=idx, **update) for idx, task in enumerate(self.load())
         )
         return tasks if self.transform is None else self.transform(tasks)
 

@@ -9,6 +9,8 @@ import pytest
 from pydantic import Field, ValidationError
 
 import verifiers.v1 as vf
+from verifiers.v1.runtimes import PrimeConfig
+from verifiers.v1.utils.compile import resolve_runtime_config
 
 
 class CountTask(vf.Task[vf.TaskData]):
@@ -204,29 +206,40 @@ def test_select_bounds_an_infinite_taskset() -> None:
 # Network policy
 
 
-class ClosedBookTaskset(vf.Taskset[CountTask, vf.TasksetConfig]):
-    def load(self):
-        closed = vf.NetworkPolicyConfig(allow=[])
-        tasks = [count_task(i).with_data(network=closed) for i in range(3)]
-        tasks[1] = tasks[1].with_data(
-            network=vf.NetworkPolicyConfig(allow=["pypi.org"])
-        )
-        return tasks
+def closed_book(config: vf.TaskConfig | None = None) -> list[CountTask]:
+    closed = vf.NetworkPolicyConfig(allow=[])
+    tasks = [
+        CountTask(count_task(i).data.model_copy(update={"network": closed}), config)
+        for i in range(3)
+    ]
+    tasks[1] = CountTask(
+        tasks[1].data.model_copy(
+            update={"network": vf.NetworkPolicyConfig(allow=["pypi.org"])}
+        ),
+        config,
+    )
+    return tasks
 
 
-def policies(taskset) -> list[list[str] | None]:
-    return [None if t.data.network is None else t.data.network.allow for t in taskset]
+def resolved(tasks) -> list[list[str]]:
+    return [resolve_runtime_config(PrimeConfig(), task).allow for task in tasks]
 
 
-def test_network_policy_from_config_replaces_each_tasks_own() -> None:
-    assert policies(finite()) == [None] * 10
-    assert policies(ClosedBookTaskset(vf.TasksetConfig())) == [[], ["pypi.org"], []]
+def test_task_config_network_replaces_each_tasks_own() -> None:
+    assert resolved(closed_book()) == [[], ["pypi.org"], []]
     for allow in (["*"], []):
-        config = vf.TasksetConfig.model_validate({"network": {"allow": allow}})
-        assert policies(ClosedBookTaskset(config)) == [allow] * 3
+        config = vf.TaskConfig.model_validate({"network": {"allow": allow}})
+        assert resolved(closed_book(config)) == [allow] * 3
         # The override survives the config round trip a served run takes.
-        reloaded = vf.TasksetConfig.model_validate(config.model_dump(mode="json"))
-        assert policies(ClosedBookTaskset(reloaded)) == [allow] * 3
+        reloaded = vf.TaskConfig.model_validate(config.model_dump(mode="json"))
+        assert resolved(closed_book(reloaded)) == [allow] * 3
+    # A run's override does not change task identity.
+    assert [t.key for t in closed_book()] == [t.key for t in closed_book(config)]
+    # The runtime's own rules still intersect.
+    task = closed_book(vf.TaskConfig(network=vf.NetworkPolicyConfig(allow=["*"])))[0]
+    assert resolve_runtime_config(PrimeConfig(allow=["github.com"]), task).allow == [
+        "github.com"
+    ]
 
 
 def test_replaced_network_fields_are_refused() -> None:

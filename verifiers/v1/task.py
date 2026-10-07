@@ -113,10 +113,10 @@ class TaskData(BaseModel):
 
     network: NetworkPolicyConfig | None = None
     """This task's execution-time egress policy — the same `allow`/`block` object the
-    runtimes carry; None is open. A taskset config `network` set from TOML/CLI replaces
-    it. The runtime's own rules still intersect with the result: unsupported
-    intersections are rejected, Prime runtimes accept host-level entries, and Docker
-    framework routes take precedence over blocks."""
+    runtimes carry; None is open. `TaskConfig.network`, set from TOML/CLI, replaces it
+    (see `Task.network`). The runtime's own rules still intersect with the result:
+    unsupported intersections are rejected, Prime runtimes accept host-level entries,
+    and Docker framework routes take precedence over blocks."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
@@ -180,6 +180,16 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else self.config_type()()
+
+    @property
+    def network(self) -> NetworkPolicyConfig | None:
+        """The policy this task runs under: the run's `config.network` when set, else
+        the task's own `data.network`; None is open."""
+        return (
+            self.config.network
+            if self.config.network is not None
+            else self.data.network
+        )
 
     @property
     def hash(self) -> str:

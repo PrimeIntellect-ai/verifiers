@@ -612,26 +612,26 @@ NETWORK_RUNTIMES = [
 
 ALLOWED_URL, BLOCKED_URL = "https://example.com/", "https://pypi.org/"
 
-# (taskset network policy, network_notice, the note's expected text or None,
+# (taskset task-config overrides, network_notice, the note's expected text or None,
 #  whether each URL gets through)
 NETWORK_POLICIES = [
     pytest.param({}, True, None, {ALLOWED_URL: True, BLOCKED_URL: True}, id="open"),
     pytest.param(
-        {"network": {"allow": []}},
+        {"task": {"network": {"allow": []}}},
         True,
         "External network access is disabled.",
         {ALLOWED_URL: False, BLOCKED_URL: False},
         id="framework-only",
     ),
     pytest.param(
-        {"network": {"allow": ["example.com"]}},
+        {"task": {"network": {"allow": ["example.com"]}}},
         True,
         "External network access is limited to these destinations: example.com.",
         {ALLOWED_URL: True, BLOCKED_URL: False},
         id="allowlist",
     ),
     pytest.param(
-        {"network": {"allow": ["example.com"]}},
+        {"task": {"network": {"allow": ["example.com"]}}},
         False,
         None,
         {ALLOWED_URL: True, BLOCKED_URL: False},

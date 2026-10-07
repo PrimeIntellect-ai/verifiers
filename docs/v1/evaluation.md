@@ -55,13 +55,13 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 
 The `prime`, `docker` and `modal` runtimes enforce an egress policy on the agent's box; `subprocess` has none. The policy is one `allow`/`block` object (`NetworkPolicyConfig`) that comes from two places:
 
-1. `[env.taskset.network]` in TOML or `--env.taskset.network.allow` on the CLI replaces every task's policy.
+1. `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI replaces every task's policy.
 2. Otherwise a task's own `TaskData.network`, set by the taskset (a closed-book benchmark sets `allow = []`); open when unset.
 
 The runtime's own `allow`/`block` (`[env.agent.runtime]`) then intersects with the result, so a runtime restriction is never widened by a task.
 
 ```toml
-[env.taskset.network]
+[env.taskset.task.network]
 allow = []              # framework-only: no internet
 # allow = ["github.com"]  # an allowlist
 # block = ["example.com"] # a denylist
