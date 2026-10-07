@@ -123,11 +123,13 @@ class HarborArtifact(Artifact):
 
 
 class VerifierConfig(BaseModel):
-    """The box this task's verifier wants, when it wants one of its own.
+    """The task's verifier phase: its egress policy, and the box it wants when it
+    wants one of its own."""
 
-    `None` on `HarborData` means shared — grade where the agent worked, which is still
-    Harbor's default and every task that says nothing."""
-
+    separate: bool = False
+    """Grade in a box the agent never touched (`[verifier].environment_mode =
+    "separate"`). False grades where the agent worked, which is still Harbor's
+    default and every task that says nothing; the box fields below are then unused."""
     resources: TaskResources = TaskResources()
     workdir: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -138,8 +140,9 @@ class VerifierConfig(BaseModel):
     resources; a declared environment states its own, and what it omits falls back to
     the run's rather than to the agent's task-derived values."""
     network: NetworkPolicyConfig = NetworkPolicyConfig()
-    """The verifier's egress policy, from its network mode: open, or `allow=[]` for
-    Harbor's `no-network` / `allow_internet = false`."""
+    """The verifier phase's egress policy, from its network mode: open, or `allow=[]`
+    for Harbor's `no-network` / `allow_internet = false`. A separate box resolves its
+    runtime from it; a shared verifier grades with open egress when it is open."""
 
 
 class HarborData(TaskData):
@@ -179,10 +182,7 @@ class HarborData(TaskData):
     collect: list[CollectHook] = Field(default_factory=list)
     """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
     after the agent stops, so the files can travel to a grading box as artifacts."""
-    verifier_network: NetworkPolicyConfig = NetworkPolicyConfig()
-    """The verifier phase's declared egress policy. A shared verifier grades with open
-    egress when this is open; a separate verifier box resolves from `verifier`."""
-    verifier: VerifierConfig | None = None
+    verifier: VerifierConfig = VerifierConfig()
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
 
@@ -338,7 +338,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
-        if self.data.verifier is None or self.data.verifier_image is None:
+        if not self.data.verifier.separate or self.data.verifier_image is None:
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
             )
@@ -359,7 +359,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
-        if self.data.verifier is not None:
+        if self.data.verifier.separate:
             if not self.verifier_staged:
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
@@ -368,7 +368,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
-            if not self.data.verifier_network.network_restricted:
+            if not self.data.verifier.network.network_restricted:
                 # Harbor runs a public verifier phase with the environment's full
                 # network after the agent is done, so a shared verifier gets the
                 # same here, whatever the agent's phase was restricted to. A process
@@ -437,7 +437,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
     fresh copy of `[environment]` keeps the task's own. The verifier's network
     policy applies either way."""
     verifier = data.verifier
-    if verifier is None:
+    if not verifier.separate:
         raise TaskError(f"task {data.name!r} declares no separate verifier")
     fresh = verifier.fresh_copy
     return data.model_copy(
@@ -649,7 +649,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             ignore_dockerfile=harbor_config.ignore_dockerfile,
             verifier=True,
         )
-        if verifier is not None and parsed.verifier.environment is not None
+        if verifier.separate and parsed.verifier.environment is not None
         else None
     )
     environment_dir = task_dir / "environment"
@@ -658,9 +658,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         docker_image=image,
     )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
-    verifier_network = (
-        parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
-    )
     task, meta = parsed.task, parsed.metadata
     authors = (
         [Author(name=author.name, email=author.email) for author in task.authors]
@@ -716,11 +713,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         ),
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
-        verifier_network=NetworkPolicyConfig(
-            allow=["*"]
-            if verifier_network.network_mode == NetworkMode.PUBLIC
-            else list(verifier_network.allowed_hosts)
-        ),
         artifacts=artifacts,
         collect=hooks,
         verifier=verifier,
@@ -792,8 +784,9 @@ def parse_verifier_extras(
 
 def parse_verifier_environment(
     task_dir: Path, parsed, harbor_config: HarborConfig
-) -> VerifierConfig | None:
-    """The box Harbor wants this task's verifier in, or None to grade in the agent's.
+) -> VerifierConfig:
+    """The task's verifier phase: its egress policy, and the box Harbor wants it in
+    when it is not the agent's.
 
     Harbor resolves `[verifier.environment]` if declared, else a deep copy of
     `[environment]` — so a mode-only `separate` lands on the task's own image and needs
@@ -808,8 +801,18 @@ def parse_verifier_environment(
         resolve_task_verifier_mode,
     )
 
+    def policy(environment) -> NetworkPolicyConfig:
+        network = (
+            parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
+        )
+        return NetworkPolicyConfig(
+            allow=["*"]
+            if network.network_mode == NetworkMode.PUBLIC
+            else list(network.allowed_hosts)
+        )
+
     if resolve_task_verifier_mode(parsed) != VerifierEnvironmentMode.SEPARATE:
-        return None
+        return VerifierConfig(network=policy(parsed.environment))
     if harbor_config.ignore_separate_verifier:
         logger.warning(
             "%s: asks for a separate verifier; grading in the agent's box anyway "
@@ -830,8 +833,8 @@ def parse_verifier_environment(
             "integration cannot honor"
         )
 
-    network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
     return VerifierConfig(
+        separate=True,
         # A declared environment states its own resources; what it leaves out is the
         # run's default, not the agent task's. A fresh copy is the task's environment,
         # so it keeps whatever the agent box resolved to.
@@ -843,11 +846,7 @@ def parse_verifier_environment(
         workdir=environment.workdir if declared else None,
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         fresh_copy=not declared,
-        network=NetworkPolicyConfig(
-            allow=["*"]
-            if network.network_mode == NetworkMode.PUBLIC
-            else list(network.allowed_hosts)
-        ),
+        network=policy(environment),
     )
 
 

@@ -45,7 +45,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
             raise TypeError(
                 f"the harbor env runs harbor tasks; got {type(task).__name__}"
             )
-        separate = task.data.verifier is not None
+        separate = task.data.verifier.separate
         if separate:
             # Resolve the verifier's box before the solve, so an impossible pairing
             # (e.g. an invalid network policy) costs nothing
@@ -100,7 +100,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         `setup` and `stage_verifier` run in the verifier box too. Setup,
         restoration, staging, and scoring failures retry per `verifier.retries`;
         the last one fails the episode."""
-        if not isinstance(task, HarborTask) or task.data.verifier is None:
+        if not isinstance(task, HarborTask) or not task.data.verifier.separate:
             return
         solution = episode.traces[0]
         if not solution.ok:
