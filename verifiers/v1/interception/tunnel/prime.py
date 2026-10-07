@@ -6,14 +6,19 @@ pool scales with."""
 import asyncio
 import contextlib
 import logging
+import random
+import subprocess
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
+
+if TYPE_CHECKING:
+    from prime_tunnel import Tunnel as TunnelClient
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,66 @@ def tunnel_limiter() -> CreationLimiter:
     return CreationLimiter("prime-tunnel", run_scope(), _TUNNELS_PER_MIN / 60)
 
 
+# How often a held tunnel's state is checked with the tunnel service. The service marks a
+# tunnel disconnected about a minute after its frpc stops answering; two such checks in a
+# row restart frpc.
+CHECK_SECONDS = 20
+
+
+async def _restart(client: "TunnelClient") -> None:
+    """Restart frpc with the tunnel's own config: it logs in again under the same
+    registration, so the URL comes back unchanged. (prime_tunnel has no public restart.)"""
+    from prime_tunnel.binary import get_frpc_path
+
+    old = client._process
+    if old is not None and old.poll() is None:
+        old.kill()
+        await asyncio.to_thread(old.wait)
+    frpc = await asyncio.to_thread(get_frpc_path)
+    client._process = await asyncio.to_thread(
+        subprocess.Popen,
+        [str(frpc), "-c", str(client._config_file)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    await client._wait_for_connection()
+    client._start_pipe_drain()
+
+
+async def _watch(client: "TunnelClient", url: str) -> None:
+    """Keep a held tunnel up. A tunnel service hiccup can leave frpc running while the
+    service has it disconnected for good, and every request to the URL then hangs or
+    404s; frpc can also exit. Either way, restart it."""
+    strikes = 0
+    while True:
+        await asyncio.sleep(CHECK_SECONDS * random.uniform(0.75, 1.25))
+        if client.is_running:
+            try:
+                info = await client._client.get_tunnel(client.tunnel_id)
+            except Exception as e:  # noqa: BLE001 - the service is unreachable: no verdict
+                logger.debug("tunnel %s: state check failed: %s", url, e)
+                continue
+            if info is None:
+                logger.error("tunnel %s: registration gone; cannot repair", url)
+                return
+            strikes = strikes + 1 if info.status == "disconnected" else 0
+            if strikes < 2:
+                continue
+        logger.warning(
+            "tunnel %s: %s; restarting frpc",
+            url,
+            "disconnected" if client.is_running else "frpc exited",
+        )
+        try:
+            await _restart(client)
+        except Exception as e:  # noqa: BLE001 - tried again on the next check
+            logger.warning("tunnel %s: frpc restart failed: %s", url, e)
+        else:
+            logger.warning("tunnel %s: back up", url)
+            strikes = 0
+
+
 class PrimeTunnelConfig(BaseTunnelConfig):
     """Expose the host interception port via `prime_tunnel` (frpc). No fields — the tunnel
     service mints a fresh public URL per exposed port."""
@@ -57,7 +122,8 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
         is network-bound and rate-capped (512/min, run-wide via the shared
         `tunnel_limiter`), so transient failures are retried; a terminal one raises
-        `TunnelError`. The tunnel is torn down on exit."""
+        `TunnelError`. While held, frpc is restarted if the tunnel goes down. The tunnel is
+        torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.errors import TunnelError
@@ -72,10 +138,17 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
+        watch = asyncio.create_task(_watch(client, url))
+
+        async def close() -> None:
+            watch.cancel()  # first, so it can't start a new frpc after the stop
+            await asyncio.wait({watch})
+            await asyncio.to_thread(client.sync_stop)
+
         try:
             yield url
         finally:
-            # Run the synchronous stop to completion even under cancellation (`run_shielded`
-            # re-raises the cancellation after); tunnel-stop failures are best-effort.
+            # Run the stop to completion even under cancellation (`run_shielded` re-raises
+            # the cancellation after); tunnel-stop failures are best-effort.
             with contextlib.suppress(Exception):
-                await run_shielded(asyncio.to_thread(client.sync_stop))
+                await run_shielded(close())
