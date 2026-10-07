@@ -215,6 +215,14 @@ class ContainerRuntime(Runtime):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self._run_host(*self._exec(self.process_env(env)), *argv)
 
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        if self._host is None:
+            return await self.run(argv, env)
+        # Keep the host's non-replaying program path for the rollout itself.
+        return await self._host.run_program(
+            [*self._exec(self.process_env(env)), *argv], {}
+        )
+
     async def open_process(
         self, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:

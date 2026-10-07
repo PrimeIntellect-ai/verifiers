@@ -38,6 +38,11 @@ from verifiers.v1.runtimes.subprocess import (
     SubprocessRuntime,
     SubprocessRuntimeInfo,
 )
+from verifiers.v1.runtimes.vercel import (
+    VercelSandboxConfig,
+    VercelSandboxRuntime,
+    VercelSandboxRuntimeInfo,
+)
 
 RuntimeConfig = Annotated[
     SubprocessConfig
@@ -46,7 +51,8 @@ RuntimeConfig = Annotated[
     | ApptainerConfig
     | PrimeConfig
     | ModalConfig
-    | E2BConfig,
+    | E2BConfig
+    | VercelSandboxConfig,
     Field(discriminator="type"),
 ]
 
@@ -57,7 +63,8 @@ RuntimeInfo = Annotated[
     | ApptainerRuntimeInfo
     | PrimeRuntimeInfo
     | ModalRuntimeInfo
-    | E2BRuntimeInfo,
+    | E2BRuntimeInfo
+    | VercelSandboxRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -71,6 +78,7 @@ def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
         "prime": PrimeRuntime,
         "modal": ModalRuntime,
         "e2b": E2BRuntime,
+        "vercel": VercelSandboxRuntime,
     }[config.type]
 
 
@@ -134,6 +142,9 @@ __all__ = [
     "SubprocessConfig",
     "SubprocessRuntime",
     "SubprocessRuntimeInfo",
+    "VercelSandboxConfig",
+    "VercelSandboxRuntime",
+    "VercelSandboxRuntimeInfo",
     "make_runtime",
     "provision_runtime",
     "runtime_is_local",

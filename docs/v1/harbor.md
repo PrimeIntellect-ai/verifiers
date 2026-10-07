@@ -90,7 +90,8 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 Select `runtime.type = "docker"` to run Compose tasks locally.
 
 With the default Harbor env, tasks containing `environment/docker-compose.yaml`
-run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
+run their topology through Harbor on local Docker, Prime VMs, Modal's VM runtime, or
+Vercel Sandbox.
 Local Docker requires `--env.trust-compose`: task definitions can mount host files
 and request Docker privileges, so only enable it for trusted packages. Local Compose
 receives Docker connection settings and infrastructure variables rather than the
@@ -105,15 +106,16 @@ For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
 services, and its network policy applies to every service after trusted setup.
 For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
 backend with Docker support and requires `network_access = true` and access to that
-backend. Local Docker Compose also requires unrestricted networking. GPU Compose
+backend. For Vercel, set `runtime.type = "vercel"`; one sandbox hosts Docker and all
+services. Local Docker Compose also requires unrestricted networking. GPU Compose
 tasks are unsupported.
 
 The runtime's CPU and memory settings size the entire remote sandbox, so allow room
-for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
+for sidecars. Prime also applies the disk request; Modal and Vercel have no disk-size setting.
 Prebuilt service images must be Docker-pullable inside the sandbox; services with a
 `build` stanza are built there. Prime-only VM image references cannot serve as inner
-container images. Prime VM ports cannot be published externally. Modal publishes
-main's runtime service port through its encrypted tunnel, including when main shares
+container images. Prime VM ports cannot be published externally. Modal and Vercel
+publish main's runtime service port through their tunnels, including when main shares
 another service's network namespace.
 
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
