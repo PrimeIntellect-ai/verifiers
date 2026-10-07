@@ -69,6 +69,38 @@ class _JobDied(Exception):
     """A background job's wrapper died before it wrote the job's exit status."""
 
 
+_TRANSIENT_ATTEMPTS = 4
+"""Tries of a repeatable sandbox API call that the gateway failed transiently."""
+_TRANSIENT_MARKERS = (
+    "bad gateway",
+    "http 502",
+    "http 503",
+    "http 504",
+    "upstream unavailable",
+    "failed to route",
+    "(unavailable)",
+)
+
+
+def _transient(error: BaseException) -> bool:
+    """Whether a sandbox API error is the gateway's, which a repeat can ride out. A
+    terminated sandbox or a missing file is not."""
+    text = str(error).lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+async def _repeatable(call):
+    """Run a repeatable sandbox API call, repeating it through transient gateway errors."""
+    for attempt in range(_TRANSIENT_ATTEMPTS):
+        try:
+            return await call()
+        except Exception as e:
+            if attempt == _TRANSIENT_ATTEMPTS - 1 or not _transient(e):
+                raise
+            logger.warning("prime: transient sandbox API error, retrying: %s", e)
+            await asyncio.sleep(2**attempt)
+
+
 @dataclass
 class _SharedClient:
     client: Any
@@ -330,8 +362,10 @@ class PrimeRuntime(Runtime):
             next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
             misses = 0
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                result = await _repeatable(
+                    lambda: self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    )
                 )
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
@@ -385,7 +419,7 @@ class PrimeRuntime(Runtime):
             result = await self._client.execute_command(
                 self.info.id, command, timeout=60, user=self.user
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - an unknown liveness is not a death
             logger.debug("prime: liveness check of job %s failed: %s", job.job_id, e)
             return None
         verdict = (result.stdout or "").strip()
@@ -488,7 +522,11 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await _repeatable(
+                    lambda: self._client.download_file(
+                        self.info.id, target, str(download)
+                    )
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -502,8 +540,10 @@ class PrimeRuntime(Runtime):
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
+            await _repeatable(
+                lambda: self._client.upload_bytes(
+                    self.info.id, target, data, filename=PurePosixPath(target).name
+                )
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
