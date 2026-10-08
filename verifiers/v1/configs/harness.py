@@ -50,8 +50,9 @@ class HarnessConfig(BaseConfig):
         return resolved
 
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
-    """Seconds a single tool call (MCP or a harness's local `bash`) may take; raise it
-    for tools that boot a VM."""
+    """Seconds a single MCP tool call may take; raise it for tools that boot a VM. A
+    harness's local `bash` command still running after this long is moved to the
+    background and the agent is told where its output goes."""
     disabled_tools: list[str] | None = None
     skills: list[SkillSource] = Field(default_factory=list)
     """Host skill folders or `{runtime: path}` roots of skills inside the runtime.

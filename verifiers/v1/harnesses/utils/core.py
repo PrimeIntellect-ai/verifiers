@@ -2,10 +2,9 @@
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
-import os
-import signal
 import subprocess
 import tempfile
 import traceback
@@ -160,37 +159,47 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
+BASH_LOG_DIR: Path | None = None
+"""Where `run_bash` writes command output; created on first use."""
+
+BACKGROUNDED: list[subprocess.Popen] = []
+"""Commands still running past the timeout, reaped once they exit."""
+
+BASH_CALLS = itertools.count(1)
+
+
 def run_bash(command: str, timeout: float) -> str:
     """Run `command` and return its stdout + stderr.
 
-    Output goes to temporary files, not pipes, and the call waits on bash itself:
-    a process the command backgrounds (`server &`, `nohup ... &`) inherits a pipe
-    and would hold it open, so waiting for EOF would block until the timeout.
-    The command runs in its own session; on timeout the whole session is killed."""
+    Output goes to a log file, not pipes, and the call waits on bash itself: a
+    process the command backgrounds (`server &`, `nohup ... &`) would inherit a
+    pipe and hold it open, so waiting for EOF would block on it. A command still
+    running after `timeout` seconds is left running: the call returns its output
+    so far and where the rest goes, so long builds and test runs aren't lost."""
+    global BASH_LOG_DIR
+    BACKGROUNDED[:] = [proc for proc in BACKGROUNDED if proc.poll() is None]
     try:
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        if BASH_LOG_DIR is None:
+            BASH_LOG_DIR = Path(tempfile.mkdtemp(prefix="vf-bash-"))
+        log = BASH_LOG_DIR / f"{next(BASH_CALLS)}.log"
+        with log.open("wb") as out:
             proc = subprocess.Popen(
                 ["bash", "-c", command],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
-                stderr=err,
-                start_new_session=True,
+                stderr=subprocess.STDOUT,
             )
-            try:
-                proc.wait(timeout=timeout)
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-                timed_out = True
-            out.seek(0)
-            err.seek(0)
-            output = out.read().decode(errors="replace") + err.read().decode(
-                errors="replace"
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            BACKGROUNDED.append(proc)
+            output = log.read_bytes().decode(errors="replace")
+            return (
+                f"{output}\n[still running after {timeout:g}s: moved to the background as pid "
+                f"{proc.pid}; output continues in {log}. Check it with `tail -n 50 {log}`, "
+                f"stop it with `pkill -P {proc.pid}; kill {proc.pid}`.]"
             )
-        if timed_out:
-            output += f"\n[command timed out after {timeout:g}s and was killed]"
-        return output
+        return log.read_bytes().decode(errors="replace")
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
