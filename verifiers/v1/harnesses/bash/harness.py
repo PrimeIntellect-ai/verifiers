@@ -83,7 +83,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             p for p in (" ".join(fragments), system_prompt) if p
         )
         env = {**self.config.resolved_env}
-        args = ["--bash"]
+        args = ["--bash", f"--tool-timeout={self.config.tool_timeout}"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction is not None:

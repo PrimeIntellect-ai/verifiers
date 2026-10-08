@@ -4,7 +4,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import subprocess
+import tempfile
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -157,16 +160,37 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str, timeout: float) -> str:
+    """Run `command` and return its stdout + stderr.
+
+    Output goes to temporary files, not pipes, and the call waits on bash itself:
+    a process the command backgrounds (`server &`, `nohup ... &`) inherits a pipe
+    and would hold it open, so waiting for EOF would block until the timeout.
+    The command runs in its own session; on timeout the whole session is killed."""
     try:
-        result = subprocess.run(
-            ["bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
-        )
-        return result.stdout + result.stderr
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(
+                ["bash", "-c", command],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                start_new_session=True,
+            )
+            try:
+                proc.wait(timeout=timeout)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+                timed_out = True
+            out.seek(0)
+            err.seek(0)
+            output = out.read().decode(errors="replace") + err.read().decode(
+                errors="replace"
+            )
+        if timed_out:
+            output += f"\n[command timed out after {timeout:g}s and was killed]"
+        return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -412,7 +436,7 @@ async def run_chat_loop(
                     content = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
+                        run_bash, tool_args.get("command", ""), args.tool_timeout
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -450,6 +474,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
+    parser.add_argument("--tool-timeout", type=float, default=600.0)
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
