@@ -627,6 +627,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
+    if parsed.steps:
+        raise ValueError(
+            f"{task_dir.name}: multi-step Harbor tasks are not supported; "
+            "select single-step tasks with --taskset.tasks"
+        )
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
     image = resolve_image(
@@ -866,10 +871,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         task_dirs = [
             toml_path.parent
             for toml_path in sorted(root.rglob("task.toml"))
-            if (toml_path.parent / "instruction.md").is_file()
-            and (
-                self.config.tasks is None or toml_path.parent.name in self.config.tasks
-            )
+            if (self.config.tasks is None or toml_path.parent.name in self.config.tasks)
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")

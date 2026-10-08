@@ -1,6 +1,6 @@
 # Harbor
 
-verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a Harbor-based taskset is straightforward in most cases:
+verifiers supports single-step Harbor 0.24.0 tasks via the `HarborTaskset` class. Tasks declaring `steps` are rejected; use `tasks` to select single-step tasks from mixed datasets. Creating a Harbor-based taskset is straightforward in most cases:
 
 ```python
 import verifiers.v1 as vf
