@@ -66,13 +66,23 @@ jobs:
           uv run pytest tests/v1 -vv -n auto -m "not e2e" --cov=verifiers --cov-report=xml --cov-report=term
 
   v1-e2e:
-    name: V1 live E2E (Python 3.12)
+    name: V1 live E2E (Python 3.12, ${{ matrix.suite }})
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: core
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "not test_acp_resume_with_tool"
+          - suite: acp
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k test_acp_resume_with_tool
+          - suite: examples
+            selection: tests/v1/test_envs.py
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
@@ -102,9 +112,25 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Cache wiki-search index and embedding model
+        if: matrix.suite == 'examples'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/wiki_search
+            ~/.cache/chroma
+          key: wiki-search-${{ runner.os }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
+
       - name: Run live v1 E2Es
         run: |
-          uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal and not e2b" --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest ${{ matrix.selection }} -vv -n 4 --dist worksteal -m "e2e and not prime and not modal and not e2b" --cov=verifiers --cov-report=xml --cov-report=term --durations=25 --junitxml=test-results.xml
+
+      - name: Upload E2E test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: v1-e2e-${{ matrix.suite }}-results
+          path: test-results.xml
 
   delivery-behaviors:
     name: Nano-RLM delivery behaviors
