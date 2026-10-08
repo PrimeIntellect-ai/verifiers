@@ -184,7 +184,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError(
                 "prime-agent has no per-tool disable flag; its model-facing tool "
-                "surface is ipython"
+                "surface is python_repl"
             )
 
         root = self._root(trace)
