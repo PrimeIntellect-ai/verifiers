@@ -3513,15 +3513,15 @@ toml = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.3"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/ba/3d38aeafc0ef885eef7b99bbe26fe350b4248af8d3fa89d4ca8a249f0f04/prime_runs-0.1.3.tar.gz", hash = "sha256:181ab1c720ed9113abbf3719ba6863c9ee23c55309101c0b7f4021ff9dafbe20", size = 65541, upload-time = "2026-09-17T15:31:42.319Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/de/6fb503ce854315d096982b79340b02eb5a978b139a7c719d39df77e7f211/prime_runs-0.1.4.tar.gz", hash = "sha256:f06c2bc7db28f0ed99ca6b06aa5186245ca94009872eb861ab0be7cff25484bd", size = 67282, upload-time = "2026-10-08T00:23:59.354Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/93/5fff685470a6cb12fc93192432951a081de70e271aef1cebc506fba4ccc5/prime_runs-0.1.3-py3-none-any.whl", hash = "sha256:86c3d5183ed5848854a194233b4a9451deabea56a9063771244c5c54c00d69df", size = 45087, upload-time = "2026-09-17T15:31:40.913Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/51/8f300ac057c95afa9df591172b2e8374743afdeeae300771fd78c91a5f75/prime_runs-0.1.4-py3-none-any.whl", hash = "sha256:f33b477c2d53eca08524a3d469810943eee31af8f60ceffc38ef2b9c90596d1b", size = 46253, upload-time = "2026-10-08T00:23:57.736Z" },
 ]
 
 [[package]]
