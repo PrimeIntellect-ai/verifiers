@@ -39,6 +39,7 @@ from verifiers.v1.types import SamplingConfig
 logger = logging.getLogger(__name__)
 
 ResponseT = TypeVar("ResponseT", bound=BaseResponse)
+DecodedT = TypeVar("DecodedT")
 
 
 class EnvClient:
@@ -51,7 +52,7 @@ class EnvClient:
         self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.connect(address)
         self._pending: dict[str, asyncio.Future[bytes]] = {}
-        self._deltas: dict[str, Callable[[bytes], None]] = {}
+        self._deltas: dict[str, Callable[[dict], None]] = {}
         # Strong refs to in-flight fire-and-forget cancels: the loop only
         # holds weak references to tasks, so an unreferenced one can be
         # garbage-collected before it ever sends
@@ -82,7 +83,10 @@ class EnvClient:
                 if kind == b"delta":
                     on_delta = self._deltas.get(request_id)
                     if on_delta is not None:
-                        on_delta(data)
+                        delta = await self._decode(unpack, data)
+                        # Cancellation may remove the handler while the worker decodes.
+                        if self._deltas.get(request_id) is on_delta:
+                            on_delta(delta)
                     continue
                 future = self._pending.pop(request_id, None)
                 if future is not None and not future.done():
@@ -95,11 +99,11 @@ class EnvClient:
         request: BaseRequest,
         response_type: type[ResponseT],
         timeout: float | None = None,
-        on_delta: Callable[[bytes], None] | None = None,
+        on_delta: Callable[[dict], None] | None = None,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. A
         `timeout` is only used for health polling — rollouts run untimed. `on_delta`
-        receives each `delta` frame the request streams before its reply."""
+        receives each decoded `delta` the request streams before its reply."""
         self._ensure_receiver()
         request_id = uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -134,13 +138,10 @@ class EnvClient:
             raise RuntimeError(response.error or "env server request failed")
         return response
 
-    async def _validate_episode(self, record: dict) -> WireEpisode:
-        """Type the assembled record off the loop, one episode at a time: a long
-        trace is a lot of token spans to validate."""
+    async def _decode(self, decode: Callable[..., DecodedT], *args: object) -> DecodedT:
+        """Decode off the loop, sharing one slot with final episode validation."""
         await self._decode_slots.acquire()
-        decoding = asyncio.create_task(
-            asyncio.to_thread(WireEpisode.model_validate, record)
-        )
+        decoding = asyncio.create_task(asyncio.to_thread(decode, *args))
         # Hold the slot until the worker finishes so cancellation cannot overlap decodes.
         decoding.add_done_callback(lambda _: self._decode_slots.release())
         try:
@@ -199,8 +200,7 @@ class EnvClient:
         episode returned is assembled from the same deltas."""
         assembly = EpisodeAssembly()
 
-        def apply(data: bytes) -> None:
-            delta = unpack(data)
+        def apply(delta: dict) -> None:
             assembly.apply(delta)
             if on_delta is not None:
                 on_delta(delta)
@@ -216,8 +216,8 @@ class EnvClient:
             on_delta=apply,
         )
         assert response.head is not None
-        return await self._validate_episode(
-            assembly.finish(response.head, response.traces)
+        return await self._decode(
+            WireEpisode.model_validate, assembly.finish(response.head, response.traces)
         )
 
     async def close(self) -> None:
