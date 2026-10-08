@@ -161,6 +161,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return self.model_dump(
             mode="json",
             exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+            exclude_none=True,
             context={"float_decimals": float_decimals},
         )
 

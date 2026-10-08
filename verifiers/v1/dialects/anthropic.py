@@ -660,7 +660,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
-        s = sampling.wire_args()
+        s = sampling.model_dump(exclude_none=True)
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_output_config = s.pop("output_config", None)
         overrides: dict = {**s, "model": model}

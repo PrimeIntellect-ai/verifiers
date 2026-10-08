@@ -21,7 +21,12 @@ from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
 )
-from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
+from verifiers.v1.configs.agent import (
+    AgentConfig,
+    TimeoutConfig,
+    agent_config_fields,
+    resolve_agent,
+)
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
@@ -41,7 +46,6 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
-    Sampling,
     ToolMessage,
     UserMessage,
 )
@@ -550,8 +554,7 @@ class Agent:
             config = config.model_copy(
                 update={"harness": harness_config_type("bash")(id="bash")}
             )
-        if config.sampling is None:
-            config = config.model_copy(update={"sampling": Sampling()})
+        config = resolve_agent(config)
         self.config = config
         self.harness = load_harness(config.harness)
         self.ctx = ModelContext(

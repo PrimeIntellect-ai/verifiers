@@ -10,6 +10,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
@@ -139,12 +140,23 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
         {"extra_body": {"top_k": None}},
         {"extra_body": None},
         {"top_k": 10, "extra_body": {"frequency_penalty": 0.5}},
+        {"extra_body": {"top_k": 20, "max_completion_tokens": None}},
     ],
 )
 def test_bare_trace_round_trip(sampling, tmp_path):
+    spec = vf.AgentConfig(sampling=sampling)
+    restored = vf.AgentConfig.model_validate_json(
+        spec.model_dump_json(exclude_none=True)
+    )
+    if spec.sampling is not None:
+        assert restored.sampling.model_fields_set == spec.sampling.model_fields_set
+    defaults = vf.SamplingConfig(temperature=0.7, max_tokens=128, top_k=40)
+    resolved = resolve_agent(restored, sampling=defaults)
+    assert resolved.sampling == resolve_agent(spec, sampling=defaults).sampling
+    assert set(vf.SamplingConfig.model_fields) <= resolved.sampling.model_fields_set
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig(sampling=sampling)),
+        agent=vf.AgentInfo(config=resolved),
         task=vf.TraceTask(
             type="Task",
             data=vf.TaskData(idx=3, prompt="hello"),
@@ -156,6 +168,7 @@ def test_bare_trace_round_trip(sampling, tmp_path):
     (episode,) = read_episodes(tmp_path, vf.Trace)
     for rt in (
         vf.Trace.model_validate(tr.model_dump()),
+        vf.Trace.model_validate_json(tr.model_dump_json(exclude_none=True)),
         vf.Trace.model_validate(tr.to_record()),
         episode.traces[0],
         vf.Episode.model_validate(episode.to_record()).traces[0],
@@ -167,11 +180,7 @@ def test_bare_trace_round_trip(sampling, tmp_path):
         assert rt.num_turns == 0 and rt.num_branches == 0
         assert rt.reward == 0.0 and rt.errors == []
         assert rt.agent.config == tr.agent.config
-        if sampling is not None:
-            assert (
-                rt.agent.config.sampling.model_fields_set
-                == tr.agent.config.sampling.model_fields_set
-            )
+        assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
 
 
 def test_custom_task_state_round_trip(tmp_path):

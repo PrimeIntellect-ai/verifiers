@@ -8,8 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SerializerFunctionWrapHandler,
-    model_serializer,
+    model_validator,
 )
 from typing_extensions import TypedDict
 
@@ -283,26 +282,20 @@ class SamplingConfig(BaseModel):
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
 
-    @model_serializer(mode="wrap")
-    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """Only explicitly set sampling fields may override inherited defaults."""
-        return {
-            key: value
-            for key, value in handler(self).items()
-            if key in self.model_fields_set
-        }
-
-    def wire_args(self) -> dict[str, Any]:
-        """Flatten OpenAI-style ``extra_body`` before building a provider request."""
-        args = self.model_dump(exclude_none=True)
-        extra_body = {
-            key: value
-            for key, value in (args.pop("extra_body", None) or {}).items()
-            if value is not None
-        }
-        if "max_tokens" in args:
-            extra_body.pop("max_completion_tokens", None)
-        return {**extra_body, **args}
+    @model_validator(mode="before")
+    @classmethod
+    def normalize(cls, data: Any) -> Any:
+        """Use one key per parameter before merging overrides, retaining null clears."""
+        if not isinstance(data, dict):
+            return data
+        normalized = {}
+        for layer in (data.get("extra_body") or {}, data):
+            layer = dict(layer)
+            if "max_completion_tokens" in layer:
+                layer.setdefault("max_tokens", layer.pop("max_completion_tokens"))
+            layer.pop("extra_body", None)
+            normalized.update(layer)
+        return normalized
 
 
 Sampling = SamplingConfig

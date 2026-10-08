@@ -23,8 +23,8 @@ def write_episode(
     results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
-    # Preserve typed Trace fields and explicit null config overrides.
-    data = type_adapter(type(episode)).dump_json(episode)
+    # Preserve fields declared by typed Trace subclasses nested in the episode.
+    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
