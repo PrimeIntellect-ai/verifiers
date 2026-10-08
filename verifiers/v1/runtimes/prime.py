@@ -57,6 +57,12 @@ _LIVENESS_MISSES = 2
 """Consecutive checks that must find the job dead before it is reported dead, so the
 moment between the job's output closing and its exit file appearing is never one."""
 
+_BOOT_WAIT_ATTEMPTS = 180
+"""Creation-wait budget for a box booting from its image, in the SDK's polls (~355 s)."""
+_RESTORE_WAIT_ATTEMPTS = 420
+"""Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
+copies the checkpoint's data first, and a large box's takes longer than a boot."""
+
 _CHECKPOINT_DEADLINE_SECONDS = 900
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
 the first of a box holding several GB can take minutes."""
@@ -290,7 +296,12 @@ class PrimeRuntime(Runtime):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
+            await self._client.wait_for_creation(
+                self.info.id,
+                max_attempts=_RESTORE_WAIT_ATTEMPTS
+                if self.config.checkpoint
+                else _BOOT_WAIT_ATTEMPTS,
+            )
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
