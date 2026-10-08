@@ -47,16 +47,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - parallel:
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
 
-      - name: Cache Hugging Face tokenizers
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.HF_HOME }}
-          key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            hf-tokenizers-${{ runner.os }}-
+          - name: Cache Hugging Face tokenizers
+            uses: actions/cache@v6
+            with:
+              path: ${{ env.HF_HOME }}
+              key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+              restore-keys: |
+                hf-tokenizers-${{ runner.os }}-
 
       - name: Install dependencies
         run: uv sync
@@ -66,13 +67,23 @@ jobs:
           uv run pytest tests/v1 -vv -n auto -m "not e2e" --cov=verifiers --cov-report=xml --cov-report=term
 
   v1-e2e:
-    name: V1 live E2E (Python 3.12)
+    name: V1 live E2E (Python 3.12, ${{ matrix.suite }})
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: core
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "not (test_acp_resume_with_tool or test_agentic)"
+          - suite: harnesses
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "test_acp_resume_with_tool or test_agentic"
+          - suite: examples
+            selection: tests/v1/test_envs.py
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
@@ -88,23 +99,50 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - parallel:
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
 
-      - name: Cache Hugging Face tokenizers
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.HF_HOME }}
-          key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            hf-tokenizers-${{ runner.os }}-
+          - name: Cache Hugging Face tokenizers
+            uses: actions/cache@v6
+            with:
+              path: ${{ env.HF_HOME }}
+              key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+              restore-keys: |
+                hf-tokenizers-${{ runner.os }}-
 
       - name: Install dependencies
         run: uv sync
 
+      - name: Resolve wiki-search corpus revision
+        if: matrix.suite == 'examples'
+        id: wiki-corpus
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          from huggingface_hub import dataset_info
+          from wiki_search.servers.wiki import DATASET
+          print(f"revision={dataset_info(DATASET).sha}")
+          PY
+
+      - name: Cache wiki-search index and embedding model
+        if: matrix.suite == 'examples'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/wiki_search
+            ~/.cache/chroma
+          key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
+
       - name: Run live v1 E2Es
         run: |
-          uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal and not e2b" --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest ${{ matrix.selection }} -vv -n 4 --dist worksteal -m "e2e and not prime and not modal and not e2b" --cov=verifiers --cov-report=xml --cov-report=term --durations=25 --junitxml=test-results.xml
+
+      - name: Upload E2E test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: v1-e2e-${{ matrix.suite }}-results
+          path: test-results.xml
 
   delivery-behaviors:
     name: Nano-RLM delivery behaviors
@@ -116,11 +154,13 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v10.0.1
-      - name: Install Verifiers and nano-rlm
-        run: |
-          uv sync
-          uv tool install --python 3.12 'git+https://github.com/PrimeIntellect-ai/nano-rlm.git@c38e20b60c90bbf625274d3fde2b2a384f390a66'
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+      - parallel:
+          - name: Install Verifiers
+            run: uv sync
+          - name: Install nano-rlm
+            run: |
+              uv tool install --python 3.12 'git+https://github.com/PrimeIntellect-ai/nano-rlm.git@c38e20b60c90bbf625274d3fde2b2a384f390a66'
+              echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
       - name: Run scripted delivery behaviors without model credentials
         env:
           VF_DELIVERY_BEHAVIORS: "1"
