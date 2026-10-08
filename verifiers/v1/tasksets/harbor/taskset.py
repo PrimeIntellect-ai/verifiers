@@ -10,9 +10,9 @@ grades that box (see ``env.py``). Either way the score lands in
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
 not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
 deliberately uses the harness runtime image. Tasks without an environment also use that
-image unless ``require_image`` is set. The same rule applies to a declared
-``[verifier.environment]``: it needs a pullable ``docker_image``, since Harbor would
-otherwise build the verifier image from ``tests/Dockerfile``.
+image unless ``require_image`` is set. Separate verifiers prefer their own image
+or tests build definition, then fall back to the agent environment. Unsupported verifier builds are rejected unless
+``ignore_dockerfile`` explicitly selects the fallback image.
 """
 
 import asyncio
@@ -442,7 +442,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "workdir": data.workdir if fresh else verifier.workdir,
             "resources": data.resources if fresh else verifier.resources,
             "upload_environment": data.upload_environment
-            if fresh and data.verifier_image is None
+            if data.verifier_image is None
             else False,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
@@ -580,7 +580,7 @@ def resolve_image(
 
     ``None`` keeps the harness image for the solver, or the solver image for a
     separate verifier. A declared verifier environment without an image implies
-    a build from tests/Dockerfile, even if that file is absent.
+    a dedicated build only when the resolved definition contains one.
     """
     if image:
         return image
@@ -593,6 +593,8 @@ def resolve_image(
             return None
     section = "verifier.environment" if verifier else "environment"
     dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"
+    if verifier and not (task_dir / dockerfile).is_file():
+        dockerfile = "tests/docker-compose.yaml"
     if verifier or (task_dir / dockerfile).exists():
         if ignore_dockerfile:
             if verifier:
@@ -624,6 +626,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.environments.definition import should_upload_environment_dir
     from harbor.models.task.config import NetworkMode
     from harbor.models.task.task import Task as HarborModelTask
+    from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
@@ -640,15 +643,20 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         harbor_config.require_image,
         harbor_config.ignore_dockerfile,
     )
+    definition = (
+        resolve_verifier_environment_definition(parsed, harbor_task.paths)
+        if verifier is not None
+        else None
+    )
     verifier_image = (
         resolve_image(
             task_dir,
-            parsed.verifier.environment.docker_image,
+            definition.config.docker_image,
             require_image=True,
             ignore_dockerfile=harbor_config.ignore_dockerfile,
             verifier=True,
         )
-        if verifier is not None and parsed.verifier.environment is not None
+        if definition is not None and definition.bundled_tests
         else None
     )
     environment_dir = task_dir / "environment"
@@ -789,14 +797,15 @@ def parse_verifier_environment(
     Harbor resolves `[verifier.environment]` if declared, else a deep copy of
     `[environment]` — so a mode-only `separate` lands on the task's own image and needs
     nothing but a second box. A declared environment is the case that can name a
-    different image, and the case that can name none at all: there Harbor builds
-    `tests/Dockerfile`, which verifiers never does.
+    different image or only override resources. Image selection is resolved separately
+    by Harbor: verifier image, tests build definition, then the agent environment.
     """
     from harbor.models.task.config import NetworkMode, TaskOS
+    from harbor.models.task.paths import TaskPaths
     from harbor.models.task.verifier_mode import (
         VerifierEnvironmentMode,
-        resolve_effective_verifier_env_config,
         resolve_task_verifier_mode,
+        resolve_verifier_environment_definition,
     )
 
     if resolve_task_verifier_mode(parsed) != VerifierEnvironmentMode.SEPARATE:
@@ -809,9 +818,10 @@ def parse_verifier_environment(
         )
         return None
 
-    environment = resolve_effective_verifier_env_config(parsed, None)
-    if environment is None:  # unreachable while the mode is SEPARATE
+    definition = resolve_verifier_environment_definition(parsed, TaskPaths(task_dir))
+    if definition is None:  # unreachable while the mode is SEPARATE
         raise ValueError(f"{task_dir.name}: separate verifier resolved no environment")
+    environment = definition.config
     declared = parsed.verifier.environment is not None
     unsupported = [field for field in ("tpu",) if getattr(environment, field, None)]
     if environment.os != TaskOS.LINUX or unsupported:

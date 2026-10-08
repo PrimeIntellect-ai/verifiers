@@ -63,7 +63,7 @@ class OpenThoughtsTBLiteTaskset(
         ]
 ```
 
-Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. When `verifier_image` is `None`, a separate verifier inherits the task's current `image` and stages the task package's tests. These changes leave `task.toml` unchanged.
+Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. A separate verifier prefers `[verifier.environment].docker_image`, then `tests/Dockerfile` or `tests/docker-compose.yaml`, then the agent environment. A verifier section that only declares resources inherits the agent image and stages the task package's tests. Dedicated verifier builds are rejected unless `ignore_dockerfile` explicitly enables fallback. When `verifier_image` is `None`, the verifier uses the task's current `image` and stages the packaged tests. These changes leave `task.toml` unchanged.
 
 To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 
