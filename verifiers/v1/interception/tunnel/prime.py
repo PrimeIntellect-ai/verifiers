@@ -7,7 +7,6 @@ import asyncio
 import contextlib
 import logging
 import random
-import subprocess
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
@@ -51,27 +50,6 @@ def tunnel_limiter() -> CreationLimiter:
 CHECK_SECONDS = 20
 
 
-async def _restart(client: "TunnelClient") -> None:
-    """Restart frpc with the tunnel's own config: it logs in again under the same
-    registration, so the URL comes back unchanged. (prime_tunnel has no public restart.)"""
-    from prime_tunnel.binary import get_frpc_path
-
-    old = client._process
-    if old is not None and old.poll() is None:
-        old.kill()
-        await asyncio.to_thread(old.wait)
-    frpc = await asyncio.to_thread(get_frpc_path)
-    client._process = await asyncio.to_thread(
-        subprocess.Popen,
-        [str(frpc), "-c", str(client._config_file)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    await client._wait_for_connection()
-    client._start_pipe_drain()
-
-
 async def _watch(client: "TunnelClient", url: str) -> None:
     """Keep a held tunnel up. A tunnel service hiccup can leave frpc running while the
     service has it disconnected for good, and every request to the URL then hangs or
@@ -97,7 +75,7 @@ async def _watch(client: "TunnelClient", url: str) -> None:
             "disconnected" if client.is_running else "frpc exited",
         )
         try:
-            await _restart(client)
+            await client.restart()
         except Exception as e:  # noqa: BLE001 - tried again on the next check
             logger.warning("tunnel %s: frpc restart failed: %s", url, e)
         else:
