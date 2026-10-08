@@ -108,9 +108,10 @@ shared and separate verifiers.
 
 Select `runtime.type = "docker"` to run Compose tasks locally.
 
-With the default Harbor env, tasks containing `environment/docker-compose.yaml`
-run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
-Local Docker requires `--env.trust-compose`: task definitions can mount host files
+Tasks containing `environment/docker-compose.yaml` declare a composition that the
+runtime provisions on local Docker, Prime VMs, or Modal's VM runtime. Harbor is a
+task-format adapter and works under the ordinary single-agent and best-of-N Envs.
+Local Docker requires `--env.agent.deployment.trust-compose`: task definitions can mount host files
 and request Docker privileges, so only enable it for trusted packages. Local Compose
 receives Docker connection settings and infrastructure variables rather than the
 evaluator's full environment. Task-local `.env` files and declared task env remain available.
@@ -192,7 +193,7 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The harbor env — this taskset's default — grades such tasks in `finalize`: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the env then provisions a fresh box, restores those artifacts, prepares the verifier tests, and grades there, recording the verifier's rewards and metrics onto the solver's trace. The grading box derives from the solver's runtime policy unless `--env.verifier.runtime.*` names its own; setup, restoration, staging, and scoring failures retry per `--env.verifier.retries` before the episode fails. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The ordinary task lifecycle collects the solver's declared artifacts and `/logs/artifacts/` while its deployment is alive, stops the workspace before collecting sidecar evidence, and provisions a fresh grading target. It restores artifacts, stages trusted verifier inputs, and records rewards on the same attempt. This works with single-agent, best-of-N, and other compatible Envs; Harbor contributes task requirements rather than agent control flow. Setup, restoration, and scoring retry twice in fresh targets before failing the attempt. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image. A dedicated `[verifier.environment].docker_image` must contain the complete `/tests` suite, including `/tests/test.sh` and its dependencies; that suite runs without uploading packaged tests, matching Harbor. When grading in a fresh copy of the solver image (including the `ignore_dockerfile` fallback), `/tests` is replaced with the task package's tests so stale image files cannot affect grading. Solver artifacts rooted under `/tests` are rejected before the tests run, and old reward files are cleared in either case.
 
@@ -208,3 +209,11 @@ verifiers does not have parity with Harbor yet, so some features are missing and
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+
+## Verifier placement
+
+Harbor's verifier mode becomes the task's default scoring placement.
+`env.agent.verifier.mode = "task"` honors it; `"shared"` and `"isolated"` explicitly
+override it. Fresh graders use the same image resolver and reward parser as shared
+graders, and receive only declared artifacts, including collected sidecar evidence.
+The taskset works with ordinary single-agent, best-of-n, and agentic-judge programs.

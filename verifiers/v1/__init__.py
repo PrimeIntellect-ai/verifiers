@@ -396,3 +396,30 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.deployment import (
+    Deployment,
+    DeploymentConfig,
+    ExecutionFailurePolicy,
+    ExecutionTarget,
+    Termination,
+)
+
+__all__ += [
+    "ComposeSpec",
+    "Deployment",
+    "DeploymentConfig",
+    "ExecutionFailurePolicy",
+    "ExecutionTarget",
+    "Termination",
+]
+
+from verifiers.v1.configs.verifier import VerifierConfig
+
+__all__ += ["VerifierConfig"]
+
+from verifiers.v1.runtimes.deployment import DeploymentStrategy, ExecutionConnection
+from verifiers.v1.runtimes.strategies import register_deployment_strategy
+
+__all__ += ["DeploymentStrategy", "ExecutionConnection", "register_deployment_strategy"]

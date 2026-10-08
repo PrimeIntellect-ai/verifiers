@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
@@ -56,6 +56,14 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class TargetStatus:
+    state: Literal["running", "lost", "unknown"]
+    cause: str = "unknown"
+    evidence: dict | None = None
+    attribution: Literal["agent", "infra", "unknown"] = "unknown"
 
 
 class RuntimeProcess(ABC):
@@ -174,6 +182,29 @@ class Runtime(ABC):
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
         borrowing program, caught up front instead of failing opaquely mid-harness."""
 
+    def deployment_strategy(self, config, execution, *, composed=False):
+        from verifiers.v1.runtimes.strategies import deployment_strategy
+
+        return deployment_strategy(
+            config.strategy, self.config, execution, composed=composed
+        )
+
+    def deploy(self, **kwargs):
+        from verifiers.v1.runtimes.deployment import Deployment
+
+        return Deployment(self, **kwargs)
+
+    def execution_command(self, caller: "Runtime", argv: list[str]) -> list[str]:
+        """Launch a worker from a trusted caller into this execution target."""
+        if caller is self:
+            return argv
+        raise NotImplementedError(
+            "this target has no execution transport from the caller"
+        )
+
+    async def quiesce(self) -> None:
+        raise NotImplementedError("this target cannot stop all agent processes")
+
     @property
     def type(self) -> str:
         return self.config.type
@@ -232,6 +263,10 @@ class Runtime(ABC):
         runtime.__dict__ = self.__dict__
         runtime.user = user
         return runtime
+
+    async def execution_status(self) -> TargetStatus:
+        """Observed lifecycle state; a failed transport is not proof of target death."""
+        return TargetStatus("unknown")
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when

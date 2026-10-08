@@ -113,6 +113,7 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     run._agent_time_remaining = None
     run._timeouts = RolloutTimeouts()
     run._harness_session = FailingSession()
+    run.deployment = SimpleNamespace(run=lambda turn: turn)
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,
