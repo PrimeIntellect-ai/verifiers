@@ -112,6 +112,16 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Resolve wiki-search corpus revision
+        if: matrix.suite == 'examples'
+        id: wiki-corpus
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          from huggingface_hub import dataset_info
+          from wiki_search.servers.wiki import DATASET
+          print(f"revision={dataset_info(DATASET).sha}")
+          PY
+
       - name: Cache wiki-search index and embedding model
         if: matrix.suite == 'examples'
         uses: actions/cache@v6
@@ -119,7 +129,7 @@ jobs:
           path: |
             ~/.cache/wiki_search
             ~/.cache/chroma
-          key: wiki-search-${{ runner.os }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
+          key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
 
       - name: Run live v1 E2Es
         run: |
