@@ -392,6 +392,12 @@ class HarnessSession:
             self.tool_interception_url,
         )
 
+    async def lost(self) -> Exception:
+        """Wait until the harness's live process dies between turns (its box went
+        away, say) and return why. A session that keeps no process between turns
+        never returns."""
+        return await asyncio.get_running_loop().create_future()
+
     async def close(self) -> None:
         """Close session-owned resources. Idempotent."""
         self._closed = True

@@ -416,6 +416,12 @@ class Rollout:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         return await self._harness_session.steer(message, message_id=message_id)
 
+    async def lost(self) -> Exception:
+        """Wait until the harness's live process dies between segments (its box
+        went away, say) and return why; see `HarnessSession.lost`."""
+        assert self._harness_session is not None
+        return await self._harness_session.lost()
+
     async def step(self, messages: Messages | None = None) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —

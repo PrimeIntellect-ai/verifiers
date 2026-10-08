@@ -492,6 +492,17 @@ class Interaction:
         self._over = True
         return Segment(messages=[], terminated=True)
 
+    async def lost(self) -> None:
+        """Return once the harness's live process dies between turns (its box went
+        away, say), the failure recorded on the trace, so a caller waiting for its
+        next message learns the exchange is over without sending one. Never
+        returns while the process lives, or for a harness that keeps none."""
+        error = await self._run.lost()
+        async with self._lock:
+            if not self._run.closed and self._run.ok:
+                self._run.fail(error)
+            self._over = True
+
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""

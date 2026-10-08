@@ -235,6 +235,13 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._stopping = False
+        self._lost: asyncio.Future[Exception] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+    async def lost(self) -> Exception:
+        return await asyncio.shield(self._lost)
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -262,6 +269,17 @@ class ACPHarnessSession(HarnessSession):
                     future.set_exception(
                         RuntimeError(f"ACP connection closed: {error}")
                     )
+            # Its stream ending unasked means the process (or its box) is gone,
+            # which a caller waiting between turns learns only through `lost()`.
+            if not (
+                self._closed
+                or self._stopping
+                or isinstance(error, asyncio.CancelledError)
+                or self._lost.done()
+            ):
+                self._lost.set_result(
+                    HarnessError(f"the ACP process stream ended: {error}")
+                )
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
         process = self._process
@@ -378,6 +396,7 @@ class ACPHarnessSession(HarnessSession):
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
             return {}
+        self._stopping = True
         response_metadata: dict[str, Any] = {}
         try:
             if graceful:
@@ -404,6 +423,7 @@ class ACPHarnessSession(HarnessSession):
                 except TimeoutError:
                     continue
         finally:
+            self._stopping = False
             self._process = None
             self._reader = None
             self._response_task = None
