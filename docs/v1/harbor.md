@@ -85,6 +85,25 @@ resource_multiplier = 2.0
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
+## Rewards
+
+`reward.json` takes precedence over `reward.txt`. An existing JSON file must contain
+an object of finite numeric values; invalid, unreadable, or oversized JSON fails
+grading without falling back to text. When JSON is absent, `reward.txt` supplies
+the numeric `reward` value. A verifier's nonzero exit does not override a valid
+reward file.
+
+The `reward` key supplies the scalar reward by default. To select another key:
+
+```toml
+[env.taskset.task]
+reward_key = "accuracy"
+```
+
+Other named values are retained as trace metrics. A missing selected key fails
+grading; named values are never implicitly summed. The same selection applies to
+shared and separate verifiers.
+
 ## Docker Compose
 
 Select `runtime.type = "docker"` to run Compose tasks locally.

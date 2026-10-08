@@ -28,7 +28,6 @@ import time
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -50,12 +49,18 @@ HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
 REWARD_JSON_ADAPTER = TypeAdapter(
-    float | Annotated[dict[str, float], Field(min_length=1)],
+    dict[str, float],
     config=ConfigDict(strict=True, allow_inf_nan=False),
+)
+
+REWARD_SCALAR_ADAPTER = TypeAdapter(
+    float, config=ConfigDict(strict=True, allow_inf_nan=False)
 )
 
 
 class HarborTaskConfig(TaskConfig):
+    reward_key: str = Field("reward", min_length=1)
+    """Named verifier value used as the training reward; other values remain metrics."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
 
@@ -380,44 +385,57 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
         scores = await self.read_reward_json(runtime)
-        if scores is not None:
-            if isinstance(scores, dict) and "reward" in scores:
-                trace.record_metrics(
-                    {key: value for key, value in scores.items() if key != "reward"}
-                )
-                return {"reward": scores["reward"]}
-            return scores
-        try:
-            reward = (
-                (
-                    await runtime.read(
-                        "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+        if scores is None:
+            try:
+                value = (
+                    (
+                        await runtime.read(
+                            "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+                        )
                     )
+                    .decode()
+                    .strip()
                 )
-                .decode()
-                .strip()
-            )
-            return REWARD_JSON_ADAPTER.validate_python(float(reward))
-        except (SandboxError, OSError, ValueError) as exc:
+                scores = {"reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))}
+            except (SandboxError, OSError, ValueError) as exc:
+                raise TaskError(
+                    "Harbor verifier produced no reward.json and no valid reward.txt "
+                    f"(exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                ) from exc
+        key = self.config.reward_key
+        if key not in scores:
             raise TaskError(
-                "Harbor verifier produced no valid reward.json or reward.txt "
-                f"(exit {result.exit_code}): "
-                f"{(result.stderr or result.stdout).strip()[-500:]}"
-            ) from exc
+                f"Harbor verifier reward key {key!r} is missing; "
+                f"available keys: {sorted(scores)}. "
+                "Set task.reward_key to select a named verifier reward."
+            )
+        trace.record_metrics(
+            {name: value for name, value in scores.items() if name != key}
+        )
+        return {key: scores[key]}
 
-    async def read_reward_json(
-        self, runtime: Runtime
-    ) -> float | dict[str, float] | None:
-        """Read Harbor's scalar or keyed JSON reward, if it is valid.
+    async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
+        """JSON takes precedence whenever present; invalid or unreadable JSON fails.
 
-        Bounded: this is a grading input, and nothing guarantees its size.
+        Only absence permits text fallback. Reads remain bounded at the source.
         """
+        exists = await runtime.run(
+            ["sh", "-c", 'test -e "$1" || test -L "$1"', "vf-reward", REWARD_JSON], {}
+        )
+        if exists.exit_code == 1:
+            return None
+        if exists.exit_code:
+            raise TaskError(f"Cannot inspect Harbor reward file {REWARD_JSON}")
         try:
             return REWARD_JSON_ADAPTER.validate_json(
                 await runtime.read(REWARD_JSON, max_bytes=MAX_REWARD_BYTES)
             )
-        except (SandboxError, OSError, ValidationError):
-            return None
+        except (SandboxError, OSError, ValidationError) as exc:
+            raise TaskError(
+                "Harbor verifier produced invalid or unreadable reward.json; "
+                "expected an object of finite numeric rewards"
+            ) from exc
 
 
 def verifier_box_data(data: HarborData) -> HarborData:
