@@ -48,6 +48,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
 )
 
 if TYPE_CHECKING:
@@ -164,6 +165,9 @@ class MessageNode(BaseModel):
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
 
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Sampler top-k probabilities for sampled tokens; unnormalized over the head."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
@@ -224,6 +228,29 @@ class MessageNode(BaseModel):
                 counts=_decode_ndarray(value["counts"]),
             )
         raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+
+    @field_serializer("top_logprobs")
+    def serialize_top_logprobs(self, head: TopLogprobs | None) -> dict | None:
+        if head is None:
+            return None
+        return {
+            "ids": _encode_ndarray(head.ids),
+            "logprobs": _encode_ndarray(head.logprobs),
+            "counts": _encode_ndarray(head.counts),
+        }
+
+    @field_validator("top_logprobs", mode="before")
+    @classmethod
+    def deserialize_top_logprobs(cls, value: Any) -> TopLogprobs | None:
+        if value is None or isinstance(value, TopLogprobs):
+            return value
+        if isinstance(value, dict):
+            return TopLogprobs(
+                ids=_decode_ndarray(value["ids"]),
+                logprobs=_decode_ndarray(value["logprobs"]),
+                counts=_decode_ndarray(value["counts"]),
+            )
+        raise TypeError(f"cannot build TopLogprobs from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -775,6 +802,22 @@ def _project_prompt_attribution(
     return projected_spans, projected_is_content
 
 
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a completion-aligned top-k sampling head to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        raise ValueError("Top logprobs must align with every sampled node token")
+    node.top_logprobs = payload
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -969,6 +1012,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id
