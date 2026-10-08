@@ -16,6 +16,8 @@
  * See README.md for full documentation.
  */
 
+import "dotenv/config";
+
 import { createServer } from "./server";
 import { sessionManager } from "./sessionManager";
 
