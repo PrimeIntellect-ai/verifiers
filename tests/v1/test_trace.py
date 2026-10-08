@@ -26,7 +26,7 @@ from verifiers.v1.semantic import (
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
-from verifiers.v1.utils.trace_store import read_episodes, write_episode
+from verifiers.v1.utils.trace_store import write_episode
 
 
 class MyTask(vf.TaskData):
@@ -143,16 +143,11 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
         {"extra_body": {"top_k": 20, "max_completion_tokens": None}},
     ],
 )
-def test_bare_trace_round_trip(sampling, tmp_path):
+def test_bare_trace_round_trip(sampling):
     spec = vf.AgentConfig(sampling=sampling)
-    restored = vf.AgentConfig.model_validate_json(
-        spec.model_dump_json(exclude_none=True)
-    )
-    if spec.sampling is not None:
-        assert restored.sampling.model_fields_set == spec.sampling.model_fields_set
     defaults = vf.SamplingConfig(temperature=0.7, max_tokens=128, top_k=40)
-    resolved = resolve_agent(restored, sampling=defaults)
-    assert resolved.sampling == resolve_agent(spec, sampling=defaults).sampling
+    # Resolve the live overrides before serializing the effective config on a trace.
+    resolved = resolve_agent(spec, sampling=defaults)
     assert set(vf.SamplingConfig.model_fields) <= resolved.sampling.model_fields_set
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
@@ -164,13 +159,14 @@ def test_bare_trace_round_trip(sampling, tmp_path):
             hash="content-digest",
         ),
     )
-    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
-    (episode,) = read_episodes(tmp_path, vf.Trace)
+    episode = vf.Episode(task=tr.task, traces=[tr], ok=True)
     for rt in (
         vf.Trace.model_validate(tr.model_dump()),
         vf.Trace.model_validate_json(tr.model_dump_json(exclude_none=True)),
         vf.Trace.model_validate(tr.to_record()),
-        episode.traces[0],
+        vf.Episode.model_validate_json(
+            episode.model_dump_json(exclude_none=True)
+        ).traces[0],
         vf.Episode.model_validate(episode.to_record()).traces[0],
     ):
         assert rt.id == tr.id

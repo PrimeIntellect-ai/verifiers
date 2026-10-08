@@ -53,6 +53,9 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
+from openai.types.chat.completion_create_params import (
+    CompletionCreateParamsNonStreaming,
+)
 from pydantic import BaseModel
 from typing_extensions import TypeVar
 
@@ -176,7 +179,15 @@ class Judge(Generic[ParsedT, ConfigT]):
             else [message_to_wire(m) for m in messages]
         )
         kwargs: dict[str, Any] = {"model": self.config.model, "messages": wire}
-        kwargs.update(self.config.sampling.model_dump(exclude_none=True))
+        params = self.config.sampling.model_dump(exclude_none=True)
+        sdk_fields = CompletionCreateParamsNonStreaming.__annotations__
+        kwargs.update(
+            {key: value for key, value in params.items() if key in sdk_fields}
+        )
+        # The SDK accepts provider-specific parameters only through extra_body.
+        kwargs["extra_body"] = {
+            key: value for key, value in params.items() if key not in sdk_fields
+        }
         kwargs.update(sampling)
 
         response: JudgeResponse[Any] | None = None
