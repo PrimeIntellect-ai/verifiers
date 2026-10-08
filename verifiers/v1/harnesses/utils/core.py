@@ -168,6 +168,27 @@ BACKGROUNDED: list[subprocess.Popen] = []
 BASH_CALLS = itertools.count(1)
 
 
+def held_open(path: Path) -> bool:
+    """Whether a process still has `path` open (False when /proc can't tell, e.g. macOS)."""
+    try:
+        target = path.stat()
+    except OSError:
+        return False
+    for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:  # gone, or another user's process
+            continue
+        for fd in fds:
+            try:
+                st = fd.stat()
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
+                return True
+    return False
+
+
 def run_bash(command: str, timeout: float) -> str:
     """Run `command` and return its stdout + stderr.
 
@@ -175,7 +196,9 @@ def run_bash(command: str, timeout: float) -> str:
     process the command backgrounds (`server &`, `nohup ... &`) would inherit a
     pipe and hold it open, so waiting for EOF would block on it. A command still
     running after `timeout` seconds is left running: the call returns its output
-    so far and where the rest goes, so long builds and test runs aren't lost."""
+    so far and where the rest goes, so long builds and test runs aren't lost. A
+    finished command's log is deleted unless a process it backgrounded still
+    writes to it; then it stays, and the agent is told where."""
     global BASH_LOG_DIR
     BACKGROUNDED[:] = [proc for proc in BACKGROUNDED if proc.poll() is None]
     try:
@@ -199,7 +222,11 @@ def run_bash(command: str, timeout: float) -> str:
                 f"{proc.pid}; output continues in {log}. Check it with `tail -n 50 {log}`, "
                 f"stop it with `pkill -P {proc.pid}; kill {proc.pid}`.]"
             )
-        return log.read_bytes().decode(errors="replace")
+        output = log.read_bytes().decode(errors="replace")
+        if held_open(log):
+            return f"{output}\n[processes this command backgrounded still send their output to {log}]"
+        log.unlink()
+        return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
