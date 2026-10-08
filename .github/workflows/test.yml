@@ -78,9 +78,9 @@ jobs:
       matrix:
         include:
           - suite: core
-            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "not test_acp_resume_with_tool"
-          - suite: acp
-            selection: tests/v1 --ignore=tests/v1/test_envs.py -k test_acp_resume_with_tool
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "not (test_acp_resume_with_tool or test_agentic)"
+          - suite: harnesses
+            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "test_acp_resume_with_tool or test_agentic"
           - suite: examples
             selection: tests/v1/test_envs.py
     env:
