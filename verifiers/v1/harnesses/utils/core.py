@@ -5,6 +5,7 @@ import asyncio
 import itertools
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import traceback
@@ -169,12 +170,16 @@ BASH_CALLS = itertools.count(1)
 
 
 def held_open(path: Path) -> bool:
-    """Whether a process still has `path` open (False when /proc can't tell, e.g. macOS)."""
+    """Whether another process still has `path` open (False when /proc can't
+    tell, e.g. macOS)."""
     try:
         target = path.stat()
     except OSError:
         return False
+    own = Path(f"/proc/{os.getpid()}/fd")
     for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+        if fd_dir == own:
+            continue
         try:
             fds = list(fd_dir.iterdir())
         except OSError:  # gone, or another user's process
@@ -202,30 +207,36 @@ def run_bash(command: str, timeout: float) -> str:
     global BASH_LOG_DIR
     BACKGROUNDED[:] = [proc for proc in BACKGROUNDED if proc.poll() is None]
     try:
-        if BASH_LOG_DIR is None:
+        # The command may wipe $TMPDIR (`rm -rf /tmp/*`): recreate the directory,
+        # and read output through the open file rather than its path
+        if BASH_LOG_DIR is None or not BASH_LOG_DIR.is_dir():
             BASH_LOG_DIR = Path(tempfile.mkdtemp(prefix="vf-bash-"))
         log = BASH_LOG_DIR / f"{next(BASH_CALLS)}.log"
-        with log.open("wb") as out:
+        # Append mode: seeking back to read must not move where the command's
+        # still-running processes write
+        with log.open("a+b") as out:
             proc = subprocess.Popen(
                 ["bash", "-c", command],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.STDOUT,
             )
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            BACKGROUNDED.append(proc)
-            output = log.read_bytes().decode(errors="replace")
-            return (
-                f"{output}\n[still running after {timeout:g}s: moved to the background as pid "
-                f"{proc.pid}; output continues in {log}. Check it with `tail -n 50 {log}`, "
-                f"stop it with `pkill -P {proc.pid}; kill {proc.pid}`.]"
-            )
-        output = log.read_bytes().decode(errors="replace")
-        if held_open(log):
-            return f"{output}\n[processes this command backgrounded still send their output to {log}]"
-        log.unlink()
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                BACKGROUNDED.append(proc)
+                out.seek(0)
+                output = out.read().decode(errors="replace")
+                return (
+                    f"{output}\n[still running after {timeout:g}s: moved to the background as pid "
+                    f"{proc.pid}; output continues in {log}. Check it with `tail -n 50 {log}`, "
+                    f"stop it with `pkill -P {proc.pid}; kill {proc.pid}`.]"
+                )
+            out.seek(0)
+            output = out.read().decode(errors="replace")
+            if held_open(log):
+                return f"{output}\n[processes this command backgrounded still send their output to {log}]"
+        log.unlink(missing_ok=True)
         return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
