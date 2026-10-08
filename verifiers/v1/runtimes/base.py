@@ -306,14 +306,28 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"{self.scripts_dir}/{digest}.py"
-        if digest not in self._uv_interpreters:
-            async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
-                if digest not in self._uv_interpreters:
-                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+        # Views of one box share this cache but not their user: an interpreter
+        # prepared as root lives in root's uv cache, which another user cannot run,
+        # and the uploaded script lands in root's directory, which it cannot write.
+        # Another user prepares its own copy in a directory of its own.
+        scripts_dir = (
+            self.scripts_dir if self.user is None else f"{self.scripts_dir}-{self.user}"
+        )
+        path = f"{scripts_dir}/{digest}.py"
+        key = f"{self.user or ''}:{digest}"
+        if key not in self._uv_interpreters:
+            async with self._uv_script_locks.setdefault(key, asyncio.Lock()):
+                if key not in self._uv_interpreters:
+                    tmp = f"{self.scripts_dir}/{digest}.py.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    place = (
+                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"
+                        if self.user is None
+                        else f"mkdir -p {shlex.quote(scripts_dir)} "
+                        f"&& cp {shlex.quote(tmp)} {shlex.quote(path)}"
+                    )
                     command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"{place} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
@@ -328,10 +342,8 @@ class Runtime(ABC):
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
-                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
-                        -1
-                    ]
-        interpreter = self._uv_interpreters[digest]
+                    self._uv_interpreters[key] = result.stdout.strip().splitlines()[-1]
+        interpreter = self._uv_interpreters[key]
         if not activate:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
