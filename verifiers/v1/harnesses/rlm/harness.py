@@ -19,10 +19,12 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="128dd78964e9dd24df1d328a344eaad6011af98c", min_length=1
+        default="c665a1879cc90ec58699a604dcff43bda55c5ea8", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -192,6 +194,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
+        seed: Messages | None = None,
     ) -> JsonObject:
         compaction = self.config.compaction
         max_concurrent_subagents = self.config.max_concurrent_subagents
@@ -250,6 +253,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         }
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
+        if seed:
+            payload["seed_messages"] = [
+                message_to_wire(message) for message in seed if message.role != "system"
+            ]
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
     async def prepare_acp(
@@ -263,12 +270,18 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        seed = None
+        if isinstance(prompt, list) and any(m.role != "user" for m in prompt):
+            # A saved conversation: rlm resumes it, and the user messages after its
+            # last model or tool message are the next turn.
+            cut = max(i for i, m in enumerate(prompt) if m.role != "user") + 1
+            seed, prompt = prompt[:cut], prompt[cut:] or None
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt
+                ctx, trace, runtime, endpoint, secret, system_prompt, seed
             ),
         )
 
