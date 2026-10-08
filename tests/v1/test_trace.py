@@ -12,8 +12,9 @@ import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
-from verifiers.v1.graph import MessageNode, prepare_turn
+from verifiers.v1.graph import FullToolOutput, MessageNode, prepare_turn
 from verifiers.v1.harnesses.rlm.harness import (
+    RLM_CUT_TOOL_OUTPUTS_METADATA_KEY,
     RLM_SESSION_METADATA_KEY,
     RLMHarness,
     RLMHarnessConfig,
@@ -24,7 +25,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
 
@@ -447,6 +448,45 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     )
     restored.add_semantic_edges(_semantic_edge_set())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
+
+
+def test_rlm_cut_tool_output_is_kept_whole_on_its_node():
+    """The node keeps the cut view the model saw; the whole output rides beside it."""
+    view = "Warning: truncated output\n\nhe\n[... 6 bytes truncated ...]\nil"
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q")),
+            MessageNode(parent=0, message=ToolMessage(tool_call_id="c1", content=view)),
+            MessageNode(parent=1, message=ToolMessage(tool_call_id="c2", content="ok")),
+        ],
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    cut = {
+        "tool_call_id": "c1",
+        "content": "head-tail",
+        "head_chars": 2,
+        "tail_chars": 2,
+    }
+    harness.acp_turn_result(
+        tr,
+        vf.ACPTurn(
+            reply="done",
+            response_metadata={
+                RLM_SESSION_METADATA_KEY: {"session_id": tr.id, "metrics": {}},
+                RLM_CUT_TOOL_OUTPUTS_METADATA_KEY: [cut],
+            },
+        ),
+    )
+
+    restored = vf.WireTrace.model_validate_json(tr.model_dump_json())
+    assert restored.nodes[1].message.content == view
+    assert restored.nodes[1].full_output == FullToolOutput(
+        content="head-tail", head_chars=2, tail_chars=2
+    )
+    assert restored.nodes[2].full_output is None
+    assert "full_output" not in tr.nodes[2].model_dump()
 
 
 def test_semantic_edge_uses_last_committed_retry_node():

@@ -20,6 +20,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.graph import FullToolOutput
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -37,6 +38,7 @@ SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+RLM_CUT_TOOL_OUTPUTS_METADATA_KEY = "ai.prime.rlm/cut-tool-outputs-v1"
 
 
 class _SessionSnapshot(BaseModel):
@@ -71,7 +73,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="c665a1879cc90ec58699a604dcff43bda55c5ea8", min_length=1
+        default="c4659fa4a88aa353de0d577a339dec54644fa8d2", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -292,6 +294,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
         trace.record_metrics(snapshot.metrics)
+        for item in metadata.get(RLM_CUT_TOOL_OUTPUTS_METADATA_KEY, []):
+            trace.record_full_tool_output(
+                item["tool_call_id"], FullToolOutput.model_validate(item)
+            )
         if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
             trace.stop(condition)
 

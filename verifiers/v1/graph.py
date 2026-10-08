@@ -80,6 +80,19 @@ overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="pytho
 full precision — training never reads the record."""
 
 
+class FullToolOutput(BaseModel):
+    """A tool result as the tool produced it, when the harness cut it before the model
+    saw it. The node's `message` holds the cut view the model saw."""
+
+    content: str
+    """The tool's whole output."""
+    head_chars: int
+    """Characters at the start of `content` the model saw."""
+    tail_chars: int
+    """Characters at the end of `content` the model saw; everything between the head
+    and the tail was cut."""
+
+
 class MessageNode(BaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -100,6 +113,10 @@ class MessageNode(BaseModel):
     """
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
+    full_output: FullToolOutput | None = Field(
+        default=None, exclude_if=lambda output: output is None
+    )
+    """Tool nodes only: the whole tool result when the model saw a cut `message`."""
     sampled: bool = False
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context

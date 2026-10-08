@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError, stop_condition
-from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
+from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, FullToolOutput, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
@@ -566,6 +566,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 )
             )
         return branches
+
+    def record_full_tool_output(
+        self, tool_call_id: str, output: FullToolOutput
+    ) -> None:
+        """Keep a tool result the model saw cut whole, on the nodes carrying it."""
+        for node in self.nodes:
+            if (
+                isinstance(node.message, ToolMessage)
+                and node.message.tool_call_id == tool_call_id
+            ):
+                node.full_output = output
+        self.notify()
 
     def add_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
         """Add newly advertised ACP edges; cumulative replays are idempotent."""
