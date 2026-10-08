@@ -69,7 +69,7 @@ class EnvClient:
         # handler that raises is logged and skipped rather than allowed to end the loop.
         while True:
             try:
-                frames = await self.socket.recv_multipart()
+                frames = await self.socket.recv_multipart(copy=False)
             except asyncio.CancelledError:
                 break
             try:
@@ -78,19 +78,23 @@ class EnvClient:
                         f"expected [request_id, kind, data], got {len(frames)} frames - "
                         "is the env server speaking the same serve protocol?"
                     )
-                request_id_bytes, kind, data = frames
-                request_id = request_id_bytes.decode()
+                request_id_frame, kind_frame, data_frame = frames
+                request_id = request_id_frame.bytes.decode()
+                kind = kind_frame.bytes
                 if kind == b"delta":
                     on_delta = self._deltas.get(request_id)
                     if on_delta is not None:
-                        delta = await self._decode(unpack, data)
+                        # The view retains its ZMQ frame while a cancelled worker finishes.
+                        delta = await self._decode(
+                            unpack, data_frame.buffer.toreadonly()
+                        )
                         # Cancellation may remove the handler while the worker decodes.
                         if self._deltas.get(request_id) is on_delta:
                             on_delta(delta)
                     continue
                 future = self._pending.pop(request_id, None)
                 if future is not None and not future.done():
-                    future.set_result(data)
+                    future.set_result(data_frame.bytes)
             except Exception:  # keep receiving for the other requests
                 logger.warning("dropping a malformed env-server frame", exc_info=True)
 
