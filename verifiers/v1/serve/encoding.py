@@ -47,7 +47,7 @@ def msgpack_encoder(obj):
         return obj.value
     elif isinstance(obj, (datetime, date)):
         return obj.isoformat()
-    elif isinstance(obj, (np.integer, np.floating)):
+    elif isinstance(obj, (np.bool_, np.integer, np.floating)):
         return obj.item()
     elif isinstance(obj, np.ndarray):
         return _encode_array_like(obj)
