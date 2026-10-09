@@ -395,7 +395,7 @@ def test_transcript():
 
 
 def test_agentic_judge_trace_hidden_reasoning_toggle():
-    task = JudgeTask.from_trace(full_trace_fixture(), JudgeTaskConfig(), None)
+    task = JudgeTask.from_trace(full_trace_fixture(), JudgeTaskConfig())
     record = json.loads(task.files[TRACE_FILE])
     assistant = record["nodes"][1]["message"]
     assert assistant["content"] == "Let me look it up."
@@ -404,7 +404,7 @@ def test_agentic_judge_trace_hidden_reasoning_toggle():
     assert "provider_state" not in assistant
 
     task = JudgeTask.from_trace(
-        full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True), None
+        full_trace_fixture(), JudgeTaskConfig(include_hidden_reasoning=True)
     )
     assistant = json.loads(task.files[TRACE_FILE])["nodes"][1]["message"]
     assert assistant["reasoning_content"] == "SECRET REASONING"

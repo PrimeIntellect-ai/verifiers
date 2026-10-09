@@ -139,12 +139,12 @@ class JudgeTask(vf.Task):
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        network: vf.NetworkPolicyConfig | None,
         share_runtime: bool = True,
     ) -> "JudgeTask":
-        """Mint the judge's task from the solver's finished trace. `network` is the
-        policy the solver actually ran under (`Task.network`, the run's override
-        included), not the declaration its trace records, so a shared box matches.
+        """Mint the judge's task from the solver's finished trace. The judge's box
+        gets the policy the solver's box ran under, read from the trace's runtime
+        record (the run's override included) rather than the task's declaration, so
+        a shared box matches and a fresh one resolves the same.
 
         `share_runtime` selects both the workspace note and artifact transport. In
         the solver's box the published artifacts are already on disk, so none
@@ -152,6 +152,12 @@ class JudgeTask(vf.Task):
         paths they had.
         """
         solved = solution.task.data
+        runtime = solution.agent.runtime
+        network = (
+            vf.NetworkPolicyConfig(allow=runtime.allow, block=runtime.block)
+            if isinstance(runtime, vf.NetworkPolicyConfig)
+            else None
+        )
         record = solution.to_record()
         if not config.include_hidden_reasoning:
             for node in record["nodes"]:
@@ -348,7 +354,7 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
                 raise RuntimeError(
                     "the solver's rollout failed, so the judge never ran"
                 )
-            judge_task = JudgeTask.from_trace(solution, self.config.task, task.network)
+            judge_task = JudgeTask.from_trace(solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 
 
@@ -360,7 +366,5 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
         if not solution.ok:
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(
-            JudgeTask.from_trace(
-                solution, self.config.task, task.network, share_runtime=False
-            )
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )

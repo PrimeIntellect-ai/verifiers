@@ -114,3 +114,17 @@ def test_agent_runtime_refuses_a_network_policy() -> None:
     )
     # Outside a seat a runtime config still takes a policy.
     assert DockerConfig(allow=[]).network_restricted
+    # The debug and validate CLIs run the task in their `--runtime`, so the same rule.
+    from verifiers.v1.configs.cli.debug import DebugConfig
+    from verifiers.v1.configs.cli.validate import ValidateConfig
+
+    for cli, extra in ((DebugConfig, {"command": "true"}), (ValidateConfig, {})):
+        with pytest.raises(ValueError, match="taskset.task.network"):
+            cli.model_validate({"runtime": {"type": "prime", "allow": []}, **extra})
+    # A recorded trace keeps whatever policy its run resolved.
+    from verifiers.v1.configs.agent import WireAgentConfig
+
+    recorded = WireAgentConfig.model_validate(
+        {"runtime": {"type": "prime", "allow": []}}
+    )
+    assert recorded.runtime.network_restricted

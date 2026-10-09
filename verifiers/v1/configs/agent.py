@@ -58,29 +58,10 @@ class AgentConfig(BaseConfig):
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_runtime_network_policy(cls, data):
-        """The seat's box enforces its task's policy (`Task.network`), so `allow`/`block`
-        under `runtime` are refused here. A runtime configured anywhere else — a tool
-        server's own box, the Harbor verifier's — still takes them."""
-        if not isinstance(data, dict):
-            return data
-        runtime = data.get("runtime")
-        if isinstance(runtime, dict):
-            allow, block = runtime.get("allow"), runtime.get("block")
-            restricted = (allow is not None and "*" not in allow) or bool(block)
-        else:
-            restricted = (
-                isinstance(runtime, NetworkPolicyConfig) and runtime.network_restricted
-            )
-        if restricted:
-            raise ValueError(
-                "an agent's network policy comes from its task: set TaskData.network "
-                "in the taskset or override it with [env.taskset.task.network], not "
-                "allow/block under [env.agent.runtime]"
-            )
-        return data
+    @model_validator(mode="after")
+    def _refuse_runtime_network_policy(self):
+        refuse_runtime_network_policy(self.runtime, "[env.taskset.task.network]")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -110,6 +91,23 @@ class WireAgentConfig(AgentConfig):
     def _resolve_harness(cls, data):
         """Override: a record read resolves no plugins."""
         return data
+
+    @model_validator(mode="after")
+    def _refuse_runtime_network_policy(self):
+        """Override: a record read keeps the policy the run recorded."""
+        return self
+
+
+def refuse_runtime_network_policy(runtime: RuntimeConfig, override: str) -> None:
+    """A box that runs a task enforces the task's policy (`Task.network`), so a
+    restricted policy on its runtime config has nowhere to apply; refuse it in favour
+    of the task's. A runtime configured elsewhere — a tool server's own box, the Harbor
+    verifier's — keeps its policy."""
+    if isinstance(runtime, NetworkPolicyConfig) and runtime.network_restricted:
+        raise ValueError(
+            "the box's network policy comes from its task: set TaskData.network in the "
+            f"taskset or override it with {override}, not allow/block on the runtime"
+        )
 
 
 def agent_config_fields(config: BaseModel) -> dict[str, AgentConfig]:
