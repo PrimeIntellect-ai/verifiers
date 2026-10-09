@@ -164,9 +164,8 @@ baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema
 
 A run replaces a task's policy with `[env.taskset.task.network]`. Trusted task and harness
 setup remains online. The policy starts immediately before the agent and stays active
-through finalization and scoring, except that a shared verifier whose verifier phase is
-`public` grades with open egress, as it does under Harbor; a separate verifier box follows
-its own declared policy and `--env.verifier.runtime.*`. Interception and MCP URLs are
+through finalization; shared-box grading reopens egress first (the verifier is trusted),
+and a separate verifier box follows its own declared policy and `--env.verifier.runtime.*`. Interception and MCP URLs are
 added automatically in allowlist and framework-only modes. Concrete task/runtime
 allowlists retain their shared entries, while blocklists combine; framework-only access on
 either side takes precedence, and concrete allowlists cannot be combined with blocklists.
