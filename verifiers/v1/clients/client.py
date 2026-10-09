@@ -72,6 +72,10 @@ class Client(ABC):
 
 def resolve_client(config: BaseClientConfig) -> Client:
     if isinstance(config, TrainClientConfig):
+        if config.protocol == "mito":
+            from verifiers.v1.clients.mito import MITOTrainClient
+
+            return MITOTrainClient(config)
         from verifiers.v1.clients.train import TrainClient
 
         return TrainClient(config)

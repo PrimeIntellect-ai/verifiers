@@ -14,6 +14,284 @@ import pytest
 mark = pytest.mark
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["mito", "tito"])
+async def test_mito_training_engine_tokens(protocol):
+    import base64
+    import json
+
+    import httpx
+    import numpy as np
+    import verifiers.v1 as vf
+
+    from verifiers.v1.clients import EvalClientConfig, TrainClientConfig, resolve_client
+    from verifiers.v1.clients.eval import EvalClient
+    from verifiers.v1.dialects import ChatDialect
+    from verifiers.v1.types import SamplingConfig
+
+    config = TrainClientConfig(base_url="http://provider.test/v1", protocol=protocol)
+    if protocol == "tito":
+        from verifiers.v1.clients.train import TrainClient
+
+        assert isinstance(resolve_client(config), TrainClient)
+        return
+    client = resolve_client(config)
+    payload = {
+        "id": "image-turn",
+        "created": 0,
+        "model": "adapter-v2",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "red"},
+                "finish_reason": "stop",
+            }
+        ],
+        "nvext": {
+            "engine_data": {
+                "prompt_token_ids": [1, 18, 18, 18, 2],
+                "completion_token_ids": [4, 5],
+                "completion_logprobs": [-0.1, -0.2],
+            }
+        },
+    }
+    sent = []
+
+    async def respond(request):
+        sent.append(request)
+        return httpx.Response(200, json=payload)
+
+    await client.client.aclose()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    body = {
+        "model": "adapter-v2",
+        "messages": [{"role": "user", "content": "color?"}],
+        "stream": True,
+        "nvext": {"cache_salt": "v2", "extra_fields": ["foo"]},
+    }
+    try:
+        response = await client.get_response(
+            ChatDialect(),
+            body,
+            SamplingConfig(),
+            session_id="rollout-1",
+            headers={"authorization": "Bearer localhost", "x-request-id": "req-1"},
+        )
+        assert response.tokens.prompt_ids == [1, 18, 18, 18, 2]
+        assert response.tokens.completion_ids == [4, 5]
+        assert response.tokens.completion_logprobs == [-0.1, -0.2]
+        wire = json.loads(sent[0].content)
+        assert wire["stream"] is False
+        assert wire["logprobs"] is True
+        assert wire["model"] == "adapter-v2"
+        assert wire["nvext"] == {
+            "cache_salt": "v2",
+            "extra_fields": ["foo", "engine_data"],
+        }
+        assert sent[0].headers["x-session-id"] == "rollout-1"
+        assert sent[0].headers["x-request-id"] == "req-1"
+        assert sent[0].headers["authorization"] != "Bearer localhost"
+        assert body["stream"] is True
+        assert body["nvext"]["extra_fields"] == ["foo"]
+        assert response.raw == payload
+        routing = np.arange(7, dtype=np.uint16).reshape(7, 1, 1)
+        payload["nvext"]["routed_experts"] = {
+            "data": base64.b64encode(routing.tobytes()).decode(),
+            "shape": [7, 1, 1],
+            "start": 0,
+            "dtype": "uint16",
+        }
+        payload["nvext"]["engine_data"]["sampling_mask"] = [[4], [5, 6]]
+        response = await client.get_response(ChatDialect(), body, SamplingConfig())
+        trace = vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="color?")),
+        )
+        from verifiers.v1.graph import prepare_turn
+
+        prepare_turn(trace, [vf.UserMessage(content="color?")]).commit(response)
+        branch = trace.branches[-1]
+        assert branch.token_ids == [1, 18, 18, 18, 2, 4, 5]
+        assert branch.sampled_mask == [False] * 5 + [True, True]
+        assert branch.logprobs[-2:] == [-0.1, -0.2]
+        assert np.array_equal(branch.routed_experts, routing)
+        assert response.tokens.sampling_mask.counts.tolist() == [1, 2]
+        assert branch.sampling_mask.counts.tolist() == [0] * 5 + [1, 2]
+        assert branch.sampling_mask.ids.tolist() == [4, 5, 6]
+    finally:
+        await client.close()
+
+    evaluation = EvalClient(EvalClientConfig(base_url="http://provider.test/v1"))
+    await evaluation.client.aclose()
+    evaluation.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        response = await evaluation.get_response(ChatDialect(), body, SamplingConfig())
+        assert response.tokens is None
+        assert json.loads(sent[-1].content) == body
+    finally:
+        await evaluation.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {
+            "prompt_token_ids": [True],
+            "completion_token_ids": [2],
+            "completion_logprobs": [-0.1],
+        },
+        {
+            "prompt_token_ids": [1],
+            "completion_token_ids": [2],
+            "completion_logprobs": [],
+        },
+        {
+            "prompt_token_ids": [1],
+            "completion_token_ids": [2],
+            "completion_logprobs": [None],
+        },
+        {
+            "prompt_token_ids": [-1],
+            "completion_token_ids": [2],
+            "completion_logprobs": [-0.1],
+        },
+        {
+            "prompt_token_ids": [1],
+            "completion_token_ids": [2],
+            "completion_logprobs": [-0.1],
+            "sampling_mask": [],
+        },
+        {
+            "prompt_token_ids": [1],
+            "completion_token_ids": [2],
+            "completion_logprobs": [-0.1],
+            "sampling_mask": [[True]],
+        },
+        {
+            "prompt_token_ids": "invalid",
+            "completion_token_ids": [2],
+            "completion_logprobs": [-0.1],
+        },
+    ],
+)
+async def test_mito_training_rejects_invalid_engine_tokens(metadata):
+    import httpx
+
+    from verifiers.v1.clients import TrainClientConfig, resolve_client
+    from verifiers.v1.dialects import ChatDialect
+    from verifiers.v1.errors import ProviderError
+    from verifiers.v1.types import SamplingConfig
+
+    client = resolve_client(
+        TrainClientConfig(base_url="http://provider.test/v1", protocol="mito")
+    )
+    payload = {
+        "id": "turn",
+        "created": 0,
+        "model": "model",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "text"},
+                "finish_reason": "stop",
+            }
+        ],
+        "nvext": {"engine_data": metadata},
+    }
+    await client.client.aclose()
+    client.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    )
+    try:
+        with pytest.raises(ProviderError, match="engine_data"):
+            await client.get_response(
+                ChatDialect(), {"model": "model", "messages": []}, SamplingConfig()
+            )
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mito_training_intercepted_stream_captures_tokens():
+    import json
+
+    import httpx
+    import verifiers.v1 as vf
+
+    from verifiers.v1.clients import ModelContext, TrainClientConfig
+    from verifiers.v1.interception.server import (
+        InterceptionServer,
+        InterceptionServerConfig,
+    )
+    from verifiers.v1.session import RolloutSession
+
+    config = TrainClientConfig(base_url="http://provider.test/v1", protocol="mito")
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="color?")),
+    )
+    session = RolloutSession(
+        ctx=ModelContext(model="adapter-v2", client=config), trace=trace
+    )
+    sent = []
+
+    def respond(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "turn",
+                "created": 0,
+                "model": "adapter-v2",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "red"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "nvext": {
+                    "engine_data": {
+                        "prompt_token_ids": [1, 2],
+                        "completion_token_ids": [3],
+                        "completion_logprobs": [-0.1],
+                    }
+                },
+            },
+        )
+
+    async with InterceptionServer(InterceptionServerConfig()) as server:
+        async with server.acquire(session) as (base_url, secret, _):
+            await session.client.client.aclose()
+            session.client.client = httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            )
+            async with httpx.AsyncClient() as harness:
+                response = await harness.post(
+                    f"{base_url}/v1/chat/completions",
+                    headers={"authorization": f"Bearer {secret}"},
+                    json={
+                        "model": "ignored",
+                        "messages": [{"role": "user", "content": "color?"}],
+                        "stream": True,
+                    },
+                )
+            assert response.status_code == 200, response.text
+            assert "text/event-stream" in response.headers["content-type"]
+            assert "red" in response.text
+            assert sent[0]["stream"] is False
+            assert sent[0]["model"] == "adapter-v2"
+            assert trace.branches[-1].token_ids == [1, 2, 3]
+            assert trace.branches[-1].sampled_mask == [False, False, True]
+            assert trace.branches[-1].logprobs[-1:] == [-0.1]
+
+
 def pair(a: str, b: str, id: str, *extra_marks):
     marks = [getattr(mark, a.replace("-", "_")), getattr(mark, b.replace("-", "_"))]
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
