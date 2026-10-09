@@ -139,9 +139,12 @@ class JudgeTask(vf.Task):
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
+        network: vf.NetworkPolicyConfig | None,
         share_runtime: bool = True,
     ) -> "JudgeTask":
-        """Mint the judge's task from the solver's finished trace.
+        """Mint the judge's task from the solver's finished trace. `network` is the
+        policy the solver actually ran under (`Task.network`, the run's override
+        included), not the declaration its trace records, so a shared box matches.
 
         `share_runtime` selects both the workspace note and artifact transport. In
         the solver's box the published artifacts are already on disk, so none
@@ -175,7 +178,7 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
-                network=solved.network,
+                network=network,
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,
@@ -345,7 +348,7 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
                 raise RuntimeError(
                     "the solver's rollout failed, so the judge never ran"
                 )
-            judge_task = JudgeTask.from_trace(solution, self.config.task)
+            judge_task = JudgeTask.from_trace(solution, self.config.task, task.network)
             await agents.judge.run(judge_task, runtime=box)
 
 
@@ -357,5 +360,7 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
         if not solution.ok:
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+            JudgeTask.from_trace(
+                solution, self.config.task, task.network, share_runtime=False
+            )
         )
