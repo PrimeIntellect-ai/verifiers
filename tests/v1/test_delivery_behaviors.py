@@ -102,7 +102,6 @@ async def test_delivery_behavior(kind, state, modes, tmp_path, monkeypatch):
             harness=config,
             model="scripted-delivery" if kind == "rlm" else "claude-sonnet-4-6",
             client={
-                "type": "eval",
                 "base_url": scenario.endpoint + "/v1",
                 "api_key_var": "DELIVERY_SCRIPTED_KEY",
             },
