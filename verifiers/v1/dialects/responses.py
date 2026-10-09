@@ -28,7 +28,7 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_domains,
 )
-from verifiers.v1.errors import model_error
+from verifiers.v1.errors import model_error, stream_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -333,8 +333,15 @@ class ResponsesStreamParser(StreamParser):
 
     def __init__(self) -> None:
         self.events: deque[bytes] = deque(maxlen=2)
-        self.feed = self.events.append
         self.terminal_events: tuple[bytes, ...] | None = None
+
+    def feed(self, raw: bytes) -> None:
+        # A bare `error` event carries the upstream's failure detail; the terminal
+        # `response.failed` path only sees a status, so raise here to keep it.
+        event = parse_sse_event(raw)
+        if isinstance(event, dict) and event.get("type") == "error":
+            raise stream_error(event.get("error") or event)
+        self.events.append(raw)
 
     def on_done(self) -> None:
         # Freeze the terminal tail before later relay chunks can evict it.
