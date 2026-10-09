@@ -110,6 +110,13 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
+A task's egress policy is `TaskData.network` (`NetworkPolicyConfig`, see [Network access](evaluation.md#network-access)); None is open. A closed-book benchmark declares it on its task data:
+
+```python
+class ClosedBookData(vf.TaskData):
+    network: vf.NetworkPolicyConfig | None = vf.NetworkPolicyConfig(allow=[])
+```
+
 ## Task identity
 
 A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.

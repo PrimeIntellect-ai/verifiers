@@ -51,6 +51,22 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
   created instead of opening a new one — this is how a hosted evaluation's sandbox runs
   the same command; it is not something a local run sets by hand
 
+## Network access
+
+The `prime`, `docker` and `modal` runtimes can enforce an egress policy on the agent's box. A policy is one `NetworkPolicyConfig` with two lists of destinations:
+
+- `allow`: what the box may reach. Each entry is a host pattern (`github.com`, `*.github.com`, with `fnmatch` wildcards) or a URL origin (`https://api.github.com:443`, whose scheme and port must then match). `["*"]` is unrestricted and `[]` reaches nothing beyond the framework's own routes (the model endpoint and tool servers).
+- `block`: what the box may not reach. A bare domain blocks its subdomains too; `*.example.com` blocks the subdomains but not the domain itself; `*` blocks everything beyond the framework, which is the same as `allow = []`.
+
+A request is permitted when it matches no `block` entry and some `allow` entry. A concrete allowlist cannot be combined with a non-empty blocklist (the config is rejected); use `allow = ["*"]` with `block` for a denylist, or `allow` alone for an allowlist.
+
+A box's policy comes from the task:
+
+- The task. Its data declares it (`TaskData.network`; a closed-book benchmark declares `allow = []`), and the run's task config replaces that declaration: `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI.
+- Not the agent's runtime. `[env.agent.runtime]` refuses `allow`/`block`: the agent's box enforces the task's resolved policy. A runtime configured anywhere else still takes them — a tool server placed in its own box (`taskset.task.tools.runtime`), the Harbor verifier's `--env.verifier.runtime.*` — and there they are additive restrictions on top of the task's policy: allowlists intersect, blocklists union, so such a runtime only ever narrows.
+
+Before a rollout starts, verifiers appends a note about the restriction to the system prompt, so the model treats a failing connection as intended. `network_notice = false` under `[env.agent]` disables it.
+
 ## Resuming evaluations
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.

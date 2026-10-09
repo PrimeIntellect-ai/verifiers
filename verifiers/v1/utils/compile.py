@@ -42,18 +42,14 @@ def resolve_runtime_config(
         and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    task_network_policy = "*" not in task.data.network_allow or bool(
-        task.data.network_block
-    )
-    if task_network_policy:
+    policy = task.network
+    if policy is not None and policy.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
                 f"task {task.data.idx!r} requires a network policy, but the "
                 f"{config.type} runtime does not support framework-aware policies"
             )
-        config = config.with_task_network_policy(
-            task.data.network_allow, task.data.network_block
-        )
+        config = config.with_task_network_policy(policy.allow, policy.block)
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
         if spec is None:

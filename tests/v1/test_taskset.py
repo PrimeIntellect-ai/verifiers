@@ -9,6 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 import verifiers.v1 as vf
+from verifiers.v1.runtimes import PrimeConfig
+from verifiers.v1.utils.compile import resolve_runtime_config
 
 
 class CountTask(vf.Task[vf.TaskData]):
@@ -199,3 +201,64 @@ def test_select_bounds_an_infinite_taskset() -> None:
     # The shuffle comes before the limit, so the limit cannot bound it.
     with pytest.raises(ValueError, match="infinite"):
         infinite().select(vf.SelectConfig(shuffle=True, limit=5))
+
+
+# Network policy
+
+
+def closed_book(config: vf.TaskConfig | None = None) -> list[CountTask]:
+    closed = vf.NetworkPolicyConfig(allow=[])
+    tasks = [
+        CountTask(count_task(i).data.model_copy(update={"network": closed}), config)
+        for i in range(3)
+    ]
+    tasks[1] = CountTask(
+        tasks[1].data.model_copy(
+            update={"network": vf.NetworkPolicyConfig(allow=["pypi.org"])}
+        ),
+        config,
+    )
+    return tasks
+
+
+def resolved(tasks) -> list[list[str]]:
+    return [resolve_runtime_config(PrimeConfig(), task).allow for task in tasks]
+
+
+def test_task_config_network_replaces_each_tasks_own() -> None:
+    assert resolved(closed_book()) == [[], ["pypi.org"], []]
+    for allow in (["*"], []):
+        config = vf.TaskConfig.model_validate({"network": {"allow": allow}})
+        assert resolved(closed_book(config)) == [allow] * 3
+        # The override survives the config round trip a served run takes.
+        reloaded = vf.TaskConfig.model_validate(config.model_dump(mode="json"))
+        assert resolved(closed_book(reloaded)) == [allow] * 3
+    # A run's override does not change task identity.
+    assert [t.key for t in closed_book()] == [t.key for t in closed_book(config)]
+    # The runtime's own rules still intersect.
+    task = closed_book(vf.TaskConfig(network=vf.NetworkPolicyConfig(allow=["*"])))[0]
+    assert resolve_runtime_config(PrimeConfig(allow=["github.com"]), task).allow == [
+        "github.com"
+    ]
+
+
+def test_harbor_verifier_keeps_its_declared_policy() -> None:
+    from verifiers.v1.tasksets.harbor.taskset import (
+        HarborData,
+        HarborTask,
+        VerifierConfig,
+        verifier_box_data,
+    )
+
+    closed = vf.NetworkPolicyConfig(allow=[])
+    data = HarborData(
+        prompt="x",
+        network=closed,
+        verifier=VerifierConfig(network=vf.NetworkPolicyConfig(allow=["pypi.org"])),
+    )
+    # The run's override reaches the solver, not the separate verifier box, which
+    # the harbor env builds from the verifier declaration with a default config.
+    solver = HarborTask(data, HarborTask.config_type()(network=closed))
+    assert resolve_runtime_config(PrimeConfig(), solver).allow == []
+    grader = HarborTask(verifier_box_data(data))
+    assert resolve_runtime_config(PrimeConfig(), grader).allow == ["pypi.org"]

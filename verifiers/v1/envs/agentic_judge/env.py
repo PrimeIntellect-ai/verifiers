@@ -141,7 +141,10 @@ class JudgeTask(vf.Task):
         config: "JudgeTaskConfig",
         share_runtime: bool = True,
     ) -> "JudgeTask":
-        """Mint the judge's task from the solver's finished trace.
+        """Mint the judge's task from the solver's finished trace. The judge's box
+        gets the policy the solver's box ran under, read from the trace's runtime
+        record (the run's override included) rather than the task's declaration, so
+        a shared box matches and a fresh one resolves the same.
 
         `share_runtime` selects both the workspace note and artifact transport. In
         the solver's box the published artifacts are already on disk, so none
@@ -149,6 +152,12 @@ class JudgeTask(vf.Task):
         paths they had.
         """
         solved = solution.task.data
+        runtime = solution.agent.runtime
+        network = (
+            vf.NetworkPolicyConfig(allow=runtime.allow, block=runtime.block)
+            if isinstance(runtime, vf.NetworkPolicyConfig)
+            else None
+        )
         record = solution.to_record()
         if not config.include_hidden_reasoning:
             for node in record["nodes"]:
@@ -175,8 +184,7 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
-                network_allow=solved.network_allow,
-                network_block=solved.network_block,
+                network=network,
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,

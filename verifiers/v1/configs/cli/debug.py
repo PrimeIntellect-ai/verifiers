@@ -6,6 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.agent import refuse_runtime_network_policy
 from verifiers.v1.configs.cli.validate import CheckTimeoutConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -61,4 +62,9 @@ class DebugConfig(BaseConfig):
             raise ValueError(
                 f"script_path does not exist or is not a file: {self.script_path}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_runtime_network_policy(self):
+        refuse_runtime_network_policy(self.runtime, "--taskset.task.network")
         return self

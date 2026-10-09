@@ -6,6 +6,7 @@ from pydantic import Field, FiniteFloat, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 
 
 class DecoratedFunctionConfig(BaseConfig):
@@ -38,6 +39,12 @@ class TaskConfig(BaseConfig):
 
     judges: Judges = Field(default_factory=list)
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
+
+    network: NetworkPolicyConfig | None = None
+    """Execution-time egress policy for every task — the same `allow`/`block` object
+    the runtimes carry. Set from TOML/CLI (`[env.taskset.task.network]`,
+    `--env.taskset.task.network.allow`) it replaces each task's own `TaskData.network`;
+    None leaves that in place. The runtime's own rules still intersect."""
 
     stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Typed `Request`, `Response`, or `Trace` stop predicates plugged by name and

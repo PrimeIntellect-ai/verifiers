@@ -162,8 +162,10 @@ baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema
 | `no-network` | Sets the task allowlist to `[]` (framework routes only). |
 | `allowlist` | Sets the task allowlist to `allowed_hosts`. |
 
-Trusted task and harness setup remains online. The policy starts immediately before the
-agent and stays active through finalization and scoring. Interception and MCP URLs are
+A run replaces a task's policy with `[env.taskset.task.network]`. Trusted task and harness
+setup remains online. The policy starts immediately before the agent and stays active
+through finalization; shared-box grading reopens egress first (the verifier is trusted),
+and a separate verifier box follows its own declared policy and `--env.verifier.runtime.*`. Interception and MCP URLs are
 added automatically in allowlist and framework-only modes. Concrete task/runtime
 allowlists retain their shared entries, while blocklists combine; framework-only access on
 either side takes precedence, and concrete allowlists cannot be combined with blocklists.
@@ -205,6 +207,6 @@ Under any other env, a separate-verifier task refuses to grade in the agent's bo
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
 - Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
-- Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
+- A *shared* verifier whose verifier phase declares an allowlist different from the agent's ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)): only a `public` verifier phase switches the policy; a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))

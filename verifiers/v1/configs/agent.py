@@ -8,6 +8,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import deep_merge
@@ -57,6 +58,11 @@ class AgentConfig(BaseConfig):
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
 
+    @model_validator(mode="after")
+    def _refuse_runtime_network_policy(self):
+        refuse_runtime_network_policy(self.runtime, "[env.taskset.task.network]")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
@@ -85,6 +91,23 @@ class WireAgentConfig(AgentConfig):
     def _resolve_harness(cls, data):
         """Override: a record read resolves no plugins."""
         return data
+
+    @model_validator(mode="after")
+    def _refuse_runtime_network_policy(self):
+        """Override: a record read keeps the policy the run recorded."""
+        return self
+
+
+def refuse_runtime_network_policy(runtime: RuntimeConfig, override: str) -> None:
+    """A box that runs a task enforces the task's policy (`Task.network`), so a
+    restricted policy on its runtime config has nowhere to apply; refuse it in favour
+    of the task's. A runtime configured elsewhere — a tool server's own box, the Harbor
+    verifier's — keeps its policy."""
+    if isinstance(runtime, NetworkPolicyConfig) and runtime.network_restricted:
+        raise ValueError(
+            "the box's network policy comes from its task: set TaskData.network in the "
+            f"taskset or override it with {override}, not allow/block on the runtime"
+        )
 
 
 def agent_config_fields(config: BaseModel) -> dict[str, AgentConfig]:

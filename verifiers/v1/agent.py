@@ -84,7 +84,7 @@ def _check_borrowed_placement(
     """A borrowed box is never re-provisioned, so a task's placement fields can't
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
-    task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
+    task_policy = task.network is not None and task.network.network_restricted
     base_policy = base_config if isinstance(base_config, NetworkPolicyConfig) else None
     if task_policy or (base_policy is not None and base_policy.network_restricted):
         config = runtime.config

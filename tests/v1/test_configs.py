@@ -93,3 +93,38 @@ def test_e2b_egress_update_states_the_complete_policy() -> None:
 
     no_routes = _egress_update(E2BConfig(allow=[]), [])
     assert no_routes == {"allow_internet_access": False}
+
+
+def test_agent_runtime_refuses_a_network_policy() -> None:
+    from verifiers.v1.configs.agent import AgentConfig
+    from verifiers.v1.runtimes import DockerConfig
+
+    for runtime in (
+        {"type": "prime", "allow": []},
+        {"type": "docker", "block": ["x.com"]},
+    ):
+        with pytest.raises(ValueError, match="env.taskset.task.network"):
+            AgentConfig.model_validate({"runtime": runtime})
+    # The open defaults, spelled out or round-tripped through a dump, still parse.
+    open_ = AgentConfig.model_validate({"runtime": {"type": "prime", "allow": ["*"]}})
+    assert not open_.runtime.network_restricted
+    assert (
+        AgentConfig.model_validate(open_.model_dump(mode="json")).runtime.type
+        == "prime"
+    )
+    # Outside a seat a runtime config still takes a policy.
+    assert DockerConfig(allow=[]).network_restricted
+    # The debug and validate CLIs run the task in their `--runtime`, so the same rule.
+    from verifiers.v1.configs.cli.debug import DebugConfig
+    from verifiers.v1.configs.cli.validate import ValidateConfig
+
+    for cli, extra in ((DebugConfig, {"command": "true"}), (ValidateConfig, {})):
+        with pytest.raises(ValueError, match="taskset.task.network"):
+            cli.model_validate({"runtime": {"type": "prime", "allow": []}, **extra})
+    # A recorded trace keeps whatever policy its run resolved.
+    from verifiers.v1.configs.agent import WireAgentConfig
+
+    recorded = WireAgentConfig.model_validate(
+        {"runtime": {"type": "prime", "allow": []}}
+    )
+    assert recorded.runtime.network_restricted
