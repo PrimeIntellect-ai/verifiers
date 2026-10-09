@@ -8,9 +8,9 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
-    "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
+PRIME_AGENT_COMMIT: Literal["763094e1b6a7c17450ee8399b06cda1853847ca5"] = (
+    "763094e1b6a7c17450ee8399b06cda1853847ca5"
 )
-PRIME_AGENT_VERSION = "0.9.5"
+PRIME_AGENT_VERSION = "0.10.0"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -31,63 +31,45 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 
-INSTALL = r"""
-set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
+INSTALL = (
+    "set -e\n"
+    + _ENSURE_UV
+    + r"""
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ] && exit 0
-export NPM_CONFIG_PREFIX="$prefix"
-export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
-release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
-agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
-ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
-core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
-tui_tarball="prime-agent-tui-$PRIME_AGENT_RELEASE_VERSION.tgz"
-download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
-trap 'rm -rf "$download_dir"' EXIT
-for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
-    curl -fsSL --retry 5 --retry-all-errors \
-        "$release_url/$tarball" -o "$download_dir/$tarball"
-done
-printf '%s  %s\n' \
-    '349f1682c7909550842f1b04a71ba95814341b136474ade736df93f8ec006876' "$agent_tarball" \
-    '9ad0184b7b5f3d5c3b1677c0663335de32c092cbdb72697aeaf997f17910bb92' "$ai_tarball" \
-    '59aafeffb4b64eb997399d56a03f529b2f6604b228e5674372195277db52f04a' "$core_tarball" \
-    'e49f41170edfd1d0e72418729d2c117969ccf8df784dc55fe8c1a9d91778e103' "$tui_tarball" \
-    > "$download_dir/SHA256SUMS"
-(cd "$download_dir" && sha256sum -c SHA256SUMS)
-mkdir "$download_dir/package-root"
-tar -xzf "$download_dir/$agent_tarball" -C "$download_dir/package-root"
-node - \
-    "$download_dir/package-root/package/package.json" \
-    "$download_dir" \
-    "$ai_tarball" \
-    "$core_tarball" \
-    "$tui_tarball" <<'NODE'
-const fs = require("node:fs");
-const [manifestPath, downloadDir, ai, core, tui] = process.argv.slice(2);
-const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-for (const [name, file] of [
-    ["@earendil-works/pi-ai", ai],
-    ["@earendil-works/pi-agent-core", core],
-    ["@earendil-works/pi-tui", tui],
-]) {
-    manifest.dependencies[name] = `file:${downloadDir}/${file}`;
-}
-fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-NODE
-mkdir "$download_dir/repacked"
-repacked="$(npm pack "$download_dir/package-root/package" \
-    --pack-destination "$download_dir/repacked" --silent)"
-PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
-    --no-fund --no-audit --loglevel=error --progress=false \
-    "$download_dir/repacked/$repacked"
-[ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
+if [ ! -x "$prefix/bin/prime-agent" ]; then
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64) platform=linux-x64; sha=c16bd2af5e77b53f49b914a44742c4cf6a67c5ed5000041430b78dbd4c3bcbec ;;
+        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=f3cab3530a4d7ca43dbef8321bf13f260d1ba05d8b5dde057165a20bd4f675c4 ;;
+        Darwin-x86_64) platform=darwin-x64; sha=af4866b5ba82f3419b964290e3f023ddb9b99958a89e16ee856962b901ec0fc6 ;;
+        Darwin-arm64) platform=darwin-arm64; sha=e418bdf62fcb0002777bf3ac43bcc136512b26763f2ab5c500792f26e37294e5 ;;
+        *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+    esac
+    command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
+    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+    tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
+    download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+    trap 'rm -rf "$download_dir"' EXIT
+    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
+    printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
+    if command -v sha256sum >/dev/null; then
+        (cd "$download_dir" && sha256sum -c SHA256SUMS)
+    else
+        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
+    fi
+    mkdir "$download_dir/bin"
+    tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
+    [ "$("$download_dir/bin/prime-agent" --version)" = "$PRIME_AGENT_RELEASE_VERSION" ]
+    mkdir -p "$prefix"
+    mv "$download_dir/bin" "$prefix/bin"
+fi
+# Let the released binary validate the kernel cache and prepare its Python runtime.
+"$prefix/bin/prime-agent" --prime-agent-bootstrap
 """
+)
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = PRIME_AGENT_COMMIT
+    commit: Literal["763094e1b6a7c17450ee8399b06cda1853847ca5"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
     autonomous: bool = False
@@ -154,7 +136,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
@@ -184,7 +165,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError(
                 "prime-agent has no per-tool disable flag; its model-facing tool "
-                "surface is python_repl"
+                "surface is a Python REPL"
             )
 
         root = self._root(trace)
@@ -262,7 +243,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "/bin/sh",
                 "-eu",
                 "-c",
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                'export PATH="$HOME/.local/bin:$PATH"; exec "$@"',
                 "prime-agent",
                 *args,
             ],
