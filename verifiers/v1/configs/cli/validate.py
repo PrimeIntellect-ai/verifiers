@@ -13,9 +13,9 @@ from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
 
 class CheckTimeoutConfig(BaseConfig):
-    setup: float | None = None
+    setup: float | None = Field(None, gt=0)
     """Max wall-clock for the task's `setup` hook."""
-    total: float | None = None
+    total: float | None = Field(None, gt=0)
     """Max wall-clock for the check itself per task, after setup — the gold check's
     `validate` hook, or the noop check's `finalize` and scoring."""
 
@@ -40,7 +40,7 @@ class ValidateConfig(BaseConfig):
     untouched task (no reference answer, no agent). Scoring is the task's full rewards,
     configured judges included. Invalid when it already passes."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max tasks validated in flight at once (and, for a container runtime, live sandboxes)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
