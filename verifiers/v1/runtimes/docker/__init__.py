@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import EnforcedNetworkPolicy, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -39,11 +39,11 @@ if TYPE_CHECKING:
     from verifiers.v1.runtimes.prime import PrimeConfig
 
 
-class DockerConfig(ContainerConfig, NetworkPolicyConfig):
+class DockerConfig(ContainerConfig, EnforcedNetworkPolicy):
     type: Literal["docker"] = "docker"
 
 
-class PodmanConfig(ContainerConfig, NetworkPolicyConfig):
+class PodmanConfig(ContainerConfig, EnforcedNetworkPolicy):
     type: Literal["podman"] = "podman"
     image: str = "docker.io/library/python:3.11-slim"
 

@@ -75,9 +75,9 @@ The lifecycle is fixed:
 
 The verifier runtime must be Docker, Prime, or another container runtime; absolute
 artifact restoration is intentionally refused on the host subprocess runtime.
-By default the verifier uses the solver's resolved runtime policy. Set
-`--env.verifier.runtime.*` to independently choose its runtime type, image, resources,
-and network policy; `--env.verifier.env` can independently set its process environment.
+The verifier box enforces the verifier's declared policy. Set
+`--env.verifier.runtime.*` to independently choose its runtime type, image and resources;
+`--env.verifier.env` can independently set its process environment.
 Relative artifacts require matching solver and verifier workdirs because artifacts are
 restored without path translation; absolute artifacts permit different workdirs.
 Configured model-backed task judges are rejected: use deterministic metrics/rewards

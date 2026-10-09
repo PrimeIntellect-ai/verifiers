@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import EnforcedNetworkPolicy, NetworkPolicyConfig
 from verifiers.v1.runtimes.apptainer import (
     ApptainerConfig,
     ApptainerRuntime,
@@ -116,6 +116,7 @@ __all__ = [
     "E2BConfig",
     "E2BRuntime",
     "E2BRuntimeInfo",
+    "EnforcedNetworkPolicy",
     "ModalConfig",
     "ModalRuntime",
     "ModalRuntimeInfo",

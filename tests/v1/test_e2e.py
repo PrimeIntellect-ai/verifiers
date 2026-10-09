@@ -171,12 +171,6 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
-    pytest.param(
-        "bash",
-        {"type": "modal", "allow": []},
-        marks=[mark.bash, mark.modal],
-        id="bash-harness-in-modal-framework-only",
-    ),
     pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 

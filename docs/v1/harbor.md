@@ -158,18 +158,16 @@ baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema
 
 | Harbor mode | Task network policy |
 | --- | --- |
-| `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
-| `no-network` | Sets the task allowlist to `[]` (framework routes only). |
-| `allowlist` | Sets the task allowlist to `allowed_hosts`. |
+| `public` | Sets the task policy to open (`allow = ["*"]`). |
+| `no-network` | Sets the task policy to `allow = []` (framework routes only). |
+| `allowlist` | Sets the task policy to `allow = allowed_hosts`. |
 
-A run replaces a task's policy with `[env.taskset.task.network]`. Trusted task and harness
-setup remains online. The policy starts immediately before the agent and stays active
-through finalization and scoring, except that a shared verifier whose verifier phase is
-`public` grades with open egress, as it does under Harbor; a separate verifier box follows
-its own declared policy and `--env.verifier.runtime.*`. Interception and MCP URLs are
-added automatically in allowlist and framework-only modes. Concrete task/runtime
-allowlists retain their shared entries, while blocklists combine; framework-only access on
-either side takes precedence, and concrete allowlists cannot be combined with blocklists.
+A run replaces a task's policy with `[env.taskset.task.network]`; the runtime enforces the
+result and has no policy of its own. Trusted task and harness setup remains online. The
+policy starts immediately before the agent and stays active through finalization;
+shared-box grading reopens egress first (the verifier is trusted), and a separate verifier
+box enforces the verifier's declared policy. Interception and MCP URLs are added
+automatically in allowlist and framework-only modes.
 Docker framework routes take precedence over deny rules, while ordinary Prime deny rules
 are applied unchanged and may block a matching route. Restricted Harbor tasks require
 Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained

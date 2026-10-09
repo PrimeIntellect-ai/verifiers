@@ -20,7 +20,10 @@ from typing import ClassVar, Literal
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
+from verifiers.v1.configs.runtime import (
+    EnforcedNetworkPolicy,
+    parse_network_rule,
+)
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -73,7 +76,7 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     return host
 
 
-class ModalConfig(NetworkPolicyConfig):
+class ModalConfig(EnforcedNetworkPolicy):
     type: Literal["modal"] = "modal"
     vm: bool = False
     """Use a VM sandbox for workloads requiring a Docker daemon."""
