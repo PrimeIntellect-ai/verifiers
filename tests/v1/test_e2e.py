@@ -171,12 +171,6 @@ AGENTIC_PLACEMENTS = [
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
-    pytest.param(
-        "bash",
-        {"type": "modal", "allow": []},
-        marks=[mark.bash, mark.modal],
-        id="bash-harness-in-modal-framework-only",
-    ),
     pair("bash", "e2b", "bash-harness-in-e2b"),
 ]
 
@@ -756,11 +750,12 @@ async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
     traces = await run_v1(
         "echo-v1",
         harness=None,
+        taskset_overrides={"task": {"network": {"block": ["example.com"]}}},
         env={
             "id": "shared-agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "docker"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -801,11 +796,12 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     traces = await run_v1(
         "echo-agentic-v1",
         harness=None,
+        taskset_overrides={"task": {"network": {"block": ["example.com"]}}},
         env={
             "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "docker"},
             },
             "judge": {
                 "harness": {"id": "bash"},
