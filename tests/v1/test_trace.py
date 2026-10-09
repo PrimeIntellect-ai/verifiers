@@ -733,3 +733,36 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+def test_output_tokens_count_each_call_once_across_branches():
+    # Two assistant siblings after one tool result → 2 branches sharing the first call.
+    def assistant(parent):
+        return {"parent": parent, "message": {"role": "assistant", "content": "x"}}
+
+    def call(node, completion):
+        return {
+            "node": node,
+            "model": "m",
+            "usage": {"prompt_tokens": 10, "completion_tokens": completion},
+        }
+
+    tr = vf.Trace.model_validate(
+        {
+            "agent": {"config": {}},
+            "task": {"type": "Task", "data": {"idx": 0, "prompt": "q"}},
+            "nodes": [
+                {"parent": None, "message": {"role": "user", "content": "q"}},
+                assistant(0),
+                {
+                    "parent": 1,
+                    "message": {"role": "tool", "tool_call_id": "c", "content": "ok"},
+                },
+                assistant(2),
+                assistant(2),
+            ],
+            "calls": [call(1, 100), call(3, 50), call(4, 70)],
+        }
+    )
+    assert tr.num_branches == 2
+    assert tr.num_output_tokens == 220
