@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.envs.best_of_n.env import BestOfNEnv
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -41,6 +44,40 @@ class HookTask(vf.Task[HookData]):
     @vf.reward(weight=0.0)
     async def fmt(self, trace: vf.Trace) -> float:
         return 1.0
+
+
+@pytest.mark.parametrize(
+    ("scores", "threshold", "expected_best", "expected_pass"),
+    [
+        ([-0.5, -1.0, None], 1.0, [1.0, 0.0, 0.0], 0.0),
+        ([-0.5, None], 0.0, [1.0, 0.0], 0.0),
+        ([None, None], 0.0, [0.0, 0.0], 0.0),
+        ([0.0, None, None], 1.0, [1.0, 0.0, 0.0], 0.0),
+        ([-0.5, -0.5, None], 1.0, [1.0, 1.0, 0.0], 0.0),
+        ([0.3, 0.9, 0.5], 0.9, [0.0, 1.0, 0.0], 1.0),
+    ],
+)
+async def test_best_of_n_excludes_failed_siblings(
+    scores, threshold, expected_best, expected_pass
+) -> None:
+    task = vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q"))
+    traces = []
+    for score in scores:
+        trace = vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()), task=task, ok=score is not None
+        )
+        if score is not None:
+            trace.record_reward("task", score)
+        traces.append(trace)
+    episode = vf.Episode(task=task, traces=traces)
+    env = SimpleNamespace(config=SimpleNamespace(threshold=threshold))
+
+    await BestOfNEnv.finalize(env, None, episode)
+
+    assert [trace.metrics["best"] for trace in traces] == expected_best
+    assert [trace.metrics["pass_at_n"] for trace in traces] == [expected_pass] * len(
+        traces
+    )
 
 
 async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
