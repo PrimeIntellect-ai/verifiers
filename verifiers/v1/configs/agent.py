@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import BaseModel, Field, SerializeAsAny, field_serializer, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
@@ -10,7 +10,7 @@ from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
-from verifiers.v1.utils.generic import deep_merge
+from verifiers.v1.utils.generic import merge_defaults
 
 
 class TimeoutConfig(BaseConfig):
@@ -57,6 +57,12 @@ class AgentConfig(BaseConfig):
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
 
+    @field_serializer("sampling")
+    def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:
+        # An unresolved agent carries only overrides across env-server boundaries.
+        # resolve_agent fills every field before the config is recorded on a trace.
+        return sampling.model_dump(exclude_unset=True) if sampling is not None else None
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
@@ -99,9 +105,7 @@ def merge_agent_defaults(config: type[BaseModel], data: Any) -> Any:
             if isinstance(field.default, AgentConfig) and isinstance(
                 data.get(name), dict
             ):
-                data[name] = deep_merge(
-                    field.default.model_dump(exclude_none=True), data[name]
-                )
+                data[name] = merge_defaults(field.default, data[name])
     return data
 
 
@@ -116,19 +120,14 @@ def resolve_agent(
     """`spec` with what it leaves unset filled from the run's defaults; its own
     sampling values merge over the run's. The one place a seat's identity resolves,
     for configured agent roles."""
-    merged = spec.sampling if sampling is None else sampling
-    if sampling is not None and spec.sampling is not None:
-        merged = sampling.model_copy(
-            update=deep_merge(
-                sampling.model_dump(exclude_unset=True),
-                spec.sampling.model_dump(exclude_unset=True),
-            )
-        )
+    defaults = sampling or SamplingConfig()
+    overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
+    merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,
             "model": spec.model if spec.model is not None else model,
             "client": spec.client if spec.client is not None else client,
-            "sampling": merged,
+            "sampling": SamplingConfig.model_validate(merged),
         }
     )

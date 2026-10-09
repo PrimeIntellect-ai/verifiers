@@ -10,6 +10,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
@@ -127,10 +128,30 @@ async def test_failed_segment_does_not_reuse_prior_root_reply():
     assert trace.last_reply == "current partial reply"
 
 
-def test_bare_trace_round_trip():
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        None,
+        {},
+        {"reasoning_effort": "high"},
+        {"temperature": 0.7, "max_tokens": 128, "reasoning_effort": "high"},
+        {"temperature": None},
+        {"max_completion_tokens": None},
+        {"extra_body": {"top_k": None}},
+        {"extra_body": None},
+        {"top_k": 10, "extra_body": {"frequency_penalty": 0.5}},
+        {"extra_body": {"top_k": 20, "max_completion_tokens": None}},
+    ],
+)
+def test_bare_trace_round_trip(sampling):
+    spec = vf.AgentConfig(sampling=sampling)
+    defaults = vf.SamplingConfig(temperature=0.7, max_tokens=128, top_k=40)
+    # Resolve the live overrides before serializing the effective config on a trace.
+    resolved = resolve_agent(spec, sampling=defaults)
+    assert set(vf.SamplingConfig.model_fields) <= resolved.sampling.model_fields_set
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=resolved),
         task=vf.TraceTask(
             type="Task",
             data=vf.TaskData(idx=3, prompt="hello"),
@@ -138,13 +159,24 @@ def test_bare_trace_round_trip():
             hash="content-digest",
         ),
     )
-    rt = vf.Trace.model_validate(tr.model_dump())
-    assert rt.id == tr.id
-    assert rt.task.type == "Task"
-    assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
-    assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
-    assert rt.num_turns == 0 and rt.num_branches == 0
-    assert rt.reward == 0.0 and rt.errors == []
+    episode = vf.Episode(task=tr.task, traces=[tr], ok=True)
+    for rt in (
+        vf.Trace.model_validate(tr.model_dump()),
+        vf.Trace.model_validate_json(tr.model_dump_json(exclude_none=True)),
+        vf.Trace.model_validate(tr.to_record()),
+        vf.Episode.model_validate_json(
+            episode.model_dump_json(exclude_none=True)
+        ).traces[0],
+        vf.Episode.model_validate(episode.to_record()).traces[0],
+    ):
+        assert rt.id == tr.id
+        assert rt.task.type == "Task"
+        assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
+        assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
+        assert rt.num_turns == 0 and rt.num_branches == 0
+        assert rt.reward == 0.0 and rt.errors == []
+        assert rt.agent.config == tr.agent.config
+        assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
 
 
 def test_custom_task_state_round_trip(tmp_path):
