@@ -3,10 +3,11 @@
 import json
 import os
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel
 
-from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.cli.run import RunConfig
 from verifiers.v1.utils.trace_store import TRACES_FILE
 
 CONFIG_DIR = "configs"
@@ -60,7 +61,14 @@ def saved_config_path(run_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def output_path(config: EvalConfig) -> Path:
+class RunOutput(Protocol):
+    """A config that owns a run directory: `output_dir / run.dir`."""
+
+    output_dir: Path
+    run: RunConfig
+
+
+def output_path(config: RunOutput) -> Path:
     """Where this run writes: `output_dir / run.dir` — the same grouping convention as
     training. The run directory defaults to the auto-generated run name
     (`<env>--<model>--<harness>--<short-id>`)."""

@@ -34,7 +34,6 @@ dependencies = [
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.14",
     "prime-sandboxes>=0.4.2",
-    "prime-runs>=0.1.4",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -154,7 +153,6 @@ prime-pydantic-config = false
 renderers = false
 
 [project.scripts]
-vf-eval = "verifiers.v1.cli.eval.main:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"

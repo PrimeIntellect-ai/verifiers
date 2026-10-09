@@ -23,7 +23,6 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 harbor = "2026-10-08T00:00:00Z"
 prime-pydantic-config = false
-prime-runs = false
 prime-sandboxes = false
 prime-tunnel = false
 renderers = false
@@ -3512,19 +3511,6 @@ toml = [
 ]
 
 [[package]]
-name = "prime-runs"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "prime-traces" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/de/6fb503ce854315d096982b79340b02eb5a978b139a7c719d39df77e7f211/prime_runs-0.1.4.tar.gz", hash = "sha256:f06c2bc7db28f0ed99ca6b06aa5186245ca94009872eb861ab0be7cff25484bd", size = 67282, upload-time = "2026-10-08T00:23:59.354Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/51/8f300ac057c95afa9df591172b2e8374743afdeeae300771fd78c91a5f75/prime_runs-0.1.4-py3-none-any.whl", hash = "sha256:f33b477c2d53eca08524a3d469810943eee31af8f60ceffc38ef2b9c90596d1b", size = 46253, upload-time = "2026-10-08T00:23:57.736Z" },
-]
-
-[[package]]
 name = "prime-sandboxes"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3541,19 +3527,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/4d/a379cdf82d6f06c970bd4f0333c2360c08aba65c809d7492f49aece84c66/prime_sandboxes-0.4.2.tar.gz", hash = "sha256:4990a724cac0a662fde6e12e7eccfee092a78679cc568653b8ef52008dfa28e4", size = 139837, upload-time = "2026-10-02T22:38:31.345Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/da/b5/6a9fe6ae1342872c1c0cc45072cc0c58a5fa2783c4c45770e585f2535c8f/prime_sandboxes-0.4.2-py3-none-any.whl", hash = "sha256:ed59f001c7575339d6c903166c5468f783eda0997586ec6476fd8b35f65746f9", size = 74970, upload-time = "2026-10-02T22:38:29.565Z" },
-]
-
-[[package]]
-name = "prime-traces"
-version = "0.0.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/77/13fa99c0fb71909f2f35d048d9724efb9ae432484e47f12386b1542815e8/prime_traces-0.0.3.tar.gz", hash = "sha256:4071833db77a606ccbb718e5c73f2dfaf63982fe801aa096daed0bc605da554f", size = 50874, upload-time = "2026-08-27T19:46:44.672Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/9a/5a917de29a3a839c0ba36d445e3af562f744d9716b509571be643a01476c/prime_traces-0.0.3-py3-none-any.whl", hash = "sha256:0838f60651f1ed38371e383bd88b954e461d20ac424874e694bc83358934f5f3", size = 38345, upload-time = "2026-08-27T19:46:43.396Z" },
 ]
 
 [[package]]
@@ -5446,7 +5419,6 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
     { name = "prime-pydantic-config", extra = ["toml"] },
-    { name = "prime-runs" },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
