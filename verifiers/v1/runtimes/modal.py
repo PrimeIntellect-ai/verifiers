@@ -85,7 +85,7 @@ class ModalConfig(EnforcedNetworkPolicy):
     """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
     """Allow network access at creation. False blocks all egress, including setup;
-    it cannot be combined with execution-time allow/block policies."""
+    a task's egress policy cannot be enforced on top of it."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
@@ -108,7 +108,8 @@ class ModalConfig(EnforcedNetworkPolicy):
             return self
         if not self.network_access:
             raise ValueError(
-                "Modal allow/block policies require network_access=true for trusted setup"
+                "a restricted task policy on Modal requires network_access=true for "
+                "trusted setup"
             )
         if self.allow == ["*"]:
             raise ValueError(

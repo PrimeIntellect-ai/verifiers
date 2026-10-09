@@ -111,9 +111,9 @@ class TaskData(BaseModel):
     network: NetworkPolicyConfig | None = None
     """This task's execution-time egress policy — the same `allow`/`block` object the
     runtimes carry; None is open. `TaskConfig.network`, set from TOML/CLI, replaces it
-    (see `Task.network`). The runtime's own rules still intersect with the result:
-    unsupported intersections are rejected, Prime runtimes accept host-level entries,
-    and Docker framework routes take precedence over blocks."""
+    (see `Task.network`), and the runtime enforces the result; a rule the runtime
+    cannot express is rejected when the task resolves (Prime accepts host-level
+    entries, Docker framework routes take precedence over blocks)."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
