@@ -254,9 +254,7 @@ def test_harbor_verifier_keeps_its_declared_policy() -> None:
     data = HarborData(
         prompt="x",
         network=closed,
-        verifier=VerifierConfig(
-            separate=True, network=vf.NetworkPolicyConfig(allow=["pypi.org"])
-        ),
+        verifier=VerifierConfig(network=vf.NetworkPolicyConfig(allow=["pypi.org"])),
     )
     # The run's override reaches the solver, not the separate verifier box, which
     # the harbor env builds from the verifier declaration with a default config.

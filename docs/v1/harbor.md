@@ -1,6 +1,6 @@
 # Harbor
 
-verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a Harbor-based taskset is straightforward in most cases:
+verifiers supports single-step Harbor 0.24.0 tasks via the `HarborTaskset` class. Tasks declaring `steps` are rejected; use `tasks` to select single-step tasks from mixed datasets. Creating a Harbor-based taskset is straightforward in most cases:
 
 ```python
 import verifiers.v1 as vf
@@ -63,7 +63,7 @@ class OpenThoughtsTBLiteTaskset(
         ]
 ```
 
-Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. When `verifier_image` is `None`, a separate verifier inherits the task's current `image` and stages the task package's tests. These changes leave `task.toml` unchanged.
+Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. A separate verifier prefers `[verifier.environment].docker_image`, then `tests/Dockerfile` or `tests/docker-compose.yaml`, then the agent environment. A verifier section that only declares resources inherits the agent image and stages the task package's tests. Dedicated verifier builds are rejected unless `ignore_dockerfile` explicitly enables fallback. When `verifier_image` is `None`, the verifier uses the task's current `image` and stages the packaged tests. These changes leave `task.toml` unchanged.
 
 To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 
@@ -84,6 +84,25 @@ resource_multiplier = 2.0
 ```
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
+
+## Rewards
+
+`reward.json` takes precedence over `reward.txt`. An existing JSON file must contain
+an object of finite numeric values; invalid, unreadable, or oversized JSON fails
+grading without falling back to text. When JSON is absent, `reward.txt` supplies
+the numeric `reward` value. A verifier's nonzero exit does not override a valid
+reward file.
+
+The `reward` key supplies the scalar reward by default. To select another key:
+
+```toml
+[env.taskset.task]
+reward_key = "accuracy"
+```
+
+Other named values are retained as trace metrics. A missing selected key fails
+grading; named values are never implicitly summed. The same selection applies to
+shared and separate verifiers.
 
 ## Docker Compose
 

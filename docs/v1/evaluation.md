@@ -63,7 +63,7 @@ A request is permitted when it matches no `block` entry and some `allow` entry. 
 A box's policy comes from two sources:
 
 - The task. Its data declares it (`TaskData.network`; a closed-book benchmark declares `allow = []`), and the run's task config replaces that declaration: `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI.
-- The runtime (`[env.agent.runtime]`). Its `allow`/`block` intersect with the task's resolved policy, so the runtime always narrows and never widens.
+- The runtime (`[env.agent.runtime]`). Its `allow`/`block` are additive restrictions on top of the task's resolved policy: the two allowlists intersect (only destinations both permit survive, and `[]` on either side leaves nothing) and the two blocklists union. The runtime can therefore only narrow a task's policy, never widen it; widening is what the task config above is for.
 
 Before a rollout starts, verifiers appends a note about the restriction to the system prompt, so the model treats a failing connection as intended. `network_notice = false` under `[env.agent]` disables it.
 
