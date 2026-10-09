@@ -3,6 +3,8 @@ Verifiers proxy for host callbacks and optional execution-time URL filtering."""
 
 import array
 import contextlib
+import csv
+import io
 import json
 import logging
 import re
@@ -30,6 +32,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,8 @@ class DockerRuntime(ContainerRuntime):
         host: Runtime | None = None,
     ) -> AsyncIterator["DockerRuntime"]:
         """Borrow an existing container; its caller owns creation and removal."""
+        if isinstance(config, ContainerConfig) and config.mounts:
+            raise ValueError("Bind mounts cannot be added to an existing container")
         runtime = cls(config, host=host)
         runtime._container = container
         runtime.info.borrowed = True  # cleanup never removes a borrowed container
@@ -229,6 +234,16 @@ class DockerRuntime(ContainerRuntime):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        for target, mount in getattr(self.config, "mounts", {}).items():
+            bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
+            if mount.read_only:
+                bind_options += ["readonly", "bind-propagation=rprivate"]
+                if self.engine == "docker":
+                    # Refuse kernels that would leave nested mounts writable.
+                    bind_options.append("bind-recursive=readonly")
+            value = io.StringIO()
+            csv.writer(value).writerow(bind_options)
+            options += ["--mount", value.getvalue().removesuffix("\r\n")]
         run = await cli(
             self.engine,
             "run",
@@ -297,6 +312,8 @@ class DockerRuntime(ContainerRuntime):
             raise SandboxError(
                 f"{self.engine} workdir setup failed: {made.stderr.strip()}"
             )
+        if await validate_runtime_mounts(self, []):
+            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
         )

@@ -2,7 +2,9 @@
 
 import asyncio
 import contextlib
+import csv
 import hashlib
+import io
 import logging
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ from pydantic import model_validator
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, parse_gpu
 from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -146,6 +149,18 @@ class ApptainerRuntime(ContainerRuntime):
             limits += ["--memory", f"{self.config.memory}g"]
         if parse_gpu(self.config.gpu)[1]:
             limits += ["--nv"]
+        mounts: list[str] = []
+        for target, mount in self.config.mounts.items():
+            value = io.StringIO()
+            csv.writer(value).writerow(
+                [
+                    "type=bind",
+                    f"source={mount.source}",
+                    f"destination={target}",
+                    *(["ro"] if mount.read_only else []),
+                ]
+            )
+            mounts += ["--mount", value.getvalue().removesuffix("\r\n")]
         started = await cli(
             "apptainer",
             "instance",
@@ -157,6 +172,7 @@ class ApptainerRuntime(ContainerRuntime):
             "--writable-tmpfs",
             "--bind",
             f"{self._dir / 'workspace'}:{self.config.workdir}",
+            *mounts,
             *limits,
             image,
             self._instance,
@@ -166,6 +182,8 @@ class ApptainerRuntime(ContainerRuntime):
                 f"apptainer instance start failed: {started.stderr.strip()}"
             )
         self.info.id = self._instance
+        if await validate_runtime_mounts(self, []):
+            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         logger.info(
             "apptainer: started instance %s (image=%s)", self.name, self.config.image
         )
