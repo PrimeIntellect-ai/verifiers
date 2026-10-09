@@ -362,6 +362,7 @@ class AnthropicStreamParser(StreamParser):
             index = event["index"]
             self.blocks[index] = dict(event.get("content_block") or {})
             self.block_parts.pop(index, None)
+            self.partial_json.pop(index, None)
         elif kind == "content_block_delta":
             index = event["index"]
             block = self.blocks.setdefault(index, {"type": "text", "text": ""})
