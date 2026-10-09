@@ -192,6 +192,13 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
 
+    def grader(self) -> Task | None:
+        """The task that scores this one in a fresh runtime, or None to score in the
+        solver's runtime. An agent run collects the declared artifacts, tears the
+        solver's runtime down, and scores the grader there onto the solver's trace
+        (`setup`, artifact restore, `stage_verifier`, then metrics and rewards)."""
+        return None
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None

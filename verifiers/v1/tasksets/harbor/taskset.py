@@ -329,6 +329,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         await self.stage_tests(runtime, wipe=True)
         self.verifier_staged = True
 
+    def grader(self) -> "HarborTask | None":
+        if self.data.verifier is None:
+            return None
+        return type(self)(verifier_box_data(self.data), self.config)
+
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Use a dedicated verifier image's tests, or stage the task package's tests.
 
@@ -364,9 +369,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             if not self.verifier_staged:
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
-                    '([verifier].environment_mode = "separate"); grade it through '
-                    "the harbor env (this taskset's default), or force shared "
-                    "grading with --taskset.ignore-separate-verifier"
+                    '([verifier].environment_mode = "separate"); score its '
+                    "`grader()` in a fresh runtime, or force shared grading with "
+                    "--taskset.ignore-separate-verifier"
                 )
         else:
             # Grading is trusted: a shared-box verifier must not inherit the agent

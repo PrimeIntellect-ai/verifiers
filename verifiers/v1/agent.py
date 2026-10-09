@@ -52,6 +52,7 @@ from verifiers.v1.utils.compile import (
     validate_pairing,
 )
 from verifiers.v1.utils.retries import RetryState, backoff
+from verifiers.v1.utils.verify import GRADER_RETRIES, grade_in_fresh_runtime
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
@@ -709,6 +710,9 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
     ) -> Trace:
+        grader = None if task.scoring_deferred else task.grader()
+        if grader is not None:
+            task, collect_artifacts = task.defer_scoring(), True
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
             raise TypeError(
@@ -733,7 +737,28 @@ class Agent:
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
+        if grader is not None and trace.ok:
+            trace = await self._grade(grader, trace)
         return trace
+
+    async def _grade(self, grader: Task, solution: Trace) -> Trace:
+        """Score `grader` in a fresh runtime from this agent's policy onto a copy of
+        the finished `solution`; a grading failure fails the solution's trace."""
+        try:
+            _, graded = await grade_in_fresh_runtime(
+                resolve_runtime_config(
+                    self.runtime_config, grader, self._warned_resources
+                ),
+                grader,
+                solution,
+                timeouts=resolve_rollout_timeouts(self.timeout, grader),
+                retries=GRADER_RETRIES,
+            )
+        except Exception as error:  # noqa: BLE001 - the grade is the trace's outcome
+            solution.record_error(error)
+            solution.ok = False
+            return solution
+        return graded
 
     @asynccontextmanager
     async def interaction(
