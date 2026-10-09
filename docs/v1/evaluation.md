@@ -60,10 +60,10 @@ The `prime`, `docker` and `modal` runtimes can enforce an egress policy on the a
 
 A request is permitted when it matches no `block` entry and some `allow` entry. A concrete allowlist cannot be combined with a non-empty blocklist (the config is rejected); use `allow = ["*"]` with `block` for a denylist, or `allow` alone for an allowlist.
 
-A box's policy comes from two sources:
+A box's policy comes from the task:
 
 - The task. Its data declares it (`TaskData.network`; a closed-book benchmark declares `allow = []`), and the run's task config replaces that declaration: `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI.
-- The runtime (`[env.agent.runtime]`). Its `allow`/`block` are additive restrictions on top of the task's resolved policy: the two allowlists intersect (only destinations both permit survive, and `[]` on either side leaves nothing) and the two blocklists union. The runtime can therefore only narrow a task's policy, never widen it; widening is what the task config above is for.
+- Not the agent's runtime. `[env.agent.runtime]` refuses `allow`/`block`: the agent's box enforces the task's resolved policy. A runtime configured anywhere else still takes them — a tool server placed in its own box (`taskset.task.tools.runtime`), the Harbor verifier's `--env.verifier.runtime.*` — and there they are additive restrictions on top of the task's policy: allowlists intersect, blocklists union, so such a runtime only ever narrows.
 
 Before a rollout starts, verifiers appends a note about the restriction to the system prompt, so the model treats a failing connection as intended. `network_notice = false` under `[env.agent]` disables it.
 

@@ -8,6 +8,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import deep_merge
@@ -56,6 +57,30 @@ class AgentConfig(BaseConfig):
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_runtime_network_policy(cls, data):
+        """The seat's box enforces its task's policy (`Task.network`), so `allow`/`block`
+        under `runtime` are refused here. A runtime configured anywhere else — a tool
+        server's own box, the Harbor verifier's — still takes them."""
+        if not isinstance(data, dict):
+            return data
+        runtime = data.get("runtime")
+        if isinstance(runtime, dict):
+            allow, block = runtime.get("allow"), runtime.get("block")
+            restricted = (allow is not None and "*" not in allow) or bool(block)
+        else:
+            restricted = (
+                isinstance(runtime, NetworkPolicyConfig) and runtime.network_restricted
+            )
+        if restricted:
+            raise ValueError(
+                "an agent's network policy comes from its task: set TaskData.network "
+                "in the taskset or override it with [env.taskset.task.network], not "
+                "allow/block under [env.agent.runtime]"
+            )
+        return data
 
     @model_validator(mode="before")
     @classmethod
