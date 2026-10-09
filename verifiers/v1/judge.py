@@ -53,6 +53,14 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
+from openai import (
+    APIError,
+    AuthenticationError,
+    BadRequestError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnprocessableEntityError,
+)
 from pydantic import BaseModel
 from typing_extensions import TypeVar
 
@@ -64,6 +72,7 @@ from verifiers.v1.configs.judge import (
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.types import Messages, Usage
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.retries import retrying
 from verifiers.v1.utils.score import parse_judge_choice
 
 if TYPE_CHECKING:
@@ -182,30 +191,47 @@ class Judge(Generic[ParsedT, ConfigT]):
         response: JudgeResponse[Any] | None = None
         try:
             async with build_async_openai(self.config) as client:
-                if schema is not None:
-                    completion = await client.beta.chat.completions.parse(
-                        response_format=schema, **kwargs
-                    )
-                    choice = completion.choices[0]
-                    response = JudgeResponse(
-                        text=choice.message.content or "",
-                        parsed=choice.message.parsed,
-                        usage=Usage.from_openai(completion.usage),
-                    )
-                    if choice.message.refusal is not None:
-                        raise RuntimeError(
-                            f"judge refused structured output: {choice.message.refusal}"
-                        )
-                    if response.parsed is None:
-                        raise RuntimeError(
-                            f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
-                        )
-                else:
-                    completion = await client.chat.completions.create(**kwargs)
-                    response = JudgeResponse(
-                        text=completion.choices[0].message.content or "",
-                        usage=Usage.from_openai(completion.usage),
-                    )
+                # No SDK sits under a judge call to retry it (the client runs
+                # max_retries=0 so model-call failures reach the harness SDK): a
+                # transient fault here fails the whole rollout. Retry transport
+                # and server/rate-limit faults; deterministic 4xx raises at once.
+                async for attempt in retrying(
+                    on=APIError,
+                    give_up=(
+                        AuthenticationError,
+                        BadRequestError,
+                        NotFoundError,
+                        PermissionDeniedError,
+                        UnprocessableEntityError,
+                    ),
+                    retries=2,
+                    label=f"judge {self.reward_name}",
+                ):
+                    with attempt:
+                        if schema is not None:
+                            completion = await client.beta.chat.completions.parse(
+                                response_format=schema, **kwargs
+                            )
+                            choice = completion.choices[0]
+                            response = JudgeResponse(
+                                text=choice.message.content or "",
+                                parsed=choice.message.parsed,
+                                usage=Usage.from_openai(completion.usage),
+                            )
+                            if choice.message.refusal is not None:
+                                raise RuntimeError(
+                                    f"judge refused structured output: {choice.message.refusal}"
+                                )
+                            if response.parsed is None:
+                                raise RuntimeError(
+                                    f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
+                                )
+                        else:
+                            completion = await client.chat.completions.create(**kwargs)
+                            response = JudgeResponse(
+                                text=completion.choices[0].message.content or "",
+                                usage=Usage.from_openai(completion.usage),
+                            )
             if parse is not None:
                 response.parsed = parse(response)
             return response
