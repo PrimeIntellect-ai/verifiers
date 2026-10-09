@@ -72,8 +72,7 @@ async def agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
         raise TaskError(f"agent_user {user!r} does not exist in the image")
     if lookup.exit_code != 0:
         raise TaskError(f"agent_user {user!r} has no home directory ({home})")
-    view = runtime.with_user(user)
-    view = view.with_env({**view.env, "HOME": home})
+    view = runtime.with_user(user, home=home)
     probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
     effective, *rest = probe.stdout.split() or [""]
     if effective != user:
@@ -168,6 +167,7 @@ class Rollout:
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
+        self._agent_runtime: Runtime | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -279,7 +279,9 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                await self.harness.setup(runtime)
+                agent = await agent_runtime(runtime, self.task.data.agent_user)
+                self._agent_runtime = agent
+                await self.harness.setup(agent)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -304,7 +306,7 @@ class Rollout:
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
-                    runtime,
+                    agent,
                     shared=self._shared_tools,
                     state_secret=state_secret,
                     state_route=self.trace.id,
@@ -415,7 +417,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        await agent_runtime(runtime, harness_data.agent_user),
+                        agent,
                         self._endpoint,
                         self._secret,
                         self._urls,
@@ -606,7 +608,7 @@ class Rollout:
                         # Cross-trace judgement runs later, after the runtime is gone.
                         await asyncio.gather(
                             self.task.score(trace, runtime),
-                            self.harness.score(trace, runtime),
+                            self.harness.score(trace, self._agent_runtime or runtime),
                         )
                 except TimeoutError:
                     self.timeout("scoring")
