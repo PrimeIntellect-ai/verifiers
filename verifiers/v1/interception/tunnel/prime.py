@@ -53,22 +53,25 @@ CHECK_SECONDS = 20
 async def _watch(client: "TunnelClient", url: str) -> None:
     """Keep a held tunnel up. A tunnel service hiccup can leave frpc running while the
     service has it disconnected for good, and every request to the URL then hangs or
-    404s; frpc can also exit. Either way, restart it."""
+    404s; frpc can also exit. Either way, restart it. A tunnel the service has deleted
+    or expired can't be restarted, so stop watching it."""
+    from prime_tunnel import TunnelGoneError
+
     strikes = 0
     while True:
         await asyncio.sleep(CHECK_SECONDS * random.uniform(0.75, 1.25))
-        if client.is_running:
+        if client.is_running and not client.is_gone:
             try:
-                info = await client._client.get_tunnel(client.tunnel_id)
+                status = await client.status()
             except Exception as e:  # noqa: BLE001 - the service is unreachable: no verdict
                 logger.debug("tunnel %s: state check failed: %s", url, e)
                 continue
-            if info is None:
-                logger.error("tunnel %s: registration gone; cannot repair", url)
-                return
-            strikes = strikes + 1 if info.status == "disconnected" else 0
-            if strikes < 2:
-                continue
+            strikes = strikes + 1 if status.registration == "disconnected" else 0
+        if client.is_gone:
+            logger.error("tunnel %s: registration gone; cannot repair", url)
+            return
+        if client.is_running and strikes < 2:
+            continue
         logger.warning(
             "tunnel %s: %s; restarting frpc",
             url,
@@ -76,6 +79,9 @@ async def _watch(client: "TunnelClient", url: str) -> None:
         )
         try:
             await client.restart()
+        except TunnelGoneError:
+            logger.error("tunnel %s: registration gone; cannot repair", url)
+            return
         except Exception as e:  # noqa: BLE001 - tried again on the next check
             logger.warning("tunnel %s: frpc restart failed: %s", url, e)
         else:
