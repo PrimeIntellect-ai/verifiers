@@ -333,8 +333,31 @@ class ResponsesStreamParser(StreamParser):
 
     def __init__(self) -> None:
         self.events: deque[bytes] = deque(maxlen=2)
-        self.feed = self.events.append
         self.terminal_events: tuple[bytes, ...] | None = None
+
+    def feed(self, raw: bytes) -> None:
+        # A bare `error` event (a failure reported mid-stream, distinct from a
+        # terminal `response.failed`) would otherwise evaporate — the deque keeps
+        # no parsed state and a missing terminal event then errors generically,
+        # losing the upstream detail.
+        event = parse_sse_event(raw)
+        if event is not None and event.get("type") == "error":
+            error = event.get("error") or event
+            code = error.get("code") if isinstance(error, dict) else None
+            message = (
+                error.get("message") if isinstance(error, dict) else str(error)
+            ) or code
+            raise model_error(
+                str(message or "upstream stream error"),
+                status_code=(
+                    429
+                    if code in ("rate_limit_exceeded", "rate_limit_error")
+                    else 400
+                    if code in ("invalid_prompt", "context_length_exceeded")
+                    else 502
+                ),
+            )
+        self.events.append(raw)
 
     def on_done(self) -> None:
         # Freeze the terminal tail before later relay chunks can evict it.

@@ -24,6 +24,7 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_domains,
 )
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -50,6 +51,17 @@ STOP_REASONS: dict[str, FinishReason] = {
     "max_tokens": "length",
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
+}
+# Anthropic `error` event types -> the HTTP status the harness SDK should see:
+# its own 4xx for request problems, a retryable status for upstream faults.
+STREAM_ERROR_STATUSES = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "rate_limit_error": 429,
+    "api_error": 502,
+    "overloaded_error": 503,
 }
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
@@ -393,6 +405,16 @@ class AnthropicStreamParser(StreamParser):
                 **(self.message.get("usage") or {}),
                 **(event.get("usage") or {}),
             }
+        elif kind == "error":
+            # An upstream failure mid-stream arrives as a named `error` event —
+            # surface its detail instead of committing a partial message (or
+            # failing with a generic missing-terminal error when no `message_stop`
+            # follows).
+            error = event.get("error") or {}
+            raise model_error(
+                str(error.get("message") or error),
+                status_code=STREAM_ERROR_STATUSES.get(str(error.get("type")), 502),
+            )
 
     def finish(self) -> Response:
         for index, fields in self.block_parts.items():
