@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import EnforcedNetworkPolicy
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -73,7 +73,7 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     BASE_LABELS = list(labels)
 
 
-class PrimeConfig(EnforcedNetworkPolicy):
+class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the

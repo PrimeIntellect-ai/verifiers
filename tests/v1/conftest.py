@@ -69,7 +69,7 @@ def tool_runtime(request) -> dict:
     if request.param == "colocated":
         return {"colocated": True}
     if request.param == "docker":
-        return {"runtime": {"type": "docker"}}
+        return {"runtime": {"type": "docker", "allow": ["*"]}}
     return {"runtime": {"type": request.param}}
 
 

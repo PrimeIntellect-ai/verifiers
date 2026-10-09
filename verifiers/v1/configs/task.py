@@ -44,7 +44,7 @@ class TaskConfig(BaseConfig):
     """Execution-time egress policy for every task — the same `allow`/`block` object
     the runtimes carry. Set from TOML/CLI (`[env.taskset.task.network]`,
     `--env.taskset.task.network.allow`) it replaces each task's own `TaskData.network`;
-    None leaves that in place; the runtime enforces the result."""
+    None leaves that in place. The runtime's own rules still intersect."""
 
     stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Typed `Request`, `Response`, or `Trace` stop predicates plugged by name and

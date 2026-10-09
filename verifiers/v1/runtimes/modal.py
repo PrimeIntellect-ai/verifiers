@@ -20,10 +20,7 @@ from typing import ClassVar, Literal
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.runtime import (
-    EnforcedNetworkPolicy,
-    parse_network_rule,
-)
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -76,7 +73,7 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     return host
 
 
-class ModalConfig(EnforcedNetworkPolicy):
+class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
     vm: bool = False
     """Use a VM sandbox for workloads requiring a Docker daemon."""
@@ -85,7 +82,7 @@ class ModalConfig(EnforcedNetworkPolicy):
     """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
     """Allow network access at creation. False blocks all egress, including setup;
-    a task's egress policy cannot be enforced on top of it."""
+    it cannot be combined with execution-time allow/block policies."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
@@ -108,8 +105,7 @@ class ModalConfig(EnforcedNetworkPolicy):
             return self
         if not self.network_access:
             raise ValueError(
-                "a restricted task policy on Modal requires network_access=true for "
-                "trusted setup"
+                "Modal allow/block policies require network_access=true for trusted setup"
             )
         if self.allow == ["*"]:
             raise ValueError(

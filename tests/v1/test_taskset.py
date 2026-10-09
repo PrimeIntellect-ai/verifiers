@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import PrimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import PrimeConfig
 from verifiers.v1.utils.compile import resolve_runtime_config
 
 
@@ -235,11 +235,11 @@ def test_task_config_network_replaces_each_tasks_own() -> None:
         assert resolved(closed_book(reloaded)) == [allow] * 3
     # A run's override does not change task identity.
     assert [t.key for t in closed_book()] == [t.key for t in closed_book(config)]
-    # The runtime enforces the resolved policy; one that cannot refuses the task.
-    task = closed_book()[0]
-    assert resolve_runtime_config(PrimeConfig(), task).network_restricted
-    with pytest.raises(ValueError, match="does not enforce"):
-        resolve_runtime_config(SubprocessConfig(), task)
+    # The runtime's own rules still intersect.
+    task = closed_book(vf.TaskConfig(network=vf.NetworkPolicyConfig(allow=["*"])))[0]
+    assert resolve_runtime_config(PrimeConfig(allow=["github.com"]), task).allow == [
+        "github.com"
+    ]
 
 
 def test_harbor_verifier_keeps_its_declared_policy() -> None:

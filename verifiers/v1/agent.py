@@ -22,7 +22,7 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
-from verifiers.v1.configs.runtime import EnforcedNetworkPolicy
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
@@ -84,15 +84,27 @@ def _check_borrowed_placement(
     """A borrowed box is never re-provisioned, so a task's placement fields can't
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
-    if task.network is not None and task.network.network_restricted:
+    task_policy = task.network is not None and task.network.network_restricted
+    base_policy = base_config if isinstance(base_config, NetworkPolicyConfig) else None
+    if task_policy or (base_policy is not None and base_policy.network_restricted):
         config = runtime.config
-        if not isinstance(config, EnforcedNetworkPolicy):
+        if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires a network policy, but borrowed "
-                f"runtime {runtime.name!r} does not enforce one; use "
+                f"task {task.data.idx!r} requires a framework-aware network policy, "
+                f"but borrowed runtime {runtime.name!r} does not support one; use "
                 "agent.provision(task)"
             )
-        expected = config.with_network(task.network)
+        if base_policy is not None and type(config) is not type(base_policy):
+            raise ValueError(
+                f"the configured {base_policy.type} network policy cannot be applied "
+                f"to borrowed {config.type} runtime {runtime.name!r}; use "
+                "agent.provision(task)"
+            )
+        policy_base = base_policy or config.model_copy(
+            update={"allow": ["*"], "block": []}
+        )
+        expected = resolve_runtime_config(policy_base, task)
+        assert isinstance(expected, NetworkPolicyConfig)
         # Do not inherit extra destinations from a box provisioned for another task.
         if set(config.allow) != set(expected.allow) or set(config.block) != set(
             expected.block

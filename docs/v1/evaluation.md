@@ -60,10 +60,10 @@ The `prime`, `docker` and `modal` runtimes can enforce an egress policy on the a
 
 A request is permitted when it matches no `block` entry and some `allow` entry. A concrete allowlist cannot be combined with a non-empty blocklist (the config is rejected); use `allow = ["*"]` with `block` for a denylist, or `allow` alone for an allowlist.
 
-A box's policy comes from the task:
+A box's policy comes from two sources:
 
 - The task. Its data declares it (`TaskData.network`; a closed-book benchmark declares `allow = []`), and the run's task config replaces that declaration: `[env.taskset.task.network]` in TOML or `--env.taskset.task.network.allow` on the CLI.
-- Nowhere else. The runtime has no policy of its own: `prime`, `docker`, `modal` and `e2b` enforce the task's resolved policy, and refuse `allow`/`block` under `[env.agent.runtime]`. Modal's `network_access = false` stays, as the sandbox-level switch that cuts all networking.
+- The runtime (`[env.agent.runtime]`). Its `allow`/`block` are additive restrictions on top of the task's resolved policy: the two allowlists intersect (only destinations both permit survive, and `[]` on either side leaves nothing) and the two blocklists union. The runtime can therefore only narrow a task's policy, never widen it; widening is what the task config above is for.
 
 Before a rollout starts, verifiers appends a note about the restriction to the system prompt, so the model treats a failing connection as intended. `network_notice = false` under `[env.agent]` disables it.
 

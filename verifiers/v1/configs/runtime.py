@@ -2,10 +2,11 @@
 
 from fnmatch import fnmatchcase
 from glob import has_magic
+from itertools import product
 from typing import Self
 from urllib.parse import SplitResult, urlsplit
 
-from pydantic import Field, ValidationInfo, model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 
@@ -86,39 +87,42 @@ class NetworkPolicyConfig(BaseConfig):
             for rule in self.block
         ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
-
-class EnforcedNetworkPolicy(NetworkPolicyConfig):
-    """What a runtime that enforces egress carries: the task's resolved policy
-    (`Task.network`), written by `with_network` at resolution. Not a config: a
-    runtime has no policy of its own, so `allow`/`block` are refused from TOML/CLI
-    and left out of dumps."""
-
-    allow: list[str] = Field(default_factory=lambda: ["*"], exclude=True)
-    block: list[str] = Field(default_factory=list, exclude=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_configured_policy(cls, data, info: ValidationInfo):
-        if (
-            isinstance(data, dict)
-            and (data.keys() & {"allow", "block"})
-            and not (info.context or {}).get("resolved")
-        ):
-            raise ValueError(
-                "a runtime enforces the task's network policy; set it on the task "
-                "(TaskData.network) or override it with [env.taskset.task.network], "
-                "not on the runtime"
-            )
-        return data
-
-    @property
-    def network(self) -> NetworkPolicyConfig:
-        return NetworkPolicyConfig(allow=self.allow, block=self.block)
-
-    def with_network(self, policy: NetworkPolicyConfig) -> Self:
-        """This runtime config enforcing `policy`; the runtime's own validators
-        reject rules it cannot express."""
-        return type(self).model_validate(
-            {**self.model_dump(), "allow": policy.allow, "block": policy.block},
-            context={"resolved": True},
-        )
+    def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+        values = self.model_dump()
+        # Intersection must not erase syntax the runtime cannot enforce.
+        task = type(self).model_validate({**values, "allow": allow, "block": block})
+        allow, block = task.allow, task.block
+        if "*" in allow:
+            allow = self.allow
+        elif "*" not in self.allow:
+            intersection = []
+            for left, right in product(allow, self.allow):
+                if left == right:
+                    intersection.append(left)
+                    continue
+                a, a_host, a_port = parse_network_rule(left)
+                b, b_host, b_port = parse_network_rule(right)
+                # Bare paths can be provider-specific CIDRs, not URL paths to discard.
+                if any(
+                    not url.hostname or (url.path and not url.scheme) for url in (a, b)
+                ):
+                    raise ValueError(
+                        f"cannot intersect network rules {left!r} and {right!r}"
+                    )
+                if (
+                    len({a.scheme, b.scheme} - {""}) > 1
+                    or len({a_port, b_port} - {None}) > 1
+                ):
+                    continue
+                host = intersect_network_hosts(a_host, b_host)
+                if not host:
+                    continue
+                scheme = a.scheme or b.scheme
+                port = a_port if a_port is not None else b_port
+                authority = f"[{host}]" if ":" in host else host
+                if port is not None:
+                    authority = f"{authority}:{port}"
+                intersection.append(f"{scheme}://{authority}" if scheme else authority)
+            allow = list(dict.fromkeys(intersection))
+        block = list(dict.fromkeys([*block, *self.block]))
+        return type(self).model_validate({**values, "allow": allow, "block": block})
