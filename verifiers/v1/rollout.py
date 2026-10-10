@@ -270,11 +270,14 @@ class Rollout:
                 if self._timeouts.setup is None
                 else loop.time() + self._timeouts.setup
             )
+            # A box started from a checkpoint already holds setup's files.
+            restored = runtime.restored
+            setup = self.task.restore if restored else self.task.setup
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(TaskError, "task setup"),
+                boundary(TaskError, "task restore" if restored else "task setup"),
             ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+                await invoke(setup, {"trace": self.trace, "runtime": runtime})
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),

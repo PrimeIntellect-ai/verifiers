@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
@@ -30,6 +30,9 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Trace
+
 logger = logging.getLogger(__name__)
 
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
@@ -45,6 +48,10 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+
+_CHECKPOINT_DEADLINE_SECONDS = 900
+"""Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
+the first of a box holding several GB can take minutes."""
 
 
 BASE_LABELS: list[str] = []
@@ -351,6 +358,29 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
         return PrimeProcess(process)
+
+    @property
+    def restored(self) -> bool:
+        # the same test start() uses to pick the checkpoint over the image
+        return bool(self.config.checkpoint)
+
+    async def checkpoint(self, trace: "Trace | None" = None) -> str:
+        try:
+            # Shielded through the id capture, as in start(): a cancel that aborts the
+            # POST mid-flight would leave a durable checkpoint nobody has the id of.
+            async def request_and_capture_id() -> str:
+                requested = await self._client.checkpoint(self.info.id)
+                if trace is not None:
+                    trace.record_checkpoint(requested.id)
+                return requested.id
+
+            checkpoint_id = await run_shielded(request_and_capture_id())
+            durable = await self._client.wait_for_checkpoint(
+                checkpoint_id, timeout_seconds=_CHECKPOINT_DEADLINE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+        return durable.id
 
     async def expose(self, port: int) -> str:
         raise SandboxError(

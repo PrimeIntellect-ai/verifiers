@@ -33,6 +33,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
     provision_runtime,
+    restore_config,
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
@@ -654,11 +655,13 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        checkpoint: str | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
-        provisioning one; `tools` are live servers borrowed from their
+        provisioning one; `checkpoint` provisions it from a `Runtime.checkpoint()`
+        id instead of the image; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
@@ -672,7 +675,7 @@ class Agent:
         history: list = []
         for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, collect_artifacts, checkpoint
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -708,8 +711,11 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
+        checkpoint: str | None,
     ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
+        params = self._rollout_params(
+            task, runtime, dict(shared_tools or {}), checkpoint
+        )
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
             raise TypeError(
                 "artifact collection requires a container runtime; subprocess "
@@ -743,6 +749,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        checkpoint: str | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -758,9 +765,9 @@ class Agent:
         caller's to hide: hand the interaction a task whose `data.prompt` is None
         and keep the scenario on a scoring-side field (the user-sim env's contract).
 
-        `runtime` and `tools` borrow live resources from their owners, just as
-        they do for `run()`; an env supplies its taskset's shared tools
-        automatically for tasks loaded from that taskset.
+        `runtime`, `tools` and `checkpoint` work as they do for `run()`; an env
+        supplies its taskset's shared tools automatically for tasks loaded from
+        that taskset.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
@@ -772,7 +779,7 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
-        params = self._rollout_params(task, runtime, dict(tools or {}))
+        params = self._rollout_params(task, runtime, dict(tools or {}), checkpoint)
         run = Rollout(
             task=task,
             has_user=True,
@@ -802,7 +809,11 @@ class Agent:
                 trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: dict,
+        checkpoint: str | None = None,
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
@@ -813,6 +824,8 @@ class Agent:
             harness = type(harness)(
                 harness.config.model_copy(update={"skills": skills})
             )
+        if runtime is not None and checkpoint is not None:
+            raise ValueError("a borrowed runtime cannot also start from a checkpoint")
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -821,6 +834,8 @@ class Agent:
             runtime_config = resolve_runtime_config(
                 self.runtime_config, task, self._warned_resources
             )
+            if checkpoint is not None:
+                runtime_config = restore_config(runtime_config, checkpoint)
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
             harness,
@@ -845,14 +860,19 @@ class Agent:
         }
 
     @asynccontextmanager
-    async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
+    async def provision(
+        self, task: Task | None = None, *, checkpoint: str | None = None
+    ) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
+        policy, resolved for `task` when given and started from `checkpoint` when
+        given; share it via `run(..., runtime=box)`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
+        if checkpoint is not None:
+            config = restore_config(config, checkpoint)
         async with provision_runtime(config) as runtime:
             # Keep sandbox startup task-neutral: this box may later host another task.
             runtime.env = dict(task.runtime_env()) if task is not None else {}
@@ -926,6 +946,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        checkpoint: str | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -934,6 +955,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
+                checkpoint=checkpoint,
             )
         self._completed.append(trace)
         return trace
@@ -946,6 +968,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        checkpoint: str | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -967,6 +990,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
+                checkpoint=checkpoint,
             ) as interaction:
                 yield interaction
         finally:
