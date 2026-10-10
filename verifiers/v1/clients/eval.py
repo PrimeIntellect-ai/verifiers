@@ -17,6 +17,7 @@ from verifiers.v1.configs.client import (
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
+from verifiers.v1.prefix import PrefixReplay
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response, SamplingConfig
 
@@ -82,7 +83,10 @@ class EvalClient(Client):
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
+        replay: PrefixReplay | None = None,
     ) -> Response:
+        if replay is not None:
+            raise NotImplementedError("prefix replay needs the train client")
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,

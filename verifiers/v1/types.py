@@ -269,6 +269,8 @@ class Response(BaseModel):
     tokens: TurnTokens | None = None
     raw: dict | None = Field(default=None, exclude=True, repr=False)
     """Full native response object returned to the program; excluded from traces."""
+    replayed: bool = Field(default=False, exclude=True)
+    """Served from a prefix replay (`verifiers.v1.prefix`) instead of sampled."""
 
 
 class SamplingConfig(BaseModel):

@@ -20,6 +20,7 @@ from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
 from verifiers.v1.graph import PendingTurn
+from verifiers.v1.prefix import PrefixCall, PrefixReplay
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -185,6 +186,27 @@ def response_from_generate(
     )
 
 
+def replayed_result(
+    renderer: Renderer,
+    prompt_ids: list[int],
+    prompt_attribution: RenderedTokens | None,
+    tools: list[dict] | None,
+    call: PrefixCall,
+) -> dict:
+    """A `generate` result for a recorded prefix call: its completion parsed by the
+    renderer exactly as a sampled one would be, without logprobs."""
+    parsed = renderer.parse_response(call.completion_ids, tools=tools)
+    return {
+        "prompt_ids": prompt_ids,
+        "completion_ids": list(call.completion_ids),
+        "content": parsed.content,
+        "reasoning_content": parsed.reasoning_content,
+        "tool_calls": parsed.tool_calls,
+        "finish_reason": call.finish_reason,
+        "prompt_attribution": prompt_attribution,
+    }
+
+
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
     if not messages:
@@ -346,6 +368,7 @@ class TrainClient(Client):
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
+        replay: PrefixReplay | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
@@ -420,9 +443,14 @@ class TrainClient(Client):
                     prompt_ids = bridged.token_ids
                     prompt_attribution = bridged
                     bridged_turn = turn
-                    sampling_params["routed_experts_prompt_start"] = max(
-                        turn.path_len - 1, 0
-                    )
+                    # Reuse the prefix's recorded routing only when every prefix node has it
+                    # (replayed calls never reached the engine); otherwise route the whole
+                    # prompt so the commit can fill the gaps.
+                    nodes = [turn.trace.nodes[nid] for nid in turn.prefix_node_ids]
+                    if all(n.routed_experts is not None for n in nodes if n.token_ids):
+                        sampling_params["routed_experts_prompt_start"] = max(
+                            turn.path_len - 1, 0
+                        )
 
             # Render here (encode-side, so through the slot) rather than inside `generate`:
             # handed prebuilt prompt_ids, generate's own renderer touches are decode-side
@@ -439,31 +467,38 @@ class TrainClient(Client):
                 prompt_ids = rendered.token_ids
                 prompt_attribution = rendered
 
-            try:
-                result = await generate(
-                    client=self.client,
-                    renderer=renderer,
-                    messages=wire_messages,
-                    model=model,
-                    prompt_ids=prompt_ids,
-                    prompt_attribution=prompt_attribution,
-                    tools=wire_tools,
-                    sampling_params=sampling_params,
-                    process_multimodal=process_multimodal,
-                    cache_salt=cache_salt,
-                    extra_headers={SESSION_ID_HEADER: session_id}
-                    if session_id
-                    else None,
+            recorded = replay.take(prompt_ids, turn) if replay is not None else None
+            if recorded is not None:
+                result = replayed_result(
+                    renderer, prompt_ids, prompt_attribution, wire_tools, recorded
                 )
-            except OverlongPromptError as e:
-                # The renderer's pre-flight overflow never reached the provider: a
-                # deterministic 400, so the harness SDK never retries it.
-                raise ProviderError(str(e), status_code=400) from e
-            except OpenAIError as e:
-                raise model_error(e) from e
+            else:
+                try:
+                    result = await generate(
+                        client=self.client,
+                        renderer=renderer,
+                        messages=wire_messages,
+                        model=model,
+                        prompt_ids=prompt_ids,
+                        prompt_attribution=prompt_attribution,
+                        tools=wire_tools,
+                        sampling_params=sampling_params,
+                        process_multimodal=process_multimodal,
+                        cache_salt=cache_salt,
+                        extra_headers={SESSION_ID_HEADER: session_id}
+                        if session_id
+                        else None,
+                    )
+                except OverlongPromptError as e:
+                    # The renderer's pre-flight overflow never reached the provider: a
+                    # deterministic 400, so the harness SDK never retries it.
+                    raise ProviderError(str(e), status_code=400) from e
+                except OpenAIError as e:
+                    raise model_error(e) from e
         response = response_from_generate(
             result, model, bridged_turn, mm_token_type_id_map
         )
+        response.replayed = recorded is not None
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)

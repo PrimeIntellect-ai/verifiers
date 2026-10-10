@@ -9,7 +9,7 @@ fields whose value changed (timing spans, stop condition, rewards, ...), and the
 `pending` preview — the messages of the request in flight that no node holds yet, so a
 watcher sees a tool result before the model has answered it. The `Trace` is
 append-only at turn granularity except for links and the last routing row of a node,
-which the next prefill can repair. Apart from these and the preview, every byte of the
+which the next prefill can repair (or all its rows, if it had none). Apart from these and the preview, every byte of the
 episode crosses the wire once and the stream costs about what a single reply would; the
 reply that ends the run carries only the episode head and per-trace counts the client
 checks its assembly against. A cursor advances only once its delta is on the wire, so a
@@ -175,7 +175,8 @@ class DeltaStreamer:
         cursor: TraceCursor,
         sent_nodes: int,
     ) -> None:
-        """Add final rows repaired since they were sent, keyed by node index.
+        """Add final rows repaired since they were sent, keyed by node index (all rows for
+        a node first sent without routing).
 
         Record every node's current row on the cursor. `sent_nodes` is the pre-flush
         count, so a node first sent in this delta is never reported as a repair.
@@ -186,10 +187,16 @@ class DeltaStreamer:
                 continue
             row = _encode_ndarray(node.routed_experts[-1:])
             packed = pack(row)
-            if cursor.final_rows.get(index) != packed:
+            previous = cursor.final_rows.get(index)
+            if previous != packed:
                 cursor.final_rows[index] = packed
                 if index < sent_nodes:
-                    repairs[index] = row
+                    # A node sent without routing (a prefix-replayed call) gets all of it.
+                    repairs[index] = (
+                        row
+                        if previous is not None
+                        else _encode_ndarray(node.routed_experts)
+                    )
         if repairs:
             delta["routing_repairs"] = repairs
 
@@ -258,13 +265,17 @@ class EpisodeAssembly:
         self.traces: dict[str, dict] = {}
 
     def _maybe_apply_routing_repairs(self, delta: dict[str, Any], trace: dict) -> None:
-        """Replace repaired final rows in nodes the client already holds.
+        """Replace repaired final rows in nodes the client already holds; a node held
+        without routing takes the repair as its whole routing.
 
         Rebuild each array: a repair can widen its dtype, and decoded rows alias
         the original delta's bytes, which must remain unchanged for consumers.
         """
         for index, row in (delta.get("routing_repairs") or {}).items():
             node = trace["nodes"][int(index)]
+            if node.get("routed_experts") is None:
+                node["routed_experts"] = row
+                continue
             node["routed_experts"] = _encode_ndarray(
                 np.concatenate(
                     [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]

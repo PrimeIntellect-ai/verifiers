@@ -226,6 +226,12 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                # Only the recorded agent replays, and only through the run's own client.
+                prefix=ctx.prefix
+                if ctx.prefix is not None
+                and name == ctx.prefix.agent
+                and spec.client is None
+                else None,
             )
 
         agents = Agents(self.config, make)

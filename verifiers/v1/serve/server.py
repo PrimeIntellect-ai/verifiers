@@ -8,6 +8,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.prefix import Prefix
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -87,17 +88,23 @@ class EnvServer:
         return self.task_cls(data, self.env.config.taskset.task)
 
     def _context(
-        self, client_config: ClientConfig, model: str, sampling: SamplingConfig
+        self,
+        client_config: ClientConfig,
+        model: str,
+        sampling: SamplingConfig,
+        prefix: Prefix | None = None,
     ) -> ModelContext:
         """The request's sampling context. No client is built or cached here — each
         rollout constructs its own from `client_config` and closes it, so a request's
         endpoint (and a training run's changing model) leaves nothing behind."""
-        return ModelContext(client=client_config, model=model, sampling=sampling)
+        return ModelContext(
+            client=client_config, model=model, sampling=sampling, prefix=prefix
+        )
 
     async def _run(
         self, req: RunRequest, client_id: bytes, request_id: bytes
     ) -> RunResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
+        ctx = self._context(req.client, req.model, req.sampling, req.prefix)
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
         async def send_delta(delta: dict) -> None:

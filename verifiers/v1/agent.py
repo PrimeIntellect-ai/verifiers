@@ -32,6 +32,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.prefix import Prefix
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -884,8 +885,10 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        prefix: Prefix | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
+        self.ctx = replace(self.ctx, prefix=prefix)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name

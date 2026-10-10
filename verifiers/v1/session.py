@@ -32,6 +32,7 @@ from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.prefix import PrefixReplay
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -154,6 +155,8 @@ class RolloutSession:
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
     cannot be enforced, so it ends the rollout instead of letting the call run."""
+    replay: PrefixReplay | None = None
+    """The recorded prefix calls the train client serves before sampling."""
     client: Client | None = None
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it

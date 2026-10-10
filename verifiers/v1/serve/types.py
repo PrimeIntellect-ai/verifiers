@@ -3,6 +3,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.prefix import Prefix
 from verifiers.v1.serve.delta import TraceSummary
 from verifiers.v1.types import SamplingConfig
 
@@ -48,6 +49,8 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    prefix: Prefix | None = None
+    """Recorded calls the rollout replays before sampling (`verifiers.v1.prefix`)."""
 
 
 class RunResponse(BaseResponse):
