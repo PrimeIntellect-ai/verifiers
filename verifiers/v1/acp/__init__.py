@@ -59,6 +59,9 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
+    gate_failed: str | None = None
+    """A file the agent's own gate hook writes when it couldn't ask the gate, failing the
+    turn."""
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -333,6 +336,7 @@ class ACPHarnessSession(HarnessSession):
             "tool_interception": {
                 "url": self.tool_interception_url,
                 "secret": self.secret,
+                "failed": self.config.gate_failed,
             }
             if self.tool_interception_url
             else None,

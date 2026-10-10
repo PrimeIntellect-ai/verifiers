@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # State calls may cross a tunnel, so allow transient startup failures without hanging forever.
 STATE_TIMEOUT = 30.0  # seconds per request
-STATE_RETRIES = 4
+STATE_RETRY_SECONDS = 300.0
 
 
 async def _channel_request(
@@ -39,19 +39,23 @@ async def _channel_request(
     content: bytes | None = None,
     client: AsyncClient | None = None,
 ) -> Response:
-    """Retry tunnel transport errors and 5xx responses, but not invalid 4xx requests."""
+    """Retry what a tunnel or proxy dropped or answered (the rollout stamps its own
+    answers). Requests are reads or whole-state replaces, so a repeat is harmless."""
     import httpx
     from tenacity import (
         AsyncRetrying,
         retry_if_exception,
-        stop_after_attempt,
+        stop_after_delay,
         wait_exponential_jitter,
     )
 
     def transient(e: BaseException) -> bool:
-        return isinstance(e, httpx.TransportError) or (
-            isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500
-        )
+        if isinstance(e, httpx.HTTPStatusError):
+            status = e.response.status_code
+            return "x-verifiers-interception" not in e.response.headers and (
+                status in (404, 408, 429) or status >= 500
+            )
+        return isinstance(e, httpx.TransportError)
 
     async def request() -> Response:
         manager = (
@@ -72,8 +76,8 @@ async def _channel_request(
             return resp
 
     return await AsyncRetrying(
-        stop=stop_after_attempt(STATE_RETRIES + 1),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
+        stop=stop_after_delay(STATE_RETRY_SECONDS),
+        wait=wait_exponential_jitter(initial=0.5, max=10),
         retry=retry_if_exception(transient),
         reraise=True,
     )(request)
