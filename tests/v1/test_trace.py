@@ -26,7 +26,7 @@ from verifiers.v1.semantic import (
     extract_acp_info,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
-from verifiers.v1.utils.trace_store import write_episode
+from verifiers.v1.utils.trace_store import read_episodes, write_episode
 
 
 class MyTask(vf.TaskData):
@@ -206,6 +206,28 @@ def test_custom_task_state_round_trip(tmp_path):
     saved = json.loads((tmp_path / "traces.jsonl").read_bytes())
     assert "state" not in saved["traces"][0]
     assert tr.state.artifacts["/artifact.bin"] == b"\xff\x00\xfe"
+
+
+def test_read_episodes_skips_torn_final_line(tmp_path):
+    # An interrupted eval can leave a partial final line in traces.jsonl; replay
+    # must keep the parseable rows instead of losing the whole run — the same
+    # tolerance the resume loader applies (#2801).
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
+    )
+    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
+    with (tmp_path / "traces.jsonl").open("a", encoding="utf-8") as f:
+        f.write('{"task": {"type": "T", "da')
+
+    saved = read_episodes(tmp_path, vf.Trace)
+    assert len(saved) == 1
+    assert saved[0].ok is True
+    assert saved[0].traces[0].task.data.idx == 0
+
+    # a run killed before flushing anything parseable yields no episodes, not a crash
+    (tmp_path / "traces.jsonl").write_text('{"task": {"type": "T", "da')
+    assert read_episodes(tmp_path, vf.Trace) == []
 
 
 @pytest.mark.parametrize("history_type", ["additional_tools", "tool_search_output"])
