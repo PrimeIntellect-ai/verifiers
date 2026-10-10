@@ -150,6 +150,18 @@ def compare_stdout_results(
     )
 
 
+def _has_unbracketed_whitespace(text: str) -> bool:
+    depth = 0
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]" and depth:
+            depth -= 1
+        elif char.isspace() and not depth:
+            return True
+    return False
+
+
 def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
     outcomes: dict[str, str] = {}
     for raw_line in ANSI_RE.sub("", output or "").splitlines():
@@ -165,6 +177,12 @@ def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
         if test_id.startswith("["):
             continue
 
+        # Only node ids carry "::". Captured log records ("ERROR    logger:file:"
+        # "line message") and other non-test rows do not, so they must not be
+        # counted as outcomes (issue #2810).
+        if "::" not in test_id:
+            continue
+
         # These summary rows append " - <reason>"; passing node ids do not.
         if outcome in ("FAILED", "ERROR", "XFAIL", "XPASS") and " - " in test_id:
             parts = test_id.split(" - ")
@@ -173,5 +191,13 @@ def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
                 if node_id.count("[") == node_id.count("]"):
                     test_id = node_id
                     break
-        outcomes[test_id.rstrip()] = outcome
+
+        # A node id only ever carries whitespace inside parameterization
+        # brackets, so a row whose id has whitespace elsewhere (e.g. a captured
+        # log record whose message contains "::") is not a test row either.
+        test_id = test_id.rstrip()
+        if _has_unbracketed_whitespace(test_id):
+            continue
+
+        outcomes[test_id] = outcome
     return outcomes
