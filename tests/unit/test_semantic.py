@@ -16,6 +16,310 @@ from verifiers.v1.semantic import (
     routing_session_id,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.trace_store import read_episodes, write_episode
+
+
+class MyTask(vf.TaskData):
+    answer: str = ""  # a task-specific field WireTaskData must absorb
+
+
+class MyState(vf.State):
+    score: int = 0
+
+
+@pytest.mark.parametrize(
+    "reason,condition",
+    [
+        ("max_total_tokens", "max_total_tokens"),
+        ("max_total_turns", "max_turns"),
+        ("token_budget", "max_output_tokens"),
+        ("compaction_failed", "compaction_failed"),
+        ("done", "agent_completed"),
+        (None, "agent_completed"),
+    ],
+)
+def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+    )
+    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    metadata = {
+        RLM_SESSION_METADATA_KEY: {
+            "session_id": trace.id,
+            "metrics": {"turns": 1},
+            "last_stop_reason": reason,
+        }
+    }
+    harness.acp_turn_result(
+        trace, vf.ACPTurn(reply="partial", response_metadata=metadata)
+    )
+    trace.stop("agent_completed")
+    harness.acp_close_result(trace, metadata)
+
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.stop_condition == condition
+    assert restored.is_truncated is (condition != "agent_completed")
+
+
+class FailingSegmentRollout:
+    ok = Rollout.ok
+    closed = Rollout.closed
+    fail = Rollout.fail
+    step = Rollout.step
+
+
+@pytest.mark.asyncio
+async def test_failed_segment_does_not_reuse_prior_root_reply():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(
+            type="Task",
+            data=vf.TaskData(idx=0, prompt=None),
+            key="dataset/example-0",
+            hash="content-digest",
+        ),
+    )
+    trace.root_reply = "previous reply"
+
+    class FailingSession:
+        async def turn(self, messages):
+            trace.nodes.append(
+                MessageNode(
+                    parent=None,
+                    message=AssistantMessage(content="current partial reply"),
+                    sampled=True,
+                )
+            )
+            raise RuntimeError("segment failed after sampling")
+
+    run = FailingSegmentRollout()
+    run.trace = trace
+    run._opened = True
+    run._closed = False
+    run._failed = False
+    run._failure = None
+    run._borrowed_runtime = None
+    run.runtime = None
+    run._agent_time_remaining = None
+    run._timeouts = RolloutTimeouts()
+    run._harness_session = FailingSession()
+    run._session = SimpleNamespace(
+        request_interceptors=[],
+        error=None,
+        stopped=False,
+    )
+    run.deadline_at = None
+
+    segment = await Interaction(run).turn("next")
+
+    assert segment.last_reply == "current partial reply"
+    assert trace.root_reply is None
+    assert trace.last_reply == "current partial reply"
+
+
+def test_bare_trace_round_trip():
+    # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(
+            type="Task",
+            data=vf.TaskData(idx=3, prompt="hello"),
+            key="dataset/example-3",
+            hash="content-digest",
+        ),
+    )
+    rt = vf.Trace.model_validate(tr.model_dump())
+    assert rt.id == tr.id
+    assert rt.task.type == "Task"
+    assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
+    assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
+    assert rt.num_turns == 0 and rt.num_branches == 0
+    assert rt.reward == 0.0 and rt.errors == []
+
+
+def test_custom_task_state_round_trip(tmp_path):
+    # Custom data and state round-trip into the same parameterization. Data fields are
+    # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
+    tr = vf.Trace[MyTask, MyState](
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
+        state=MyState(score=7, artifacts={"/artifact.bin": b"\xff\x00\xfe"}),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=AssistantMessage(content="a"), sampled=True),
+        ],
+    )
+    tr.record_reward("r", 0.5)
+    wire = tr.model_dump()
+    assert "state" not in wire  # transient state is excluded from the dump
+
+    rt = vf.Trace[MyTask, MyState].model_validate(wire)
+    assert (
+        isinstance(rt.task.data, MyTask) and rt.task.data.answer == "gold"
+    )  # typed custom field
+    assert rt.task.type == "MyTask"  # the producing class's name survives the wire
+    assert rt.num_turns == 1 and rt.num_branches == 1
+    assert rt.reward == 0.5  # property recomputed from `rewards`
+    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
+    saved = json.loads((tmp_path / "traces.jsonl").read_bytes())
+    assert "state" not in saved["traces"][0]
+    assert tr.state.artifacts["/artifact.bin"] == b"\xff\x00\xfe"
+
+
+def test_read_episodes_skips_torn_final_line(tmp_path):
+    # An interrupted eval can leave a partial final line in traces.jsonl; replay
+    # must keep the parseable rows instead of losing the whole run — the same
+    # tolerance the resume loader applies (#2801).
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
+    )
+    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
+    with (tmp_path / "traces.jsonl").open("a", encoding="utf-8") as f:
+        f.write('{"task": {"type": "T", "da')
+
+    saved = read_episodes(tmp_path, vf.Trace)
+    assert len(saved) == 1
+    assert saved[0].ok is True
+    assert saved[0].traces[0].task.data.idx == 0
+
+    # a run killed before flushing anything parseable yields no episodes, not a crash
+    (tmp_path / "traces.jsonl").write_text('{"task": {"type": "T", "da')
+    assert read_episodes(tmp_path, vf.Trace) == []
+
+
+@pytest.mark.parametrize("history_type", ["additional_tools", "tool_search_output"])
+def test_wire_trace_round_trip(history_type):
+    mcp = {
+        "type": "mcp",
+        "server_label": "alpha",
+        "server_url": "https://example.invalid/mcp",
+        "authorization": "trace-test-oauth-token",
+        "headers": {"Authorization": "Bearer trace-test-header-token"},
+        "Authorization": "trace-test-case-oauth-token",
+        "Headers": {"X-Api-Key": "trace-test-case-header-token"},
+    }
+    function = {
+        "type": "function",
+        "name": "echo",
+        "description": "Echo the supplied text.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
+        "strict": False,
+    }
+    stale = function | {"parameters": {"type": "object"}, "strict": True}
+    request = ResponsesDialect().parse_request(
+        {
+            "input": [
+                {
+                    "type": history_type,
+                    "call_id": "search",
+                    "tools": [
+                        stale,
+                        {"type": "namespace", "name": "mcp__world", "tools": [stale]},
+                    ],
+                }
+            ],
+            "tools": [
+                function,
+                {"type": "namespace", "name": "mcp__world", "tools": [function]},
+                {"type": "namespace", "name": "mcp__other", "tools": [function]},
+                {"type": "custom", "name": "patch", "format": {"type": "text"}},
+                {"type": "web_search", "search_context_size": "low"},
+                mcp,
+                mcp | {"server_label": "beta"},
+            ],
+        }
+    )
+    assert request.tools is not None and len(request.tools) == 7
+    assert all(tool.parameters == function["parameters"] for tool in request.tools[:3])
+    assert all(tool.strict is False for tool in request.tools[:3])
+    assistant = fold_assistant(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_0",
+                "name": "echo",
+                "namespace": "mcp__world",
+                "arguments": '{"text":"hello"}',
+            }
+        ]
+    )
+    # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
+    # carry node `parent` links for `num_branches` to survive.
+    tr = vf.Trace[MyTask, vf.State](
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
+        tools=request.tools,
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=assistant, sampled=True),
+            MessageNode(parent=0, message=AssistantMessage(content="a2"), sampled=True),
+        ],
+    )
+    tr.record_reward("r", 1.0)
+    tr.rewards.setdefault("solved", None)  # seeded: expected but never scored
+    tr.metrics.setdefault("acc", None)
+    tr.info = {"build": "ok"}
+    tr.root_reply = "root answer"
+    tr.stop("done")
+    prepare_turn(tr, [], request.tools).commit_prompt()
+
+    # the dump is plain pydantic — derived values are properties, so they're not serialized
+    data = json.loads(tr.model_dump_json(exclude_none=True))
+    assert "trace-test-" not in json.dumps(data)
+    assert mcp["authorization"] == "trace-test-oauth-token"
+    assert mcp["headers"] == {"Authorization": "Bearer trace-test-header-token"}
+    assert mcp["Authorization"] == "trace-test-case-oauth-token"
+    assert mcp["Headers"] == {"X-Api-Key": "trace-test-case-header-token"}
+    chat_request = ChatDialect().parse_request(
+        {"tools": [mcp, mcp | {"server_label": "beta"}]}
+    )
+    chat_trace = tr.model_copy(update={"tools": []})
+    prepare_turn(chat_trace, [], chat_request.tools).commit_prompt()
+    assert [tool.name for tool in chat_trace.tools] == ["alpha", "beta"]
+    assert "trace-test-" not in chat_trace.model_dump_json()
+    assert (
+        vf.WireTrace.model_validate_json(chat_trace.model_dump_json()).tools
+        == chat_request.tools
+    )
+    assert "reward" not in data and "is_truncated" not in data
+    # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
+    assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None
+
+    rt = vf.WireTrace.model_validate(data)
+    assert rt.num_branches == tr.num_branches == 2  # branch topology survived
+    assert rt.num_turns == tr.num_turns == 2
+    assert rt.reward == 1.0  # property recomputed from `rewards`, seeds contribute 0
+    assert rt.rewards["solved"] is None
+    assert rt.stop_condition == "done"
+    assert rt.info == {"build": "ok"}
+    assert rt.root_reply == "root answer"
+    assert rt.last_reply == "root answer"
+    rt.root_reply = ""
+    assert rt.last_reply == ""
+    assert (
+        rt.tools == tr.tools
+    )  # the advertised tools persist (tool-use SFT reads them)
+    assert [tool.namespace for tool in rt.tools[:3]] == [
+        None,
+        "mcp__world",
+        "mcp__other",
+    ]
+    assert all(tool.parameters == function["parameters"] for tool in rt.tools[:3])
+    assert all(tool.strict is False for tool in rt.tools[:3])
+    assert rt.tools[3].type == "custom"
+    assert rt.tools[3].model_extra == {"format": {"type": "text"}}
+    assert rt.tools[4].type == "web_search"
+    assert rt.tools[4].model_extra == {"search_context_size": "low"}
+    assert [tool.name for tool in rt.tools[5:]] == ["alpha", "beta"]
+    assert rt.nodes[1].message.tool_calls[0].namespace == "mcp__world"
+    assert rt.task.data.model_extra == {
+        "answer": "a"
+    }  # taskset extras preserved on WireTaskData
+
+    # the env-server wire form (a plain model_dump) loads too
+    assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
 
 
 def _semantic_edge_set() -> vf.SemanticEdgeSet:
