@@ -19,18 +19,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-# Two release shapes: `0.9.5` is the npm-era TS bundle (four npm tarballs,
-# installed by commit), and from the Rust rewrite on, releases are one platform
-# tarball per OS (the `prime-agent` binary, the `prime-agent-runtime/` kernel
-# sidecar, `models.bundled.json`, `mcp-services.bundled.json`, and the built-in
-# skills, all flat at the archive root).
 TS_VERSION = "0.9.5"
-TS_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
-    "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
-)
+TS_COMMIT = "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
 RUST_VERSION = "0.10.0"
-# The v0.10.0 release SHA256SUMS rows for the published tarballs.
-RUST_RELEASE_SHA256: dict[str, str] = {
+RUST_RELEASE_SHA256 = {
     "linux-x64": "c16bd2af5e77b53f49b914a44742c4cf6a67c5ed5000041430b78dbd4c3bcbec",
     "linux-arm64": "f3cab3530a4d7ca43dbef8321bf13f260d1ba05d8b5dde057165a20bd4f675c4",
     "darwin-x64": "af4866b5ba82f3419b964290e3f023ddb9b99958a89e16ee856962b901ec0fc6",
@@ -120,33 +112,28 @@ printf '%s  %s\n' "$VF_PRIME_AGENT_RELEASE_SHA256" "$tarball" \
 mkdir -p "$prefix"
 tar -xzf "$download_dir/$tarball" -C "$prefix"
 chmod +x "$prefix/prime-agent"
-# The kernel bootstrap provisions the venv's Python and packages through uv;
-# the binary looks for uv on PATH and at ~/.local/bin/uv.
+# The kernel bootstrap provisions the venv through uv; the binary looks on PATH and at ~/.local/bin/uv.
 if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
     curl -fsSL --retry 5 --retry-all-errors \
         https://astral.sh/uv/install.sh -o "$download_dir/uv-install.sh"
     UV_INSTALL_DIR="$HOME/.local/bin" sh "$download_dir/uv-install.sh" >/dev/null
     [ -x "$HOME/.local/bin/uv" ]
 fi
-# The release installer's own pre-warm: run the install-time bootstrap entry
-# so the first session starts with the kernel venv already built.
+# Pre-warm the kernel venv through the release's install-time bootstrap entry.
 PATH="$HOME/.local/bin:$PATH" "$prefix/prime-agent" --prime-agent-bootstrap
 [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
 """
 
 
 class ReleasePlan(NamedTuple):
-    """How one Prime Agent release is installed and launched."""
-
     install: str
     bin: str
     launch_path: str
 
 
 def release_plan(version: str, platform: str) -> ReleasePlan:
-    """Choose the install script, binary path, and launch PATH dirs for one
-    release version: the 0.9.x npm era keeps the TS bundle, the Rust rewrite's
-    versions install the platform tarball."""
+    """Choose the install script, binary path, and launch PATH for a release:
+    0.9.5 keeps the npm-era TS bundle, 0.10.0 installs the Rust tarball."""
     if version == TS_VERSION:
         return ReleasePlan(
             TS_INSTALL,
@@ -172,8 +159,7 @@ def release_plan(version: str, platform: str) -> ReleasePlan:
 
 class PrimeAgentHarnessConfig(HarnessConfig):
     version: Literal["0.9.5", "0.10.0"] = RUST_VERSION
-    """Prime Agent release to install: the Rust platform tarball, or `0.9.5`
-    for the npm-era TS bundle."""
+    """Prime Agent release version to install."""
 
     platform: Literal["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"] = (
         "linux-x64"
@@ -263,9 +249,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "PRIME_AGENT_COMMIT": TS_COMMIT,
                 "PRIME_AGENT_RELEASE_VERSION": self.config.version,
                 "VF_PRIME_AGENT_PLATFORM": self.config.platform,
-                "VF_PRIME_AGENT_RELEASE_SHA256": RUST_RELEASE_SHA256.get(
-                    self.config.platform, ""
-                ),
+                "VF_PRIME_AGENT_RELEASE_SHA256": RUST_RELEASE_SHA256[
+                    self.config.platform
+                ],
             },
             label="prime-agent",
         )
