@@ -39,11 +39,17 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
         for line in f:
             if not line.strip():
                 continue
-            row = json.loads(line)
-            record = WireEpisode.model_validate({**row, "traces": []})
-            record.traces = [
-                trace_adapter.validate_python(trace) for trace in row["traces"]
-            ]
+            # A torn final line (the run died mid-write) or a foreign shape is
+            # not an episode — it's dropped, never a crash of the whole read.
+            # Same tolerance as the resume loader, which owes the row again.
+            try:
+                row = json.loads(line)
+                record = WireEpisode.model_validate({**row, "traces": []})
+                record.traces = [
+                    trace_adapter.validate_python(trace) for trace in row["traces"]
+                ]
+            except Exception:  # noqa: BLE001, S112
+                continue
             episodes.append(record)
     return episodes
 
