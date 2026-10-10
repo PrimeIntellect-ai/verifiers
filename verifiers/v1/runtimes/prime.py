@@ -251,6 +251,40 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
+    async def execution_status(self):
+        from verifiers.v1.runtimes.base import TargetStatus
+
+        if self._client is None or self.info.id is None:
+            return TargetStatus("unknown")
+        try:
+            async with asyncio.timeout(10):
+                sandbox = await self._client.get(self.info.id)
+            if sandbox.status == "RUNNING":
+                return TargetStatus("running")
+            if sandbox.status not in {"TERMINATED", "ERROR", "TIMEOUT"}:
+                return TargetStatus("unknown")
+            evidence = {
+                key: getattr(sandbox, key, None)
+                for key in (
+                    "status",
+                    "termination_reason",
+                    "exit_code",
+                    "error_type",
+                    "error_message",
+                )
+            }
+            cause = (
+                sandbox.error_type or sandbox.termination_reason or "sandbox_terminated"
+            )
+            attribution = (
+                "infra"
+                if cause.upper() in {"HOST_OOM", "NODE_LOST", "PROVIDER_FAILED"}
+                else "unknown"
+            )
+            return TargetStatus("lost", cause, evidence, attribution)
+        except Exception:  # noqa: BLE001 - failed observation is not confirmed loss
+            return TargetStatus("unknown")
+
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
         if not self.network_restricted:

@@ -69,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="c38e20b60c90bbf625274d3fde2b2a384f390a66", min_length=1
+        default="fa06a0db32c97dcbde0a8cfd48306b44fe44fd4f", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -142,10 +142,13 @@ class RLMHarnessConfig(HarnessConfig):
 
 
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
+    SUPPORTS_SPLIT_EXECUTION = True
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     _skills_install_dir: str | None = None
+    _execution_runtime: Runtime | None = None
+    _execution_command: list[str] | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
@@ -183,6 +186,27 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             label="rlm",
         )
         await super().setup(runtime)
+
+    async def setup_execution(
+        self, runtime: Runtime, task_runtime: Runtime, connection
+    ) -> None:
+        if self.config.skills:
+            raise ValueError("split execution currently supports builtin skills only")
+        if self.config.builtin_tools not in (None, ["ipython"]):
+            raise ValueError(
+                "split execution supports only IPython; use builtin_skills for bash/edit/fetch"
+            )
+        # Install the same pinned worker code, without running the agent loop there.
+        worker = type(self)(self.config)
+        await worker.setup(task_runtime.with_user(None))
+        self._execution_runtime = task_runtime
+        self._execution_command = connection.command(
+            [
+                f"{worker._install_dir()}/tools/rlm/bin/python",
+                "-m",
+                "rlm.execution",
+            ],
+        )
 
     def _runtime_metadata(
         self,
@@ -245,10 +269,14 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": runtime.env,
+            "kernel_env": (self._execution_runtime or runtime).env,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
-        if self.config.builtin_tools is not None:
+        if self._execution_command is not None:
+            payload["execution_command"] = self._execution_command
+            payload["execution_cwd"] = self._execution_runtime.config.workdir
+            payload["builtin_tools"] = ["ipython"]
+        elif self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 

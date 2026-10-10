@@ -14,35 +14,30 @@ class Env(ABC):
 
 verifiers comes with different pre-built `Env`s to use:
 
-- `IsolatedVerifierEnv` runs one solver, transfers only declared artifacts into a
-  fresh configured runtime, and runs deterministic task scoring there.
 - The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The judge can re-use the same runtime after the solver (`SharedAgenticJudgeEnv`) or use its own, new runtime `IsolatedAgenticJudgeEnv`.
 - The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
 - The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
 
-## Isolated deterministic verification
+## Verifier placement
 
-Select `--env.id isolated-verifier` when the task's score must not run in the
-solver's sandbox. It is still a one-agent run: the environment records one solver
-trace and starts no verifier agent, model, or harness.
+Task scoring placement is independent of the Env's agent program. Set
+`--env.agent.verifier.mode isolated` to restore declared artifacts into a fresh
+runtime before running task metrics, rewards, and judge plugins. No extra agent
+or harness is started. The default `task` follows `TaskData.verifier_mode`
+(`shared` unless the task declares otherwise); `shared` explicitly scores in the
+workspace. This also works for each attempt in `BestOfNEnv`.
 
 ```bash
-uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
+uv run vf-eval my-task --env.agent.runtime.type docker --env.agent.verifier.mode isolated
 ```
 
-Task authors use the existing task API. Declare every solver output the verifier
-needs in `TaskData.artifacts`, then implement deterministic `@vf.reward` and
-`@vf.metric` methods. A runtime parameter makes the fresh verifier box available:
+Task authors declare every output needed for fresh grading in `TaskData.artifacts`.
+Task `setup` initializes the fresh runtime, artifacts are restored at their original
+paths, and `stage_verifier` installs trusted scoring inputs before `@vf.metric`,
+`@vf.reward`, and configured judge plugins run. Each retry gets an independent task
+controller and trace; only successful scoring updates the solver trace.
 
 ```python
-from pathlib import Path
-
-import verifiers.v1 as vf
-
-
-PRIVATE_TESTS = Path("tests/test_solution.sh").read_bytes()
-
-
 class CodeTask(vf.Task[CodeData]):
     async def stage_verifier(self, runtime: vf.Runtime) -> None:
         await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
@@ -56,31 +51,22 @@ class CodeTask(vf.Task[CodeData]):
 task = CodeTask(
     CodeData(
         prompt="Fix the implementation.",
+        verifier_mode="isolated",
         artifacts=[vf.Artifact(source="src")],
     )
 )
 ```
 
-The lifecycle is fixed:
+`agent.verifier.runtime` optionally chooses an independent provider, image,
+resources, and network policy. Otherwise the agent's provider policy and the task's
+scoring requirements resolve the fresh runtime. Solver checkpoints are not inherited.
+`agent.verifier.env` overrides its process environment, and `agent.verifier.retries`
+sets additional fresh attempts (default: 2). Runtime and environment overrides require
+isolated placement. Relative artifacts require matching solver and verifier workdirs;
+absolute paths support different workdirs. Fresh verification requires an isolated
+filesystem and cannot use the host subprocess runtime.
 
-1. The task and harness run normally, including task `finalize` and harness metrics,
-   but task metrics and rewards are deferred.
-2. The environment collects the declared paths and `/logs/artifacts`, then destroys
-   the solver runtime.
-3. It creates a fresh task controller and provisions either the same resolved
-   container/runtime policy or the independently configured verifier runtime, runs
-   task `setup`, restores the artifacts at their original paths, runs task
-   `stage_verifier`, reapplies the execution network policy, and runs task metrics
-   and rewards onto the solver trace.
-
-The verifier runtime must be Docker, Prime, or another container runtime; absolute
-artifact restoration is intentionally refused on the host subprocess runtime.
-By default the verifier uses the solver's resolved runtime policy. Set
-`--env.verifier.runtime.*` to independently choose its runtime type, image, resources,
-and network policy; `--env.verifier.env` can independently set its process environment.
-Relative artifacts require matching solver and verifier workdirs because artifacts are
-restored without path translation; absolute artifacts permit different workdirs.
-Configured model-backed task judges are rejected: use deterministic metrics/rewards
-here, or an agentic/judge environment when a model must judge the result.
-`--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
-staging, or scoring failures (default: 2).
+A judge plugin is part of task scoring and receives the selected scoring runtime.
+An agentic judge is a separate agent with its own trace, so its sequence and workspace
+sharing remain the responsibility of an agentic-judge Env. The solver in that program
+can independently use isolated task verification.

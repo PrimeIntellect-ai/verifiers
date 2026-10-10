@@ -79,6 +79,7 @@ def validate_pairing(
     runtime_config: RuntimeConfig,
     *,
     tools: Collection = (),
+    execution_config: RuntimeConfig | None = None,
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
     A failure holds for every row the task class can carry. For `tools` only
@@ -104,7 +105,9 @@ def validate_pairing(
             "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
             "use --env.agent.runtime.type docker or prime."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+    if task_cls.NEEDS_CONTAINER and isinstance(
+        execution_config or runtime_config, SubprocessConfig
+    ):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
             "this run resolves to the subprocess runtime; use "

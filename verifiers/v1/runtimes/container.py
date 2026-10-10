@@ -212,6 +212,22 @@ class ContainerRuntime(Runtime):
         `env` in its environment; `stdin` keeps the caller's stdin attached."""
         raise NotImplementedError
 
+    def execution_command(self, caller: Runtime, argv: list[str]) -> list[str]:
+        if caller is not self._host and not (
+            self._host is None and caller.type == "subprocess"
+        ):
+            return super().execution_command(caller, argv)
+        return [*self._exec(self.env, stdin=True), *argv]
+
+    async def quiesce(self) -> None:
+        result = await self._run_host(
+            self.engine, "restart", "--time", "1", self._container
+        )
+        if result.exit_code:
+            raise SandboxError(
+                f"cannot quiesce execution target: {result.stderr[-1000:]}"
+            )
+
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self._run_host(*self._exec(self.process_env(env)), *argv)
 

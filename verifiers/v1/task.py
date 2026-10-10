@@ -15,7 +15,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes.compose import ComposeSpec
+    from verifiers.v1.runtimes.deployment import Deployment
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,9 @@ class TaskData(BaseModel):
     """Initial user prompt; unset if the user opens the conversation."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
+
+    verifier_mode: Literal["shared", "isolated"] = "shared"
+    """Default scoring placement, overridable by agent.verifier.mode."""
 
     image: str | None = None
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
@@ -182,6 +187,20 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
+    def deployment_spec(self) -> ComposeSpec | None:
+        """Optional service composition for each independent attempt."""
+        return
+
+    def grading_task(self, runtime: Runtime, *, isolated: bool) -> Self:
+        """Adapt scoring inputs to the selected placement without changing the solver task."""
+        return self
+
+    async def finalize_services(
+        self, trace: Trace, targets: dict[str, Runtime]
+    ) -> None:
+        """Collect evidence from surviving services after workspace collection."""
+        return
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
@@ -214,6 +233,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         self,
         trace: Trace,
         runtime: Runtime | None = None,
+        deployment: Deployment | None = None,
     ) -> None:
         if self.scoring_deferred:
             return
@@ -227,6 +247,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
+        if deployment is not None:
+            available["deployment"] = deployment
 
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
             metrics = self.hooks("metric")

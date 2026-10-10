@@ -40,6 +40,7 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
+    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
     """Whether the program asks the rollout's `/tool` gate (handed over as
@@ -105,6 +106,14 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
+
+    async def setup_execution(
+        self, runtime: Runtime, task_runtime: Runtime, connection
+    ) -> None:
+        """Configure the harness's tools to execute in a distinct task runtime."""
+        raise HarnessError(
+            f"harness {self.config.id!r} does not support split execution"
+        )
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
