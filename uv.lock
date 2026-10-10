@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 4
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -5430,7 +5430,6 @@ wheels = [
 [[package]]
 name = "verifiers"
 source = { editable = "." }
-default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
