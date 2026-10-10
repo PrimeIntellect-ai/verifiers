@@ -55,7 +55,13 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
-    if system_prompt:
+    replays_system_prompt = (
+        isinstance(prompt, list)
+        and bool(prompt)
+        and prompt[0].role == "system"
+        and prompt[0].content == system_prompt
+    )
+    if system_prompt and not replays_system_prompt:
         args.append(f"--system-prompt={system_prompt}")
     if mcp_urls:
         args.append(
