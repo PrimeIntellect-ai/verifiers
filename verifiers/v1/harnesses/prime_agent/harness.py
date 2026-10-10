@@ -28,13 +28,13 @@ TS_VERSION = "0.9.5"
 TS_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
     "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
 )
-RUST_VERSION = "0.9.9-beta.45"
-# The v0.9.9-beta.45 release SHA256SUMS rows for the published tarballs.
+RUST_VERSION = "0.10.0"
+# The v0.10.0 release SHA256SUMS rows for the published tarballs.
 RUST_RELEASE_SHA256: dict[str, str] = {
-    "linux-x64": "729350e11d002046b37326c992a8cc7e980e612d48ac119348bd5d228692a3a9",
-    "linux-arm64": "abd73f046dab5f0f49e187497ad662272b471d6a3fe1cd61e809015e8ba3ae8e",
-    "darwin-x64": "b1208b8d8c037ca918ba21daa4244d54c8438672b93fe38d18ca7d8cd3227d29",
-    "darwin-arm64": "42ab61a0f7bedf67f06d9c0cdb94c259def605007dc041eae69224531110daab",
+    "linux-x64": "c16bd2af5e77b53f49b914a44742c4cf6a67c5ed5000041430b78dbd4c3bcbec",
+    "linux-arm64": "f3cab3530a4d7ca43dbef8321bf13f260d1ba05d8b5dde057165a20bd4f675c4",
+    "darwin-x64": "af4866b5ba82f3419b964290e3f023ddb9b99958a89e16ee856962b901ec0fc6",
+    "darwin-arm64": "e418bdf62fcb0002777bf3ac43bcc136512b26763f2ab5c500792f26e37294e5",
 }
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
@@ -171,7 +171,7 @@ def release_plan(version: str, platform: str) -> ReleasePlan:
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: Literal["0.9.5", "0.9.9-beta.45"] = RUST_VERSION
+    version: Literal["0.9.5", "0.10.0"] = RUST_VERSION
     """Prime Agent release to install: the Rust platform tarball, or `0.9.5`
     for the npm-era TS bundle."""
 
