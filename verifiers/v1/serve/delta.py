@@ -50,6 +50,7 @@ LIST_FIELDS = (
     "extra_usage",
     "request_rewrites",
     "response_rewrites",
+    "checkpoints",
 )
 """Append-only on the worker: each delta carries the items past the sent count."""
 
