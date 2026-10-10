@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import tempfile
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -158,15 +159,21 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 
 
 def run_bash(command: str) -> str:
+    # Output goes to files, not pipes: a process the command leaves running in the
+    # background (a server started with `&`) would hold a pipe open and block the call
+    # until the timeout; with files the call returns when bash itself exits.
     try:
-        result = subprocess.run(
-            ["bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
-        )
-        return result.stdout + result.stderr
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            subprocess.run(
+                ["bash", "-c", command],
+                stdout=out,
+                stderr=err,
+                timeout=3600,
+                check=False,
+            )
+            out.seek(0)
+            err.seek(0)
+            return out.read().decode(errors="replace") + err.read().decode(errors="replace")
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
