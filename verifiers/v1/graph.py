@@ -209,8 +209,9 @@ class MessageNode(BaseModel):
         if mask is None:
             return None
         return {
-            "ids": _encode_ndarray(mask.ids),
-            "counts": _encode_ndarray(mask.counts),
+            name: _encode_ndarray(array)
+            for name, array in vars(mask).items()
+            if array is not None
         }
 
     @field_validator("sampling_mask", mode="before")
@@ -219,10 +220,7 @@ class MessageNode(BaseModel):
         if value is None or isinstance(value, SamplingMask):
             return value
         if isinstance(value, dict):
-            return SamplingMask(
-                ids=_decode_ndarray(value["ids"]),
-                counts=_decode_ndarray(value["counts"]),
-            )
+            return SamplingMask(**{k: _decode_ndarray(v) for k, v in value.items()})
         raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
 
 
@@ -699,8 +697,10 @@ def _attribute_sampling_mask(
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
-        payload.ids
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or (payload.logprobs is not None and len(payload.logprobs) != len(payload.ids))
     ):
         return
     node.sampling_mask = payload
