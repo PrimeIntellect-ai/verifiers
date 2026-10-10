@@ -126,6 +126,63 @@ def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
     }
 
 
+def test_parse_pytest_outcomes_ignores_captured_log_records() -> None:
+    # Issue #2810: pytest prints captured log records as
+    # "ERROR    logger:path:line message"; they must not become outcomes.
+    output = (
+        "PASSED tests/test_api.py::test_status\n"
+        "PASSED tests/test_api.py::test_body\n"
+        "=============================== Captured log call "
+        "==============================\n"
+        "ERROR    app.server:server.py:88 upstream request failed\n"
+        "ERROR    app.server:server.py:90 cannot parse payload :: id a :: b\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_api.py::test_status": "PASSED",
+        "tests/test_api.py::test_body": "PASSED",
+    }
+    assert all(value == "PASSED" for value in vf.parse_pytest_outcomes(output).values())
+
+
+def test_parse_pytest_outcomes_ignores_progress_and_summary_rows() -> None:
+    output = (
+        "\x1b[32mPASSED tests/test_mod.py::test_ok\x1b[0m\n"
+        "test_mod.py::test_ok PASSED                              [ 12%]\n"
+        "test_mod.py::test_param[100%] PASSED                     [ 62%]\n"
+        "SKIPPED [1] test_mod.py:22: not ready\n"
+        "=========================== short test summary info "
+        "===========================\n"
+        "============== 1 failed, 5 passed, 1 skipped in 0.03s ==============\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_mod.py::test_ok": "PASSED",
+    }
+
+
+def test_parse_pytest_outcomes_keeps_parameterized_ids() -> None:
+    output = (
+        "PASSED tests/test_mod.py::test_param[alpha]\n"
+        "PASSED tests/test_mod.py::test_param[b - c]\n"
+        "PASSED tests/test_mod.py::test_param[100%]\n"
+        "ERROR tests/test_mod.py::test_setup - Exception: boom\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_mod.py::test_param[alpha]": "PASSED",
+        "tests/test_mod.py::test_param[b - c]": "PASSED",
+        "tests/test_mod.py::test_param[100%]": "PASSED",
+        "tests/test_mod.py::test_setup": "ERROR",
+    }
+
+
+def test_parse_pytest_outcomes_handles_empty_and_none() -> None:
+    assert vf.parse_pytest_outcomes(None) == {}
+    assert vf.parse_pytest_outcomes("") == {}
+    assert vf.parse_pytest_outcomes("no pytest rows here\n") == {}
+
+
 def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
     assert (
         vf.parse_judge_choice(
