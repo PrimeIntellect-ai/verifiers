@@ -139,14 +139,11 @@ class EvalClient(Client):
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
-        # Load-shed and transport faults retry HERE, next to the provider, before the
-        # failure crosses the tunnel: an upstream 5xx/429 or a dropped connection is
-        # infrastructure answering for the model, and surfacing it un-retried kills an
-        # otherwise healthy session (measured live: "upstream 504: upstream request
-        # timeout" storms under fleet concurrency). Bounded and short — the harness
-        # keeps its own outer ladder.
-        last_error: Exception | None = None
-        for attempt in range(1, _UPSTREAM_ATTEMPTS + 1):
+        # Load-shed and transport faults retry here, next to the provider, before the
+        # failure crosses the tunnel; the harness keeps its own outer retry.
+        for attempt in range(_UPSTREAM_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(min(_BACKOFF_CAP_SECONDS, 2.0**attempt))
             request = self.client.build_request(
                 "POST",
                 url,
@@ -156,37 +153,27 @@ class EvalClient(Client):
             try:
                 response = await self.client.send(request, stream=stream)
             except httpx.TimeoutException as e:
-                last_error = model_error(str(e), status_code=504)
-                last_error.__cause__ = e
-            except httpx.HTTPError as e:
-                last_error = model_error(str(e), status_code=503)
-                last_error.__cause__ = e
-            except ConnectionResetError as e:
-                last_error = model_error(str(e), status_code=503)
-                last_error.__cause__ = e
-            else:
-                if stream:
-                    break
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    last_error = model_error(
-                        f"upstream {e.response.status_code}: {e.response.text}",
-                        status_code=e.response.status_code,
-                    )
-                    last_error.__cause__ = e
-                    if e.response.status_code not in _RETRY_STATUSES:
-                        raise last_error
-                else:
-                    return response
-            if attempt < _UPSTREAM_ATTEMPTS:
-                # Exponential to a minute: measured 504 storms run multi-minute, and a
-                # turn stalled in retry beats a dead session under wall-clock stops.
-                await asyncio.sleep(
-                    min(_BACKOFF_CAP_SECONDS, 2.0 * (2 ** (attempt - 1)))
+                error, cause = model_error(str(e), status_code=504), e
+                continue
+            except (httpx.HTTPError, ConnectionResetError) as e:
+                error, cause = model_error(str(e), status_code=503), e
+                continue
+            if stream:
+                break
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                error = model_error(
+                    f"upstream {status}: {e.response.text}", status_code=status
                 )
-        if not stream:
-            raise last_error
+                cause = e
+                if status not in _RETRY_STATUSES:
+                    raise error from e
+            else:
+                return response
+        else:
+            raise error from cause
         if response.status_code < 400:
             return response
         try:
