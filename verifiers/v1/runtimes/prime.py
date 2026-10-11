@@ -200,14 +200,18 @@ class PrimeRuntime(Runtime):
             if self.config.lifetime is not None
             else DEFAULT_LIFETIME
         )
+        # -1 is the platform's "no limit"
+        lifetime_minutes = (
+            max(1, math.ceil(lifetime / 60)) if lifetime is not None else -1
+        )
+        if lifetime_minutes > 0 and idle_minutes is not None:
+            # The platform rejects an idle timeout above the lifetime.
+            idle_minutes = min(idle_minutes, lifetime_minutes)
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "gpu_count": gpu_count,
-            # -1 is the platform's "no limit"
-            "timeout_minutes": max(1, math.ceil(lifetime / 60))
-            if lifetime is not None
-            else -1,
+            "timeout_minutes": lifetime_minutes,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
