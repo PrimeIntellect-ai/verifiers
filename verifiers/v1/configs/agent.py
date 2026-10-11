@@ -42,6 +42,11 @@ class AgentConfig(BaseConfig):
     sampling: SamplingConfig | None = None
     """Sampling values merged onto the run's sampling."""
 
+    checkpoint_on_finish: bool = False
+    """Checkpoint the box's filesystem when the agent finishes, before finalize and
+    scoring touch it; the id lands in `trace.info["checkpoint"]` once restorable.
+    Runtimes without checkpoints (only prime has them) record nothing."""
+
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""
     max_input_tokens: int | None = None
