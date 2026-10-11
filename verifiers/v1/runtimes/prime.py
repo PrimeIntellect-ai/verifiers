@@ -48,6 +48,7 @@ exec is reported as failed."""
 
 
 BASE_LABELS: list[str] = []
+DEFAULT_LIFETIME: float | None = None
 
 
 @dataclass
@@ -71,6 +72,15 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     name so every sandbox of a run is findable on the platform."""
     global BASE_LABELS
     BASE_LABELS = list(labels)
+
+
+def set_default_sandbox_lifetime(seconds: float | None) -> None:
+    """Set the process-wide lifetime of Prime sandboxes whose ``PrimeConfig.lifetime`` is
+    unset. Call it in the process that creates the sandboxes, like
+    ``set_base_sandbox_labels`` — e.g. a trainer bounds how long a sandbox it leaks on
+    SIGKILL keeps running."""
+    global DEFAULT_LIFETIME
+    DEFAULT_LIFETIME = seconds
 
 
 class PrimeConfig(NetworkPolicyConfig):
@@ -100,6 +110,9 @@ class PrimeConfig(NetworkPolicyConfig):
     ``checkpoint`` and ``wait_for_checkpoint``)."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    lifetime: float | None = None
+    """Seconds after which the sandbox is deleted, busy or not. None falls back to the
+    process default (``set_default_sandbox_lifetime``), else no limit."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -182,11 +195,19 @@ class PrimeRuntime(Runtime):
             if self.config.idle_timeout is not None
             else None
         )
+        lifetime = (
+            self.config.lifetime
+            if self.config.lifetime is not None
+            else DEFAULT_LIFETIME
+        )
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "gpu_count": gpu_count,
-            "timeout_minutes": -1,
+            # -1 is the platform's "no limit"
+            "timeout_minutes": max(1, math.ceil(lifetime / 60))
+            if lifetime is not None
+            else -1,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
