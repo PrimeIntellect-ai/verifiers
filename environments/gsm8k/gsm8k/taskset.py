@@ -32,6 +32,11 @@ class GSM8KTask(vf.Task[GSM8KData]):
         # scoring happens after that.
         await runtime.prepare_uv_script(VERIFY)
 
+    async def privileged(self, runtime: vf.Runtime | None = None) -> vf.Privileged:
+        """The defaults (the answer, the reward's source) plus the verifier script."""
+        base = await super().privileged()
+        return base.model_copy(update={"files": {**base.files, "verify.py": VERIFY}})
+
     @vf.reward(weight=1.0)
     async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
         prediction = trace.last_reply

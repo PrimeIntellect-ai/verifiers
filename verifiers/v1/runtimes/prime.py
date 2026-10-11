@@ -7,7 +7,7 @@ import logging
 import math
 import shlex
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -293,6 +293,23 @@ class PrimeRuntime(Runtime):
             policy.get("allow"),
             policy.get("deny"),
         )
+
+    async def checkpoint(self) -> Awaitable[str]:
+        try:
+            checkpoint = await self._client.checkpoint(self.info.id)
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+        async def durable() -> str:
+            try:
+                await self._client.wait_for_checkpoint(checkpoint.id)
+            except Exception as e:
+                raise SandboxError(
+                    f"prime checkpoint {checkpoint.id} did not become durable: {e}"
+                ) from e
+            return checkpoint.id
+
+        return durable()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
