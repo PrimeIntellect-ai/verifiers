@@ -24,8 +24,8 @@ from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# Ensure `uv` is available for our PEP 723 scripts: keep one already on PATH (an image that
-# pre-installs it, or an earlier rollout's install on the same box); otherwise prefer pip on
+# Ensure `uv` supports both script commands used below. Reuse a compatible installation;
+# upgrade older binaries bundled in task images. Prefer pip on
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
@@ -40,9 +40,12 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "command -v uv >/dev/null 2>&1 "
-    "|| pip install -q -U --user uv 2>/dev/null "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
+    "uv_supports_scripts() { "
+    "uv sync --help 2>/dev/null | grep -q -- '--script' "
+    "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "
+    "uv_supports_scripts "
+    "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supports_scripts; } "
+    f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
