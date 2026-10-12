@@ -14,6 +14,8 @@ from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
+    InterceptionError,
+    ProviderError,
     RolloutError,
     SandboxError,
     TaskError,
@@ -250,6 +252,31 @@ class Rollout:
         self._failed = True
         self._failure = error
         self.trace.record_error(error)
+
+    async def recover(self) -> bool:
+        """Clear a model-side failure (a provider or interception error) so the next
+        segment can run on the same, still-live box: the error stays on the trace,
+        the run is no longer failed. False, and nothing changes, for any other
+        failure, a borrowed box, or a box that is no longer alive."""
+        failure = self._failure
+        if (
+            not self._failed
+            or not isinstance(failure, (ProviderError, InterceptionError))
+            or self._closed
+            or self.runtime is None
+        ):
+            return False
+        try:
+            if not await self.runtime.alive():
+                return False
+        except Exception:  # noqa: BLE001 - an unreachable box is not live
+            return False
+        self._failed = False
+        self._failure = None
+        self.trace.ok = True
+        self.trace.is_completed = False
+        self.trace.stop_condition = None
+        return True
 
     def timeout(self, stage: str) -> None:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not

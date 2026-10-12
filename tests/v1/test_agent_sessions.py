@@ -220,16 +220,21 @@ def fake_boxes(monkeypatch):
 class Endpoint:
     url: str
     requests: list[dict] = field(default_factory=list)
+    refuse: set[int] = field(default_factory=set)
+    """Indexes of requests the endpoint refuses (HTTP 400), as a provider would."""
 
 
 @pytest.fixture
 async def model():
     """The scripted endpoint, recording the requests it serves."""
     requests: list[dict] = []
+    refuse: set[int] = set()
 
     async def handle(request: web.Request) -> web.Response:
         body = await request.json()
         requests.append(body)
+        if len(requests) - 1 in refuse:
+            return web.json_response({"error": {"message": "refused"}}, status=400)
         return web.json_response(reply(body["messages"]))
 
     app = web.Application()
@@ -239,7 +244,7 @@ async def model():
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
-    yield Endpoint(f"http://127.0.0.1:{port}/v1", requests)
+    yield Endpoint(f"http://127.0.0.1:{port}/v1", requests, refuse)
     await runner.cleanup()
 
 
@@ -530,6 +535,21 @@ async def test_an_interaction_retry_keeps_pending_steers(model):
     ]
     assert retried, "the replacement rollout must still deliver the steer"
     assert [steer.text for steer in interaction.trace.steers] == ["mind the logs"]
+
+
+async def test_a_failed_model_call_is_retried_on_the_same_box(model):
+    model.refuse.add(1)
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.interaction(task()) as interaction:
+        segment = await interaction.turn()
+        assert interaction.failed_attempts == []
+    # The box survived: no replacement was provisioned or restored.
+    assert len(FakeRuntime.made) == 1
+    assert EVENTS == ["setup"]
+    trace = interaction.trace
+    assert trace.ok, trace.errors
+    assert [error.type for error in trace.errors] == ["ProviderError"]
+    assert segment.last_reply.startswith("done")
 
 
 async def test_task_error_is_not_retried(model):

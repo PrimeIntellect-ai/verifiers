@@ -30,6 +30,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, UserMessage
 
 __all__ = [
+    "MODEL_RETRY_NOTE",
     "RETRYABLE_SANDBOX_KINDS",
     "RETRY_NOTE",
     "Session",
@@ -44,6 +45,13 @@ RETRY_NOTE = (
     "still need."
 )
 """The user message an interaction retry continues with (`AgentConfig.interaction_retries`)."""
+
+MODEL_RETRY_NOTE = (
+    "The host retried this turn after a model call failed. Nothing on the box "
+    "changed; continue where you left off."
+)
+"""The user message an interaction retry continues with on the same box, after a
+model-side failure that left part of the turn committed."""
 
 RETRYABLE_SANDBOX_KINDS = frozenset({"box_lost", "io"})
 """`SandboxError.kind`s an interaction retry recovers from on a fresh box."""

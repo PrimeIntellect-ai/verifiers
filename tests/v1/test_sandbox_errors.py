@@ -299,3 +299,20 @@ async def test_supports_checkpoint_needs_both_operations(runtime):
     assert _Checkpointing().supports_checkpoint
     with pytest.raises(NotImplementedError):
         await _Box().delete_checkpoint("ck")
+
+
+async def test_a_wrapped_exception_keeps_its_type_on_the_record():
+    from verifiers.v1.errors import EnvError, boundary, error_cause
+    from verifiers.v1.trace import Error
+
+    with pytest.raises(EnvError) as caught:
+        async with boundary(EnvError, "Env.run()"):
+            raise KeyError("missing")
+    assert error_cause(caught.value) == "KeyError"
+    assert error_cause(vf.SandboxError("gone", kind="box_lost")) is None
+    try:
+        raise vf.TaskError("verdict invalid") from ValueError("no JSON")
+    except vf.TaskError as typed:
+        assert error_cause(typed) is None
+    record = Error(type="EnvError", message="m")
+    assert "cause" not in record.model_dump(exclude_none=False)

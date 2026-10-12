@@ -232,7 +232,17 @@ async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[No
     except TimeoutError as e:
         raise error_cls(f"{what} timed out") from e
     except Exception as e:
-        raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
+        wrapped = error_cls(f"{what}: {type(e).__name__}: {e}")
+        wrapped.wrapped = type(e).__name__
+        raise wrapped from e
+
+
+def error_cause(error: BaseException) -> str | None:
+    """The type name of the exception `boundary` wrapped into `error`, so a reader of
+    the record can tell a `ValueError` from a `KeyError` inside one `EnvError`. None for
+    an error the boundary did not wrap (a typed error raised `from` another keeps its
+    own type)."""
+    return getattr(error, "wrapped", None)
 
 
 def stop_condition(error: BaseException) -> str:

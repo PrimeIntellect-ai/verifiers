@@ -18,6 +18,7 @@ from weakref import WeakValueDictionary
 from typing_extensions import TypeVar
 
 from verifiers.v1.agent_session import (
+    MODEL_RETRY_NOTE,
     RETRY_NOTE,
     Session,
     prompt_messages,
@@ -261,6 +262,16 @@ class Interaction:
     @property
     def trace(self) -> Trace:
         return self._run.trace
+
+    @property
+    def runtime(self) -> Runtime | None:
+        """The box the current attempt runs on (a retry may replace it)."""
+        return self._run.runtime
+
+    @property
+    def task(self) -> Task:
+        """The task the current attempt runs."""
+        return self._run.task
 
     @property
     def calls(self) -> int:
@@ -623,6 +634,21 @@ class Interaction:
             failure = self._run.failure
             if failure is None or not retryable_error(failure):
                 break
+            if await self._run.recover():
+                # The model call failed but the box is fine: continue on it, from
+                # the conversation as it stands, instead of restoring a save.
+                retries_left -= 1
+                was_ok = True
+                logger.warning(
+                    "interaction turn failed on a model call (%s: %s); continuing on "
+                    "the same box",
+                    type(failure).__name__,
+                    failure,
+                )
+                if len(self.trace.nodes) > nodes_before:
+                    step_messages = [UserMessage(content=MODEL_RETRY_NOTE)]
+                await asyncio.sleep(backoff(self._retries - retries_left - 1))
+                continue
             if not self._resumable(first):
                 # Earlier turns changed the box and nothing saved it: the opening box
                 # no longer matches the conversation, so there is nothing sound to resume.

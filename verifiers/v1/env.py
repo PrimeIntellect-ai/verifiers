@@ -24,7 +24,7 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.errors import EnvError, boundary, error_kind
+from verifiers.v1.errors import EnvError, boundary, error_cause, error_kind
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
     Interception,
@@ -51,6 +51,7 @@ def _as_error(e: Exception) -> Error:
         status_code=getattr(e, "status_code", None),
         traceback=traceback.format_exc(),
         kind=error_kind(e),
+        cause=error_cause(e),
     )
 
 
