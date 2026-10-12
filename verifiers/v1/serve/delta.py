@@ -70,6 +70,7 @@ SCALAR_FIELDS = (
     "num_input_tokens",
     "num_output_tokens",
     "num_total_tokens",
+    "steers",
 )
 """Re-sent whole whenever their dumped value changes."""
 

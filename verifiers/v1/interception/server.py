@@ -24,11 +24,12 @@ import contextlib
 import hashlib
 import json
 import logging
+import random
 import secrets
 import os
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -66,9 +67,14 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
-from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
+from verifiers.v1.session import (
+    IdempotentRequest,
+    PendingSteer,
+    ReplayResponse,
+    RolloutSession,
+)
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +89,12 @@ KEEPALIVE_INTERVAL_SECONDS = 3
 # its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
 # well inside the tunnel's response-header timeout.
 KEEPALIVE_GRACE_SECONDS = 60
+# A committed stream can report a failure only as an SSE error event, which harness SDKs do
+# not retry, so a retryable failure (5xx/429) after commit is rerun here, up to this many
+# attempts in all, waiting longer before each (keepalives hold the stream meanwhile).
+COMMITTED_TURN_ATTEMPTS = 5
+COMMITTED_TURN_BACKOFF_SECONDS = 2.0
+COMMITTED_TURN_BACKOFF_MAX_SECONDS = 30.0
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -248,11 +260,19 @@ async def _collect_stream(
         await reply.close()
 
 
+async def _after(
+    delay: float, call: Callable[[], Awaitable[web.Response]]
+) -> web.Response:
+    await asyncio.sleep(delay)
+    return await call()
+
+
 async def _buffered_stream(
     request: web.Request,
     dialect: Dialect,
     pending: Awaitable[web.Response],
     trace_id: str,
+    rerun: Callable[[], Awaitable[web.Response]] | None = None,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
@@ -278,10 +298,31 @@ async def _buffered_stream(
         try:
             await stream.prepare(request)
             first = True
-            while not task.done():
-                await stream.write(dialect.stream_keepalive(first))
-                first = False
-                await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+            for attempt in range(1, COMMITTED_TURN_ATTEMPTS + 1):
+                while not task.done():
+                    await stream.write(dialect.stream_keepalive(first))
+                    first = False
+                    await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+                status = task.result().status
+                if (
+                    rerun is None
+                    or attempt == COMMITTED_TURN_ATTEMPTS
+                    or (status < 500 and status != 429)
+                ):
+                    break
+                delay = min(
+                    COMMITTED_TURN_BACKOFF_SECONDS * 2 ** (attempt - 1),
+                    COMMITTED_TURN_BACKOFF_MAX_SECONDS,
+                ) * random.uniform(0.5, 1.0)
+                logger.warning(
+                    "intercept stream: rerunning failed committed turn in %.1fs: "
+                    "id=%s status=%d attempt=%d",
+                    delay,
+                    trace_id,
+                    status,
+                    attempt,
+                )
+                task = asyncio.ensure_future(_after(delay, rerun))
         except ConnectionResetError:
             # A reader that goes away mid-turn is the failure a tunnel or proxy drop looks
             # like from here; its retry (if any) coalesces onto this turn.
@@ -448,6 +489,8 @@ class InterceptionServer(Interception):
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
+        # A rollout's `message_agent` tool steers a sibling agent of its episode.
+        app.router.add_post("/steer", self.handle_steer)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
@@ -593,6 +636,42 @@ class InterceptionServer(Interception):
         )
         session.trace.notify()
 
+    def insert_steers(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        body: dict,
+        request: Request,
+    ) -> tuple[Request, list[PendingSteer]]:
+        """Add the rollout's pending steer messages to this request (native `body` and
+        parsed request alike); returns the request as it now stands and the steers it
+        carries. A body the dialect cannot place them in goes out unsteered."""
+        inserts, placed = session.place_steers(request)
+        if not inserts:
+            return request, []
+        key = "input" if "input" in body else "messages"
+        before = body.get(key)
+        try:
+            dialect.insert_user_messages(body, request, inserts)
+            steered = dialect.parse_request(body)
+            # The native insert must parse back to exactly the planned conversation.
+            planned = [*request.messages]
+            for offset, (index, message) in enumerate(inserts):
+                planned.insert(index + offset, message)
+            if [graph.message_hash(m) for m in steered.messages] != [
+                graph.message_hash(m) for m in planned
+            ]:
+                raise ValueError("steered request does not parse back as planned")
+        except (NotImplementedError, ValueError) as error:
+            body[key] = before
+            logger.warning(
+                "steer not added to this request: id=%s %s",
+                session.trace.id,
+                error,
+            )
+            return request, []
+        return steered, placed
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -730,6 +809,11 @@ class InterceptionServer(Interception):
             if refused is not None:
                 return web.json_response(
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
+                )
+            steered: list[PendingSteer] = []
+            if session.steers:
+                model_request, steered = self.insert_steers(
+                    session, dialect, body, model_request
                 )
             original_request = model_request
             model_request, request_rewrites, stopped = await session.rewrite_request(
@@ -921,10 +1005,14 @@ class InterceptionServer(Interception):
                     policy_paths=policy_paths,
                     acp=acp,
                 )
+                if node is not None and steered and not session.released:
+                    session.land_steers(steered, node, len(session.trace.calls) - 1)
             return serve(call_response, events)
 
         if streaming:
-            return await _buffered_stream(request, dialect, sample(), session.trace.id)
+            return await _buffered_stream(
+                request, dialect, sample(), session.trace.id, rerun=sample
+            )
         return await sample()
 
     async def handle_aux(
@@ -1040,6 +1128,28 @@ class InterceptionServer(Interception):
                 "task": task.model_dump_json(),
             }
         )
+
+    async def handle_steer(self, request: web.Request) -> web.Response:
+        """`POST /steer`: a rollout's `message_agent` tool, keyed by its private state
+        bearer, steers a sibling agent of the same episode — `{seat, text}` in, a
+        `{queued, reason}` receipt out."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        if session.released:
+            return web.json_response({"error": "rollout concluded"}, status=409)
+        try:
+            body = from_json(await request.read())
+            seat, text = body["seat"], body["text"]
+            if not isinstance(seat, str) or not isinstance(text, str):
+                raise TypeError("seat and text must be strings")
+        except (ValueError, KeyError, TypeError) as error:
+            return web.json_response({"error": f"invalid steer: {error}"}, status=400)
+        if session.steer_peer is None:
+            return web.json_response(
+                {"queued": False, "reason": "messaging is not enabled for this agent"}
+            )
+        return web.json_response(await session.steer_peer(seat, text))
 
     async def handle_state_put(self, request: web.Request) -> web.Response:
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the

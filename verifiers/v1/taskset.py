@@ -37,6 +37,7 @@ from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
+    from verifiers.v1.episode import Episode
     from verifiers.v1.mcp import Toolset
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,22 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
             transform if prev is None else lambda tasks: transform(prev(tasks))
         )
         return clone
+
+    def observe(self, task: TaskT, episode: Episode) -> None:
+        """Feedback: `task`, handed out by `load()`, finished as `episode` (its final
+        attempt, after retries and `finalize()`). A taskset that adapts what it yields
+        (a curriculum, a work queue) updates itself here. Called by the runner that
+        dispatched the task, once per task, from its event loop; never by verifiers
+        itself. Every dispatched task gets exactly one of `observe` or `on_failed`.
+        Keep it quick and non-blocking; an exception stops the run. Called on the
+        taskset object the runner iterates, which may be a view (`include`, `take`,
+        ...): a shallow copy that shares this taskset's attributes. Default: no-op."""
+
+    def on_failed(self, task: TaskT, error: BaseException) -> None:
+        """Feedback: `task`, handed out by `load()`, produced no episode at all (the
+        env server died, dispatch failed); `error` is why. A failed episode is not
+        this: it arrives through `observe`. Called by the runner like `observe`, with
+        the same rules. Default: no-op."""
 
     @classmethod
     def task_type(cls) -> type[Task]:

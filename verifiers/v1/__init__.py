@@ -4,6 +4,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.agent_session import Session
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -57,6 +58,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
+    SandboxErrorKind,
     TaskError,
     ToolsetError,
     TunnelError,
@@ -98,6 +100,7 @@ from verifiers.v1.semantic import (
     SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
+from verifiers.v1.steering import SteerReceipt, steer
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
@@ -110,6 +113,7 @@ from verifiers.v1.trace import (
     ModelCall,
     PolicyEvent,
     Reward,
+    SteerRecord,
     TimeSpan,
     TimeSplit,
     Timing,
@@ -272,6 +276,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "reward",
     # interception
     "InterceptRecord",
+    "SteerRecord",
     # errors
     "RolloutError",
     "EnvError",
@@ -279,6 +284,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "HarnessError",
     "ToolsetError",
     "SandboxError",
+    "SandboxErrorKind",
     "TaskError",
     "InterceptionError",
     "TunnelError",
@@ -390,6 +396,10 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # the user channel
     "Interaction",
     "Segment",
+    "Session",
+    # steering any running agent
+    "SteerReceipt",
+    "steer",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

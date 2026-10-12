@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, Literal
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError, stop_condition
+from verifiers.v1.errors import ProviderError, error_cause, error_kind, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -86,6 +86,12 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    kind: str | None = Field(default=None, exclude_if=lambda kind: kind is None)
+    """A `SandboxError`'s kind (`errors.SandboxErrorKind`) when it is known; left out
+    of the record otherwise."""
+    cause: str | None = Field(default=None, exclude_if=lambda cause: cause is None)
+    """The type of the exception a boundary wrapped into this error
+    (`errors.error_cause`); left out of the record otherwise."""
 
 
 class VersionInfo(BaseModel):
@@ -130,6 +136,32 @@ class TraceTask(BaseModel, Generic[DataT]):
 
 class InterceptRecord(BaseModel):
     handler: str
+
+
+class SteerRecord(BaseModel):
+    """One message steered into a running rollout (`Rollout.steer`, `vf.steer`)."""
+
+    id: str | None = None
+    """The sender's message id, when it gave one (deduplicates retries)."""
+    text: str
+    sender: str | None = None
+    """Who steered: a person, a monitor, or the seat name of a sibling agent."""
+    time: float
+    """Wall-clock epoch seconds when the rollout accepted the message."""
+    delivery: Literal["native", "interception"]
+    """`native`: the harness took it mid-turn itself (ACP steering). `interception`: the
+    interception server adds it as a user message to the rollout's model requests."""
+    call: int | None = None
+    """Index into `Trace.calls` of the model call the message landed before. For
+    `interception`, the first committed call whose request carried it (None while it is
+    still waiting for a model call). For `native`, the number of calls recorded when the
+    harness accepted it, i.e. the index the next call gets."""
+    node: int | None = None
+    """The user node holding the message (`interception` only, once it landed)."""
+    trainable: bool = False
+    """Whether training may use the message's tokens. A steer is a prompt-side user node
+    (`mask` False, never in the RL loss); consumers that train observation tokens (e.g.
+    echo-style CE on user messages) must skip `node` while this is False."""
 
 
 class Checkpoint(BaseModel):
@@ -410,6 +442,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    steers: list[SteerRecord] = Field(
+        default_factory=list, exclude_if=lambda steers: not steers
+    )
+    """Messages steered into the rollout while it ran, in arrival order (omitted when
+    none)."""
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     """Checkpoints of the run's box taken for this trace (`Runtime.checkpoint(trace)`),
     in order."""
@@ -762,6 +799,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                kind=error_kind(error),
+                cause=error_cause(error),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None
