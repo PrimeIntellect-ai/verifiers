@@ -282,11 +282,10 @@ class Rollout:
                 # The harness, its colocated tools, and its session run as the task's
                 # `agent_user` (just `runtime` when unset). Task setup and scoring,
                 # interception, and the execution policy keep the default `runtime`.
-                agent_runtime = await resolve_agent_runtime(
+                self._agent_runtime = await resolve_agent_runtime(
                     runtime, self.task.data.agent_user
                 )
-                self._agent_runtime = agent_runtime
-                await self.harness.setup(agent_runtime)
+                await self.harness.setup(self._agent_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -311,7 +310,7 @@ class Rollout:
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
-                    agent_runtime,
+                    self._agent_runtime,
                     shared=self._shared_tools,
                     state_secret=state_secret,
                     state_route=self.trace.id,
@@ -382,7 +381,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        agent_runtime,
+                        self._agent_runtime,
                         self._endpoint,
                         self._secret,
                         self._urls,
