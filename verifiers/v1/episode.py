@@ -1,9 +1,17 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
-from typing import Annotated, Any, Generic, Literal, Self, TypeVar
+from typing import Annotated, Any, Generic, Literal, Self
 
-from pydantic import BaseModel, Field, JsonValue, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    computed_field,
+    model_validator,
+)
+from typing_extensions import TypeVar
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
@@ -83,10 +91,19 @@ class EvalRunInfo(BaseModel):
 
 RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
-OutcomeT = TypeVar("OutcomeT", bound=BaseModel)
+OutcomeT = TypeVar("OutcomeT", bound=BaseModel, default=BaseModel)
+"""The env's outcome model: what its `run()` returns (`Episode.outcome`)."""
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
+class WireOutcome(BaseModel):
+    """Wire form of an episode outcome: every field kept, without importing the env's
+    outcome model (as `WireTaskData` is for task data)."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT, OutcomeT]):
     """The artifact Env.run produces. Contains multiple agents' traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -108,16 +125,20 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
-    outcome: dict[str, JsonValue] | None = None
-    """What the env's `run()` returned, when it returned a pydantic model (dumped as
-    JSON); `finalize()` may set or amend it. Each retry attempt starts with None.
-    Read it back typed with `outcome_as`."""
+    outcome: SerializeAsAny[OutcomeT] | None = None
+    """What the env's `run()` returned, when it returned a pydantic model, kept as that
+    model; `finalize()` may set or replace it. Each retry attempt starts with None.
+    Serialized like any field (left out of the record when None); a record loads it
+    as `WireOutcome` (`WireEpisode`). Read it typed with `outcome_as`."""
 
-    def outcome_as(self, model: type[OutcomeT]) -> OutcomeT | None:
-        """`outcome` validated into `model`, or None when the episode has none."""
+    def outcome_as(self, model: type[ModelT]) -> ModelT | None:
+        """`outcome` validated into `model` (from the typed outcome or its wire form),
+        or None when the episode has none."""
         if self.outcome is None:
             return None
-        return model.model_validate(self.outcome)
+        if isinstance(self.outcome, model):
+            return self.outcome
+        return model.model_validate(self.outcome.model_dump(mode="json"))
 
     def record_run(self, run: RunInfo) -> None:
         """Record the run identity on the dispatched episode."""
@@ -178,6 +199,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         )
 
 
-WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
+WireEpisode = Episode[WireTaskData, State, WireAgentConfig, WireOutcome]
 """Record loader for consumers without the run's packages: unknown task fields
-survive in `task.model_extra`, agent configs parse loose (`WireAgentConfig`)."""
+survive in `task.model_extra`, agent configs parse loose (`WireAgentConfig`), and
+the outcome keeps every field (`WireOutcome`; read it typed with `outcome_as`)."""

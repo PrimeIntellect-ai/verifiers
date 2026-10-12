@@ -54,16 +54,18 @@ class AgentConfig(BaseConfig):
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     save: Literal["off", "per_call"] = "off"
-    """When the agent's exchange is saved as a `Session`: never, or after every model
-    response (`per_call`: an owned box is checkpointed before the harness receives the
-    response, and the run's `on_save` gets the session as of that call). An owned box
-    needs a runtime with checkpoints; a failed checkpoint is logged and skipped (the
-    previous save stands)."""
+    """When the run's box is checkpointed: never, or after every model response
+    (`per_call`: an owned box is checkpointed before the harness receives the response,
+    the checkpoint is recorded on the trace (`Trace.checkpoints`), and the run's
+    `on_save(trace, checkpoint)` sees it). An owned box needs a runtime with
+    checkpoints; a checkpoint failing three tries is logged and skipped (the previous
+    one stands). A borrowed box is never checkpointed."""
     interaction_retries: int = Field(0, ge=0)
     """Times an interaction turn that fails on infrastructure (a lost box or failed
     transfer, a provider, harness or interception error; never a task error) runs
-    again on a fresh box, continuing from the latest save (or from the interaction's
-    opening state when it has none). The failed attempt's trace keeps its errors."""
+    again: on the same box after a model-side failure, else on a fresh box restored
+    from the trace's latest checkpoint (or from the interaction's opening state when
+    the first turn has none). The failed attempt's trace keeps its errors."""
 
     message_agents: bool = False
     """Give the agent a `message_agent(seat, text)` tool that steers a sibling agent of

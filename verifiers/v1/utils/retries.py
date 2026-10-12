@@ -29,6 +29,13 @@ from tenacity import (
 )
 
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
+from verifiers.v1.errors import (
+    HarnessError,
+    InterceptionError,
+    ProviderError,
+    SandboxError,
+    TaskError,
+)
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode
@@ -156,3 +163,36 @@ async def run_episode_with_retry(
         # and every consumer share this one list.
         final.errors[:0] = history
     return final
+
+
+# -- interaction retries (`AgentConfig.interaction_retries`) ---------------------
+
+RETRY_NOTE = (
+    "The host reopened this session after an infrastructure failure. The conversation "
+    "above is intact. Files are as they were at the last saved point of this "
+    "conversation; background processes you started are gone, so restart any you "
+    "still need."
+)
+"""The user message an interaction retry continues with on a box restored from the
+trace's latest checkpoint."""
+
+MODEL_RETRY_NOTE = (
+    "The host retried this turn after a model call failed. Nothing on the box "
+    "changed; continue where you left off."
+)
+"""The user message an interaction retry continues with on the same box, after a
+model-side failure that left part of the turn committed."""
+
+RETRYABLE_SANDBOX_KINDS = frozenset({"box_lost", "io"})
+"""`SandboxError.kind`s an interaction retry recovers from on a fresh box."""
+
+
+def retryable_error(error: BaseException) -> bool:
+    """Whether an interaction retry recovers from `error`: an infrastructure failure a
+    fresh box (or a fresh model call) can get past — a lost box or failed transfer, a
+    provider, harness or interception failure. Never a task's own failure."""
+    if isinstance(error, TaskError):
+        return False
+    if isinstance(error, SandboxError):
+        return getattr(error, "kind", None) in RETRYABLE_SANDBOX_KINDS
+    return isinstance(error, (ProviderError, HarnessError, InterceptionError))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import time
 import traceback
 import uuid
@@ -21,7 +22,7 @@ from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.task import DataT, Task, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -32,6 +33,7 @@ from verifiers.v1.types import (
     Tool,
     ToolMessage,
     Usage,
+    UserMessage,
     content_text,
 )
 
@@ -132,6 +134,48 @@ class TraceTask(BaseModel, Generic[DataT]):
     """Stable task identity (``Task.key``); defaults to the content hash unless overridden."""
     hash: str | None = None
     """Content hash of ``data`` (``Task.hash``)."""
+    cls: str | None = Field(default=None, exclude_if=lambda cls: cls is None)
+    """Import path of the Task class, `module:QualName`: what rebuilds the task
+    (`rebuild`). None on traces recorded before it existed."""
+    config: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda config: config is None
+    )
+    """`task.config` dumped (JSON mode). None on traces recorded before it existed."""
+
+    @classmethod
+    def of(cls, task: Task) -> TraceTask:
+        """The record of `task`: its class, data, identity and config."""
+        return cls(
+            type=type(task).__name__,
+            data=task.data,
+            key=task.key,
+            hash=task.hash,
+            cls=f"{type(task).__module__}:{type(task).__qualname__}",
+            config=task.config.model_dump(mode="json"),
+        )
+
+    def rebuild(self) -> Task:
+        """The recorded task, rebuilt from its class (`cls`), data and config (the
+        class's default config when none was recorded). Raises ValueError when the
+        class cannot be imported (no `cls`, or a class local to a function)."""
+        module_name, _, qualname = (self.cls or "").partition(":")
+        if not module_name or not qualname or "<locals>" in qualname:
+            raise ValueError(
+                f"the trace's task class {self.cls or self.type!r} cannot be "
+                "imported; pass the task explicitly (task=...)"
+            )
+        target: Any = importlib.import_module(module_name)
+        for part in qualname.split("."):
+            target = getattr(target, part)
+        if not (isinstance(target, type) and issubclass(target, Task)):
+            raise TypeError(f"the trace's task class {self.cls!r} is not a Task class")
+        data = target.data_type().model_validate(self.data.model_dump(mode="json"))
+        config = (
+            target.config_type().model_validate(self.config)
+            if self.config is not None
+            else None
+        )
+        return target(data, config)
 
 
 class InterceptRecord(BaseModel):
@@ -165,10 +209,35 @@ class SteerRecord(BaseModel):
 
 
 class Checkpoint(BaseModel):
+    """A filesystem checkpoint of the run's box, and the conversation it matches.
+
+    The box at the checkpoint matches the trace's conversation cut at `turns`
+    (`Trace.conversation_at`): with `turns < num_turns`, the request of the trace's
+    `turns + 1`-th sampled turn (in commit order) — the root-to-parent path of that
+    assistant node, which holds every tool result the box has executed and no tool call
+    it has not; with `turns >= num_turns`, the whole current conversation (its last
+    branch). Where each checkpoint is taken:
+
+    - between turns (`Interaction.checkpoint`, `Runtime.checkpoint(trace)`): `turns` is
+      the turns completed, so the cut is the whole conversation so far;
+    - a per-call save (`AgentConfig.save = "per_call"`) is taken in the response
+      interceptor, before the reply commits and before the harness acts on it. For a
+      reply with tool calls, `turns` is the turns completed before it: the cut is that
+      call's request, and a continuation samples the reply again. For a final reply (no
+      tool calls, so the box is unchanged by it), `turns` counts the reply: the cut
+      includes it;
+    - a run started from a checkpoint (a resume, an interaction retry) records it at
+      `turns = 0` with `restored` set: its box matches the opening conversation.
+
+    The cut drops system messages and trims a trailing assistant message whose tool
+    calls have no results."""
+
     id: str
     """The runtime's checkpoint id, to start a box from (`checkpoint=`)."""
     turns: int
-    """Model turns the run had completed when the checkpoint was taken."""
+    """The trace's sampled turns the box's state reflects; see the class docs."""
+    restored: bool = Field(default=False, exclude_if=lambda restored: not restored)
+    """The run started from this checkpoint: an earlier run took it (and owns it)."""
 
 
 class Reward(BaseModel):
@@ -489,10 +558,69 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
 
-    def record_checkpoint(self, checkpoint_id: str) -> None:
-        """Record a checkpoint of the run's box taken now, at the current turn."""
-        self.checkpoints.append(Checkpoint(id=checkpoint_id, turns=self.num_turns))
+    def record_checkpoint(
+        self, checkpoint_id: str, turns: int | None = None
+    ) -> Checkpoint:
+        """Record a checkpoint of the run's box, matching the conversation at `turns`
+        (default: the turns completed now). Returns the record."""
+        checkpoint = Checkpoint(
+            id=checkpoint_id, turns=self.num_turns if turns is None else turns
+        )
+        self.checkpoints.append(checkpoint)
         self.notify()
+        return checkpoint
+
+    def checkpoint_at(self, at: str | int | None = None) -> Checkpoint:
+        """A recorded checkpoint by id or index; the latest when `at` is None. Raises
+        ValueError when there is none."""
+        if not self.checkpoints:
+            raise ValueError(f"trace {self.id} has no checkpoints")
+        if at is None:
+            return self.checkpoints[-1]
+        if isinstance(at, int):
+            try:
+                return self.checkpoints[at]
+            except IndexError:
+                raise ValueError(
+                    f"trace {self.id} has {len(self.checkpoints)} checkpoints; "
+                    f"no index {at}"
+                ) from None
+        for checkpoint in reversed(self.checkpoints):
+            if checkpoint.id == at:
+                return checkpoint
+        raise ValueError(f"trace {self.id} has no checkpoint {at!r}")
+
+    def conversation_at(self, turns: int | None = None) -> Messages:
+        """The conversation a continuation opens on, cut at `turns` (the rule on
+        `Checkpoint`; None is the whole current conversation). System messages are
+        dropped (the task re-emits its own system prompt) and a trailing assistant
+        message with tool calls but no results is trimmed (providers reject it). A
+        trace with no messages yet holds its conversation in its task's prompt."""
+        if not self.nodes:
+            prompt = self.task.data.prompt
+            messages: Messages = (
+                []
+                if prompt is None
+                else [UserMessage(content=prompt)]
+                if isinstance(prompt, str)
+                else list(prompt)
+            )
+        else:
+            sampled = [i for i, node in enumerate(self.nodes) if node.sampled]
+            if turns is not None and turns < len(sampled):
+                path: list[int] = []
+                nid = self.nodes[sampled[turns]].parent
+                while nid is not None:
+                    path.append(nid)
+                    nid = self.nodes[nid].parent
+                messages = [self.nodes[n].message for n in reversed(path)]
+            else:
+                branches = self.branches
+                messages = list(branches[-1].messages) if branches else []
+        messages = [message for message in messages if message.role != "system"]
+        while messages and messages[-1].role == "assistant" and messages[-1].tool_calls:
+            messages.pop()
+        return messages
 
     def notify(self) -> None:
         """The trace just changed shape (a phase span, a committed turn)."""

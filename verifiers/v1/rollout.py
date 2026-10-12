@@ -34,16 +34,16 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, SteerRecord, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Checkpoint, SteerRecord, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
 
-SaveCall = Callable[[str | None, Messages, Trace], None]
-"""A per-call save hook: `(checkpoint, conversation, trace)` after each model response
-(`AgentConfig.save = "per_call"`); `checkpoint` is None for a borrowed box."""
+OnSave = Callable[[Trace, Checkpoint], None]
+"""Observes each per-call save (`AgentConfig.save = "per_call"`): the live trace and the
+checkpoint just recorded on it. The caller persists what it needs."""
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,9 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
-        save_call: SaveCall | None = None,
+        save: bool = False,
+        on_save: OnSave | None = None,
+        restored_from: str | None = None,
         seat: steering.SeatKey | None = None,
     ) -> None:
         self.task = task
@@ -145,17 +147,17 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.of(task),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
         )
+        if restored_from is not None:
+            # The box starts from this checkpoint, matching the opening conversation.
+            self.trace.checkpoints.append(
+                Checkpoint(id=restored_from, turns=0, restored=True)
+            )
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [
@@ -189,8 +191,8 @@ class Rollout:
         self._messaging = agent_config.message_agents and seat is not None
         if self._messaging:
             self._session.steer_peer = self._steer_peer
-        self._save_call = save_call
-        if save_call is not None:
+        self._on_save = on_save
+        if save:
             # Last, so it saves the response the harness will actually receive.
             self._session.response_interceptors.append(self.save_call)
         self._stack = AsyncExitStack()
@@ -522,45 +524,74 @@ class Rollout:
         self.trace.notify()
         return not self._session.stopped
 
+    async def checkpoint(self, turns: int | None = None) -> Checkpoint:
+        """Checkpoint the box this rollout owns and record it on the trace, matching
+        the conversation at `turns` (default: the turns completed now; the rule is on
+        `Checkpoint`). A failed checkpoint raises and leaves no record behind (a runtime
+        that records the id as soon as it is requested has it removed)."""
+        runtime = self.runtime
+        if not self.owns_runtime:
+            raise ValueError(
+                "a borrowed box is its owner's to checkpoint; this rollout does not "
+                "own its box"
+            )
+        if runtime is None or not runtime.supports_checkpoint:
+            raise ValueError(f"{type(runtime).__name__} has no filesystem checkpoints")
+        trace = self.trace
+        before = len(trace.checkpoints)
+        if turns is None:
+            turns = trace.num_turns
+        try:
+            checkpoint_id = await runtime.checkpoint(trace)
+        except Exception:
+            # Not restorable: it must never become a resume point.
+            del trace.checkpoints[before:]
+            raise
+        for recorded in trace.checkpoints[before:]:
+            if recorded.id == checkpoint_id:
+                recorded.turns = turns
+                trace.notify()
+                return recorded
+        return trace.record_checkpoint(checkpoint_id, turns)
+
     async def save_call(self, response: Response, request: Request) -> None:
         """Save the exchange as of this model response, before the harness receives it:
-        none of the response's tool calls has run, so an owned box checkpointed now
-        matches the conversation up to the request, plus the response when it is a
-        final reply (a reply with tool calls is left out; it is sampled again on a
-        continuation). A borrowed box is not checkpointed (the save carries None). A
-        failed checkpoint is logged and skipped, so the previous save stands."""
-        assert self._save_call is not None
-        checkpoint: str | None = None
-        if self.owns_runtime:
-            runtime = self.runtime
-            if runtime is None or not runtime.supports_checkpoint:
+        checkpoint the owned box and record it on the trace. None of the response's
+        tool calls has run, so the box matches the conversation up to the request, plus
+        the response when it is a final reply (`Checkpoint` has the rule). A borrowed
+        box is not checkpointed. A checkpoint failing every try is logged and skipped,
+        so the previous one stands."""
+        if not self.owns_runtime or self.runtime is None:
+            return
+        if not self.runtime.supports_checkpoint:
+            return
+        trace = self.trace
+        # The response is not committed yet: a final reply leaves the box as it is,
+        # so the checkpoint matches the conversation with it.
+        turns = trace.num_turns + (0 if response.message.tool_calls else 1)
+        for attempt in range(1, SAVE_CHECKPOINT_ATTEMPTS + 1):
+            try:
+                checkpoint = await self.checkpoint(turns)
+                break
+            except Exception as error:  # noqa: BLE001 - a missed save only makes a later continuation start further back
+                if attempt < SAVE_CHECKPOINT_ATTEMPTS:
+                    await asyncio.sleep(SAVE_RETRY_DELAY * attempt)
+                    continue
+                logger.warning(
+                    "rollout %s: checkpoint for a per-call save failed %d times, "
+                    "keeping the previous one: %s: %s",
+                    trace.id,
+                    attempt,
+                    type(error).__name__,
+                    error,
+                )
                 return
-            for attempt in range(1, SAVE_CHECKPOINT_ATTEMPTS + 1):
-                try:
-                    checkpoint = await runtime.checkpoint(self.trace)
-                    break
-                except Exception as error:  # noqa: BLE001 - a missed save only makes a later continuation start further back
-                    if attempt < SAVE_CHECKPOINT_ATTEMPTS:
-                        await asyncio.sleep(SAVE_RETRY_DELAY * attempt)
-                        continue
-                    logger.warning(
-                        "rollout %s: checkpoint for a per-call save failed %d times, "
-                        "keeping the previous save: %s: %s",
-                        self.trace.id,
-                        attempt,
-                        type(error).__name__,
-                        error,
-                    )
-                    return
-        conversation: Messages = [
-            message for message in request.messages if message.role != "system"
-        ]
-        if not response.message.tool_calls:
-            conversation.append(response.message)
+        if self._on_save is None:
+            return
         try:
-            self._save_call(checkpoint, conversation, self.trace)
+            self._on_save(trace, checkpoint)
         except Exception:
-            logger.warning("rollout %s: on_save failed", self.trace.id, exc_info=True)
+            logger.warning("rollout %s: on_save failed", trace.id, exc_info=True)
 
     async def steer(
         self,
