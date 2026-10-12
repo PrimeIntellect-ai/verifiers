@@ -65,6 +65,11 @@ class AgentConfig(BaseConfig):
     again on a fresh box, continuing from the latest save (or from the interaction's
     opening state when it has none). The failed attempt's trace keeps its errors."""
 
+    message_agents: bool = False
+    """Give the agent a `message_agent(seat, text)` tool that steers a sibling agent of
+    its env episode (that seat's running rollout takes the text as a user message before
+    its next model call). Inert outside an env episode; needs an MCP-capable harness."""
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):

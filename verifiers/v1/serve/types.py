@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,28 @@ class CancelRequest(BaseRequest):
 class CancelResponse(BaseResponse):
     cancelled: bool = False
     """Whether a live run was found and aborted."""
+
+
+class SteerRequest(BaseRequest):
+    """Steer a running agent: the rollout of `trace_id`, or seat `seat` of episode
+    `episode_id` (`vf.steer`). A pool asks every worker; the one running it answers."""
+
+    method: ClassVar[str] = "steer"
+    text: str
+    trace_id: str | None = None
+    episode_id: str | None = None
+    seat: str | None = None
+    sender: str | None = None
+    message_id: str | None = None
+
+
+class SteerResponse(BaseResponse):
+    queued: bool = False
+    """Whether a running agent accepted the message."""
+    reason: str | None = None
+    """Why it was not accepted."""
+    trace_id: str | None = None
+    delivery: Literal["native", "interception"] | None = None
 
 
 class RunRequest(BaseRequest):

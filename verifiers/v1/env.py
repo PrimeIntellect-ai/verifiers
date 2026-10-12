@@ -212,6 +212,7 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
+        episode_id: str | None = None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes), sharing one semaphore
@@ -240,6 +241,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                episode_id=episode_id,
             )
 
         agents = Agents(self.config, make)
@@ -279,7 +281,9 @@ class Env(ABC, Generic[ConfigT]):
             if on_trace is not None:
                 on_trace(trace)
 
-        agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
+        agents = self._episode_agents(
+            ctx, episode.traces, minted, on_discard, episode_id=episode.id
+        )
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.trace_labels()"):

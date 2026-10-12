@@ -100,6 +100,7 @@ from verifiers.v1.semantic import (
     SemanticEdgeSet,
 )
 from verifiers.v1.state import State, StateT
+from verifiers.v1.steering import SteerReceipt, steer
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
@@ -112,6 +113,7 @@ from verifiers.v1.trace import (
     ModelCall,
     PolicyEvent,
     Reward,
+    SteerRecord,
     TimeSpan,
     TimeSplit,
     Timing,
@@ -274,6 +276,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "reward",
     # interception
     "InterceptRecord",
+    "SteerRecord",
     # errors
     "RolloutError",
     "EnvError",
@@ -394,6 +397,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Interaction",
     "Segment",
     "Session",
+    # steering any running agent
+    "SteerReceipt",
+    "steer",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

@@ -172,6 +172,11 @@ class EnvServerPool:
             self._spawn_worker()
         # request_id -> {client_id, worker}
         pending: dict[bytes, dict] = {}
+        # A steer asks every worker (each holds its own rollouts' registry): its
+        # per-worker part ids -> the client's request id, and per request the client,
+        # the parts still out, and whether it was answered.
+        steer_parts: dict[bytes, bytes] = {}
+        steers: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
             self.address,
@@ -198,6 +203,18 @@ class EnvServerPool:
                             await self.frontend.send_multipart(
                                 [client_id, request_id, b"reply", _HEALTH]
                             )
+                        elif method == b"steer":
+                            steers[request_id] = {
+                                "client_id": client_id,
+                                "waiting": len(self.workers),
+                                "answered": False,
+                            }
+                            for w in self.workers:
+                                part = request_id + b"/" + str(w["index"]).encode()
+                                steer_parts[part] = request_id
+                                await w["dealer"].send_multipart(
+                                    [part, method, payload]
+                                )
                         elif method == b"cancel":
                             # Route the cancel to the worker holding the target run;
                             # an unknown/finished target (or an unparseable payload
@@ -244,6 +261,10 @@ class EnvServerPool:
                         request_id, kind, data = await w["dealer"].recv_multipart(
                             copy=False
                         )
+                        parent = steer_parts.pop(request_id.bytes, None)
+                        if parent is not None:
+                            await self._answer_steer(steers, parent, data.bytes)
+                            continue
                         # Copy only the routing key; relay the Frames unchanged. A
                         # `delta` is one of many for its request — only the `reply`
                         # closes the request out.
@@ -265,6 +286,28 @@ class EnvServerPool:
             pass
         finally:
             self._shutdown()
+
+    async def _answer_steer(
+        self, steers: dict[bytes, dict], request_id: bytes, data: bytes
+    ) -> None:
+        """One worker's answer to a steer: the first that queued it answers the
+        client, else the last one in."""
+        group = steers[request_id]
+        group["waiting"] -= 1
+        if group["waiting"] == 0:
+            del steers[request_id]
+        if group["answered"]:
+            return
+        try:
+            queued = bool(msgpack.unpackb(data, raw=False).get("queued"))
+        except Exception:  # noqa: BLE001 - one bad frame must not kill the broker
+            queued = False
+        if queued or group["waiting"] == 0:
+            group["answered"] = True
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart(
+                    [group["client_id"], request_id, b"reply", data]
+                )
 
     def _shutdown(self) -> None:
         for w in self.workers:

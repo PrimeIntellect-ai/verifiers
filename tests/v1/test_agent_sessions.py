@@ -513,6 +513,25 @@ async def test_a_later_turn_with_no_save_is_not_retried(model):
     assert len(FakeRuntime.made) == 1
 
 
+async def test_an_interaction_retry_keeps_pending_steers(model):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model, interaction_retries=1)
+    async with agent.interaction(task()) as interaction:
+        receipt = await vf.steer(
+            "mind the logs", trace_id=interaction.trace.id, sender="op"
+        )
+        assert receipt.queued, receipt.reason
+        await interaction.turn()
+        assert len(interaction.failed_attempts) == 1
+    retried = [
+        request
+        for request in model.requests[2:]
+        if any(m.get("content") == "mind the logs" for m in request["messages"])
+    ]
+    assert retried, "the replacement rollout must still deliver the steer"
+    assert [steer.text for steer in interaction.trace.steers] == ["mind the logs"]
+
+
 async def test_task_error_is_not_retried(model):
     FakeRuntime.doomed["b.txt"] = lambda: vf.TaskError("task broke")
     agent = make(model, save="per_call", interaction_retries=3)

@@ -34,7 +34,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout, RolloutTimeouts, SaveCall
+from verifiers.v1.rollout import Rollout, RolloutTimeouts, SaveCall, messaging_toolset
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -44,6 +44,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
+from verifiers.v1.steering import SeatKey
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
@@ -301,6 +302,7 @@ class Interaction:
         *,
         mode: Literal["steer", "queue"] = "steer",
         message_id: str | None = None,
+        sender: str | None = None,
     ) -> dict:
         """Deliver a user message to this open interaction.
 
@@ -321,13 +323,23 @@ class Interaction:
         keep its context open
         while more messages may arrive. A prompted task must start its opening
         turn first. Stable IDs deduplicate successful deliveries.
+        A harness without native steering takes a steered message through the
+        interception, before its next model call (`Rollout.steer`); `sender` is
+        recorded with it on `trace.steers`.
         """
         if mode not in ("steer", "queue"):
             raise ValueError("message mode must be 'steer' or 'queue'")
-        return await self._send(message, message_id=message_id, mode=mode, wake=True)
+        return await self._send(
+            message, message_id=message_id, mode=mode, wake=True, sender=sender
+        )
 
     async def steer(
-        self, message: str, *, message_id: str | None = None, wake: bool = False
+        self,
+        message: str,
+        *,
+        message_id: str | None = None,
+        wake: bool = False,
+        sender: str | None = None,
     ) -> dict:
         """Inject a user message, optionally resuming an idle interaction.
 
@@ -336,7 +348,9 @@ class Interaction:
         its opening turn. Wake-up uses the normal turn budget and lifecycle.
         Successful deliveries with a stable ID are deduplicated in this interaction.
         """
-        return await self._send(message, message_id=message_id, mode="steer", wake=wake)
+        return await self._send(
+            message, message_id=message_id, mode="steer", wake=wake, sender=sender
+        )
 
     async def _send(
         self,
@@ -345,6 +359,7 @@ class Interaction:
         message_id: str | None,
         mode: Literal["steer", "queue"],
         wake: bool,
+        sender: str | None = None,
     ) -> dict:
         if not isinstance(message, str) or not message.strip():
             raise ValueError("delivery requires a nonempty user message")
@@ -377,11 +392,11 @@ class Interaction:
                 assert pending.receipt is not None
                 return dict(pending.receipt)
             if message_id in self._steering_tasks:
-                receipt = await self._deliver_steer(message, message_id)
+                receipt = await self._deliver_steer(message, message_id, sender)
             elif self._over or not self._run.ok:
                 return {"outcome": "promptRequired", "reason": "interactionStopped"}
             elif mode == "steer":
-                receipt = await self._deliver_steer(message, message_id)
+                receipt = await self._deliver_steer(message, message_id, sender)
             else:
                 receipt = {"outcome": "promptRequired", "reason": "noRunningTurn"}
             if wake and receipt.get("outcome") == "promptRequired":
@@ -390,7 +405,9 @@ class Interaction:
                 self._steering_receipts[message_id] = (message, dict(receipt))
             return receipt
 
-    async def _deliver_steer(self, message: str, message_id: str | None) -> dict:
+    async def _deliver_steer(
+        self, message: str, message_id: str | None, sender: str | None = None
+    ) -> dict:
         key = message_id if message_id is not None else object()
         if key in self._steering_tasks:
             previous, task = self._steering_tasks[key]
@@ -400,7 +417,9 @@ class Interaction:
 
             async def deliver() -> dict:
                 try:
-                    receipt = await self._run.steer(message, message_id=message_id)
+                    receipt = await self._run.steer(
+                        message, message_id=message_id, sender=sender
+                    )
                     if receipt.get("outcome") == "injected" and message_id is not None:
                         self._steering_receipts[message_id] = (message, dict(receipt))
                     return receipt
@@ -691,11 +710,21 @@ class Interaction:
                 ]
             )
             next_messages = None
+        steers = [steer.record for steer in self._run.session.steers]
         failed = await self._run.close()
         self.failed_attempts.append(failed)
         self._history.extend(failed.errors)
         self._run = await self._reopen(task, checkpoint, calls)
         self._base_calls = calls
+        # A steer the replacement's conversation does not hold (never delivered, or
+        # delivered after the save) is queued again so the retry still hears it.
+        prompt = task.data.prompt if isinstance(task.data.prompt, list) else []
+        held = {m.content for m in prompt if m.role == "user"}
+        for record in steers:
+            if record.text not in held:
+                self._run.session.queue_steer(
+                    record.text, message_id=record.id, sender=record.sender
+                )
         return next_messages
 
     async def close(self) -> Trace:
@@ -773,6 +802,9 @@ class Agent:
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
+        # Env episode agents set this: their runs are steerable by seat, and
+        # `message_agents` reaches the episode's other seats.
+        self._seat: SeatKey | None = None
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -802,7 +834,11 @@ class Agent:
             await server.__aexit__(*exc)
 
     def _interception_for(
-        self, run_is_local: bool, task: Task, shared_tools: Mapping
+        self,
+        run_is_local: bool,
+        task: Task,
+        shared_tools: Mapping,
+        messaging: bool = False,
     ) -> Interception | None:
         """Which interception this run rides: an injected one always (its owner
         sized its reach); the owned server only when provably reachable from all
@@ -818,7 +854,10 @@ class Agent:
             # server was created; let the rollout size a scoped server instead.
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not task.toolsets(task.config)
+            run_is_local
+            and not shared_tools
+            and not messaging
+            and not task.toolsets(task.config)
         ):
             return self._server
         return None
@@ -1218,11 +1257,16 @@ class Agent:
             if checkpoint is not None:
                 runtime_config = restore_config(runtime_config, checkpoint)
             run_is_local = runtime_is_local(runtime_config)
+        messaging = (
+            [messaging_toolset()]
+            if self.config.message_agents and self._seat is not None
+            else []
+        )
         validate_pairing(
             harness,
             type(task),
             runtime_config,
-            tools=[*task.toolsets(task.config), *shared_tools.values()],
+            tools=[*task.toolsets(task.config), *shared_tools.values(), *messaging],
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -1236,8 +1280,11 @@ class Agent:
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
-            "interception": self._interception_for(run_is_local, task, shared_tools),
+            "interception": self._interception_for(
+                run_is_local, task, shared_tools, bool(messaging)
+            ),
             "runtime": runtime,
+            "seat": self._seat,
         }
 
     @asynccontextmanager
@@ -1282,8 +1329,11 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        episode_id: str | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
+        if episode_id is not None:
+            self._seat = (episode_id, name)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
