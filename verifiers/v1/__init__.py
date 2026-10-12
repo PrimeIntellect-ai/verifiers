@@ -4,6 +4,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.agent_session import Session
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -57,6 +58,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
+    SandboxErrorKind,
     TaskError,
     ToolsetError,
     TunnelError,
@@ -279,6 +281,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "HarnessError",
     "ToolsetError",
     "SandboxError",
+    "SandboxErrorKind",
     "TaskError",
     "InterceptionError",
     "TunnelError",
@@ -390,6 +393,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # the user channel
     "Interaction",
     "Segment",
+    "Session",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

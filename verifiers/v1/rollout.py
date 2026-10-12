@@ -38,6 +38,10 @@ from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
 
+SaveCall = Callable[[str | None, Messages, Trace], None]
+"""A per-call save hook: `(checkpoint, conversation, trace)` after each model response
+(`AgentConfig.save = "per_call"`); `checkpoint` is None for a borrowed box."""
+
 
 @dataclass(frozen=True)
 class RolloutTimeouts:
@@ -86,6 +90,12 @@ async def agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     return view
 
 
+SAVE_CHECKPOINT_ATTEMPTS = 3
+"""Checkpoints tried for one per-call save: the platform fails one now and then."""
+SAVE_RETRY_DELAY = 1.0
+"""Seconds before the second checkpoint try; the third waits twice as long."""
+
+
 class Rollout:
     """Manages one rollout's lifecycle (open, step, close)."""
 
@@ -105,6 +115,7 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        save_call: SaveCall | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -160,6 +171,10 @@ class Rollout:
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
+        self._save_call = save_call
+        if save_call is not None:
+            # Last, so it saves the response the harness will actually receive.
+            self._session.response_interceptors.append(self.save_call)
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
@@ -183,6 +198,12 @@ class Rollout:
     def closed(self) -> bool:
         """Whether `close()` (or `abort()`) already ran — no further segments."""
         return self._closed
+
+    @property
+    def owns_runtime(self) -> bool:
+        """Whether this rollout provisions (and tears down) its box, rather than
+        borrowing a live one."""
+        return self._borrowed_runtime is None
 
     @property
     def failure(self) -> Exception | None:
@@ -408,6 +429,46 @@ class Rollout:
         self.trace.timing.agent.start = now
         self.trace.notify()
         return not self._session.stopped
+
+    async def save_call(self, response: Response, request: Request) -> None:
+        """Save the exchange as of this model response, before the harness receives it:
+        none of the response's tool calls has run, so an owned box checkpointed now
+        matches the conversation up to the request, plus the response when it is a
+        final reply (a reply with tool calls is left out; it is sampled again on a
+        continuation). A borrowed box is not checkpointed (the save carries None). A
+        failed checkpoint is logged and skipped, so the previous save stands."""
+        assert self._save_call is not None
+        checkpoint: str | None = None
+        if self.owns_runtime:
+            runtime = self.runtime
+            if runtime is None or not runtime.supports_checkpoint:
+                return
+            for attempt in range(1, SAVE_CHECKPOINT_ATTEMPTS + 1):
+                try:
+                    checkpoint = await runtime.checkpoint(self.trace)
+                    break
+                except Exception as error:  # noqa: BLE001 - a missed save only makes a later continuation start further back
+                    if attempt < SAVE_CHECKPOINT_ATTEMPTS:
+                        await asyncio.sleep(SAVE_RETRY_DELAY * attempt)
+                        continue
+                    logger.warning(
+                        "rollout %s: checkpoint for a per-call save failed %d times, "
+                        "keeping the previous save: %s: %s",
+                        self.trace.id,
+                        attempt,
+                        type(error).__name__,
+                        error,
+                    )
+                    return
+        conversation: Messages = [
+            message for message in request.messages if message.role != "system"
+        ]
+        if not response.message.tool_calls:
+            conversation.append(response.message)
+        try:
+            self._save_call(checkpoint, conversation, self.trace)
+        except Exception:
+            logger.warning("rollout %s: on_save failed", self.trace.id, exc_info=True)
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:

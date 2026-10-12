@@ -1,6 +1,6 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -53,6 +53,17 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    save: Literal["off", "per_call"] = "off"
+    """When the agent's exchange is saved as a `Session`: never, or after every model
+    response (`per_call`: an owned box is checkpointed before the harness receives the
+    response, and the run's `on_save` gets the session as of that call). An owned box
+    needs a runtime with checkpoints; a failed checkpoint is logged and skipped (the
+    previous save stands)."""
+    interaction_retries: int = Field(0, ge=0)
+    """Times an interaction turn that fails on infrastructure (a lost box or failed
+    transfer, a provider, harness or interception error; never a task error) runs
+    again on a fresh box, continuing from the latest save (or from the interaction's
+    opening state when it has none). The failed attempt's trace keeps its errors."""
 
     @model_validator(mode="before")
     @classmethod
