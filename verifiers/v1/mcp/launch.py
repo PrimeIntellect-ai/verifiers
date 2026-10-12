@@ -236,12 +236,12 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 
 async def _install_in_sandbox(server: ServerBase, agent: RuntimeHandle) -> str:
     # Install as root; the agent user only runs the server.
-    runtime = agent if agent.user is None else agent.with_user(None)
+    handle = agent if agent.user is None else agent.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
     # the tmpfs.
-    workdir = str(PurePosixPath(runtime.config.workdir))
+    workdir = str(PurePosixPath(handle.config.workdir))
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
@@ -250,10 +250,10 @@ async def _install_in_sandbox(server: ServerBase, agent: RuntimeHandle) -> str:
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime.runtime._mcp_install_lock:
+    async with handle.runtime._mcp_install_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [
-            source for source in sources if source not in runtime.runtime._mcp_sources
+            source for source in sources if source not in handle.runtime._mcp_sources
         ]
         if pending:
             setup = (
@@ -263,22 +263,22 @@ async def _install_in_sandbox(server: ServerBase, agent: RuntimeHandle) -> str:
             )
             if agent.user is not None:
                 setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-            if not runtime.runtime._mcp_sources:
+            if not handle.runtime._mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
             for source in pending:
                 name, data = await _cached_package(Path(source))
                 remote = f"{root}/{name}"
-                await run_shielded(runtime.write(remote, data))
+                await run_shielded(handle.write(remote, data))
                 setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            result = await run_shielded(handle.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
                     f"server {server.server_name!r} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.runtime._mcp_sources.update(pending)
+            handle.runtime._mcp_sources.update(pending)
         if agent.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -287,7 +287,7 @@ async def _install_in_sandbox(server: ServerBase, agent: RuntimeHandle) -> str:
                 f'cp "$(command -v uv)" {venv_q}/bin/uv; chmod -R a+rX {venv_q}; '
                 f"[ ! -d {python_q} ] || chmod -R a+rX {python_q}"
             )
-            result = await run_shielded(runtime.run(["sh", "-c", share], {}))
+            result = await run_shielded(handle.run(["sh", "-c", share], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
                     f"server {server.server_name!r} could not be shared with "
@@ -415,7 +415,7 @@ async def reachable_url(
 @dataclass(frozen=True)
 class _ServedServer:
     url: str
-    runtime: RuntimeHandle
+    handle: RuntimeHandle
 
 
 @contextlib.asynccontextmanager
@@ -444,23 +444,23 @@ async def _serve(
                 "unrestricted runtime"
             )
         if colocated and harness_runtime is not None:
-            runtime = harness_runtime
+            handle = harness_runtime
         else:
             owner = await stack.enter_async_context(provision_runtime(cfg.runtime))
-            runtime = owner.handle()
+            handle = owner.handle()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
-        exposed = runtime is not harness_runtime
+        exposed = handle is not harness_runtime
         # The shared-state channel: every server reaches the interception at the rollout's
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
         state_url = (
-            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
+            handle.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
         port = await serve_in_runtime(
             server,
-            runtime,
+            handle,
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
@@ -469,7 +469,7 @@ async def _serve(
         # server shares the harness's runtime, reached with the harness's locality (read
         # off the harness runtime when there is one, else `harness_is_local` for an
         # eval-level shared tool).
-        colocated = runtime is harness_runtime
+        colocated = handle is harness_runtime
         consumer_is_local = (
             harness_runtime.is_local
             if harness_runtime is not None
@@ -477,14 +477,14 @@ async def _serve(
         )
         base = await stack.enter_async_context(
             reachable_url(
-                runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
+                handle, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
-        if colocated and harness_runtime is not None and runtime.network_restricted:
+        if colocated and harness_runtime is not None and handle.network_restricted:
             base = base.replace("127.0.0.1", "localhost", 1)
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
-        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", handle)
 
 
 @contextlib.asynccontextmanager
@@ -571,8 +571,8 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 )
                 servers[name] = SharedToolServer(
                     url=served.url,
-                    local=served.runtime.is_local,
-                    runtime=served.runtime,
+                    local=served.handle.is_local,
+                    runtime=served.handle,
                     state_secret=state_secret,
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)

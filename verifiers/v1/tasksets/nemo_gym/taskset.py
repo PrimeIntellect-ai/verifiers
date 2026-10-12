@@ -121,7 +121,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
 class NeMoGymEnv(SingleAgentEnv):
     """Start a taskset's NeMo resource server once per environment worker."""
 
-    _nemo_runtime: RuntimeHandle | None = None
+    _nemo_handle: RuntimeHandle | None = None
 
     async def start(self) -> None:
         taskset = cast(NeMoGymTaskset, self.taskset)
@@ -132,11 +132,11 @@ class NeMoGymEnv(SingleAgentEnv):
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
 
-        runtime = self._nemo_runtime = make_runtime(SubprocessConfig()).handle()
-        await runtime.runtime.start()
+        handle = self._nemo_handle = make_runtime(SubprocessConfig()).handle()
+        await handle.runtime.start()
         server = Path(__file__).with_name("server.py")
-        program = await runtime.prepare_uv_script(server.read_bytes())
-        await runtime.run_background(
+        program = await handle.prepare_uv_script(server.read_bytes())
+        await handle.run_background(
             program,
             {"NEMO_GYM_RESOURCE_SERVER": entrypoint},
             "nemo_gym.log",
@@ -145,7 +145,7 @@ class NeMoGymEnv(SingleAgentEnv):
         async with httpx.AsyncClient(timeout=1) as client:
             for _ in range(60):
                 try:
-                    port = int((await runtime.read("nemo_gym.port")).decode())
+                    port = int((await handle.read("nemo_gym.port")).decode())
                     resources_url = f"http://127.0.0.1:{port}"
                     await client.get(resources_url)
                     config.resources_url = resources_url
@@ -153,12 +153,12 @@ class NeMoGymEnv(SingleAgentEnv):
                 except (FileNotFoundError, ValueError, httpx.HTTPError):
                     pass
                 await asyncio.sleep(0.5)
-        log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
+        log = (await handle.read("nemo_gym.log")).decode(errors="replace")[-2000:]
         raise RuntimeError(f"NeMo Gym server did not start:\n{log}")
 
     async def stop(self) -> None:
-        if self._nemo_runtime is None:
+        if self._nemo_handle is None:
             return
-        runtime, self._nemo_runtime = self._nemo_runtime, None
+        handle, self._nemo_handle = self._nemo_handle, None
         cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
-        await runtime.runtime.stop()
+        await handle.runtime.stop()
