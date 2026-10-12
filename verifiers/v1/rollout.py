@@ -556,7 +556,8 @@ class Rollout:
 
     async def save_call(self, response: Response, request: Request) -> None:
         """Save the exchange as of this model response, before the harness receives it:
-        checkpoint the owned box and record it on the trace. None of the response's
+        checkpoint the owned box and record it on the trace; `on_save` is called once
+        the call has committed to the trace. None of the response's
         tool calls has run, so the box matches the conversation up to the request, plus
         the response when it is a final reply (`Checkpoint` has the rule). A borrowed
         box is not checkpointed. A checkpoint failing every try is logged and skipped,
@@ -588,10 +589,17 @@ class Rollout:
                 return
         if self._on_save is None:
             return
-        try:
-            self._on_save(trace, checkpoint)
-        except Exception:
-            logger.warning("rollout %s: on_save failed", trace.id, exc_info=True)
+        on_save = self._on_save
+
+        def report() -> None:
+            # After the call commits: the trace now holds the request and reply that
+            # this checkpoint's conversation cut reaches, so a saved trace resumes exactly.
+            try:
+                on_save(trace, checkpoint)
+            except Exception:
+                logger.warning("rollout %s: on_save failed", trace.id, exc_info=True)
+
+        self._session.on_commit = report
 
     async def steer(
         self,

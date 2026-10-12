@@ -369,6 +369,23 @@ async def test_a_checkpoint_refused_every_time_is_skipped(model, monkeypatch):
     ]
 
 
+async def test_a_trace_saved_in_on_save_resumes_from_what_the_box_holds(model):
+    """on_save runs once the call has committed, so a trace persisted right there cuts
+    at the new checkpoint to exactly the conversation the box matches."""
+    saved: list[tuple[dict, vf.Checkpoint]] = []
+    agent = make(model, save="per_call")
+    await agent.run(
+        task(), on_save=lambda t, c: saved.append((t.model_dump(mode="json"), c))
+    )
+    record, checkpoint = saved[1]
+    trace = vf.WireTrace.model_validate(record)
+    assert [m.role for m in trace.conversation_at(checkpoint.turns)] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
 async def test_on_save_failure_does_not_fail_the_run(model):
     def broken(trace: vf.Trace, checkpoint: vf.Checkpoint) -> None:
         raise OSError("disk full")
