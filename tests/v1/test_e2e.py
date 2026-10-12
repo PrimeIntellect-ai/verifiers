@@ -575,22 +575,27 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime", TOOL_STATE_PLACEMENTS, indirect=True
 )
-async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
+async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path, monkeypatch):
     """The shared-state round-trip: a `@vf.tool` increments the typed `trace.state` each call (synced
     over the interception server) and the `@reward` reads it back — reward 1.0 proves tool writes
     reach the host's `trace.state`, exercised colocated and own-runtime (a SHARED server's
     per-rollout state channel is covered by `test_shared_tool_isolation`)."""
+    monkeypatch.setenv("VF_TEST_TOOL_API_KEY", "test-tool-secret")
+    monkeypatch.setenv("VF_TEST_UNFORWARDED_API_KEY", "unforwarded-secret")
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="null",
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
-        taskset_overrides={"task": {"tools": tool_runtime}},
+        taskset_overrides={
+            "task": {"tools": {**tool_runtime, "forward_env": ["VF_TEST_TOOL_API_KEY"]}}
+        },
     )
     assert trace.ok
     assert trace.num_turns >= 2  # at least two tool calls accumulated
     assert trace.reward == 1.0
+    assert "test-tool-secret" not in trace.model_dump_json()
 
 
 @pytest.mark.e2e

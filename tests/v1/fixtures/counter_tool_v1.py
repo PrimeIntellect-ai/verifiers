@@ -1,5 +1,7 @@
 """Task-scoped counter tool with typed rollout state."""
 
+import os
+
 import verifiers.v1 as vf
 
 TARGET = 3
@@ -15,6 +17,9 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
     @vf.tool
     def bump(self) -> str:
         """Increment the shared counter and return its new value."""
+        if "VF_TEST_TOOL_API_KEY" in self.config.forward_env:
+            assert os.environ["VF_TEST_TOOL_API_KEY"] == "test-tool-secret"
+            assert "VF_TEST_UNFORWARDED_API_KEY" not in os.environ
         self.state.count += 1
         return f"count={self.state.count}"
 
