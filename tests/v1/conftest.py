@@ -134,6 +134,7 @@ def _eval_config(
     runtime: dict | None = None,
     env: dict | None = None,
     reasoning_effort: str | None = None,
+    client: dict | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
@@ -195,6 +196,7 @@ def _eval_config(
         run={"dir": output_dir.name},
         model=CI_MODEL,
         push=False,
+        **({"client": client} if client else {}),
     )
 
 
@@ -280,3 +282,102 @@ async def live_ctx():
         client=EvalClientConfig(),
         sampling=SamplingConfig(max_tokens=2048),
     )
+
+
+@pytest.fixture
+async def scripted_model():
+    """A deterministic upstream model: every call gets a plain "OK" in the caller's own
+    dialect (chat completions, Responses, or Anthropic messages), streamed through that
+    dialect's own encoder when asked. Yields a client config pointing at it."""
+    from aiohttp import web
+
+    from verifiers.v1.dialects.anthropic import AnthropicDialect
+    from verifiers.v1.dialects.chat import ChatDialect
+    from verifiers.v1.dialects.responses import ResponsesDialect
+
+    def chat(model: str) -> dict:
+        message = {"role": "assistant", "content": "OK"}
+        return {
+            "id": "chatcmpl-scripted",
+            "object": "chat.completion",
+            "created": 0,
+            "model": model,
+            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    def responses(model: str) -> dict:
+        text = {"type": "output_text", "text": "OK", "annotations": []}
+        return {
+            "id": "resp_scripted",
+            "object": "response",
+            "created_at": 0,
+            "model": model,
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_scripted",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [text],
+                }
+            ],
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        }
+
+    def anthropic(model: str) -> dict:
+        return {
+            "id": "msg_scripted",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [{"type": "text", "text": "OK"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    routes = [
+        ("/chat/completions", ChatDialect(), chat),
+        ("/responses", ResponsesDialect(), responses),
+        ("/messages", AnthropicDialect(), anthropic),
+    ]
+
+    async def answer(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        dialect, build = next(
+            (dialect, build)
+            for suffix, dialect, build in routes
+            if request.path.endswith(suffix)
+        )
+        raw = build(str(body.get("model", "scripted")))
+        if not dialect.streaming(body):
+            return web.json_response(raw)
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for event in dialect.stream_events(raw):
+            await response.write(event)
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", answer)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        yield {"base_url": f"http://127.0.0.1:{port}/v1"}
+    finally:
+        await runner.cleanup()
