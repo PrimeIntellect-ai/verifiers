@@ -549,7 +549,8 @@ class DockerRuntime(ContainerRuntime):
         result = await self._run_host(*command, "sh", "-c", script)
         if result.exit_code != 0:
             raise SandboxError(
-                f"{self.engine} background process failed: {result.stderr.strip()}"
+                f"{self.engine} background process failed: {result.stderr.strip()}",
+                kind="exec",
             )
 
     def cleanup(self) -> None:

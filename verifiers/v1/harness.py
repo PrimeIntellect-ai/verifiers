@@ -182,7 +182,8 @@ copy_failed=$(
         if not await runtime.alive():
             raise SandboxError(
                 f"runtime died under harness {self.config.id!r} "
-                f"(exit {result.exit_code}): {detail}"
+                f"(exit {result.exit_code}): {detail}",
+                kind="box_lost",
             )
         if result.exit_code == MODEL_TRANSPORT_ERROR_EXIT_CODE:
             raise InterceptionError(

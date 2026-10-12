@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, missing_file_kind
 from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
@@ -244,14 +244,27 @@ class Runtime(ABC):
 
     @property
     def supports_checkpoint(self) -> bool:
-        """Whether `checkpoint()` is implemented for this runtime instance."""
-        return type(self).checkpoint is not Runtime.checkpoint
+        """Whether `checkpoint()` and `delete_checkpoint()` are implemented for this
+        runtime instance."""
+        return (
+            type(self).checkpoint is not Runtime.checkpoint
+            and type(self).delete_checkpoint is not Runtime.delete_checkpoint
+        )
 
     async def checkpoint(self, trace: "Trace | None" = None) -> str:
         """Save the box's filesystem and return the checkpoint's id once it can be
         restored (`restore_config`). Files survive; running processes do not. With
         `trace`, the checkpoint is recorded on it (`Trace.checkpoints`) at the run's
         current turn."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no filesystem checkpoints"
+        )
+
+    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+        """Delete a checkpoint this runtime's provider holds (a `checkpoint()` id).
+        Works on a runtime that was never started or is already torn down: the
+        checkpoint outlives its box. A checkpoint that no longer exists counts as
+        deleted. Raises `SandboxError` when the provider refuses the delete."""
         raise NotImplementedError(
             f"{type(self).__name__} has no filesystem checkpoints"
         )
@@ -421,7 +434,10 @@ class Runtime(ABC):
             {},
         )
         if result.exit_code:
-            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            detail = result.stderr.strip()[-500:]
+            raise SandboxError(
+                f"read {path!r}: {detail}", kind=missing_file_kind(detail, "io")
+            )
         return base64.b64decode(result.stdout)
 
     @abstractmethod
