@@ -12,7 +12,6 @@ another request (no dedicated probe thread).
 
 import asyncio
 import contextlib
-import gc
 import logging
 import time
 import uuid
@@ -44,11 +43,7 @@ DecodedT = TypeVar("DecodedT")
 
 
 class EnvClient:
-    """Receive streamed episodes with process-wide automatic GC disabled.
-
-    Callers collect explicitly at payload-release boundaries; close also collects.
-    Reference counting continues to release objects normally.
-    """
+    """Receive streamed episodes with bounded worker decoding."""
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000") -> None:
         self.address = address
@@ -66,8 +61,6 @@ class EnvClient:
         self._cancel_tasks: set[asyncio.Task] = set()
         self._receiver: asyncio.Task | None = None
         self._decode_slots = asyncio.BoundedSemaphore(1)
-        # Automatic collection pauses every thread, including the receive loop.
-        gc.disable()
 
     def _ensure_receiver(self) -> None:
         if self._receiver is None:
@@ -250,4 +243,3 @@ class EnvClient:
                 await task
         self.socket.close()
         self.ctx.term()
-        await asyncio.to_thread(gc.collect)
