@@ -1,9 +1,9 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
-from typing import Annotated, Any, Generic, Literal, Self
+from typing import Annotated, Any, Generic, Literal, Self, TypeVar
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, JsonValue, computed_field, model_validator
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
@@ -83,6 +83,8 @@ class EvalRunInfo(BaseModel):
 
 RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
+OutcomeT = TypeVar("OutcomeT", bound=BaseModel)
+
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The artifact Env.run produces. Contains multiple agents' traces."""
@@ -106,6 +108,16 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
+    outcome: dict[str, JsonValue] | None = None
+    """What the env's `run()` returned, when it returned a pydantic model (dumped as
+    JSON); `finalize()` may set or amend it. Each retry attempt starts with None.
+    Read it back typed with `outcome_as`."""
+
+    def outcome_as(self, model: type[OutcomeT]) -> OutcomeT | None:
+        """`outcome` validated into `model`, or None when the episode has none."""
+        if self.outcome is None:
+            return None
+        return model.model_validate(self.outcome)
 
     def record_run(self, run: RunInfo) -> None:
         """Record the run identity on the dispatched episode."""

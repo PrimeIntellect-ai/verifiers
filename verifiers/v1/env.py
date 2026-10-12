@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import traceback
 from abc import ABC, abstractmethod
@@ -12,6 +13,8 @@ from typing import (
     TypeVar,
 )
 
+from pydantic import BaseModel, JsonValue
+
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import (
@@ -21,7 +24,7 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.errors import EnvError, boundary
+from verifiers.v1.errors import EnvError, boundary, error_kind
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
     Interception,
@@ -47,6 +50,7 @@ def _as_error(e: Exception) -> Error:
         message=str(e),
         status_code=getattr(e, "status_code", None),
         traceback=traceback.format_exc(),
+        kind=error_kind(e),
     )
 
 
@@ -154,14 +158,17 @@ class Env(ABC, Generic[ConfigT]):
         today `trainable` (`agents.judge.trainable = False`); once per episode."""
 
     @abstractmethod
-    async def run(self, task: Task, agents: Agents) -> None:
-        """One episode: how the agents interact on `task`, returning nothing —
-        every finished run joins the episode automatically, stamped with its seat's
-        standing. An agent-run failure is data on its trace (this hook decides what
-        it means); an exception raised here is the episode itself failing.
+    async def run(self, task: Task, agents: Agents) -> BaseModel | None:
+        """One episode: how the agents interact on `task` — every finished run joins
+        the episode automatically, stamped with its seat's standing. An agent-run
+        failure is data on its trace (this hook decides what it means); an exception
+        raised here is the episode itself failing.
         Independent agents are written as such (`asyncio.gather`); how many of them
         actually run at once is the run's bound, not this hook's
-        (`--env.max-concurrent-agents`, one at a time by default)."""
+        (`--env.max-concurrent-agents`, one at a time by default).
+        Optionally return a pydantic model: the episode keeps it, dumped as JSON, as
+        `episode.outcome` (read it back with `episode.outcome_as(Model)`). Any other
+        return value is ignored."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
@@ -171,6 +178,13 @@ class Env(ABC, Generic[ConfigT]):
         signals via `record_reward`/`record_metric`, in program order. A raise
         fails the episode (the retryable unit) — validate strictly, never
         record a guess."""
+
+    def trace_labels(self, task: Task) -> dict[str, JsonValue]:
+        """Labels for every trace this episode of `task` mints, put into
+        `trace.info` at mint, before any `on_trace` observer sees the trace. Called
+        once per episode attempt, before `setup()`; a raise fails the episode.
+        Default: none."""
+        return {}
 
     def complete(self, episode: Episode) -> bool:
         """Whether a finished episode is a valid result — what `--resume` keeps
@@ -245,8 +259,9 @@ class Env(ABC, Generic[ConfigT]):
         however `run()` fans out.
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
-        each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
-        retry mints a replacement)."""
+        each agent-run's trace at mint, after `trace_labels(task)` landed in its
+        `info`; `on_discard` its abandonment (a per-agent retry mints a replacement).
+        A pydantic model returned by `run()` becomes `episode.outcome`."""
         episode = Episode(
             env=EnvInfo(id=self.config.env_id),
             task=TraceTask(
@@ -256,13 +271,25 @@ class Env(ABC, Generic[ConfigT]):
                 hash=task.hash,
             ),
         )
-        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
+        labels: dict[str, JsonValue] = {}
+
+        def minted(trace: Trace) -> None:
+            # Labels land before any observer sees the trace; each trace gets its own copy.
+            trace.info.update(copy.deepcopy(labels))
+            if on_trace is not None:
+                on_trace(trace)
+
+        agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
+                async with boundary(EnvError, f"{type(self).__name__}.trace_labels()"):
+                    labels.update(self.trace_labels(task))
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    await self.run(task, agents)
+                    outcome = await self.run(task, agents)
+                    if isinstance(outcome, BaseModel):
+                        episode.outcome = outcome.model_dump(mode="json")
                     if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
