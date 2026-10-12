@@ -1,5 +1,7 @@
 """Container operations through a CLI on the local machine or an owned runtime."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import os
@@ -13,6 +15,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1.runtimes.handle import RuntimeHandle
 from verifiers.v1.runtimes.subprocess import SubprocessProcess
 from verifiers.v1.utils.aio import run_shielded
 
@@ -81,7 +84,7 @@ class ContainerProcess(RuntimeProcess):
     def __init__(
         self,
         process: RuntimeProcess,
-        runtime: "ContainerRuntime",
+        runtime: ContainerRuntime,
         pid: int,
         pidfile: str,
     ) -> None:
@@ -134,7 +137,7 @@ class ContainerProcess(RuntimeProcess):
 
 
 async def _abort_process_startup(
-    proc: RuntimeProcess, runtime: "ContainerRuntime", pidfile: str
+    proc: RuntimeProcess, runtime: ContainerRuntime, pidfile: str
 ) -> str:
     """Kill a partially opened container process and reap its CLI client."""
     # The target normally writes its PID immediately, but cancellation can win
@@ -177,13 +180,13 @@ class ContainerRuntime(Runtime):
     """A container reached through its CLI: every operation is an `exec` into it.
     Subclasses provision the container (`start` / `cleanup`) and describe the exec."""
 
-    config: "ContainerConfig | PrimeConfig | ModalConfig"
+    config: ContainerConfig | PrimeConfig | ModalConfig
     _host: Runtime | None = None
 
     async def _run_host(self, *argv: str) -> ProgramResult:
         if self._host is None:
             return await cli(*argv)
-        return await self._host.run(list(argv), {})
+        return await self._host.handle().run(list(argv), {})
 
     async def _communicate_host(
         self, *argv: str, input: bytes | None = None
@@ -195,10 +198,10 @@ class ContainerRuntime(Runtime):
         command = f"{shlex.join(argv)} > {temporary}.out"
         try:
             if input is not None:
-                await self._host.write(f"{temporary}.in", input)
+                await self._host.handle().write(f"{temporary}.in", input)
                 command += f" < {temporary}.in"
             result = await self._run_host("sh", "-c", command)
-            data = await self._host.read(f"{temporary}.out")
+            data = await self._host.handle().read(f"{temporary}.out")
             return result.exit_code, data, result.stderr.encode()
         finally:
             # Temporary-file cleanup is best-effort after command completion/failure.
@@ -207,16 +210,22 @@ class ContainerRuntime(Runtime):
                     self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
                 )
 
-    def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
+    def _exec(
+        self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
+    ) -> list[str]:
         """Host argv that runs a command inside the container, in the workdir, with
         `env` in its environment; `stdin` keeps the caller's stdin attached."""
         raise NotImplementedError
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self._run_host(*self._exec(self.process_env(env)), *argv)
+    async def _run(
+        self, handle: RuntimeHandle, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
+        return await self._run_host(
+            *self._exec(handle.process_env(env), user=handle.user), *argv
+        )
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, handle: RuntimeHandle, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
@@ -230,7 +239,7 @@ class ContainerRuntime(Runtime):
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
-            *self._exec(self.process_env(env), stdin=True),
+            *self._exec(handle.process_env(env), user=handle.user, stdin=True),
             "sh",
             "-c",
             wrapper,
@@ -249,7 +258,7 @@ class ContainerRuntime(Runtime):
                 )
             )
         else:
-            proc = await self._host.open_process(command, {})
+            proc = await self._host.handle().open_process(command, {})
         loop = asyncio.get_running_loop()
         deadline = loop.time() + (30 if self._host is not None else 5)
         try:
@@ -258,7 +267,11 @@ class ContainerRuntime(Runtime):
                     # An exited client gets one final PID read: short commands may
                     # have written their PID and finished before the first poll.
                     returncode = await proc.poll()
-                    ready = await self._run_host(*self._exec({}), "cat", pidfile)
+                    ready = await self._run_host(
+                        *self._exec(handle.process_env({}), user=handle.user),
+                        "cat",
+                        pidfile,
+                    )
                     if ready.exit_code == 0 and ready.stdout.strip().isdigit():
                         return ContainerProcess(
                             proc, self, int(ready.stdout.strip()), pidfile
@@ -280,24 +293,26 @@ class ContainerRuntime(Runtime):
             f"{stderr or ready.stderr.strip()}"
         )
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, handle: RuntimeHandle, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Backgrounded inside the container, so it outlives this exec and lives until
         # the container is removed in stop().
         script = f"{shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null &"
         result = await self._run_host(
-            *self._exec(self.process_env(env)), "sh", "-c", script
+            *self._exec(handle.process_env(env), user=handle.user), "sh", "-c", script
         )
         if result.exit_code != 0:
             raise SandboxError(
                 f"container background process failed: {result.stderr.strip()}"
             )
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, handle: RuntimeHandle, path: str, max_bytes: int | None = None
+    ) -> bytes:
         argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         code, data, stderr = await self._communicate_host(
-            *self._exec({}), *argv, "--", path
+            *self._exec(handle.process_env({}), user=handle.user), *argv, "--", path
         )
         if code != 0:
             raise SandboxError(
@@ -305,10 +320,10 @@ class ContainerRuntime(Runtime):
             )
         return data
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, handle: RuntimeHandle, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
         code, _, stderr = await self._communicate_host(
-            *self._exec({}, stdin=True),
+            *self._exec(handle.process_env({}), user=handle.user, stdin=True),
             "sh",
             "-c",
             f"mkdir -p {parent} && cat > {shlex.quote(path)}",

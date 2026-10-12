@@ -150,7 +150,7 @@ class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
         self,
         ctx: vf.ModelContext,
         trace: vf.Trace,
-        runtime: vf.Runtime,
+        runtime: vf.RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

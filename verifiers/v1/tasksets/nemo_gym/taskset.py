@@ -12,7 +12,7 @@ from pydantic import Field
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
-from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
+from verifiers.v1.runtimes import RuntimeHandle, SubprocessConfig, make_runtime
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
@@ -47,7 +47,7 @@ class NeMoGymData(TaskData):
 
 
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
-    async def setup(self, trace: Trace, runtime: Runtime) -> None:
+    async def setup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         state = trace.state
         if self.config.resources_url is None:
             raise ValueError("set resources_url or use a managed NeMo Gym taskset")
@@ -121,7 +121,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
 class NeMoGymEnv(SingleAgentEnv):
     """Start a taskset's NeMo resource server once per environment worker."""
 
-    _nemo_runtime: Runtime | None = None
+    _nemo_runtime: RuntimeHandle | None = None
 
     async def start(self) -> None:
         taskset = cast(NeMoGymTaskset, self.taskset)
@@ -132,8 +132,8 @@ class NeMoGymEnv(SingleAgentEnv):
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
 
-        runtime = self._nemo_runtime = make_runtime(SubprocessConfig())
-        await runtime.start()
+        runtime = self._nemo_runtime = make_runtime(SubprocessConfig()).handle()
+        await runtime.runtime.start()
         server = Path(__file__).with_name("server.py")
         program = await runtime.prepare_uv_script(server.read_bytes())
         await runtime.run_background(
@@ -161,4 +161,4 @@ class NeMoGymEnv(SingleAgentEnv):
             return
         runtime, self._nemo_runtime = self._nemo_runtime, None
         cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
-        await runtime.stop()
+        await runtime.runtime.stop()

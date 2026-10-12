@@ -3,7 +3,7 @@ from pathlib import Path
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -19,7 +19,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
 
@@ -27,7 +27,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

@@ -10,7 +10,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -153,7 +153,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
         statuses.append(status)
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         await ensure_installed(
@@ -175,7 +175,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -269,7 +269,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             prompt=prompt,
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         root = self._root(trace)
         await remove_dir(runtime, root, "prime-agent state")
 

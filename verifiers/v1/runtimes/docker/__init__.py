@@ -1,6 +1,8 @@
 """Docker and Podman share engine-managed bridges, port publication, and the
 Verifiers proxy for host callbacks and optional execution-time URL filtering."""
 
+from __future__ import annotations
+
 import array
 import contextlib
 import json
@@ -30,6 +32,7 @@ from verifiers.v1.runtimes.docker.egress import (
     NetworkPolicy,
     is_loopback_host,
 )
+from verifiers.v1.runtimes.handle import RuntimeHandle
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -77,7 +80,7 @@ class DockerRuntime(ContainerRuntime):
 
     def __init__(
         self,
-        config: "DockerConfig | PodmanConfig | PrimeConfig | ModalConfig",
+        config: DockerConfig | PodmanConfig | PrimeConfig | ModalConfig,
         name: str | None = None,
         *,
         host: Runtime | None = None,
@@ -106,12 +109,12 @@ class DockerRuntime(ContainerRuntime):
     @contextlib.asynccontextmanager
     async def attach(
         cls,
-        config: "DockerConfig | PrimeConfig | ModalConfig",
+        config: DockerConfig | PrimeConfig | ModalConfig,
         container: str,
         *,
         service_url: str | None = None,
         host: Runtime | None = None,
-    ) -> AsyncIterator["DockerRuntime"]:
+    ) -> AsyncIterator[DockerRuntime]:
         """Borrow an existing container; its caller owns creation and removal."""
         runtime = cls(config, host=host)
         runtime._container = container
@@ -507,7 +510,9 @@ class DockerRuntime(ContainerRuntime):
             await self._proxy.stop()
         await super().teardown()
 
-    def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
+    def _exec(
+        self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
+    ) -> list[str]:
         assert self._container is not None
         if self.network_restricted and self._cut:
             env = {**env, **self._proxy_env()}
@@ -530,20 +535,20 @@ class DockerRuntime(ContainerRuntime):
             "exec",
             *(("-i",) if stdin else ()),
             *(arg for key, value in env.items() for arg in ("--env", f"{key}={value}")),
-            *(("--user", self.user) if self.user is not None else ()),
+            *(("--user", user) if user is not None else ()),
             "--workdir",
             self.config.workdir,
             self._container,
         ]
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, handle: RuntimeHandle, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
         if self.network_restricted and self._proxy is not None:
             env = {**env, **self._proxy_env()}
         # The engine owns the background server as a detached exec process.
-        command = self._exec(self.process_env(env))
+        command = self._exec(handle.process_env(env), user=handle.user)
         command.insert(2, "--detach")
         script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         result = await self._run_host(*command, "sh", "-c", script)

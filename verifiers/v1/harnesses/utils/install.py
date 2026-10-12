@@ -2,11 +2,11 @@
 
 import shlex
 
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 
 
 async def ensure_installed(
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     *,
     directory: str,
     install: str,
@@ -65,7 +65,7 @@ async def ensure_installed(
         raise RuntimeError(f"{label} install failed: {detail}")
 
 
-async def remove_dir(runtime: Runtime, path: str, label: str) -> None:
+async def remove_dir(runtime: RuntimeHandle, path: str, label: str) -> None:
     """Delete `path` in `runtime`; a failure names `label` (what the path held)."""
     result = await runtime.run(["rm", "-rf", path], {})
     if result.exit_code != 0:

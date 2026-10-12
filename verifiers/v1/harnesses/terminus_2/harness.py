@@ -4,7 +4,7 @@ from pathlib import Path
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -23,7 +23,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     # Beyond the usual host leaks, Terminus drives tmux: on the host its tmux server —
     # and the `tmux kill-server` cleanup in `launch` — would share the user's own.
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
 
@@ -31,7 +31,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -71,7 +71,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                     {"TMUX_TMPDIR": tmux_dir},
                 )
             except Exception:
-                # Runtime teardown is the final backstop; preserve the rollout's
+                # RuntimeHandle teardown is the final backstop; preserve the rollout's
                 # result or original failure when this best-effort cleanup cannot run.
                 logger.warning(
                     "failed to clean up Terminus 2 tmux server", exc_info=True

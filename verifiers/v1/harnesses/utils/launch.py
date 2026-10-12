@@ -7,7 +7,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
@@ -37,7 +37,7 @@ async def launch_chat_program(
     config: HarnessConfig,
     ctx: ModelContext,
     trace: Trace,
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     endpoint: str,
     secret: str,
     mcp_urls: dict[str, str],

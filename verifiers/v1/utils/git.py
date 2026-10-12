@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from verifiers.v1.errors import SandboxError
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import RuntimeHandle
     from verifiers.v1.trace import Trace
 
 PATCH_CAP_BYTES = 2_000_000
@@ -69,7 +69,7 @@ _DIFF = (
 )
 
 
-async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
+async def resolve_head(runtime: RuntimeHandle, env: dict | None = None) -> str:
     """The repo's current commit SHA, or "" when unresolvable.
 
     Call at the end of `setup`, before the agent runs, and keep the result in
@@ -83,7 +83,9 @@ async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
     return (result.stdout or "").strip()
 
 
-async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[str]:
+async def snapshot_untracked(
+    runtime: RuntimeHandle, env: dict | None = None
+) -> list[str]:
     """The repo's untracked files, to hand `capture_patch` as `ignore`.
 
     Call at the end of `setup`, before the agent runs, and keep the result in host
@@ -105,7 +107,7 @@ async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[
 
 async def capture_patch(
     trace: Trace,
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     base_commit: str = "",
     env: dict | None = None,
     write_path: str | None = None,

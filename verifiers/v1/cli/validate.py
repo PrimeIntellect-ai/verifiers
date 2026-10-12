@@ -293,12 +293,13 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
             ),
         )
         await runtime.start()
+        handle = runtime.handle()
         await asyncio.wait_for(
-            invoke(task.setup, {"trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": handle}),
             setup_timeout,
         )
         valid = await asyncio.wait_for(
-            CHECKS[mode](task, trace, runtime), config.timeout.total
+            CHECKS[mode](task, trace, handle), config.timeout.total
         )
     except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
         exc = e

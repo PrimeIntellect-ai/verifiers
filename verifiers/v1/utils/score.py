@@ -11,7 +11,7 @@ from math_verify.errors import TimeoutException as MathVerifyTimeout
 from verifiers.v1.errors import SandboxError
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import RuntimeHandle
     from verifiers.v1.trace import Trace
 
 BOXED_START = "\\boxed{"
@@ -39,7 +39,7 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
 
 
 async def read_answer_file_or_last_reply(
-    runtime: Runtime, path: str, trace: Trace
+    runtime: RuntimeHandle, path: str, trace: Trace
 ) -> str:
     try:
         answer = (await runtime.read(path)).decode(errors="replace").strip()

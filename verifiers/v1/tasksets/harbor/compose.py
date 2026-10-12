@@ -22,6 +22,7 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     PrimeConfig,
     RuntimeConfig,
+    RuntimeHandle,
     provision_runtime,
 )
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
@@ -69,7 +70,7 @@ async def compose_services(
     *,
     trust_compose: bool = False,
     setup_timeout: float | None = None,
-) -> AsyncIterator[tuple[dict[str, DockerRuntime], Callable[[], Awaitable[str]]]]:
+) -> AsyncIterator[tuple[dict[str, RuntimeHandle], Callable[[], Awaitable[str]]]]:
     """Own one Compose attempt and lend its services until the context exits."""
     if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
         raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
@@ -96,7 +97,7 @@ async def compose_services(
     async def run_host(*argv: str) -> ProgramResult:
         if host is None:
             return await cli(*argv, env=compose_env)
-        return await host.run(list(argv), compose_env)
+        return await host.handle().run(list(argv), compose_env)
 
     async def compose(*args: str, timeout: float | None = None) -> str:
         async with asyncio.timeout(timeout):
@@ -186,12 +187,12 @@ async def compose_services(
                     provision_runtime(config.model_copy(update=host_config))
                 )
                 if isinstance(config, PrimeConfig):
-                    install = await host.run(["sh", "-c", INSTALL_DOCKER], {})
+                    install = await host.handle().run(["sh", "-c", INSTALL_DOCKER], {})
                     if install.exit_code:
                         raise SandboxError(
                             f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                         )
-                await host.run_background(
+                await host.handle().run_background(
                     ["dockerd", "--host=unix:///var/run/docker.sock"],
                     {},
                     "/tmp/dockerd.log",
@@ -205,7 +206,7 @@ async def compose_services(
                         f"Loading host images failed: {loaded.stderr or loaded.stdout}"
                     )
                 root = "/harbor"
-                await host.write(
+                await host.handle().write(
                     "/tmp/harbor.tar.gz",
                     pack_dir_to_bytes(directory, compress=True).getvalue(),
                 )
@@ -296,7 +297,9 @@ async def compose_services(
             if host is None:
                 (directory / "overlay.json").write_text(json.dumps(overlay))
             else:
-                await host.write(f"{root}/overlay.json", json.dumps(overlay).encode())
+                await host.handle().write(
+                    f"{root}/overlay.json", json.dumps(overlay).encode()
+                )
             compose_argv += ["-f", f"{root}/overlay.json"]
 
             if local:
@@ -328,6 +331,9 @@ async def compose_services(
                 )
             if "main" not in runtimes:
                 raise SandboxError("Harbor Compose requires a main container")
-        yield runtimes, partial(compose, "stop", "main", timeout=60)
+        yield (
+            {name: runtime.handle() for name, runtime in runtimes.items()},
+            partial(compose, "stop", "main", timeout=60),
+        )
     finally:
         await run_shielded(stack.aclose())

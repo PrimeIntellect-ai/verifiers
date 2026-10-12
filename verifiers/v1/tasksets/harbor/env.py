@@ -22,7 +22,7 @@ from verifiers.v1.envs.isolated_verifier import (
     IsolatedVerifierEnvConfig,
 )
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import Runtime, RuntimeConfig
+from verifiers.v1.runtimes import RuntimeConfig, RuntimeHandle
 from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
@@ -132,7 +132,7 @@ class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
         episode.traces[0] = solution
 
     async def verify(
-        self, task: vf.Task, solution: vf.Trace, runtime: Runtime
+        self, task: vf.Task, solution: vf.Trace, runtime: RuntimeHandle
     ) -> float | dict[str, float]:
         assert isinstance(task, HarborTask)
         return await task.run_verifier(runtime, solution)

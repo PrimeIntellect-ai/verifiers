@@ -11,7 +11,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -65,7 +65,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await ensure_node(runtime)
         logger.info(
             "pi: ensuring Pi %s and pi-acp %s are installed",
@@ -89,7 +89,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -203,11 +203,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             mcp_urls={},
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
 
     async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+        self, config: ACPConfig, runtime: RuntimeHandle, url: str, secret: str
     ) -> None:
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
         await runtime.write(f"{agent_dir}/gate.mjs", GATE_EXTENSION.encode())

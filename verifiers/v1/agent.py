@@ -34,8 +34,8 @@ from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
-    Runtime,
     RuntimeConfig,
+    RuntimeHandle,
     SubprocessConfig,
     provision_runtime,
     runtime_is_local,
@@ -83,7 +83,7 @@ def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeo
 
 
 def _check_borrowed_placement(
-    task: Task, runtime: Runtime, base_config: RuntimeConfig
+    task: Task, runtime: RuntimeHandle, base_config: RuntimeConfig
 ) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't
     be honored. Reject requirements that cannot be applied to the running box; an
@@ -653,7 +653,7 @@ class Agent:
         self,
         task: Task,
         *,
-        runtime: Runtime | None = None,
+        runtime: RuntimeHandle | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
@@ -707,7 +707,7 @@ class Agent:
     async def _run_once(
         self,
         task: Task,
-        runtime: Runtime | None,
+        runtime: RuntimeHandle | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
@@ -743,7 +743,7 @@ class Agent:
         self,
         task: Task,
         *,
-        runtime: Runtime | None = None,
+        runtime: RuntimeHandle | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
@@ -805,7 +805,7 @@ class Agent:
                 trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
+        self, task: Task, runtime: RuntimeHandle | None, shared_tools: dict
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
@@ -848,7 +848,7 @@ class Agent:
         }
 
     @asynccontextmanager
-    async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
+    async def provision(self, task: Task | None = None) -> AsyncIterator[RuntimeHandle]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
         config = (
@@ -859,7 +859,7 @@ class Agent:
         async with provision_runtime(config) as runtime:
             # Keep sandbox startup task-neutral: this box may later host another task.
             runtime.env = dict(task.runtime_env()) if task is not None else {}
-            yield runtime
+            yield runtime.handle()
 
 
 class _EpisodeAgent(Agent):
@@ -925,7 +925,7 @@ class _EpisodeAgent(Agent):
         self,
         task: Task,
         *,
-        runtime: Runtime | None = None,
+        runtime: RuntimeHandle | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
@@ -946,7 +946,7 @@ class _EpisodeAgent(Agent):
         self,
         task: Task,
         *,
-        runtime: Runtime | None = None,
+        runtime: RuntimeHandle | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:

@@ -182,7 +182,7 @@ class JudgeTask(vf.Task):
             artifacts={} if share_runtime else solution.state.artifacts,
         )
 
-    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+    async def setup(self, trace: vf.Trace, runtime: vf.RuntimeHandle) -> None:
         await vf.restore(runtime, self.artifacts)
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
@@ -192,7 +192,7 @@ class JudgeTask(vf.Task):
         for path, content in self.files.items():
             await runtime.write(path, content)
 
-    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+    async def finalize(self, trace: vf.Trace, runtime: vf.RuntimeHandle) -> None:
         """Scrape the verdict off the box while it's alive. A judge that wrote no
         file (or garbage) fails HERE — on the judge's own trace, the retryable
         unit — never silently."""

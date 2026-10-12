@@ -37,7 +37,7 @@ from verifiers.v1.utils.generic import concrete_type
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import RuntimeHandle
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -182,17 +182,17 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
-    async def setup(self, trace: Trace, runtime: Runtime) -> None:
+    async def setup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         return None
 
-    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+    async def finalize(self, trace: Trace, runtime: RuntimeHandle) -> None:
         return None
 
-    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+    async def stage_verifier(self, trace: Trace, runtime: RuntimeHandle) -> None:
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
 
-    async def validate(self, runtime: Runtime) -> bool | None:
+    async def validate(self, runtime: RuntimeHandle) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None
 
@@ -213,7 +213,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def score(
         self,
         trace: Trace,
-        runtime: Runtime | None = None,
+        runtime: RuntimeHandle | None = None,
     ) -> None:
         if self.scoring_deferred:
             return

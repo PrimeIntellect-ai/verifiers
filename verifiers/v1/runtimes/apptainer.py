@@ -62,7 +62,9 @@ class ApptainerRuntime(ContainerRuntime):
         self._dir: Path | None = None  # host backing for the workspace, /tmp and $HOME
         self._stopped = False
 
-    def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
+    def _exec(
+        self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
+    ) -> list[str]:
         # `--env` is a comma-separated map flag, so values pass through `env` inside.
         return [
             "apptainer",

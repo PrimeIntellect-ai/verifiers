@@ -16,7 +16,7 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
-from verifiers.v1.runtimes import Runtime, runtime_is_local
+from verifiers.v1.runtimes import RuntimeHandle, runtime_is_local
 from verifiers.v1.session import RolloutSession
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ def make_interception(
 @asynccontextmanager
 async def serve_interception(
     interception: Interception | None,
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     session: RolloutSession,
     servers: list,
     shared_tools: "dict[str, SharedToolServer]",

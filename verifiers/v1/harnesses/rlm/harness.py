@@ -20,7 +20,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -147,7 +147,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     SUPPORTS_SKILLS = True
     _skills_install_dir: str | None = None
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
@@ -188,7 +188,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         system_prompt: str | None,
@@ -245,7 +245,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": runtime.env,
+            "kernel_env": dict(runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if self.config.builtin_tools is not None:
@@ -256,7 +256,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -289,7 +289,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if RLM_SESSION_METADATA_KEY in response_metadata:
             self._consume_snapshot(trace, response_metadata)
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
         if self._skills_install_dir is not None:
             await remove_dir(

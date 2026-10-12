@@ -7,7 +7,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -40,7 +40,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await ensure_node(runtime)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         directory = CLAUDE_ACP_DIR.format(**versions)
@@ -67,7 +67,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -107,7 +107,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         )
 
     async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+        self, config: ACPConfig, runtime: RuntimeHandle, url: str, secret: str
     ) -> None:
         # An `ask` rule on every tool makes Claude Code raise a permission request for
         # each call, read-only tools included; the ACP adapter hands it to the runner.
@@ -117,7 +117,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             json.dumps({"permissions": {"ask": ["*"]}}).encode(),
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await remove_dir(runtime, self.config_dir(trace), "Claude config")
 
     @staticmethod

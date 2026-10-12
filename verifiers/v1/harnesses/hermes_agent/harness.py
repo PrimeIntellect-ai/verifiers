@@ -7,7 +7,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -37,7 +37,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         # Hermes needs its source-tree assets and supports editable installs only.
         directory = HERMES_DIR.format(version=self.config.version)
         await ensure_installed(
@@ -59,7 +59,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -119,5 +119,5 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             system_prompt=system_prompt,
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")

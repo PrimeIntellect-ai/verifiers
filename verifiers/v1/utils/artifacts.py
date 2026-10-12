@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import RuntimeHandle
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class Artifact(BaseModel):
 
 
 async def collect(
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     artifacts: list[Artifact] | None = None,
     *,
     max_bytes: int = MAX_ARTIFACT_BYTES,
@@ -136,7 +136,7 @@ async def collect(
     return collected
 
 
-async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
+async def restore(runtime: RuntimeHandle, collected: dict[str, bytes | None]) -> None:
     """Extract `collected` in `runtime` at the original absolute paths.
 
     Archive bytes are untrusted: the agent controls both their source files and the
@@ -177,7 +177,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
 
 
-async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
+async def _tar_out(runtime: RuntimeHandle, artifact: Artifact, budget: int) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
@@ -332,7 +332,7 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
 
 
-async def _run(runtime: Runtime, command: str, action: str) -> str:
+async def _run(runtime: RuntimeHandle, command: str, action: str) -> str:
     result = await runtime.run(["sh", "-c", command], {})
     if result.exit_code:
         detail = (result.stderr or result.stdout).strip()[-500:]

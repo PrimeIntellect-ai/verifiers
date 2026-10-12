@@ -26,7 +26,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
-from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
@@ -166,7 +166,7 @@ async def run_timed(
     return result_info(result, start)
 
 
-async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
+async def run_action(runtime: RuntimeHandle, config: DebugConfig) -> dict[str, Any]:
     if config.command is not None:
         return {
             "action": "command",
@@ -230,18 +230,19 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         runtime.env = dict(task.runtime_env())
         trace.timing.boot.start = time.time()
         await runtime.start()
+        handle = runtime.handle()
         now = time.time()
         trace.timing.boot.end = now
         trace.timing.setup.start = now
         await asyncio.wait_for(
-            invoke(task.setup, {"trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": handle}),
             setup_timeout,
         )
         await runtime.prepare_execution([])
         trace.timing.setup.end = time.time()
 
         trace.timing.agent.start = time.time()
-        debug.update(await run_action(runtime, config))
+        debug.update(await run_action(handle, config))
         trace.timing.agent.end = time.time()
         trace.ok = bool(debug["ok"])
         if not trace.ok:

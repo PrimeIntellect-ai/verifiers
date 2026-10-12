@@ -44,11 +44,11 @@ PRIVATE_TESTS = Path("tests/test_solution.sh").read_bytes()
 
 
 class CodeTask(vf.Task[CodeData]):
-    async def stage_verifier(self, runtime: vf.Runtime) -> None:
+    async def stage_verifier(self, runtime: vf.RuntimeHandle) -> None:
         await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
 
     @vf.reward
-    async def tests(self, runtime: vf.Runtime) -> float:
+    async def tests(self, runtime: vf.RuntimeHandle) -> float:
         result = await runtime.run(["bash", "/tmp/test_solution.sh"], {})
         return float(result.exit_code == 0)
 

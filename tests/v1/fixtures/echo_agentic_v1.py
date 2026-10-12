@@ -9,7 +9,7 @@ e.g. `bash`.
 
 import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 
 SYSTEM = "You complete the task by running shell commands with the bash tool."
 TARGET = "answer.txt"  # workdir-relative, so it's isolated per rollout on every runtime
@@ -32,7 +32,7 @@ class EchoAgenticData(vf.TaskData):
 
 class EchoAgenticTask(vf.Task[EchoAgenticData]):
     @vf.reward(weight=1.0)
-    async def wrote_phrase(self, runtime: Runtime) -> float:
+    async def wrote_phrase(self, runtime: RuntimeHandle) -> float:
         try:
             content = (await runtime.read(TARGET)).decode(errors="replace")
         except (SandboxError, OSError, ValueError):

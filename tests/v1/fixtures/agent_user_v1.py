@@ -19,7 +19,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.harness import Harness
 from verifiers.v1.mcp.launch import serve
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 
 __all__ = ["AgentUserTaskset", "ScriptedAgentUserHarness"]
 
@@ -69,7 +69,7 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
         self,
         ctx: ModelContext,
         trace: vf.Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -102,7 +102,7 @@ class AgentUserTask(vf.Task[AgentUserData]):
     def toolsets(cls, config: vf.TaskConfig) -> list[vf.Toolset]:
         return [AgentUserToolset(vf.ToolsetConfig(colocated=True))]
 
-    async def setup(self, trace: vf.Trace, runtime: Runtime) -> None:
+    async def setup(self, trace: vf.Trace, runtime: RuntimeHandle) -> None:
         result = await runtime.run(["sh", "-c", SETUP], {})
         if result.exit_code != 0:
             raise RuntimeError(f"root setup failed: {result.stderr}")
@@ -117,7 +117,9 @@ class AgentUserTask(vf.Task[AgentUserData]):
             await runtime.run(["rm", "-f", TOOL_USER, TOOL_UV], {})
 
     @vf.reward(weight=1.0)
-    async def agent_user_contained(self, trace: vf.Trace, runtime: Runtime) -> float:
+    async def agent_user_contained(
+        self, trace: vf.Trace, runtime: RuntimeHandle
+    ) -> float:
         report = {
             **json.loads(await runtime.read(REPORT)),
             **trace.info["agent_user_harness"],

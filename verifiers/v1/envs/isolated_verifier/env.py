@@ -18,7 +18,7 @@ from pydantic import Field, SerializationInfo, field_serializer
 import verifiers.v1 as vf
 from verifiers.v1.agent import resolve_rollout_timeouts
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_runtime
+from verifiers.v1.runtimes import RuntimeConfig, RuntimeHandle, provision_runtime
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.retries import backoff
@@ -109,7 +109,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
             episode.traces[0] = graded[1]
 
     async def stage_verifier(
-        self, task: vf.Task, solution: vf.Trace, runtime: Runtime
+        self, task: vf.Task, solution: vf.Trace, runtime: RuntimeHandle
     ) -> None:
         artifacts = dict(solution.state.artifacts)
         async with boundary(TaskError, "verifier task setup"):
@@ -118,7 +118,9 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         async with boundary(TaskError, "verifier staging"):
             await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
 
-    async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
+    async def verify(
+        self, task: vf.Task, solution: vf.Trace, runtime: RuntimeHandle
+    ) -> Any:
         await task.score(solution, runtime)
 
     async def grade(
@@ -168,12 +170,12 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                         )
                         await runtime.prepare_setup()
                         await self.stage_verifier(
-                            verifier_task, verifier_solution, runtime
+                            verifier_task, verifier_solution, runtime.handle()
                         )
                         await runtime.prepare_execution([])
                     async with asyncio.timeout(timeouts.scoring):
                         result = await self.verify(
-                            verifier_task, verifier_solution, runtime
+                            verifier_task, verifier_solution, runtime.handle()
                         )
                     return result, verifier_solution
             except Exception as error:  # noqa: BLE001 - retry the whole fresh box

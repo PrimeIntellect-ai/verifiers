@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -210,7 +210,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -232,7 +232,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if self.data.healthcheck is not None:
             await self.wait_for_health(runtime, self.data.healthcheck)
 
-    async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
+    async def wait_for_health(self, runtime: RuntimeHandle, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError
         from harbor.models.task.config import HealthcheckConfig
 
@@ -266,8 +266,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def finalize(
         self,
         trace: Trace,
-        runtime: Runtime,
-        sidecars: dict[str, Runtime] | None = None,
+        runtime: RuntimeHandle,
+        sidecars: dict[str, RuntimeHandle] | None = None,
     ) -> None:
         """Run collect hooks in authored order, then add artifacts to the trace, for
         main or, when given, the named sidecars.
@@ -320,7 +320,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     )
             trace.state.artifacts.update(collected)
 
-    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+    async def stage_verifier(self, trace: Trace, runtime: RuntimeHandle) -> None:
         if any(
             PurePosixPath(root).is_relative_to("/tests")
             for root in trace.state.artifacts
@@ -329,7 +329,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         await self.stage_tests(runtime, wipe=True)
         self.verifier_staged = True
 
-    async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
+    async def stage_tests(self, runtime: RuntimeHandle, wipe: bool = False) -> None:
         """Use a dedicated verifier image's tests, or stage the task package's tests.
 
         Raises rather than scoring stale state: a leftover reward file — planted by
@@ -359,7 +359,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+    async def solved(
+        self, runtime: RuntimeHandle, trace: Trace
+    ) -> float | dict[str, float]:
         if self.data.verifier is not None:
             if not self.verifier_staged:
                 raise TaskError(
@@ -371,12 +373,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         else:
             # Grading is trusted: a shared-box verifier must not inherit the agent
             # phase's network restrictions (Harbor test scripts install their tools).
-            await runtime.prepare_execution(None)
+            await runtime.runtime.prepare_execution(None)
             await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
     async def run_verifier(
-        self, runtime: Runtime, trace: Trace
+        self, runtime: RuntimeHandle, trace: Trace
     ) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
@@ -415,7 +417,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         )
         return {key: scores[key]}
 
-    async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
+    async def read_reward_json(self, runtime: RuntimeHandle) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.
 
         Only absence permits text fallback. Reads remain bounded at the source.

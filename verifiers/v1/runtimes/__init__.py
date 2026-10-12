@@ -26,6 +26,7 @@ from verifiers.v1.runtimes.docker import (
     PodmanRuntimeInfo,
 )
 from verifiers.v1.runtimes.e2b import E2BConfig, E2BRuntime, E2BRuntimeInfo
+from verifiers.v1.runtimes.handle import RuntimeHandle
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
 from verifiers.v1.runtimes.prime import (
     PrimeConfig,
@@ -129,6 +130,7 @@ __all__ = [
     "ProgramResult",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeHandle",
     "RuntimeInfo",
     "RuntimeProcess",
     "SubprocessConfig",

@@ -30,7 +30,7 @@ from verifiers.v1.mcp.server import (
     state_signature,
 )
 from verifiers.v1.runtimes import (
-    Runtime,
+    RuntimeHandle,
     provision_runtime,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -234,7 +234,7 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, agent: RuntimeHandle) -> str:
     # Install as root; the agent user only runs the server.
     runtime = agent if agent.user is None else agent.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
@@ -250,9 +250,11 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime._mcp_install_lock:
+    async with runtime.runtime._mcp_install_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
-        pending = [source for source in sources if source not in runtime._mcp_sources]
+        pending = [
+            source for source in sources if source not in runtime.runtime._mcp_sources
+        ]
         if pending:
             setup = (
                 f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
@@ -261,7 +263,7 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
             )
             if agent.user is not None:
                 setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-            if not runtime._mcp_sources:
+            if not runtime.runtime._mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
@@ -276,7 +278,7 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
                     f"server {server.server_name!r} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime._mcp_sources.update(pending)
+            runtime.runtime._mcp_sources.update(pending)
         if agent.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -294,7 +296,7 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
     return f"{venv}/bin/python"
 
 
-async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
+async def log_tail(runtime: RuntimeHandle, log: str, limit: int = 2000) -> str:
     if limit <= 0:
         return ""
     with contextlib.suppress(Exception):
@@ -305,7 +307,7 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     return ""
 
 
-async def _read_back_port(runtime: Runtime, path: str) -> int:
+async def _read_back_port(runtime: RuntimeHandle, path: str) -> int:
     """Poll the server's port file until the server writes it."""
     for _ in range(180):
         with contextlib.suppress(Exception):
@@ -318,7 +320,7 @@ async def _read_back_port(runtime: Runtime, path: str) -> int:
 
 async def serve_in_runtime(
     server: ServerBase,
-    runtime: Runtime,
+    runtime: RuntimeHandle,
     *,
     exposed: bool,
     state_url: str | None = None,
@@ -388,10 +390,10 @@ async def serve_in_runtime(
 
 @contextlib.asynccontextmanager
 async def reachable_url(
-    service: Runtime, port: int, *, colocated: bool, consumer_is_local: bool
+    service: RuntimeHandle, port: int, *, colocated: bool, consumer_is_local: bool
 ) -> AsyncIterator[str]:
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
-    primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
+    primitives: `RuntimeHandle.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
     into the host from a remote runtime). `colocated` = the server shares the consumer's
     runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
@@ -413,13 +415,13 @@ async def reachable_url(
 @dataclass(frozen=True)
 class _ServedServer:
     url: str
-    runtime: Runtime
+    runtime: RuntimeHandle
 
 
 @contextlib.asynccontextmanager
 async def _serve(
     server: ServerBase,
-    harness_runtime: Runtime | None = None,
+    harness_runtime: RuntimeHandle | None = None,
     harness_is_local: bool = True,
     *,
     state_secret: str = "",
@@ -444,7 +446,8 @@ async def _serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
+            owner = await stack.enter_async_context(provision_runtime(cfg.runtime))
+            runtime = owner.handle()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
@@ -487,7 +490,7 @@ async def _serve(
 @contextlib.asynccontextmanager
 async def serve(
     server: ServerBase,
-    harness_runtime: Runtime | None = None,
+    harness_runtime: RuntimeHandle | None = None,
     harness_is_local: bool = True,
     *,
     state_secret: str = "",
@@ -518,7 +521,7 @@ class SharedToolServer:
     url: str
     local: bool
     external: bool = False
-    runtime: Runtime | None = field(default=None, repr=False)
+    runtime: RuntimeHandle | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
 
 
@@ -601,7 +604,7 @@ def _shared_url_for_rollout(
 @contextlib.asynccontextmanager
 async def serve_tools(
     toolsets: list[Toolset],
-    harness_runtime: Runtime,
+    harness_runtime: RuntimeHandle,
     shared: dict[str, SharedToolServer] | None = None,
     *,
     state_secret: str = "",

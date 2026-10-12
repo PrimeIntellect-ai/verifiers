@@ -7,7 +7,7 @@ the harness can't set up or run without root.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 
 __all__ = ["AgentUserHarnessTaskset"]
 
@@ -15,7 +15,7 @@ AGENT_USER = "vf-agent"
 
 
 class AgentUserHarnessTask(vf.Task):
-    async def setup(self, trace: vf.Trace, runtime: Runtime) -> None:
+    async def setup(self, trace: vf.Trace, runtime: RuntimeHandle) -> None:
         # Stands in for the image, which normally ships the user and gives it the
         # workdir: kimi-code, pi, and openclaw keep per-rollout state there.
         setup = f"useradd -m {AGENT_USER} && chown -R {AGENT_USER} ."

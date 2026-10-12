@@ -5,7 +5,7 @@ from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -22,14 +22,14 @@ class NullHarness(Harness[NullHarnessConfig]):
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
 
     async def launch(
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

@@ -10,7 +10,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -52,7 +52,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
@@ -70,7 +70,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -128,11 +128,11 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             system_prompt=system_prompt,
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await remove_dir(runtime, f"{KIMI_HOME}/{trace.id}", "Kimi Code state")
 
     async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+        self, config: ACPConfig, runtime: RuntimeHandle, url: str, secret: str
     ) -> None:
         # An `ask` rule for every tool routes each call through Kimi's approval bridge,
         # which its ACP server turns into a permission request for the runner.

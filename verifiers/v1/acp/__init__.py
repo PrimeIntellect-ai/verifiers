@@ -15,7 +15,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, InterceptionError
 from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     SemanticEdgeSet,
@@ -64,7 +64,7 @@ class ACPConfig:
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )
@@ -86,7 +86,7 @@ class ACPHarness(Harness[ConfigT]):
             trace.add_semantic_edges(edge_set)
 
     async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+        self, config: ACPConfig, runtime: RuntimeHandle, url: str, secret: str
     ) -> None:
         """Configure the agent to ask before every tool call, so each request reaches the
         runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
@@ -97,7 +97,7 @@ class ACPHarness(Harness[ConfigT]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -109,7 +109,7 @@ class ACPHarness(Harness[ConfigT]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -142,7 +142,7 @@ class ACPHarness(Harness[ConfigT]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -206,7 +206,7 @@ class ACPHarnessSession(HarnessSession):
         harness: ACPHarness,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

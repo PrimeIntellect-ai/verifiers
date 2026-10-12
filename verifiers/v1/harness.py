@@ -16,7 +16,7 @@ from verifiers.v1.errors import (
     SandboxError,
     boundary,
 )
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.decorators import (
@@ -103,12 +103,12 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return system, prompt
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
-    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+    async def install_skills(self, runtime: RuntimeHandle, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
-        Runtime roots are copied in place; host skill folders are uploaded."""
+        RuntimeHandle roots are copied in place; host skill folders are uploaded."""
         for skill in self.config.skills:
             target_dir = skill_destination(skill, dest)
             if isinstance(skill, dict):
@@ -171,7 +171,7 @@ copy_failed=$(
                 await runtime.run(["chmod", "+x", *executables], {})
 
     async def _check_result(
-        self, trace: Trace, runtime: Runtime, result: ProgramResult
+        self, trace: Trace, runtime: RuntimeHandle, result: ProgramResult
     ) -> None:
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the exit is expected
@@ -196,7 +196,7 @@ copy_failed=$(
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -221,7 +221,7 @@ copy_failed=$(
             tool_interception_url,
         )
 
-    async def score(self, trace: Trace, runtime: Runtime) -> None:
+    async def score(self, trace: Trace, runtime: RuntimeHandle) -> None:
         """Run this harness's `@metric` methods over the finished trace, recording
         each into `trace.metrics`. Metrics declare what they need (`task`, `trace`,
         `runtime`) and can read what the harness left behind in the runtime."""
@@ -241,7 +241,7 @@ copy_failed=$(
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -287,7 +287,7 @@ copy_failed=$(
             **kwargs,
         )
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         """Remove harness-owned per-rollout state after scoring and before the
         runtime is released. Implementations should be idempotent."""
 
@@ -296,7 +296,7 @@ copy_failed=$(
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -329,7 +329,7 @@ class HarnessSession:
         harness: Harness,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

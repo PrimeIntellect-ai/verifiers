@@ -15,7 +15,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -71,7 +71,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         if failure and failure["severity"] == "error":
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(self, runtime: RuntimeHandle) -> None:
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
@@ -103,7 +103,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
@@ -134,7 +134,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
 
     async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+        self, config: ACPConfig, runtime: RuntimeHandle, url: str, secret: str
     ) -> None:
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
@@ -165,7 +165,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         await runtime.write(path, tomli_w.dumps(settings).encode())
 
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+    async def cleanup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         await remove_dir(runtime, self.trace_home(trace), "Codex home")
 
     @staticmethod
@@ -176,7 +176,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         self,
         ctx: ModelContext,
         trace: Trace,
-        runtime: Runtime,
+        runtime: RuntimeHandle,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],

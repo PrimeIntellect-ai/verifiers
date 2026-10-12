@@ -1,5 +1,5 @@
 from verifiers.v1.harnesses.utils.install import ensure_installed
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeHandle
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
@@ -78,7 +78,7 @@ node_ok || { echo "ACP adapters require Node.js 22.19 or newer" >&2; exit 1; }
 """
 
 
-async def ensure_node(runtime: Runtime) -> None:
+async def ensure_node(runtime: RuntimeHandle) -> None:
     """Install the shared Node runtime used by ACP adapter harnesses."""
     # The install replaces NODE_DIR wholesale, so the lock lives beside it.
     await ensure_installed(
