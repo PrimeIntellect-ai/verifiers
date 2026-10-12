@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
@@ -107,7 +107,9 @@ class Rollout:
         runtime: RuntimeHandle | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        on_score: Callable[[Trace, RuntimeHandle], Awaitable[None]] | None = None,
     ) -> None:
+        self._on_score = on_score
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -682,6 +684,7 @@ class Rollout:
                                 self._grading_config,
                                 self._timeouts,
                                 self._verifier_policy,
+                                on_score=self._on_score,
                             )
                         else:
                             if not self._scoring_task.scoring_deferred:
@@ -695,8 +698,14 @@ class Rollout:
                                 trace,
                                 self._agent_handle,
                             )
+                            if self._on_score is not None:
+                                await self._on_score(trace, handle)
                 except TimeoutError:
                     self.timeout("scoring")
+                    if self._on_score is not None:
+                        self.fail(
+                            TaskError("verification exceeded its scoring deadline")
+                        )
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure

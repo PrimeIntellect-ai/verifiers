@@ -73,6 +73,8 @@ async def grade_task(
     config: RuntimeConfig,
     timeouts,
     policy: VerifierConfig,
+    *,
+    on_score=None,
 ) -> None:
     # Scoring-only configurations must also bound fresh-box provisioning/staging.
     # An explicit setup budget takes precedence; retries get fresh phase budgets.
@@ -99,6 +101,8 @@ async def grade_task(
                 try:
                     async with asyncio.timeout(timeouts.scoring):
                         await grader.score(result, target)
+                        if on_score is not None:
+                            await on_score(result, target)
                 finally:
                     # Model-backed judges are billed even when an attempt fails.
                     # Preserve their accounting without committing partial rewards/state.

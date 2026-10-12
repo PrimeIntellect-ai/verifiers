@@ -730,7 +730,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
+async def test_agentic_judge_shared_verifier(run_v1, tmp_path):
     """The shared agentic judge provisions one restricted solver-owned box and
     safely reuses it for the judge's empirical verification."""
     policy = tmp_path / "judge_policy.txt"
@@ -739,10 +739,11 @@ async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
         "echo-v1",
         harness=None,
         env={
-            "id": "shared-agentic-judge",
+            "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
                 "runtime": {"type": "docker", "block": ["example.com"]},
+                "verifier": {"mode": "shared"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -788,6 +789,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
             "solver": {
                 "harness": {"id": "bash"},
                 "runtime": {"type": "docker", "block": ["example.com"]},
+                "verifier": {"mode": "isolated"},
             },
             "judge": {
                 "harness": {"id": "bash"},

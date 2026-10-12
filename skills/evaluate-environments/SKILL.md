@@ -59,7 +59,7 @@ env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `-
 ```bash
 uv run vf-eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
 uv run vf-eval my-task-v1 --env.id agentic-judge \
-  --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
+  --env.solver.runtime.type docker --env.solver.verifier.mode isolated  # judge restored artifacts
 ```
 
 ## Disabling tools
