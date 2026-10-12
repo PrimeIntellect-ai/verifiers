@@ -212,6 +212,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(self, runtime: Runtime) -> None:
+        # The verifier's host variables are resolved at scoring; checking them here makes
+        # a missing one (a judge's API key) fail before the solve rather than after it.
+        resolve_env(self.data.verifier_env)
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
