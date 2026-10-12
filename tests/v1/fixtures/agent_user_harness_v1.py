@@ -16,6 +16,8 @@ AGENT_USER = "vf-agent"
 
 class AgentUserHarnessTask(vf.Task):
     async def setup(self, trace: vf.Trace, runtime: Runtime) -> None:
+        # Stands in for the image, which normally ships the user and gives it the
+        # workdir: kimi-code, pi, and openclaw keep per-rollout state there.
         setup = f"useradd -m {AGENT_USER} && chown -R {AGENT_USER} ."
         result = await runtime.run(["sh", "-c", setup], {})
         if result.exit_code != 0:

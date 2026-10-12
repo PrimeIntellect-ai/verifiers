@@ -59,7 +59,7 @@ _HOME_PROBE = (
 )
 
 
-async def agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
+async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     """The runtime the harness runs on: `runtime` itself, or a view running as `user`
     with `HOME` set to its home. `user` must exist with a home directory it can write
     (task authors ship it in the image), and the view must really run as it, so a
@@ -279,9 +279,14 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
             ):
-                agent = await agent_runtime(runtime, self.task.data.agent_user)
-                self._agent_runtime = agent
-                await self.harness.setup(agent)
+                # The harness, its colocated tools, and its session run as the task's
+                # `agent_user` (just `runtime` when unset). Task setup and scoring,
+                # interception, and the execution policy keep the default `runtime`.
+                agent_runtime = await resolve_agent_runtime(
+                    runtime, self.task.data.agent_user
+                )
+                self._agent_runtime = agent_runtime
+                await self.harness.setup(agent_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -306,7 +311,7 @@ class Rollout:
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
-                    agent,
+                    agent_runtime,
                     shared=self._shared_tools,
                     state_secret=state_secret,
                     state_route=self.trace.id,
@@ -377,7 +382,7 @@ class Rollout:
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
-                        agent,
+                        agent_runtime,
                         self._endpoint,
                         self._secret,
                         self._urls,
