@@ -398,3 +398,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from verifiers.v1.configs.verifier import VerifierConfig
+
+__all__ += ["VerifierConfig"]

@@ -37,3 +37,11 @@ Trusted task setup and grading use the default-user handle. Agent execution and
 colocated tools use the task's agent-user handle, resolved after task setup.
 Provider operations receive this handle explicitly, so concurrent users never
 mutate the owner's identity.
+
+## Verification placement
+
+`agent.verifier.mode` selects `task` (the default), `shared`, or `isolated` scoring.
+Tasks declare their default through `TaskData.verifier_mode`. Isolated verification
+restores collected artifacts into a fresh runtime before task scoring.
+`agent.verifier.runtime` and `agent.verifier.env` override the isolated verifier;
+`agent.verifier.retries` controls additional fresh attempts.

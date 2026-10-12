@@ -15,7 +15,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
@@ -94,6 +94,9 @@ class TaskData(BaseModel):
     """Initial user prompt; unset if the user opens the conversation."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
+
+    verifier_mode: Literal["shared", "isolated"] = "shared"
+    """Default scoring placement, overridable by agent.verifier.mode."""
 
     image: str | None = None
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
@@ -181,6 +184,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def runtime_env(self) -> dict[str, str]:
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
+
+    def grading_task(self, runtime: RuntimeHandle, *, isolated: bool) -> Self:
+        """Adapt scoring inputs to the selected placement without changing the solver task."""
+        return self
 
     async def setup(self, trace: Trace, runtime: RuntimeHandle) -> None:
         return None

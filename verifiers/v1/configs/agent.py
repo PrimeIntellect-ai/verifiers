@@ -8,6 +8,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.verifier import VerifierConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
@@ -34,6 +35,9 @@ class AgentConfig(BaseConfig):
     runtime: RuntimeConfig = PrimeConfig()
     """Runtime for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
+
+    verifier: VerifierConfig = VerifierConfig()
+    """Task scoring placement, independent of the environment’s agent program."""
 
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
