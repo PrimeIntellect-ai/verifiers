@@ -84,12 +84,12 @@ class ContainerProcess(RuntimeProcess):
     def __init__(
         self,
         process: RuntimeProcess,
-        runtime: ContainerRuntime,
+        handle: RuntimeHandle,
         pid: int,
         pidfile: str,
     ) -> None:
         self._process = process
-        self._runtime = runtime
+        self._handle = handle
         self._pid = pid
         self._pidfile = pidfile
         self.stdout, self.stderr = process.stdout, process.stderr
@@ -103,11 +103,7 @@ class ContainerProcess(RuntimeProcess):
         finally:
             # Removing bookkeeping files must not replace the process result.
             with contextlib.suppress(Exception):
-                await run_shielded(
-                    self._runtime._run_host(
-                        *self._runtime._exec({}), "rm", "-f", self._pidfile
-                    )
-                )
+                await run_shielded(self._handle.run(["rm", "-f", self._pidfile], {}))
 
     async def poll(self) -> int | None:
         return await self._process.poll()
@@ -121,14 +117,16 @@ class ContainerProcess(RuntimeProcess):
     async def _signal(self, signal: str) -> None:
         if await self.poll() is not None:
             return
-        result = await self._runtime._run_host(
-            *self._runtime._exec({}),
-            "sh",
-            "-c",
-            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
-            "vf-signal",
-            signal,
-            str(self._pid),
+        result = await self._handle.run(
+            [
+                "sh",
+                "-c",
+                'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
+                "vf-signal",
+                signal,
+                str(self._pid),
+            ],
+            {},
         )
         if result.exit_code != 0 and await self.poll() is None:
             raise SandboxError(
@@ -137,7 +135,7 @@ class ContainerProcess(RuntimeProcess):
 
 
 async def _abort_process_startup(
-    proc: RuntimeProcess, runtime: ContainerRuntime, pidfile: str
+    proc: RuntimeProcess, handle: RuntimeHandle, pidfile: str
 ) -> str:
     """Kill a partially opened container process and reap its CLI client."""
     # The target normally writes its PID immediately, but cancellation can win
@@ -153,13 +151,15 @@ async def _abort_process_startup(
         with contextlib.suppress(Exception):
             # An exited CLI client may have left its inner process running.
             await asyncio.wait_for(
-                runtime._run_host(
-                    *runtime._exec({}),
-                    "sh",
-                    "-c",
-                    cleanup,
-                    "vf-process-cleanup",
-                    pidfile,
+                handle.run(
+                    [
+                        "sh",
+                        "-c",
+                        cleanup,
+                        "vf-process-cleanup",
+                        pidfile,
+                    ],
+                    {},
                 ),
                 timeout=5,
             )
@@ -274,20 +274,20 @@ class ContainerRuntime(Runtime):
                     )
                     if ready.exit_code == 0 and ready.stdout.strip().isdigit():
                         return ContainerProcess(
-                            proc, self, int(ready.stdout.strip()), pidfile
+                            proc, handle, int(ready.stdout.strip()), pidfile
                         )
                     if returncode is not None:
                         break
                     await asyncio.sleep(0.05)
         except TimeoutError as error:
-            stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
+            stderr = await run_shielded(_abort_process_startup(proc, handle, pidfile))
             raise SandboxError(
                 f"container live process failed to start: {stderr or 'PID unavailable'}"
             ) from error
         except BaseException:
-            await run_shielded(_abort_process_startup(proc, self, pidfile))
+            await run_shielded(_abort_process_startup(proc, handle, pidfile))
             raise
-        stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
+        stderr = await run_shielded(_abort_process_startup(proc, handle, pidfile))
         raise SandboxError(
             f"container client exited with code {returncode} before reporting its PID: "
             f"{stderr or ready.stderr.strip()}"
