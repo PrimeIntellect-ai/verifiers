@@ -19,16 +19,6 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
 
-# Single-turn text tasksets run on the chat loop: on the default bash harness a model
-# that reaches for the shell first is stopped before it answers.
-HARNESS = {"reverse_text": "null"}
-
-# Tasksets a capped single rollout can legitimately score 0 on, and why.
-NO_REWARD_FLOOR = {
-    "proposer_solver": "learnability is 4 * rate * (1 - rate): 0 when the solver always succeeds",
-    "web_search_interception": "needs a native web search harness (codex); the smoke runs bash",
-    "wordle": "the game outcome is the reward; a game lost within the 4-turn cap scores 0",
-}
 
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
@@ -52,8 +42,8 @@ def v1_tasksets() -> list[str]:
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
 def test_eval(taskset: str, tmp_path: Path):
-    """Run one capped rollout of `taskset` and require a positive reward; a taskset that
-    bundles a harness uses it by default."""
+    """Run one capped rollout of `taskset` and require every episode to finish ok; a
+    taskset that bundles a harness uses it by default."""
     if taskset in SKIP_EVAL:
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
@@ -74,11 +64,10 @@ def test_eval(taskset: str, tmp_path: Path):
     caps = [
         flag
         for seat in SEATS.get(taskset, ("agent",))
-        for flag in (f"--env.{seat}.max-turns", "4")
+        for flag in (f"--env.{seat}.max-turns", "16")
     ]
-    harness = ["--env.agent.harness.id", HARNESS[taskset]] if taskset in HARNESS else []
     cmd = [
-        "uv", "run", "--no-sync", "vf-eval", taskset, *harness,
+        "uv", "run", "--no-sync", "vf-eval", taskset,
         *model,
         "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
@@ -97,18 +86,9 @@ def test_eval(taskset: str, tmp_path: Path):
         json.loads(line)
         for line in (tmp_path / "run" / "traces.jsonl").read_text().splitlines()
     ]
-    traces = [trace for episode in episodes for trace in episode["traces"]]
-    rewards = [
-        sum(
-            (r["score"] or 0.0) * r.get("weight", 1.0)
-            for r in trace.get("rewards", {}).values()
-            if r is not None
-        )
-        for trace in traces
+    assert episodes and all(episode["ok"] for episode in episodes), [
+        error["message"][:500]
+        for episode in episodes
+        for holder in (episode, *episode["traces"])
+        for error in holder.get("errors") or []
     ]
-    if taskset in NO_REWARD_FLOOR:
-        return
-    assert traces and max(rewards) > 0, (
-        f"eval {taskset} scored {rewards}: "
-        f"{[t.get('errors') for t in traces if t.get('errors')]}"
-    )
