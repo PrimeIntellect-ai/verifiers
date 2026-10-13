@@ -101,16 +101,14 @@ verifiers (`1e63922d`):
   and tunnel of the process carries. `PrimeTunnel.expose` now passes them to
   `prime_tunnel.Tunnel(labels=...)`.
 - `runtimes.sweep`: `sweep_sandboxes(labels)`, `sweep_tunnels(labels)` (re-checks the label
-  and the owner client-side, skips terminated tunnels), `sweep(labels) -> SweepReport`,
-  `prime_authenticated()`. Never raises; a failed label maps to -1 and logs the manual
-  command (`prime sandbox delete --label`, `prime tunnel stop --label`).
-- `runtimes.prime_images`: `context_digest(context, dockerfile, salt)` over the Dockerfile
-  and every context file (path, exec bit, bytes, symlink target; refuses a
-  `.dockerignore`), `ensure_image(context, name, *, dockerfile, tag, salt, visibility,
-  timeout) -> PrimeImage` (reuse when COMPLETED, wait on a running build, rebuild a FAILED
-  tag, upload with the CLI's packaged-Dockerfile convention, raise `ImageBuildError` on a
-  failure or the deadline; concurrent calls for one tag in a process share one build, and
-  the build survives caller cancellation), `find_image`, `delete_image(name, tag, team_id)`.
+  and the owner client-side, skips terminated tunnels), `sweep(labels) -> SweepReport`.
+  Never raises; a failed label maps to -1 and logs the manual command (`prime sandbox
+  delete --label`, `prime tunnel stop --label`). The credentials check it needs is
+  `utils.prime.prime_authenticated()`.
+- `runtimes.prime_images`: `find_image(client, name, tag) -> PrimeImage` and
+  `delete_image(name, tag)`, both in the configured team's registry. An `ensure_image`
+  that built a Docker context into the registry by content digest was built here too and
+  later removed: no pipeline adopted it (hillclimb still builds through the CLI).
 - Tests: `tests/v1/test_sandbox_lifecycle.py`, 16 cases against SDK fakes.
 
 prime-rl (`affdb66d`): `utils/sandboxes.sweep_run_leftovers(run_name)`, called by `rl`

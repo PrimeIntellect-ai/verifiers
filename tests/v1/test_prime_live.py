@@ -14,12 +14,6 @@ import pytest
 
 from verifiers.v1.runtimes import sweep
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
-from verifiers.v1.runtimes.prime_images import (
-    configured_team_id,
-    delete_image,
-    ensure_image,
-    find_image,
-)
 
 pytestmark = [pytest.mark.e2e, pytest.mark.prime]
 
@@ -28,31 +22,6 @@ TRANSFER_BYTES = 300 * 1024 * 1024
 
 def _label() -> str:
     return f"vf-live-{uuid.uuid4().hex[:10]}"
-
-
-async def test_image_builds_into_the_team_registry_and_is_found(tmp_path):
-    from prime_sandboxes import AsyncImageClient
-
-    (tmp_path / "Dockerfile").write_text("FROM alpine\nRUN echo vf-live-smoke\n")
-    salt = uuid.uuid4().hex
-    started = time.monotonic()
-    image = await ensure_image(tmp_path, "vf-live-smoke", salt=salt, timeout=1_200)
-    try:
-        print(
-            f"\nimage {image.ref} {image.status} in {time.monotonic() - started:.0f}s "
-            f"(team {configured_team_id() or 'personal'})"
-        )
-        assert image.status == "COMPLETED"
-        async with AsyncImageClient() as client:
-            found = await find_image(client, image.name, image.tag)
-        assert found is not None and found.status == "COMPLETED"
-        again = time.monotonic()
-        assert (await ensure_image(tmp_path, "vf-live-smoke", salt=salt)) == found
-        print(f"reuse found it in {time.monotonic() - again:.1f}s")
-    finally:
-        assert await delete_image(image.name, image.tag)
-    async with AsyncImageClient() as client:
-        assert await find_image(client, image.name, image.tag) is None
 
 
 async def test_sweep_deletes_a_labelled_sandbox():

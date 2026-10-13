@@ -1,11 +1,8 @@
-"""Run labels on Prime sandboxes and tunnels, label sweeps, and digest-cached image
-builds, against fakes of the Prime SDK."""
+"""Run labels on Prime sandboxes and tunnels, label sweeps, and image deletes, against
+fakes of the Prime SDK."""
 
-import asyncio
 import contextlib
-import os
 from datetime import UTC, datetime
-from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -15,21 +12,13 @@ import pytest
 from prime_sandboxes import APIError
 from prime_sandboxes.models import (
     BulkDeleteSandboxResponse,
-    ImageListItem,
-    ImageListResponse,
 )
 from prime_tunnel.core import client as tunnel_client_module
 from prime_tunnel.models import TunnelInfo, TunnelListPage
 
 import verifiers.v1.interception.tunnel.prime as tunnel_prime
-from verifiers.v1.runtimes import prime, prime_images, sweep
-from verifiers.v1.runtimes.prime_images import (
-    ImageBuildError,
-    context_digest,
-    delete_image,
-    digest_tag,
-    ensure_image,
-)
+from verifiers.v1.runtimes import prime, sweep
+from verifiers.v1.runtimes.prime_images import delete_image
 
 NOW = datetime(2026, 10, 13, tzinfo=UTC)
 
@@ -207,178 +196,6 @@ def test_prime_authenticated_reads_the_key(monkeypatch):
 
 
 # -- images ------------------------------------------------------------------------------
-
-
-@pytest.fixture
-def context(tmp_path) -> Path:
-    (tmp_path / "Dockerfile").write_text("FROM python:3.11-slim\nCOPY app /app\n")
-    (tmp_path / "app").mkdir()
-    (tmp_path / "app" / "run.sh").write_text("echo hi\n")
-    return tmp_path
-
-
-def test_context_digest_covers_content_mode_and_salt(context):
-    base = context_digest(context)
-    assert context_digest(context) == base
-    assert context_digest(context, salt="episode-2") != base
-    script = context / "app" / "run.sh"
-    os.chmod(script, 0o755)
-    executable = context_digest(context)
-    assert executable != base
-    script.write_text("echo bye\n")
-    assert context_digest(context) not in {base, executable}
-    (context / ".dockerignore").write_text("app\n")
-    with pytest.raises(ValueError, match="dockerignore"):
-        context_digest(context)
-
-
-def row(name, tag, status, artifact="VM_SANDBOX"):
-    return ImageListItem.model_validate(
-        {
-            "id": f"{name}-{tag}-{status}",
-            "artifactType": artifact,
-            "imageName": name,
-            "imageTag": tag,
-            "status": status,
-            "createdAt": NOW,
-            "displayRef": f"prime/me/{name}:{tag}",
-        }
-    )
-
-
-class FakeImageClient:
-    """A registry whose listing advances one scripted status per poll after a push."""
-
-    def __init__(self, rows: list[ImageListItem], after_push: list[str]) -> None:
-        self.rows = rows
-        self.after_push = list(after_push)
-        self.pushes: list[tuple[str, str]] = []
-        self.started: list[str] = []
-        self.searches: list[str] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def list(self, team_id, search, offset, limit):
-        self.searches.append(search)
-        rows = self.rows
-        if self.pushes and self.after_push:
-            name, tag = self.pushes[-1]
-            rows = [row(name, tag, self.after_push.pop(0))]
-            self.rows = rows
-        noise = [
-            row(search, "other", "COMPLETED"),
-            row(search, "x", "COMPLETED", "VM_SANDBOX"),
-        ]
-        return ImageListResponse(
-            data=[*noise, *rows], totalCount=1, offset=offset, limit=limit
-        )
-
-    async def initiate_build(self, request):
-        assert request.dockerfile_path == prime_images.PACKAGED_DOCKERFILE
-        assert request.visibility.value == "PRIVATE"
-        self.pushes.append((request.image_name, request.image_tag))
-        return SimpleNamespace(
-            build_id=f"b{len(self.pushes)}", upload_url="https://upload"
-        )
-
-    async def start_build(self, build_id):
-        self.started.append(build_id)
-
-
-@pytest.fixture
-def registry(monkeypatch):
-    uploads: list[bytes] = []
-
-    class FakeHttp:
-        def __init__(self, timeout):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def put(self, url, content, headers):
-            uploads.append(content)
-            return SimpleNamespace(raise_for_status=lambda: None)
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", FakeHttp)
-    monkeypatch.setattr(prime_images, "POLL_SECONDS", 0)
-
-    def install(client: FakeImageClient) -> FakeImageClient:
-        monkeypatch.setattr(prime_sandboxes, "AsyncImageClient", lambda: client)
-        return client
-
-    install.uploads = uploads
-    return install
-
-
-async def test_a_completed_digest_is_reused_without_a_push(context, registry):
-    tag = digest_tag(context_digest(context))
-    client = registry(FakeImageClient([row("task", tag, "COMPLETED")], []))
-    image = await ensure_image(context, "task")
-    assert image.ref == f"prime/me/task:{tag}" and image.status == "COMPLETED"
-    assert client.pushes == []
-
-
-async def test_an_absent_image_is_pushed_and_awaited(context, registry):
-    client = registry(FakeImageClient([], ["BUILDING", "BUILDING", "COMPLETED"]))
-    image = await ensure_image(context, "task", tag="v1")
-    assert image.ref == "prime/me/task:v1"
-    assert client.pushes == [("task", "v1")] and client.started == ["b1"]
-    assert len(registry.uploads) == 1 and registry.uploads[0][:2] == b"\x1f\x8b"
-
-
-async def test_a_running_build_is_awaited_not_repushed(context, registry):
-    client = registry(FakeImageClient([row("task", "v1", "BUILDING")], []))
-
-    async def complete_later():
-        await asyncio.sleep(0.01)
-        client.rows = [row("task", "v1", "COMPLETED")]
-
-    asyncio.get_running_loop().create_task(complete_later())
-    assert (await ensure_image(context, "task", tag="v1")).status == "COMPLETED"
-    assert client.pushes == []
-
-
-async def test_a_failed_earlier_build_is_rebuilt(context, registry):
-    client = registry(FakeImageClient([row("task", "v1", "FAILED")], ["COMPLETED"]))
-    assert (await ensure_image(context, "task", tag="v1")).status == "COMPLETED"
-    assert client.pushes == [("task", "v1")]
-
-
-async def test_a_build_that_fails_now_raises(context, registry):
-    registry(FakeImageClient([], ["BUILDING", "FAILED"]))
-    with pytest.raises(ImageBuildError, match="FAILED"):
-        await ensure_image(context, "task", tag="v1")
-
-
-async def test_a_build_past_its_deadline_raises(context, registry):
-    registry(FakeImageClient([row("task", "v1", "BUILDING")], []))
-    with pytest.raises(ImageBuildError, match="BUILDING"):
-        await ensure_image(context, "task", tag="v1", timeout=0)
-
-
-async def test_concurrent_calls_share_one_build(context, registry):
-    client = registry(FakeImageClient([], ["BUILDING", "COMPLETED", "COMPLETED"]))
-    first, second = await asyncio.gather(
-        ensure_image(context, "task", tag="v1"), ensure_image(context, "task", tag="v1")
-    )
-    assert first == second and client.pushes == [("task", "v1")]
-
-
-async def test_invalid_names_and_tags_are_refused(context):
-    with pytest.raises(ValueError, match="name"):
-        await ensure_image(context, "Task")
-    with pytest.raises(ValueError, match="tag"):
-        await ensure_image(context, "task", tag="-bad")
 
 
 async def test_delete_image(monkeypatch):
