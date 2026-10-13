@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
-from verifiers.v1.clients.gate import RequestThrottle
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError, error_cause, error_kind, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
@@ -301,8 +300,6 @@ class ModelCall(BaseModel):
     """Policy mediation applied to the request before this call."""
     acp: ACPInfo | None = None
     """Metadata advertised by the ACP harness for this model request."""
-    throttle: RequestThrottle | None = None
-    """Request-gate admission for this call (None = no gate on the endpoint)."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:

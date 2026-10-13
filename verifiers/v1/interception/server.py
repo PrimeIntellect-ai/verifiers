@@ -42,11 +42,7 @@ from verifiers.v1 import graph, steering
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.clients.client import RelayReply
-from verifiers.v1.clients.gate import (
-    REJECTION_STATUSES,
-    RequestThrottle,
-    observe_throttle,
-)
+from verifiers.v1.clients.gate import REJECTION_STATUSES
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     TrainClientConfig,
@@ -592,7 +588,6 @@ class InterceptionServer(Interception):
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
-        throttle: RequestThrottle | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -641,7 +636,6 @@ class InterceptionServer(Interception):
                 if policy_paths
                 else None,
                 acp=acp,
-                throttle=throttle,
             )
         )
         session.trace.notify()
@@ -899,33 +893,28 @@ class InterceptionServer(Interception):
             events: bytes | None = None
             node: int | None = None
             error: Exception | None = None
-            throttle: RequestThrottle | None = None
             started = time.time()
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call. A request gate
-                    # on the endpoint reports its admission into `throttle`.
-                    with observe_throttle() as throttle:
-                        if relay:
-                            reply = await session.client.relay(
-                                dialect,
-                                body,
-                                headers=upstream_headers,
-                                session_id=session.trace.id,
-                            )
-                            call_response, events = await _collect_stream(
-                                dialect, reply
-                            )
-                        else:
-                            call_response = await session.client.get_response(
-                                dialect,
-                                body,
-                                session.ctx.sampling,
-                                headers=upstream_headers,
-                                session_id=session.trace.id,
-                                turn=turn,
-                            )
+                    # sampling imposed — recorded raw on the trace, per call.
+                    if relay:
+                        reply = await session.client.relay(
+                            dialect,
+                            body,
+                            headers=upstream_headers,
+                            session_id=session.trace.id,
+                        )
+                        call_response, events = await _collect_stream(dialect, reply)
+                    else:
+                        call_response = await session.client.get_response(
+                            dialect,
+                            body,
+                            session.ctx.sampling,
+                            headers=upstream_headers,
+                            session_id=session.trace.id,
+                            turn=turn,
+                        )
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -1027,9 +1016,6 @@ class InterceptionServer(Interception):
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
-                    throttle=throttle.model_copy()
-                    if throttle is not None and throttle.limit is not None
-                    else None,
                 )
                 if node is not None and steered and not session.released:
                     session.land_steers(steered, node, len(session.trace.calls) - 1)

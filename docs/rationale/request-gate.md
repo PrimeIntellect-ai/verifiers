@@ -85,9 +85,10 @@ A gate in prime-rl would not see nested calls. A gate in flow would sit around s
   `retry-after-ms`), otherwise for exponential backoff. Then it queues again. After
   `max_rejections` absorbed rejections, the last 429 goes to the caller as before.
 - A streamed response keeps its permit until the response is closed.
-- Trace: `ModelCall.throttle` (`RequestThrottle`) records the seconds queued, the 429s
-  absorbed, and the limit at admission, for each call the gate touched. The interception
-  server collects this through a context variable set around each upstream call.
+- No per-call trace record of the gate. A `ModelCall.throttle` record (seconds queued,
+  429s absorbed, limit at admission), filled through a context variable around each
+  upstream call, was built and removed: nothing read it. The gate's state file holds the
+  live limit and counters.
 
 ## What we will not build
 

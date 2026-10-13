@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 import verifiers.v1 as vf
 from verifiers.v1.clients.base import build_async_httpx
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.gate import ModelGate, gate_key, observe_throttle
+from verifiers.v1.clients.gate import ModelGate, gate_key
 from verifiers.v1.configs.client import EvalClientConfig, RequestGateConfig
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.harnesses.null.harness import NullHarness
@@ -145,31 +145,26 @@ async def test_the_adaptive_limit_shrinks_under_a_lower_provider_limit(tmp_path)
         tmp_path, max_concurrent=12, backoff=0.05, max_backoff=0.2, decrease_cooldown=0
     )
     async with FakeProvider(limit=3) as provider, client(provider, config) as http:
-        with observe_throttle() as throttle:
-            responses = await asyncio.gather(
-                *(post(http, provider.url) for _ in range(40))
-            )
+        responses = await asyncio.gather(*(post(http, provider.url) for _ in range(40)))
     assert all(r.status_code == 200 for r in responses), "every 429 was absorbed"
-    assert provider.rejected > 0 and throttle.rejections == provider.rejected
+    assert provider.rejected > 0
     final = state(tmp_path)
     assert final["rejections"] == provider.rejected
     assert final["limit"] < 12
-    assert throttle.limit is not None and throttle.queued > 0
 
 
-async def test_retry_after_is_honoured_and_recorded(tmp_path):
+async def test_retry_after_is_honoured(tmp_path):
     config = gate_config(tmp_path, max_concurrent=4)
     async with (
         FakeProvider(limit=4, retry_after="0.3", reject_first=1) as provider,
         client(provider, config) as http,
     ):
         started = time.monotonic()
-        with observe_throttle() as throttle:
-            response = await post(http, provider.url)
+        response = await post(http, provider.url)
         elapsed = time.monotonic() - started
     assert response.status_code == 200
     assert elapsed >= 0.3
-    assert throttle.rejections == 1 and throttle.retry_after == pytest.approx(0.3)
+    assert provider.rejected == 1
 
 
 async def test_the_last_rejection_reaches_the_caller(tmp_path):
@@ -210,7 +205,7 @@ async def test_requests_without_a_model_pass_ungated(tmp_path):
     assert not (tmp_path / "gates").exists() or not list((tmp_path / "gates").iterdir())
 
 
-async def test_the_eval_client_reports_admission_to_the_observer(tmp_path, monkeypatch):
+async def test_the_eval_client_passes_the_gate(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_KEY", "k")
     async with FakeProvider(limit=2, reject_first=1) as provider:
         config = EvalClientConfig(
@@ -220,18 +215,16 @@ async def test_the_eval_client_reports_admission_to_the_observer(tmp_path, monke
         )
         eval_client = EvalClient(config)
         try:
-            with observe_throttle() as throttle:
-                response = await eval_client.get_response(
-                    ChatDialect(),
-                    {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]},
-                    Sampling(),
-                )
+            response = await eval_client.get_response(
+                ChatDialect(),
+                {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]},
+                Sampling(),
+            )
         finally:
             await eval_client.close()
     assert response.message.content == "ok"
-    assert throttle.rejections == 1 and throttle.limit == 1, (
-        "re-admitted under the cut limit"
-    )
+    assert provider.rejected == 1, "the gate absorbed the 429"
+    assert state(tmp_path)["rejections"] == 1, "and counted it"
 
 
 CHILD = textwrap.dedent(
@@ -358,9 +351,8 @@ class OneCallHarness(NullHarness):
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
 
-async def test_the_trace_records_the_absorbed_429s(tmp_path, monkeypatch):
-    """A 429 the gate absorbs never reaches the harness; the call it delayed carries
-    the throttle record."""
+async def test_absorbed_429s_never_reach_the_harness(tmp_path, monkeypatch):
+    """A 429 the gate absorbs never reaches the harness: its call succeeds."""
     monkeypatch.setenv("FAKE_KEY", "k")
     async with FakeProvider(limit=2, reject_first=2) as provider:
         agent = vf.Agent(
@@ -385,31 +377,7 @@ async def test_the_trace_records_the_absorbed_429s(tmp_path, monkeypatch):
     assert trace.ok, trace.errors
     (call,) = trace.calls
     assert call.error is None
-    assert call.throttle is not None
-    assert call.throttle.rejections == 2 and call.throttle.limit == 1
-    assert call.throttle.queued > 0
-
-
-async def test_an_ungated_endpoint_records_no_throttle(monkeypatch):
-    monkeypatch.setenv("FAKE_KEY", "k")
-    async with FakeProvider(limit=2) as provider:
-        agent = vf.Agent(
-            vf.AgentConfig(
-                model=MODEL,
-                client={
-                    "type": "eval",
-                    "base_url": provider.url,
-                    "api_key_var": "FAKE_KEY",
-                },
-                runtime={"type": "subprocess"},
-                harness={"id": "null"},
-            )
-        )
-        agent.harness = OneCallHarness(agent.harness.config)
-        trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="go")))
-    assert trace.ok, trace.errors
-    (call,) = trace.calls
-    assert call.throttle is None
+    assert provider.rejected == 2
 
 
 def test_a_gated_rejection_is_not_retried_again():
