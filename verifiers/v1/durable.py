@@ -42,8 +42,7 @@ the episode carries); an env whose labels hold something that changes between at
 of the same episode (an attempt number) names the scope without it. The durable stamps
 `match` on the traces of its calls too, so a standalone caller finds them. The fingerprint hashes the task's
 class, code, data and config, the agent's model, sampling, harness and client, the
-durable's `parts` (a pipeline version) and the call's `depends`; `cache_inputs`
-replaces the task and agent parts. Budgets (timeouts, turn and token limits, retries,
+durable's `parts` (a pipeline version) and the call's `depends`. Budgets (timeouts, turn and token limits, retries,
 saves) are not parts: raising a timeout keeps a finished call, while a changed prompt,
 model or harness reruns it.
 
@@ -374,21 +373,16 @@ def call_parts(
     agent: Agent,
     durable: Durable | None,
     depends: Any = None,
-    cache_inputs: Any = None,
     resume: Trace | None = None,
     at: str | int | None = None,
     note: str | None = None,
 ) -> dict[str, str]:
     """What a call's result depends on, hashed part by part: the task (`task_parts`),
-    the agent (`agent_parts`), the durable's `parts` and the call's `depends`.
-    `cache_inputs`, when given, replaces the task and agent parts with its own hash
-    (`{}`: nothing but the durable's parts and `depends`). A continuation (`resume`)
-    adds the trace it continues, by id, with its `at` and `note` (`resume_part`)."""
+    the agent (`agent_parts`), the durable's `parts` and the call's `depends`. A
+    continuation (`resume`) adds the trace it continues, by id, with its `at` and
+    `note` (`resume_part`)."""
     framework = durable.framework if durable is not None else ()
-    if cache_inputs is not None:
-        parts = {"inputs": _hash(cache_inputs)}
-    else:
-        parts = {**task_parts(task, framework), **agent_parts(agent)}
+    parts = {**task_parts(task, framework), **agent_parts(agent)}
     if durable is not None:
         parts.update(durable.parts)
     if depends is not None:

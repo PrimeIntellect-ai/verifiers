@@ -94,7 +94,7 @@ must follow.
 - **The fingerprint.** The task's class, code (its source outside verifiers; pin it with
   `__code_version__`), data and config; the agent's model, sampling, harness and client;
   `Durable.parts` (a pipeline version); and the call's `depends=` (a `Path` by its
-  contents). `cache_inputs=` replaces the task and agent parts. Budgets are not parts: a
+  contents). Budgets are not parts: a
   raised timeout, more turns or retries keep a finished call, while a changed prompt,
   model or harness runs it again.
 - **Interactions.** A finished exchange replays: each `turn(message)` that matches the

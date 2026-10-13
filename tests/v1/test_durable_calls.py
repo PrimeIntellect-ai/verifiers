@@ -87,7 +87,7 @@ async def test_without_a_durable_installed_nothing_changes(model, store):
     assert first.info == {} and second.info == {}
     assert not first.kept and not second.kept
     assert len(model.requests) == 6
-    # depends= and cache_inputs= are inert on a plain call.
+    # depends= is inert on a plain call.
     assert (await agent.run(task(), depends="x")).ok
 
 
@@ -206,7 +206,7 @@ async def test_budgets_keep_a_call_and_its_inputs_rerun_it(model, store):
         assert resolve_call(durable, "agent/solve", parts).kept is None
 
 
-async def test_depends_and_cache_inputs(model, store, tmp_path):
+async def test_depends_and_durable_parts(model, store, tmp_path):
     prompt_file = tmp_path / "prompt.md"
     prompt_file.write_text("v1")
     agent = make(model)
@@ -215,14 +215,9 @@ async def test_depends_and_cache_inputs(model, store, tmp_path):
         assert (await agent.run(task(), key="solve", depends=prompt_file)).kept
         prompt_file.write_text("v2")
         assert not (await agent.run(task(), key="solve", depends=prompt_file)).kept
-        # cache_inputs replaces the task and agent: another prompt keeps it.
-        await agent.run(task(), key="pinned", cache_inputs={"n": 1})
-        assert (
-            await agent.run(task("other"), key="pinned", cache_inputs={"n": 1})
-        ).kept
     # The durable's parts are in every fingerprint.
     with vf.use_durable(vf.Durable(store, parts={"version": "2"})):
-        assert not (await agent.run(task(), key="pinned", cache_inputs={"n": 1})).kept
+        assert not (await agent.run(task(), key="solve", depends=prompt_file)).kept
 
 
 async def test_a_failed_call_continues_from_its_latest_checkpoint(model, store):

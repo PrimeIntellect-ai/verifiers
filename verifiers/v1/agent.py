@@ -1568,7 +1568,6 @@ class Agent:
         on_save: OnSave | None = None,
         key: str | None = None,
         depends: object = None,
-        cache_inputs: object = None,
         durable: Durable | bool | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
@@ -1598,8 +1597,8 @@ class Agent:
         (`verifiers.v1.durable`), keyed by its position (the agent's n-th call) or by
         `key`: a finished ok trace of the key returns without running (`trace.kept`),
         a cut-off one with checkpoints continues from its latest, and a changed
-        fingerprint (task, task code, model, sampling, harness, client, `depends`;
-        `cache_inputs` replaces the task and agent parts) runs fresh. `durable=False`
+        fingerprint (task, task code, model, sampling, harness, client, `depends`)
+        runs fresh. `durable=False`
         opts out; a `Durable` replaces the installed one for this call (another
         scope). A durable continuation (`resume=` an earlier trace, its origin, with
         `at` and `note`) is durable the same way, the origin's id, `at` and `note` in
@@ -1624,7 +1623,6 @@ class Agent:
                     collect_artifacts=collect_artifacts,
                     on_save=on_save,
                     depends=depends,
-                    cache_inputs=cache_inputs,
                     resume=resume,
                     at=at,
                     note=note,
@@ -1746,7 +1744,6 @@ class Agent:
         task: Task | None,
         found: Durable | None,
         depends: object,
-        cache_inputs: object,
         resume: Trace | None,
         at: str | int | None,
         note: str | None,
@@ -1757,7 +1754,7 @@ class Agent:
             if resume is None:
                 raise ValueError("a durable call (key=) needs its task")
             task = resume.task.rebuild()
-        return call_parts(task, self, found, depends, cache_inputs, resume, at, note)
+        return call_parts(task, self, found, depends, resume, at, note)
 
     async def _durable_run(
         self,
@@ -1771,7 +1768,6 @@ class Agent:
         collect_artifacts: bool,
         on_save: OnSave | None,
         depends: object,
-        cache_inputs: object,
         resume: Trace | None = None,
         at: str | int | None = None,
         note: str | None = None,
@@ -1783,7 +1779,7 @@ class Agent:
         resolved = resolve_call(
             found,
             key,
-            self._call_parts(task, found, depends, cache_inputs, resume, at, note),
+            self._call_parts(task, found, depends, resume, at, note),
         )
         if resolved.kept is not None:
             return resolved.kept
@@ -1866,7 +1862,6 @@ class Agent:
         on_save: OnSave | None = None,
         key: str | None = None,
         depends: object = None,
-        cache_inputs: object = None,
         durable: Durable | bool | None = None,
     ) -> AsyncIterator["Interaction | DurableInteraction"]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
@@ -1908,8 +1903,8 @@ class Agent:
         caller, and a cut-off one replays them up to its latest checkpoint and
         continues live from there; a continuation (`resume`) is durable too, as for
         `run`. While it replays, `interaction.runtime` restores the box on first use
-        (`ReplayBox`, `DurableInteraction.box`). `key`, `depends`, `cache_inputs` and
-        `durable` are as for `run`."""
+        (`ReplayBox`, `DurableInteraction.box`). `key`, `depends` and `durable`
+        are as for `run`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
@@ -1926,7 +1921,6 @@ class Agent:
                     on_trace=on_trace,
                     on_save=on_save,
                     depends=depends,
-                    cache_inputs=cache_inputs,
                     resume=resume,
                     at=at,
                     note=note,
@@ -2030,7 +2024,6 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         on_save: OnSave | None,
         depends: object,
-        cache_inputs: object,
         resume: Trace | None = None,
         at: str | int | None = None,
         note: str | None = None,
@@ -2041,7 +2034,7 @@ class Agent:
         resolved = resolve_call(
             found,
             key,
-            self._call_parts(task, found, depends, cache_inputs, resume, at, note),
+            self._call_parts(task, found, depends, resume, at, note),
         )
         # The exchange as it opens: a continuation's on its origin's conversation (a
         # prompt the first bare turn answers, or a prefix the first turn continues).
@@ -2313,7 +2306,6 @@ class _EpisodeAgent(Agent):
         on_save: OnSave | None = None,
         key: str | None = None,
         depends: object = None,
-        cache_inputs: object = None,
         durable: Durable | bool | None = None,
     ) -> Trace:
         if durable is not False:
@@ -2332,7 +2324,6 @@ class _EpisodeAgent(Agent):
                 on_save=on_save,
                 key=key,
                 depends=depends,
-                cache_inputs=cache_inputs,
                 durable=durable,
             )
             if trace.kept:
@@ -2372,7 +2363,6 @@ class _EpisodeAgent(Agent):
         on_save: OnSave | None = None,
         key: str | None = None,
         depends: object = None,
-        cache_inputs: object = None,
         durable: Durable | bool | None = None,
     ) -> AsyncIterator["Interaction | DurableInteraction"]:
         """The agent's `interaction`, with every trace stamped with its standing
@@ -2396,7 +2386,6 @@ class _EpisodeAgent(Agent):
                 on_save=on_save,
                 key=key,
                 depends=depends,
-                cache_inputs=cache_inputs,
                 durable=durable,
             ) as exchange:
                 yield exchange
