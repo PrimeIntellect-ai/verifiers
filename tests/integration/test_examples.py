@@ -5,6 +5,7 @@ example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
 SWE/container tasksets need a docker/prime runtime and are covered by the agentic tests.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -17,6 +18,13 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
+
+# Tasksets a capped single rollout can legitimately score 0 on, and why.
+NO_REWARD_FLOOR = {
+    "proposer_solver": "learnability is 4 * rate * (1 - rate): 0 when the solver always succeeds",
+    "web_search_interception": "needs a native web search harness (codex); the smoke runs bash",
+    "wordle": "the game outcome is the reward; a game lost within the 4-turn cap scores 0",
+}
 
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
@@ -39,8 +47,9 @@ def v1_tasksets() -> list[str]:
 
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
-def test_eval(taskset: str):
-    """Run one capped rollout of `taskset`; a taskset that bundles a harness uses it by default."""
+def test_eval(taskset: str, tmp_path: Path):
+    """Run one capped rollout of `taskset` and require a positive reward; a taskset that
+    bundles a harness uses it by default."""
     if taskset in SKIP_EVAL:
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
@@ -67,7 +76,8 @@ def test_eval(taskset: str):
         "uv", "run", "--no-sync", "vf-eval", taskset,
         *model,
         "-n", "1", "-r", "1", *caps,
-        "--sampling.max-tokens", "512", "--no-rich", "--no-push",
+        "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
+        "--output-dir", str(tmp_path), "--run.dir", "run",
     ]  # fmt: skip
     try:
         proc = subprocess.run(
@@ -77,4 +87,23 @@ def test_eval(taskset: str):
         pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {taskset}")
     assert proc.returncode == 0, (
         f"eval {taskset} failed: {(proc.stderr or proc.stdout)[-2000:]}"
+    )
+    episodes = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "traces.jsonl").read_text().splitlines()
+    ]
+    traces = [trace for episode in episodes for trace in episode["traces"]]
+    rewards = [
+        sum(
+            (r["score"] or 0.0) * r.get("weight", 1.0)
+            for r in trace.get("rewards", {}).values()
+            if r is not None
+        )
+        for trace in traces
+    ]
+    if taskset in NO_REWARD_FLOOR:
+        return
+    assert traces and max(rewards) > 0, (
+        f"eval {taskset} scored {rewards}: "
+        f"{[t.get('errors') for t in traces if t.get('errors')]}"
     )
