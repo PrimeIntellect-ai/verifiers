@@ -17,14 +17,6 @@ from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
 
-from verifiers.v1.agent_session import (
-    MODEL_RETRY_NOTE,
-    RETRY_NOTE,
-    Session,
-    prompt_messages,
-    resumable_conversation,
-    retryable_error,
-)
 from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
@@ -35,7 +27,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout, RolloutTimeouts, SaveCall, messaging_toolset
+from verifiers.v1.rollout import OnSave, Rollout, RolloutTimeouts, messaging_toolset
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -47,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.steering import SeatKey
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Checkpoint, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -61,13 +53,18 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
-from verifiers.v1.utils.retries import RetryState, backoff
+from verifiers.v1.utils.retries import (
+    MODEL_RETRY_NOTE,
+    RETRY_NOTE,
+    RetryState,
+    backoff,
+    retryable_error,
+)
 
 __all__ = [
     "Agent",
     "AgentConfig",
     "Agents",
-    "Session",
     "TimeoutConfig",
     "make_agent",
 ]
@@ -183,17 +180,27 @@ class Segment:
 @dataclass(frozen=True)
 class _Opening:
     """Where a rollout starts: its task (prompt resolved), the checkpoint its box
-    starts from, a conversation the first caller turn continues (a reopened session
-    waiting on its user), and the model calls made before it."""
+    starts from, and a conversation the first caller turn continues (a reopened trace
+    waiting on its user)."""
 
     task: Task
     checkpoint: str | None = None
     prefix: Messages | None = None
-    calls: int = 0
 
 
-Reopen = Callable[[Task, str | None, int], Awaitable["Rollout"]]
-"""Build and open a replacement rollout: `(task, checkpoint, calls)`."""
+Reopen = Callable[[Task, str | None], Awaitable["Rollout"]]
+"""Build and open a replacement rollout: `(task, checkpoint)`."""
+
+
+@dataclass
+class _TurnMark:
+    """Where the running turn's input lives, for an interaction retry: the trace it
+    was sent on, that trace's turns before it, and whether the trace's opening prompt
+    already holds it (a replacement restored during this turn)."""
+
+    trace: Trace
+    turns: int
+    in_prompt: bool = False
 
 
 @dataclass
@@ -220,8 +227,9 @@ class Interaction:
     as `user_closed` and finishes the rollout — hooks and scoring included.
 
     With `AgentConfig.interaction_retries`, a turn that fails on infrastructure runs
-    again on a fresh box from `latest_save` (or the opening state): the failed
-    attempt's rollout is closed with its errors (`failed_attempts`), and
+    again: on the same box after a model-side failure, else on a fresh box restored
+    from the trace's latest checkpoint (`latest_checkpoint`; or the opening state):
+    the failed attempt's rollout is closed with its errors (`failed_attempts`), and
     `interaction.trace` becomes the replacement's."""
 
     def __init__(
@@ -237,11 +245,8 @@ class Interaction:
         self._gate = gate
         self._opening = opening
         self._prefix = opening.prefix if opening is not None else None
-        self._base_calls = opening.calls if opening is not None else 0
         self._reopen = reopen
         self._retries = retries
-        self.latest_save: Session | None = None
-        """The latest per-call save (`AgentConfig.save = "per_call"`), if any."""
         self.failed_attempts: list[Trace] = []
         """Completed traces of attempts an interaction retry replaced, errors kept."""
         self._history: list = []
@@ -274,38 +279,30 @@ class Interaction:
         return self._run.task
 
     @property
-    def calls(self) -> int:
-        """Model calls made in this exchange, across the sessions it continues."""
-        return self._base_calls + self.trace.num_turns
+    def latest_checkpoint(self) -> Checkpoint | None:
+        """The current attempt's latest checkpoint (`trace.checkpoints`), if any: a
+        per-call save, a `checkpoint()`, or the one the attempt's box started from."""
+        checkpoints = self.trace.checkpoints
+        return checkpoints[-1] if checkpoints else None
 
-    async def snapshot(self) -> Session:
-        """A `Session` of this exchange as it stands between turns: the box
-        checkpointed when the interaction owns it (None for a borrowed box), the
-        trace's current conversation. Waits for a running turn to finish."""
+    async def checkpoint(self) -> Checkpoint:
+        """Checkpoint the box this interaction owns, between turns, and record it on
+        the trace (`trace.checkpoints`), matching the conversation so far: what
+        `agent.run(resume=trace)` / `agent.interaction(resume=trace)` continue from.
+        Waits for a running turn to finish. A borrowed box raises (its owner
+        checkpoints it)."""
         async with self._lock:
             run = self._run
             if run.closed:
                 raise RuntimeError(
-                    "this interaction is closed; snapshot it while it is open"
+                    "this interaction is closed; checkpoint it while it is open"
                 )
-            checkpoint: str | None = None
-            if run.owns_runtime:
-                runtime = run.runtime
-                if runtime is None or not runtime.supports_checkpoint:
-                    raise ValueError(
-                        f"{type(runtime).__name__} has no filesystem checkpoints; "
-                        "a session of an owned box needs one"
-                    )
-                checkpoint = await runtime.checkpoint(run.trace)
-            if self.trace.nodes:
-                messages = resumable_conversation(self.trace)
-            elif self._prefix is not None:
-                messages = list(self._prefix)
-            else:
-                messages = prompt_messages(self.trace.task.data.prompt)
-            return Session.of(
-                run.task, checkpoint=checkpoint, messages=messages, calls=self.calls
-            )
+            if self._prefix is not None and not self.trace.nodes:
+                raise ValueError(
+                    "the reopened conversation is not on the trace until its first "
+                    "turn; checkpoint after a turn"
+                )
+            return await run.checkpoint()
 
     async def send(
         self,
@@ -612,7 +609,7 @@ class Interaction:
         self._started = True
         step_messages = messages
         if self._prefix is not None:
-            # A reopened session waiting on its user: its conversation leads this
+            # A reopened trace waiting on its user: its conversation leads this
             # turn's relaunch (`Harness.resume` on the conversation).
             step_messages = [*self._prefix, *(messages or [])]
             self._prefix = None
@@ -621,7 +618,8 @@ class Interaction:
             if self._reopen is not None and self._opening is not None
             else 0
         )
-        calls_at_start = self.calls
+        turn_input = step_messages
+        mark = _TurnMark(self.trace, self.trace.num_turns)
         # Only a failure of this turn is retried, never one a past turn left; a
         # replacement that failed to open is this turn's failure.
         was_ok = self._run.ok
@@ -636,7 +634,7 @@ class Interaction:
                 break
             if await self._run.recover():
                 # The model call failed but the box is fine: continue on it, from
-                # the conversation as it stands, instead of restoring a save.
+                # the conversation as it stands, instead of restoring a checkpoint.
                 retries_left -= 1
                 was_ok = True
                 logger.warning(
@@ -650,17 +648,17 @@ class Interaction:
                 await asyncio.sleep(backoff(self._retries - retries_left - 1))
                 continue
             if not self._resumable(first):
-                # Earlier turns changed the box and nothing saved it: the opening box
-                # no longer matches the conversation, so there is nothing sound to resume.
+                # Earlier turns changed the box and nothing checkpointed it: the
+                # opening box no longer matches the conversation, so there is nothing
+                # sound to resume.
                 break
             retries_left -= 1
             was_ok = True
-            step_messages = await self._retry(
+            step_messages, mark = await self._retry(
                 failure,
                 first=first,
-                messages=messages,
-                step_messages=step_messages,
-                calls_at_start=calls_at_start,
+                turn_input=turn_input,
+                mark=mark,
             )
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
@@ -682,76 +680,85 @@ class Interaction:
 
     def _reopens_opening(self, first: bool) -> bool:
         """Whether a retry reopens the interaction exactly as it opened: a first
-        segment with nothing saved past its prompt."""
-        save = self.latest_save
+        segment of the original attempt with nothing checkpointed past its opening."""
+        checkpoint = self.latest_checkpoint
         return first and (
-            save is None or not any(m.role == "assistant" for m in save.messages)
+            checkpoint is None or (checkpoint.turns == 0 and not self.failed_attempts)
         )
 
     def _resumable(self, first: bool) -> bool:
         """Whether a failed turn has a sound state to resume from."""
-        return self._reopens_opening(first) or self.latest_save is not None
+        return self._reopens_opening(first) or self.latest_checkpoint is not None
 
     async def _retry(
         self,
         failure: Exception,
         *,
         first: bool,
-        messages: Messages | None,
-        step_messages: Messages | None,
-        calls_at_start: int,
-    ) -> Messages | None:
-        """Replace the failed rollout with one on a fresh box and return the messages
-        the retried step takes. A first segment with nothing saved past its prompt
-        reopens exactly as the interaction opened and runs the same step. Otherwise
-        the replacement continues from the latest save — its checkpoint and
-        conversation — opened with `RETRY_NOTE`, plus this turn's user messages when
-        the save predates them. A later turn with no save is not retried: the opening
-        box no longer matches the conversation."""
+        turn_input: Messages | None,
+        mark: _TurnMark,
+    ) -> tuple[Messages | None, _TurnMark]:
+        """Replace the failed rollout with one on a fresh box; return the messages the
+        retried step takes and where the turn's input now lives. A first segment with
+        nothing checkpointed past its opening reopens exactly as the interaction opened
+        and runs the same step. Otherwise the replacement starts from the trace's latest
+        checkpoint and the conversation cut at it (`Trace.conversation_at`), opened with
+        `RETRY_NOTE`, plus this turn's input when the cut predates it. A later turn with
+        no checkpoint is not retried: the opening box no longer matches the
+        conversation."""
         assert self._reopen is not None and self._opening is not None
-        save = self.latest_save
+        checkpoint = self.latest_checkpoint
         reopens_opening = self._reopens_opening(first)
         logger.warning(
             "interaction turn failed (%s: %s); running it again on a fresh box from %s",
             type(failure).__name__,
             failure,
-            f"its save at call {save.calls}"
-            if save is not None
+            f"checkpoint {checkpoint.id} at turn {checkpoint.turns}"
+            if checkpoint is not None and not reopens_opening
             else "its opening state",
         )
         if reopens_opening:
             task = self._opening.task
-            checkpoint = self._opening.checkpoint
-            calls = self._opening.calls
-            next_messages = step_messages
+            start = self._opening.checkpoint
+            # The turn's own input: a same-box recovery's note means nothing here.
+            next_messages = turn_input
+            in_prompt = False
         else:
-            assert save is not None
-            conversation, checkpoint, calls = save.messages, save.checkpoint, save.calls
-            pending = messages if save.calls <= calls_at_start else None
+            assert checkpoint is not None
+            trace = self.trace
+            conversation = trace.conversation_at(checkpoint.turns)
+            # The cut holds this turn's input once a call of this turn committed and
+            # the cut reaches it.
+            held = mark.in_prompt or (
+                mark.trace is trace
+                and checkpoint.turns >= mark.turns
+                and trace.num_turns > mark.turns
+            )
             task = self._opening.task.with_data(
                 prompt=[
                     *conversation,
                     UserMessage(content=RETRY_NOTE),
-                    *(pending or []),
+                    *([] if held else (turn_input or [])),
                 ]
             )
+            start = checkpoint.id
             next_messages = None
+            in_prompt = True
         steers = [steer.record for steer in self._run.session.steers]
         failed = await self._run.close()
         self.failed_attempts.append(failed)
         self._history.extend(failed.errors)
-        self._run = await self._reopen(task, checkpoint, calls)
-        self._base_calls = calls
+        self._run = await self._reopen(task, start)
         # A steer the replacement's conversation does not hold (never delivered, or
-        # delivered after the save) is queued again so the retry still hears it.
+        # delivered after the checkpoint) is queued again so the retry still hears it.
         prompt = task.data.prompt if isinstance(task.data.prompt, list) else []
-        held = {m.content for m in prompt if m.role == "user"}
+        held_texts = {m.content for m in prompt if m.role == "user"}
         for record in steers:
-            if record.text not in held:
+            if record.text not in held_texts:
                 self._run.session.queue_steer(
                     record.text, message_id=record.id, sender=record.sender
                 )
-        return next_messages
+        return next_messages, _TurnMark(self.trace, 0, in_prompt)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
@@ -908,53 +915,68 @@ class Agent:
     def _opening(
         self,
         task: Task | None,
-        session: Session | None,
+        resume: Trace | None,
+        at: str | int | None,
         note: str | None,
         checkpoint: str | None,
         runtime: Runtime | None,
         *,
         interactive: bool,
     ) -> _Opening:
-        """Resolve where a run starts. Continuing a `session` opens on its
-        conversation as the prompt — how `Harness.resume` continues an exchange —
-        continued by `note` as a user message; a session that ends on the agent's
-        reply with no `note` waits for an interaction's first `turn(message)`.
-        Everything that could make the continuation impossible is checked here,
-        before anything is provisioned."""
-        if session is None:
-            if note is not None:
-                raise ValueError("note= continues a session; pass session= with it")
+        """Resolve where a run starts. Resuming a trace opens on its conversation cut
+        at the checkpoint `at` (default: its latest; `Trace.conversation_at`) as the
+        prompt — how `Harness.resume` continues an exchange — continued by `note` as a
+        user message, on a box restored from that checkpoint; a conversation that ends
+        on the agent's reply with no `note` waits for an interaction's first
+        `turn(message)`. Everything that could make the continuation impossible is
+        checked here, before anything is provisioned."""
+        if resume is None:
+            if note is not None or at is not None:
+                raise ValueError(
+                    "note= and at= continue a trace; pass resume= with them"
+                )
             if task is None:
-                raise ValueError("pass a task to run (or a session to continue)")
+                raise ValueError("pass a task to run (or a trace to resume=)")
             return _Opening(task=task, checkpoint=checkpoint)
         if checkpoint is not None:
             raise ValueError(
-                "a session starts from its own checkpoint; pass session= or "
+                "a resumed trace starts from its own checkpoint; pass resume= or "
                 "checkpoint=, not both"
-            )
-        if runtime is not None and session.checkpoint is not None:
-            raise ValueError(
-                "this session restores its box from a checkpoint, so it cannot also "
-                "run on a borrowed runtime"
             )
         harness = self.harness
         if not harness.SUPPORTS_RESUME:
             raise ValueError(
-                f"Harness {harness.config.id!r} cannot continue a session: that "
-                "relaunches it on the session's conversation as a Messages prompt "
+                f"Harness {harness.config.id!r} cannot resume a trace: that "
+                "relaunches it on the trace's conversation as a Messages prompt "
                 "(SUPPORTS_RESUME). Use a harness that has it (e.g. bash or null)."
             )
-        if session.checkpoint is not None and runtime is None:
+        start: Checkpoint | None = None
+        if resume.checkpoints:
+            start = resume.checkpoint_at(at)
+        elif at is not None:
+            raise ValueError(f"trace {resume.id} has no checkpoints; drop at=")
+        elif task is None and runtime is None:
+            raise ValueError(
+                f"trace {resume.id} has no checkpoint, so its box cannot be restored; "
+                "pass task= to resume its conversation on a fresh box (or runtime= "
+                "to resume it in a live one)"
+            )
+        if start is not None and runtime is not None:
+            raise ValueError(
+                "this trace restores its box from a checkpoint, so it cannot also "
+                "run on a borrowed runtime"
+            )
+        if start is not None:
             try:
-                restore_config(self.runtime_config, session.checkpoint)
+                restore_config(self.runtime_config, start.id)
             except TypeError as e:
                 raise ValueError(
-                    f"this session's box is checkpoint {session.checkpoint!r}, but the "
-                    f"agent's {self.runtime_config.type} runtime cannot restore "
-                    f"checkpoints: {e}"
+                    f"this trace's box is checkpoint {start.id!r}, but the agent's "
+                    f"{self.runtime_config.type} runtime cannot restore checkpoints: "
+                    f"{e}"
                 ) from e
-        task = task if task is not None else session.rebuild_task()
-        messages = list(session.messages)
+        task = task if task is not None else resume.task.rebuild()
+        messages = resume.conversation_at(start.turns if start is not None else None)
         prefix: Messages | None = None
         prompt: Messages | None
         if note is not None:
@@ -965,7 +987,7 @@ class Agent:
             prompt, prefix = None, messages or None
         else:
             raise ValueError(
-                "this session's conversation is empty or ends on the agent's reply; "
+                "this trace's conversation is empty or ends on the agent's reply; "
                 "pass note= with the next user message"
             )
         task = task.with_data(prompt=prompt)
@@ -977,11 +999,13 @@ class Agent:
             )
         except (TypeError, ValueError) as e:
             raise ValueError(
-                f"Harness {harness.config.id!r} cannot continue this session's "
+                f"Harness {harness.config.id!r} cannot continue this trace's "
                 f"conversation: {e}"
             ) from e
         return _Opening(
-            task=task, checkpoint=session.checkpoint, prefix=prefix, calls=session.calls
+            task=task,
+            checkpoint=start.id if start is not None else None,
+            prefix=prefix,
         )
 
     def _check_saves(self, runtime: Runtime | None) -> None:
@@ -998,38 +1022,6 @@ class Agent:
                 f"from: {e}"
             ) from e
 
-    def _save_hook(
-        self,
-        task: Task,
-        calls: int,
-        on_save: Callable[[Session], None] | None,
-        record: Callable[[Session], None] | None = None,
-    ) -> SaveCall | None:
-        """The rollout's per-call save hook (`save = "per_call"`), or None."""
-        if self.config.save != "per_call":
-            return None
-
-        def save(checkpoint: str | None, conversation: Messages, trace: Trace) -> None:
-            # The response being saved is not committed yet: count it.
-            session = Session.of(
-                task,
-                checkpoint=checkpoint,
-                messages=conversation,
-                calls=calls + trace.num_turns + 1,
-            )
-            if record is not None:
-                record(session)
-            if on_save is not None:
-                on_save(session)
-
-        return save
-
-    async def snapshot(self, interaction: Interaction) -> Session:
-        """A `Session` of `interaction` between turns: its box checkpointed when the
-        interaction owns it (None for a borrowed box) and its current conversation —
-        to continue later with `run(session=...)` / `interaction(session=...)`."""
-        return await interaction.snapshot()
-
     async def run(
         self,
         task: Task | None = None,
@@ -1039,9 +1031,10 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         checkpoint: str | None = None,
-        session: Session | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
         note: str | None = None,
-        on_save: Callable[[Session], None] | None = None,
+        on_save: OnSave | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -1055,22 +1048,24 @@ class Agent:
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors.
 
-        `session` continues a saved exchange: the task is rebuilt from it unless
-        given, the box starts from its checkpoint, and the program opens on its
-        conversation followed by `note` (required when the conversation ends on the
-        agent's reply). With `config.save = "per_call"`, `on_save` gets a `Session`
-        after every model response."""
+        `resume` continues a trace (its record, e.g. loaded from JSON) from its
+        checkpoint `at` (an id or index into `resume.checkpoints`; default its latest):
+        the task is rebuilt from `resume.task` unless given, the box starts from the
+        checkpoint, and the program opens on the trace's conversation cut at it
+        (`Trace.conversation_at`) followed by `note` (required when that conversation
+        ends on the agent's reply). A trace with no checkpoint resumes only with
+        `task=` (on a fresh box) or `runtime=`. With `config.save = "per_call"`, the
+        owned box is checkpointed after every model response, each checkpoint recorded
+        on the trace and handed to `on_save(trace, checkpoint)`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         opening = self._opening(
-            task, session, note, checkpoint, runtime, interactive=False
+            task, resume, at, note, checkpoint, runtime, interactive=False
         )
         self._check_saves(runtime)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
-        save_call = self._save_hook(opening.task, opening.calls, on_save)
-        saving = {"save_call": save_call} if save_call is not None else {}
         for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
                 opening.task,
@@ -1079,7 +1074,7 @@ class Agent:
                 on_trace,
                 collect_artifacts,
                 opening.checkpoint,
-                **saving,
+                on_save,
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -1116,7 +1111,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         checkpoint: str | None,
-        save_call: SaveCall | None = None,
+        on_save: OnSave | None = None,
     ) -> Trace:
         params = self._rollout_params(
             task, runtime, dict(shared_tools or {}), checkpoint
@@ -1130,7 +1125,9 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
-            save_call=save_call,
+            save=self.config.save == "per_call" and runtime is None,
+            on_save=on_save,
+            restored_from=checkpoint,
             **params,
         )
         try:
@@ -1156,9 +1153,10 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
-        session: Session | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
         note: str | None = None,
-        on_save: Callable[[Session], None] | None = None,
+        on_save: OnSave | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -1187,40 +1185,39 @@ class Agent:
         apply here; `config.interaction_retries` runs a turn that fails on
         infrastructure again on a fresh box (never into a borrowed one).
 
-        `session` continues a saved exchange (see `run`); without `note`, a
-        session that ends on the agent's reply waits for the first
-        `turn(message)`, which continues its conversation. With `config.save =
-        "per_call"`, `on_save` gets a `Session` after every model response, and
-        `interaction.latest_save` holds the latest."""
+        `resume`, `at` and `note` continue a trace (see `run`); without `note`, a
+        conversation that ends on the agent's reply waits for the first
+        `turn(message)`, which continues it. `interaction.checkpoint()` checkpoints
+        the box between turns. With `config.save = "per_call"`, the owned box is
+        checkpointed after every model response (`on_save(trace, checkpoint)`);
+        `interaction.latest_checkpoint` holds the latest."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         opening = self._opening(
-            task, session, note, checkpoint, runtime, interactive=True
+            task, resume, at, note, checkpoint, runtime, interactive=True
         )
         self._check_saves(runtime)
         shared_tools = dict(tools or {})
-        current: list[Interaction] = []
 
-        def record(save: Session) -> None:
-            current[0].latest_save = save
-
-        def make_run(task: Task, checkpoint: str | None, calls: int) -> Rollout:
+        def make_run(task: Task, checkpoint: str | None) -> Rollout:
             return Rollout(
                 task=task,
                 has_user=True,
                 on_trace=on_trace,
-                save_call=self._save_hook(task, calls, on_save, record),
+                save=self.config.save == "per_call" and runtime is None,
+                on_save=on_save,
+                restored_from=checkpoint,
                 **self._rollout_params(task, runtime, shared_tools, checkpoint),
             )
 
-        async def reopen(task: Task, checkpoint: str | None, calls: int) -> Rollout:
+        async def reopen(task: Task, checkpoint: str | None) -> Rollout:
             # A failed open is captured on the replacement: its step fails at once.
-            replacement = make_run(task, checkpoint, calls)
+            replacement = make_run(task, checkpoint)
             await replacement.open()
             return replacement
 
-        run = make_run(opening.task, opening.checkpoint, opening.calls)
+        run = make_run(opening.task, opening.checkpoint)
         interaction = Interaction(
             run,
             gate=self._gate,
@@ -1228,7 +1225,6 @@ class Agent:
             reopen=reopen if runtime is None else None,
             retries=self.config.interaction_retries,
         )
-        current.append(interaction)
         async with self._gate or nullcontext():
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
@@ -1371,10 +1367,10 @@ class _EpisodeAgent(Agent):
         self._on_discard = on_discard
 
     def _shared_for(
-        self, task: Task | None, session: Session | None = None
+        self, task: Task | None, resume: Trace | None = None
     ) -> Mapping[str, SharedToolServer]:
-        if task is None and session is not None:
-            task = session.rebuild_task()
+        if task is None and resume is not None:
+            task = resume.task.rebuild()
         return self._shared_tools if isinstance(task, self._task_cls) else {}
 
     def _watch(
@@ -1408,19 +1404,21 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         checkpoint: str | None = None,
-        session: Session | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
         note: str | None = None,
-        on_save: Callable[[Session], None] | None = None,
+        on_save: OnSave | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task, session),
+                tools=tools if tools is not None else self._shared_for(task, resume),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 checkpoint=checkpoint,
-                session=session,
+                resume=resume,
+                at=at,
                 note=note,
                 on_save=on_save,
             )
@@ -1436,9 +1434,10 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
-        session: Session | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
         note: str | None = None,
-        on_save: Callable[[Session], None] | None = None,
+        on_save: OnSave | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1458,10 +1457,11 @@ class _EpisodeAgent(Agent):
             async with super().interaction(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task, session),
+                tools=tools if tools is not None else self._shared_for(task, resume),
                 on_trace=self._watch(remember),
                 checkpoint=checkpoint,
-                session=session,
+                resume=resume,
+                at=at,
                 note=note,
                 on_save=on_save,
             ) as interaction:

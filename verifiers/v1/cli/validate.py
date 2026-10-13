@@ -281,9 +281,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
     try:
         runtime.env = dict(task.runtime_env())
         trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
-            ),
+            task=TraceTask.of(task),
             state=state_cls(type(task))(),
             # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(

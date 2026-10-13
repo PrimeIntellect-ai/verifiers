@@ -167,9 +167,10 @@ class Env(ABC, Generic[ConfigT]):
         Independent agents are written as such (`asyncio.gather`); how many of them
         actually run at once is the run's bound, not this hook's
         (`--env.max-concurrent-agents`, one at a time by default).
-        Optionally return a pydantic model: the episode keeps it, dumped as JSON, as
-        `episode.outcome` (read it back with `episode.outcome_as(Model)`). Any other
-        return value is ignored."""
+        Optionally return a pydantic model, the env's outcome: the episode keeps it
+        as `episode.outcome` (`finalize()` may replace it; a consumer of the record
+        reads it typed with `episode.outcome_as(Model)`). Any other return value is
+        ignored."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
@@ -265,15 +266,7 @@ class Env(ABC, Generic[ConfigT]):
         each agent-run's trace at mint, after `trace_labels(task)` landed in its
         `info`; `on_discard` its abandonment (a per-agent retry mints a replacement).
         A pydantic model returned by `run()` becomes `episode.outcome`."""
-        episode = Episode(
-            env=EnvInfo(id=self.config.env_id),
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
-        )
+        episode = Episode(env=EnvInfo(id=self.config.env_id), task=TraceTask.of(task))
         labels: dict[str, JsonValue] = {}
 
         def minted(trace: Trace) -> None:
@@ -294,7 +287,7 @@ class Env(ABC, Generic[ConfigT]):
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
                     outcome = await self.run(task, agents)
                     if isinstance(outcome, BaseModel):
-                        episode.outcome = outcome.model_dump(mode="json")
+                        episode.outcome = outcome
                     if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "

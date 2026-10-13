@@ -4,7 +4,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
-from verifiers.v1.agent_session import Session
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -49,6 +48,7 @@ from verifiers.v1.episode import (
     TrainRunInfo,
     TrainWorkInfo,
     WireEpisode,
+    WireOutcome,
     WorkInfo,
 )
 from verifiers.v1.errors import (
@@ -108,6 +108,7 @@ from verifiers.v1.trace import (
     AgentInfo,
     AgentSpan,
     Branch,
+    Checkpoint,
     Error,
     InterceptRecord,
     ModelCall,
@@ -239,6 +240,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EnvInfo",
     "Episode",
     "WireEpisode",
+    "WireOutcome",
+    "Checkpoint",
     "GroupInfo",
     "TRACE_VERSION",
     "AgentInfo",
@@ -396,7 +399,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # the user channel
     "Interaction",
     "Segment",
-    "Session",
     # steering any running agent
     "SteerReceipt",
     "steer",
