@@ -12,6 +12,9 @@ to the runtime, is what lets those borrowed runs be saved and recovered:
   box from the latest checkpoint any seat took and swaps it in under the same runtime
   object, so every seat sharing the box (and every view of it) sees the restored box. An
   interaction retry on a borrowed box goes through it (`AgentConfig.interaction_retries`).
+  After a crash, `agent.provision(task, key=...)` restores the box from the latest
+  checkpoint its runs recorded (`verifiers.v1.durable`), and their durable runs resume
+  against it.
 
 Seats that take turns on a box resume exactly; seats that change it at the same time
 resume each on its own latest checkpoint, with the box as of the latest of all.
@@ -25,7 +28,9 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from typing import Any
 
+from verifiers.v1.durable import BOX_LABEL, Durable
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -49,6 +54,9 @@ class Box:
         config: RuntimeConfig,
         *,
         save: bool = False,
+        key: str | None = None,
+        fingerprint: str | None = None,
+        durable: Durable | None = None,
         restored: Checkpoint | None = None,
     ) -> None:
         self.runtime = runtime
@@ -57,6 +65,9 @@ class Box:
         self.save = save
         """Borrowed runs checkpoint the box per call (the provisioning agent's
         `save = "per_call"`), whatever their own `save`."""
+        self.key = key
+        self.fingerprint = fingerprint
+        self.durable = durable
         self.restored = restored
         """The checkpoint the current box started from, if any."""
         self.latest = restored
@@ -66,6 +77,13 @@ class Box:
         """How many times `replace` swapped the box."""
         self._lock = asyncio.Lock()
         runtime.__dict__[_ATTR] = self
+
+    @property
+    def labels(self) -> dict[str, Any]:
+        """The labels every run on a durable box carries (`durable.BOX_LABEL`)."""
+        if self.key is None:
+            return {}
+        return {BOX_LABEL: {"key": self.key, "fingerprint": self.fingerprint}}
 
     @property
     def can_checkpoint(self) -> bool:
@@ -127,6 +145,9 @@ async def provision_box(
     env: Mapping[str, str] | None = None,
     checkpoint: Checkpoint | None = None,
     save: bool = False,
+    key: str | None = None,
+    fingerprint: str | None = None,
+    durable: Durable | None = None,
 ) -> AsyncIterator[Runtime]:
     """Provision a box from `config` (started from `checkpoint` when given) with its
     `Box` owner, and tear it down on exit."""
@@ -137,6 +158,9 @@ async def provision_box(
             runtime,
             config,
             save=save and runtime.supports_checkpoint,
+            key=key,
+            fingerprint=fingerprint,
+            durable=durable,
             restored=checkpoint,
         )
         yield runtime

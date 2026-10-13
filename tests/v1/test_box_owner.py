@@ -1,6 +1,7 @@
 """Borrowed boxes (`verifiers.v1.box`): a box from `agent.provision` is checkpointed
 through its owner for the runs that borrow it, restored by its owner for an interaction
-retry (every seat on it sees the restored box).
+retry (every seat on it sees the restored box), and, with `key=`, restored after a
+crash from the latest checkpoint its runs recorded so their durable calls resume on it.
 
 Deterministic, no API key: the fakes of `test_agent_resume`.
 """
@@ -39,6 +40,11 @@ def owned_fake_boxes(monkeypatch):
     monkeypatch.setattr(runtimes_module, "make_runtime", fake)
     monkeypatch.setattr(box_module, "make_runtime", fake)
     monkeypatch.setattr(box_module, "restore_config", restore)
+
+
+@pytest.fixture
+def store(tmp_path) -> vf.TraceDir:
+    return vf.TraceDir(tmp_path / "traces")
 
 
 async def test_a_borrowed_run_saves_per_call_through_the_owner(model):
@@ -122,3 +128,81 @@ async def test_a_borrowed_retry_needs_a_checkpoint(model):
         await interaction.turn()
         assert interaction.failed_attempts == []
     assert not interaction.trace.ok
+
+
+async def test_two_seats_resume_on_the_box_their_owner_restores(
+    model, store, monkeypatch
+):
+    """A control agent and its reviewer share one durable box. The episode dies in the
+    reviewer's run; run again, the box comes back from the reviewer's latest
+    checkpoint, the control agent's finished call is kept, and the reviewer's resumes
+    on the restored box."""
+    control = make(model, save="per_call")
+    reviewer = make(model, save="per_call")
+
+    async def episode():
+        async with control.provision(task(), key="box") as box:
+            first = await control.run(task("control"), runtime=box, key="control")
+            second = await reviewer.run(task("review"), runtime=box, key="review")
+            return box, first, second
+
+    writes = {"b.txt": 0}
+    original = FakeRuntime.write
+
+    async def write(self, path, data):
+        if path == "b.txt":
+            writes["b.txt"] += 1
+            if writes["b.txt"] == 2:  # the reviewer's second write dies with the box
+                raise box_lost()
+        await original(self, path, data)
+
+    monkeypatch.setattr(FakeRuntime, "write", write)
+    with vf.use_durable(vf.Durable(store, match={"job": "j1"})):
+        box, first, failed = await episode()
+        assert first.ok and not failed.ok
+        assert first.labels["box"]["key"] == "box"
+        assert failed.labels["box"] == first.labels["box"]
+        assert failed.labels["call"]["key"] == "review"
+        assert failed.labels["job"] == "j1"
+        latest = failed.checkpoints[-1]
+        model.requests.clear()
+        EVENTS.clear()
+        box, kept, resumed = await episode()
+    assert kept.kept and kept.id == first.id
+    assert resumed.ok, resumed.errors
+    assert resumed.resumed_from == failed.id
+    # The box came back from the latest checkpoint either seat took.
+    assert box.source == latest.id
+    assert resumed.checkpoints[0].restored and resumed.checkpoints[0].id == latest.id
+    assert model.requests[0]["messages"][-1]["content"] == RETRY_NOTE
+    users = [m["content"] for m in model.requests[0]["messages"] if m["role"] == "user"]
+    assert users[0] == "review"
+
+
+async def test_a_durable_box_starts_fresh_when_its_inputs_change(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.provision(task(), key="box") as box:
+            await agent.run(task(), runtime=box)
+        async with agent.provision(task(), key="box") as box:
+            assert box.source is not None
+        async with agent.provision(task("other"), key="box") as box:
+            assert box.source is None
+        async with agent.provision(task(), key="box", depends="v2") as box:
+            assert box.source is None
+        async with agent.provision(task(), key="other-box") as box:
+            assert box.source is None
+
+
+async def test_a_durable_run_on_an_unrestored_box_runs_fresh(model, store):
+    """A cut-off run whose box was not restored by its owner (an unkeyed provision)
+    cannot continue: the box does not match its checkpoints."""
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.provision(task(), durable=False) as box:
+            failed = await agent.run(task(), runtime=box, key="solve")
+        assert not failed.ok and failed.checkpoints
+        async with agent.provision(task(), durable=False) as box:
+            fresh = await agent.run(task(), runtime=box, key="solve")
+    assert fresh.ok and fresh.resumed_from is None

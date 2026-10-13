@@ -43,6 +43,14 @@ from verifiers.v1.configs.task import (
     TaskConfig,
 )
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
+from verifiers.v1.durable import (
+    Durable,
+    TraceDir,
+    TraceLookup,
+    TraceSink,
+    current_durable,
+    use_durable,
+)
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import (
@@ -253,6 +261,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Checkpoint",
     "Box",
     "box_of",
+    "Durable",
+    "TraceDir",
+    "TraceLookup",
+    "TraceSink",
+    "current_durable",
+    "use_durable",
     "GroupInfo",
     "TRACE_VERSION",
     "AgentInfo",

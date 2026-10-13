@@ -578,9 +578,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """Physical node key -> node id for the graph builder."""
     _on_change: Any = PrivateAttr(default=None)
+    _kept: bool = PrivateAttr(default=False)
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+
+    @property
+    def kept(self) -> bool:
+        """This trace is an earlier run's, returned by a durable call (`key=`) without
+        running again: its side effects on a box are not replayed (`verifiers.v1.durable`)."""
+        return self._kept
 
     @property
     def labels(self) -> dict[str, Any]:

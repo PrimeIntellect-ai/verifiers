@@ -84,3 +84,28 @@ Configured model-backed task judges are rejected: use deterministic metrics/rewa
 here, or an agentic/judge environment when a model must judge the result.
 `--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
 staging, or scoring failures (default: 2).
+
+## Resuming a crashed episode
+
+`Env.durable(task)` returns the `vf.Durable` the episode's calls resolve through (see
+[Durable calls](agent.md#durable-calls)); `run_episode` installs it around `setup()` and
+`run()`, so every agent call in the episode is durable, keyed by its seat and position.
+Run again after a crash, the episode's calls return their finished traces without
+running (they joined the episode that made them, so they are not in this one), continue
+their cut-off runs from the latest checkpoint, and restore the boxes the seats share. An
+episode whose every call was kept is still whole. Host code in `run()` between agent
+calls must be deterministic given their results, or idempotent.
+
+```python
+class ReviewEnv(vf.Env[ReviewConfig]):
+    def trace_labels(self, task):
+        return {"job": task.data.job}
+
+    def durable(self, task):
+        return vf.Durable(MyTraceStore(), match=self.trace_labels(task))
+
+    async def run(self, task, agents):
+        async with agents.coder.provision(task) as box:
+            await agents.coder.run(task, runtime=box)
+            await agents.reviewer.run(review(task), runtime=box)
+```

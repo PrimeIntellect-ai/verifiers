@@ -8,6 +8,7 @@ what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
 
 import asyncio
+import copy
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -31,6 +32,22 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
+from verifiers.v1.durable import (
+    BOX_LABEL,
+    CALL_LABEL,
+    Durable,
+    Resolved,
+    TraceSink,
+    box_checkpoint,
+    box_parts,
+    call_parts,
+    current_durable,
+    fingerprint,
+    merge_labels,
+    observe,
+    plan_call,
+    resolve_call,
+)
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -781,6 +798,33 @@ class Interaction:
             return trace
 
 
+def _chain_save(on_save: OnSave | None, store: Durable | None) -> OnSave | None:
+    """`on_save`, then the trace written to `store` when it is also the trace store."""
+    if store is None or not isinstance(store.lookup, TraceSink):
+        return on_save
+
+    def save(trace: Trace, checkpoint: Checkpoint) -> None:
+        if on_save is not None:
+            on_save(trace, checkpoint)
+        store.write(trace)
+
+    return save
+
+
+def _call_labels(found: Durable | None, resolved: Resolved) -> dict:
+    """The labels a durable call stamps: its scope's and its own (`CALL_LABEL`)."""
+    labels = copy.deepcopy(dict(found.match)) if found is not None else {}
+    return merge_labels(labels, {CALL_LABEL: resolved.label})
+
+
+def _maybe_durable(key: str | None, durable: Durable | bool | None) -> bool:
+    """Whether a call may be durable: it names a key or a durable, or one is
+    installed. Without any, a call takes the plain path, exactly as without durability."""
+    if durable is False:
+        return False
+    return key is not None or durable is not None or current_durable() is not None
+
+
 def _box_start(runtime: Runtime | None, resumes: Trace | None) -> Checkpoint | None:
     """The checkpoint a borrowed box was restored from, for a continuation on it."""
     box = box_of(runtime)
@@ -847,6 +891,12 @@ class Agent:
         # Env episode agents set this: the episode's seats to their live trace
         # ids, which `message_agents` reaches.
         self._peers: dict[str, str] | None = None
+
+    @property
+    def name(self) -> str:
+        """The agent's name: its seat in an episode, else "agent". A durable call
+        without a key is keyed by it and its position (`<name>/<n>`)."""
+        return getattr(self, "_name", "agent")
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -1041,6 +1091,10 @@ class Agent:
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        key: str | None = None,
+        depends: object = None,
+        cache_inputs: object = None,
+        durable: Durable | bool | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -1063,13 +1117,58 @@ class Agent:
         `task=` (on a fresh box) or `runtime=`. With `config.save = "per_call"`, the
         owned box is checkpointed after every model response, each checkpoint recorded
         on the trace and handed to `on_save(trace, checkpoint)`; a box `provision`
-        handed out is checkpointed through its owner the same way (`box.Box`)."""
+        handed out is checkpointed through its owner the same way (`box.Box`).
+
+        With a `Durable` installed (`use_durable`, `Env.durable`), the call is durable
+        (`verifiers.v1.durable`), keyed by its position (the agent's n-th call) or by
+        `key`: a finished ok trace of the key returns without running (`trace.kept`),
+        a cut-off one with checkpoints continues from its latest, and a changed
+        fingerprint (task, task code, model, sampling, harness, client, `depends`;
+        `cache_inputs` replaces the task and agent parts) runs fresh. `durable=False`
+        opts out; a `Durable` replaces the installed one for this call (another
+        scope). A durable call manages `resume`, `at`, `note` and `checkpoint` itself:
+        a call passing them without `key` is a plain one."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        if durable is not False:
+            given = {"checkpoint": checkpoint, "resume": resume, "at": at, "note": note}
+            managed = [name for name, value in given.items() if value is not None]
+            if key is None and (managed or task is None):
+                durable = False
+            # The position is taken here, before anything is awaited.
+            found, key = plan_call(self.name, key, durable)
+            if key is not None:
+                return await self._durable_run(
+                    task,
+                    key,
+                    found,
+                    managed=managed,
+                    runtime=runtime,
+                    tools=tools,
+                    on_trace=on_trace,
+                    collect_artifacts=collect_artifacts,
+                    on_save=on_save,
+                    depends=depends,
+                    cache_inputs=cache_inputs,
+                )
+            return await self.run(
+                task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                collect_artifacts=collect_artifacts,
+                checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
+                durable=False,
+            )
         opening = self._opening(
             task, resume, at, note, checkpoint, runtime, interactive=False
         )
         self._check_saves(runtime)
+        on_trace, on_save, finish = self._box_watch(runtime, on_trace, on_save)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
@@ -1109,6 +1208,105 @@ class Agent:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
             trace.errors = history + trace.errors
+        finish(trace)
+        return trace
+
+    def _box_watch(
+        self,
+        runtime: Runtime | None,
+        on_trace: Callable[[Trace], None] | None,
+        on_save: OnSave | None,
+    ) -> tuple[Callable[[Trace], None], OnSave | None, Callable[[Trace], None]]:
+        """The observers of a plain run: every trace is stamped with the labels of
+        the durable box it runs on (`box.Box.labels`) and none it inherited from a
+        continued trace; a run on a durable box is written to its store on every save
+        and when it finishes. Returns `(on_trace, on_save, finish)`."""
+        box = box_of(runtime)
+        labels: dict = {}
+        store: Durable | None = None
+        if box is not None and box.key is not None:
+            store = box.durable
+            if store is not None:
+                labels = merge_labels(copy.deepcopy(dict(store.match)), box.labels)
+            else:
+                labels = box.labels
+        watch = observe(on_trace, labels, drop=(CALL_LABEL, BOX_LABEL))
+        if store is None:
+            return watch, on_save, lambda trace: None
+        return watch, _chain_save(on_save, store), store.write
+
+    def _continuation(
+        self, previous: Trace | None, runtime: Runtime | None
+    ) -> tuple[Trace | None, str | None]:
+        """Where a durable call continues `previous` (its trace and checkpoint), or
+        `(None, None)` to run fresh. An owned box restores from the trace's latest
+        checkpoint (when the runtime restores checkpoints); a borrowed box must be one
+        its owner restored, and the run continues from its latest checkpoint no newer
+        than the box's."""
+        if previous is None or not self.harness.SUPPORTS_RESUME:
+            return None, None
+        if runtime is None:
+            try:
+                restore_config(self.runtime_config, "probe")
+            except TypeError:
+                return None, None
+            return previous, None
+        box = box_of(runtime)
+        restored = box.restored if box is not None else None
+        if restored is None:
+            return None, None
+        usable = [
+            c
+            for c in previous.checkpoints
+            if c.id == restored.id
+            or (c.time is not None and restored.time is not None)
+            and c.time <= restored.time
+        ]
+        return (previous, usable[-1].id) if usable else (None, None)
+
+    async def _durable_run(
+        self,
+        task: Task | None,
+        key: str,
+        found: Durable | None,
+        *,
+        managed: list[str],
+        runtime: Runtime | None,
+        tools: Mapping[str, SharedToolServer] | None,
+        on_trace: Callable[[Trace], None] | None,
+        collect_artifacts: bool,
+        on_save: OnSave | None,
+        depends: object,
+        cache_inputs: object,
+    ) -> Trace:
+        """A durable `run`: resolve the call by its traces, then return the kept one,
+        continue it, or run fresh (`verifiers.v1.durable`)."""
+        if managed:
+            raise TypeError(f"a durable call (key=) resumes itself; drop {managed}")
+        if task is None:
+            raise ValueError("a durable call (key=) needs its task")
+        resolved = resolve_call(
+            found, key, call_parts(task, self, found, depends, cache_inputs)
+        )
+        if resolved.kept is not None:
+            return resolved.kept
+        resume, at = self._continuation(resolved.resume, runtime)
+        if resolved.resume is not None and resume is None:
+            logger.info("call %r runs fresh: its box cannot be restored", key)
+        trace = await self.run(
+            task,
+            runtime=runtime,
+            tools=tools,
+            on_trace=observe(on_trace, _call_labels(found, resolved)),
+            collect_artifacts=collect_artifacts,
+            resume=resume,
+            at=at,
+            note=RETRY_NOTE if resume is not None else None,
+            on_save=_chain_save(on_save, found),
+            durable=False,
+        )
+        if found is not None:
+            found.write(trace)
         return trace
 
     async def _run_once(
@@ -1167,6 +1365,7 @@ class Agent:
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        durable: Durable | bool | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -1200,7 +1399,8 @@ class Agent:
         `turn(message)`, which continues it. `interaction.checkpoint()` checkpoints
         the box between turns. With `config.save = "per_call"`, the owned box is
         checkpointed after every model response (`on_save(trace, checkpoint)`);
-        `interaction.latest_checkpoint` holds the latest."""
+        `interaction.latest_checkpoint` holds the latest. `durable` is accepted for
+        the calls a durable env makes; an exchange is not durable yet."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
@@ -1209,6 +1409,7 @@ class Agent:
         )
         self._check_saves(runtime)
         shared_tools = dict(tools or {})
+        on_trace, on_save, finish = self._box_watch(runtime, on_trace, on_save)
         box = box_of(runtime)
 
         def make_run(
@@ -1270,6 +1471,7 @@ class Agent:
             )
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None
+            finish(trace)
 
     def _rollout_params(
         self,
@@ -1332,7 +1534,13 @@ class Agent:
 
     @asynccontextmanager
     async def provision(
-        self, task: Task | None = None, *, checkpoint: str | None = None
+        self,
+        task: Task | None = None,
+        *,
+        checkpoint: str | None = None,
+        key: str | None = None,
+        depends: object = None,
+        durable: Durable | bool | None = None,
     ) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given and started from `checkpoint` when
@@ -1340,22 +1548,44 @@ class Agent:
 
         The box comes with its owner (`box.Box`): runs that borrow it checkpoint it
         through the owner (per call when they or this agent save per call), and an
-        interaction retry on it has the owner restore it for every seat."""
+        interaction retry on it has the owner restore it for every seat. With a
+        `Durable` installed the box is durable, keyed as `run` is (its position, or
+        `key`): every run on it is labelled with the key, and a later provision under
+        the key (a crashed episode run again) starts the box from the latest
+        checkpoint those runs recorded, so their durable calls resume against it. Its
+        fingerprint is the task, the runtime policy, the durable's parts and
+        `depends`; a changed one starts fresh. A box started from `checkpoint` is
+        durable only with `key`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
+        found: Durable | None = None
+        box_fingerprint: str | None = None
         start: Checkpoint | None = None
         if checkpoint is not None:
-            restore_config(config, checkpoint)  # raises when the runtime cannot
             start = Checkpoint(id=checkpoint, turns=0, time=time.time())
+        if key is None and checkpoint is not None:
+            durable = False
+        found, key = plan_call(self.name, key, durable)
+        if key is not None:
+            box_fingerprint = fingerprint(box_parts(task, self, found, depends))
+            if start is None:
+                start = box_checkpoint(found, key, box_fingerprint)
+                if start is not None:
+                    logger.info("box %r restores from checkpoint %s", key, start.id)
+        if start is not None:
+            restore_config(config, start.id)  # raises when the runtime cannot
         async with provision_box(
             config,
             # Keep sandbox startup task-neutral: this box may later host another task.
             env=task.runtime_env() if task is not None else {},
             checkpoint=start,
             save=self.config.save == "per_call",
+            key=key,
+            fingerprint=box_fingerprint,
+            durable=found,
         ) as runtime:
             yield runtime
 
@@ -1383,8 +1613,12 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
         peers: dict[str, str] | None = None,
+        kept: list[Trace] | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
+        self._kept = kept if kept is not None else []
+        """Traces durable calls returned without running: not the episode's (they
+        joined an earlier one), but they count as the episode having run."""
         self._peers = peers
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
@@ -1440,7 +1674,33 @@ class _EpisodeAgent(Agent):
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        key: str | None = None,
+        depends: object = None,
+        cache_inputs: object = None,
+        durable: Durable | bool | None = None,
     ) -> Trace:
+        if _maybe_durable(key, durable):
+            # The durable call resolves first (it may run nothing); the run it makes
+            # comes back through here, `durable=False`.
+            trace = await super().run(
+                task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                collect_artifacts=collect_artifacts,
+                checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
+                key=key,
+                depends=depends,
+                cache_inputs=cache_inputs,
+                durable=durable,
+            )
+            if trace.kept:
+                self._kept.append(trace)
+            return trace
         async with self._gate or nullcontext():
             trace = await super().run(
                 task,
@@ -1453,6 +1713,7 @@ class _EpisodeAgent(Agent):
                 at=at,
                 note=note,
                 on_save=on_save,
+                durable=False,
             )
         self._completed.append(trace)
         return trace
@@ -1470,6 +1731,7 @@ class _EpisodeAgent(Agent):
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        durable: Durable | bool | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1496,6 +1758,7 @@ class _EpisodeAgent(Agent):
                 at=at,
                 note=note,
                 on_save=on_save,
+                durable=False,
             ) as interaction:
                 yield interaction
         finally:

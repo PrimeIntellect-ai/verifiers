@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import copy
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -22,6 +21,7 @@ from verifiers.v1.configs.agent import (
     resolve_agent,
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
+from verifiers.v1.durable import Durable, merge_labels, use_durable
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -174,6 +174,18 @@ class Env(ABC, Generic[ConfigT]):
         raise fails the episode. Default: none."""
         return {}
 
+    def durable(self, task: Task) -> Durable | None:
+        """The durable this episode's calls resolve through (`verifiers.v1.durable`):
+        with one, every agent call in `run()` (`run`, `interaction`, `provision`) is
+        durable, keyed by its seat and position unless it names a `key=`, so an
+        episode run again after a crash returns its finished calls and continues its
+        cut-off ones from their checkpoints. Host code between the calls must then be
+        deterministic given their results, or idempotent. Its `match` is the scope
+        (typically this episode's `trace_labels(task)`, which every trace carries).
+        Called once per episode attempt, before `setup()`; a raise fails the episode.
+        Default: none (calls are plain)."""
+        return None
+
     def complete(self, episode: Episode) -> bool:
         """Whether a finished episode is a valid result — what `--resume` keeps
         vs. redoes (default `episode.ok`). An env whose `run()` tolerates a
@@ -200,6 +212,7 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
+        kept: list[Trace] | None = None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes), sharing one semaphore
@@ -231,6 +244,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
                 peers=peers,
+                kept=kept,
             )
 
         agents = Agents(self.config, make)
@@ -257,24 +271,33 @@ class Env(ABC, Generic[ConfigT]):
         labels: dict[str, JsonValue] = {}
 
         def minted(trace: Trace) -> None:
-            # Labels land before any observer sees the trace; each trace gets its own copy.
+            # Labels land before any observer sees the trace; each trace gets its own
+            # copy, merged over what it carries (a durable call's or box's labels).
             if labels:
-                trace.info[LABELS_KEY] = copy.deepcopy(labels)
+                current = trace.info.get(LABELS_KEY)
+                trace.info[LABELS_KEY] = merge_labels(
+                    dict(current) if isinstance(current, dict) else {}, labels
+                )
             if on_trace is not None:
                 on_trace(trace)
 
-        agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
+        kept: list[Trace] = []
+        agents = self._episode_agents(ctx, episode.traces, minted, on_discard, kept)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.trace_labels()"):
                     labels.update(self.trace_labels(task))
-                async with boundary(EnvError, f"{type(self).__name__}.setup()"):
-                    await self.setup(agents)
-                async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    outcome = await self.run(task, agents)
-                    if isinstance(outcome, BaseModel):
-                        episode.outcome = outcome
-                    if not episode.traces:
+                async with boundary(EnvError, f"{type(self).__name__}.durable()"):
+                    calls = self.durable(task)
+                with use_durable(calls):
+                    async with boundary(EnvError, f"{type(self).__name__}.setup()"):
+                        await self.setup(agents)
+                    async with boundary(EnvError, f"{type(self).__name__}.run()"):
+                        outcome = await self.run(task, agents)
+                if isinstance(outcome, BaseModel):
+                    episode.outcome = outcome
+                if not episode.traces and not kept:
+                    async with boundary(EnvError, f"{type(self).__name__}.run()"):
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
                             "episode must carry at least one run"
