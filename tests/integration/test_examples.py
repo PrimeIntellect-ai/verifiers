@@ -63,6 +63,9 @@ def test_eval(taskset: str, tmp_path: Path):
         "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
         "--output-dir", str(tmp_path), "--run.dir", "run",
+        # Recipe envs run their seats one at a time by default; in parallel, a
+        # multi-seat episode (proposer + n solvers) fits the timeout.
+        "--env.max-concurrent-agents", "8",
     ]  # fmt: skip
     try:
         proc = subprocess.run(
