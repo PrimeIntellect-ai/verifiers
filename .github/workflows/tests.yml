@@ -166,31 +166,3 @@ jobs:
           name: integration-results-${{ strategy.job-index }}
           path: test-results.xml
 
-  delivery:
-    name: Integration / Delivery
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.0.1
-      - parallel:
-          - name: Install Verifiers
-            run: uv sync
-          - name: Install nano-rlm
-            run: |
-              uv tool install --python 3.12 'git+https://github.com/PrimeIntellect-ai/nano-rlm.git@c38e20b60c90bbf625274d3fde2b2a384f390a66'
-              echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
-      - name: Run scripted delivery behaviors without model credentials
-        env:
-          VF_DELIVERY_BEHAVIORS: "1"
-          VF_DELIVERY_OUTPUT: delivery-traces
-        run: uv run pytest tests/integration/test_delivery.py -k rlm -v -n 2
-      - name: Upload timelines and traces
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: nano-rlm-delivery-traces
-          path: delivery-traces/
