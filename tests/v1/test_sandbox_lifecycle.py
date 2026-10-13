@@ -197,11 +197,13 @@ async def test_sweep_reports_both_kinds_and_skips_no_labels(monkeypatch):
 
 
 def test_prime_authenticated_reads_the_key(monkeypatch):
-    monkeypatch.setattr(sweep, "load_prime_config", dict)
+    from verifiers.v1.utils import prime
+
+    monkeypatch.setattr(prime, "load_prime_config", dict)
     monkeypatch.delenv("PRIME_API_KEY", raising=False)
-    assert not sweep.prime_authenticated()
+    assert not prime.prime_authenticated()
     monkeypatch.setenv("PRIME_API_KEY", "k")
-    assert sweep.prime_authenticated()
+    assert prime.prime_authenticated()
 
 
 # -- images ------------------------------------------------------------------------------

@@ -20,9 +20,14 @@ def load_prime_config() -> dict:
     return {}
 
 
+def prime_authenticated() -> bool:
+    """Whether a Prime API key is configured (`prime login` or `$PRIME_API_KEY`)."""
+    return bool(os.getenv("PRIME_API_KEY") or load_prime_config().get("api_key"))
+
+
 def ensure_prime_auth() -> None:
-    """Exit when no Prime API key is configured (`prime login` or `$PRIME_API_KEY`)."""
-    if os.getenv("PRIME_API_KEY") or load_prime_config().get("api_key"):
+    """Exit when no Prime API key is configured (`prime_authenticated`)."""
+    if prime_authenticated():
         return
     raise SystemExit(
         "not authenticated with prime - run `prime login` or set $PRIME_API_KEY"

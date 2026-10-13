@@ -15,11 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 from pydantic import BaseModel
 
-from verifiers.v1.utils.prime import load_prime_config
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +31,6 @@ class SweepReport(BaseModel):
 
     sandboxes: dict[str, int] = {}
     tunnels: dict[str, int] = {}
-
-
-def prime_authenticated() -> bool:
-    """Whether a Prime API key is configured (``prime login`` or ``$PRIME_API_KEY``)."""
-    return bool(os.getenv("PRIME_API_KEY") or load_prime_config().get("api_key"))
 
 
 async def sweep_sandboxes(labels: list[str]) -> dict[str, int]:
