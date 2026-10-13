@@ -48,8 +48,9 @@ CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
+# Booleans count as 1/0, as Harbor reads them (CyberGym's verifier writes flags alongside its reward).
 REWARD_JSON_ADAPTER = TypeAdapter(
-    dict[str, float],
+    dict[str, bool | float],
     config=ConfigDict(strict=True, allow_inf_nan=False),
 )
 
@@ -211,6 +212,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(self, runtime: Runtime) -> None:
+        # The verifier's host variables are resolved at scoring; checking them here makes
+        # a missing one (a judge's API key) fail before the solve rather than after it.
+        resolve_env(self.data.verifier_env)
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -428,7 +432,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if exists.exit_code:
             raise TaskError(f"Cannot inspect Harbor reward file {REWARD_JSON}")
         try:
-            return REWARD_JSON_ADAPTER.validate_json(
+            scores = REWARD_JSON_ADAPTER.validate_json(
                 await runtime.read(REWARD_JSON, max_bytes=MAX_REWARD_BYTES)
             )
         except (SandboxError, OSError, ValidationError) as exc:
@@ -436,6 +440,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "Harbor verifier produced invalid or unreadable reward.json; "
                 "expected an object of finite numeric rewards"
             ) from exc
+        return {name: float(value) for name, value in scores.items()}
 
 
 def verifier_box_data(data: HarborData) -> HarborData:

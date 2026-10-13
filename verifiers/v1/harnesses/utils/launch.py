@@ -55,8 +55,6 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
-    if system_prompt:
-        args.append(f"--system-prompt={system_prompt}")
     if mcp_urls:
         args.append(
             "--mcp-config="
@@ -69,14 +67,19 @@ async def launch_chat_program(
                 }
             )
         )
+    # The conversation goes in a file, never argv: an agent command such as
+    # `pkill -f <word from the task>` would otherwise match, and kill, its own harness.
+    initial: list[dict] = []
+    if system_prompt:
+        initial.append({"role": "system", "content": system_prompt})
     if isinstance(prompt, str):
-        args.append(f"--prompt={prompt}")
+        if prompt:
+            initial.append({"role": "user", "content": prompt})
     elif prompt is not None:
+        initial.extend(message_to_wire(message) for message in prompt)
+    if initial:
         path = f".vf-initial-messages-{trace.id}.json"
-        await runtime.write(
-            path,
-            json.dumps([message_to_wire(message) for message in prompt]).encode(),
-        )
+        await runtime.write(path, json.dumps(initial).encode())
         args.append(f"--initial-messages-file={path}")
     program = await runtime.prepare_uv_script(
         source, config.resolved_env, activate=activate

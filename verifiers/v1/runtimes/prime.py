@@ -47,8 +47,58 @@ _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
 
+_LIVENESS_INTERVAL_SECONDS = 60
+"""How often a running job is checked for a dead wrapper. The SDK's wrapper writes the
+exit file; if a command inside the box kills the wrapper (`pkill -f`, `killall sh`),
+the file never appears and polling alone would wait forever."""
+_LIVENESS_MISSES = 2
+"""Consecutive checks that must find the job dead before it is reported dead, so the
+moment between the job's output closing and its exit file appearing is never one."""
+
+_BOOT_WAIT_ATTEMPTS = 180
+"""Creation-wait budget for a box booting from its image, in the SDK's polls (~355 s)."""
+_RESTORE_WAIT_ATTEMPTS = 420
+"""Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
+copies the checkpoint's data first, and a large box's takes longer than a boot."""
+
 
 BASE_LABELS: list[str] = []
+
+
+class _JobDied(Exception):
+    """A background job's wrapper died before it wrote the job's exit status."""
+
+
+_TRANSIENT_ATTEMPTS = 4
+"""Tries of a repeatable sandbox API call that the gateway failed transiently."""
+_TRANSIENT_MARKERS = (
+    "bad gateway",
+    "http 502",
+    "http 503",
+    "http 504",
+    "upstream unavailable",
+    "failed to route",
+    "(unavailable)",
+)
+
+
+def _transient(error: BaseException) -> bool:
+    """Whether a sandbox API error is the gateway's, which a repeat can ride out. A
+    terminated sandbox or a missing file is not."""
+    text = str(error).lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+async def _repeatable(call):
+    """Run a repeatable sandbox API call, repeating it through transient gateway errors."""
+    for attempt in range(_TRANSIENT_ATTEMPTS):
+        try:
+            return await call()
+        except Exception as e:
+            if attempt == _TRANSIENT_ATTEMPTS - 1 or not _transient(e):
+                raise
+            logger.warning("prime: transient sandbox API error, retrying: %s", e)
+            await asyncio.sleep(2**attempt)
 
 
 @dataclass
@@ -240,7 +290,12 @@ class PrimeRuntime(Runtime):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
+            await self._client.wait_for_creation(
+                self.info.id,
+                max_attempts=_RESTORE_WAIT_ATTEMPTS
+                if self.config.checkpoint
+                else _BOOT_WAIT_ATTEMPTS,
+            )
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
@@ -308,9 +363,14 @@ class PrimeRuntime(Runtime):
             delay = 0.1
             output_retries = 0
             missing = None
+            loop = asyncio.get_running_loop()
+            next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
+            misses = 0
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                result = await _repeatable(
+                    lambda: self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    )
                 )
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
@@ -322,8 +382,20 @@ class PrimeRuntime(Runtime):
                     break
                 if result.completed:
                     output_retries += 1
+                elif loop.time() >= next_check:
+                    next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
+                    alive = await self._job_alive(job)
+                    misses = 0 if alive is not False else misses + 1
+                    if misses >= _LIVENESS_MISSES:
+                        raise _JobDied(
+                            f"job {job.job_id} died without an exit status: nothing "
+                            "holds its output open and no exit file was written (a "
+                            "command in the box likely killed the job's wrapper)"
+                        )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
+        except _JobDied as e:
+            raise SandboxError(f"prime exec failed: {e}") from None
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -337,6 +409,26 @@ class PrimeRuntime(Runtime):
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
+
+    async def _job_alive(self, job: Any) -> bool | None:
+        """Whether a job without an exit file still runs: some process holds its output
+        open, or the exit file has appeared since. None when the check itself failed.
+        Runs as the job's user, who can read the job's own file descriptors."""
+        log = shlex.quote(job.stdout_log_file)
+        command = (
+            f"if [ -e {shlex.quote(job.exit_file)} ] || "
+            f"ls -l /proc/[0-9]*/fd 2>/dev/null | grep -qF -- ' -> '{log}; "
+            "then echo alive; else echo dead; fi"
+        )
+        try:
+            result = await self._client.execute_command(
+                self.info.id, command, timeout=60, user=self.user
+            )
+        except Exception as e:  # noqa: BLE001 - an unknown liveness is not a death
+            logger.debug("prime: liveness check of job %s failed: %s", job.job_id, e)
+            return None
+        verdict = (result.stdout or "").strip()
+        return {"alive": True, "dead": False}.get(verdict)
 
     async def open_process(
         self, argv: list[str], env: dict[str, str]
@@ -417,7 +509,11 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await _repeatable(
+                    lambda: self._client.download_file(
+                        self.info.id, target, str(download)
+                    )
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -432,8 +528,10 @@ class PrimeRuntime(Runtime):
         )
         if self.user is None:
             try:
-                await self._client.upload_bytes(
-                    self.info.id, target, data, filename=PurePosixPath(target).name
+                await _repeatable(
+                    lambda: self._client.upload_bytes(
+                        self.info.id, target, data, filename=PurePosixPath(target).name
+                    )
                 )
             except Exception as e:
                 raise SandboxError(f"write {path!r}: {e}") from e
