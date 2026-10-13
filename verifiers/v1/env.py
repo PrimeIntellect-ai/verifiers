@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -37,17 +36,6 @@ from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = logging.getLogger(__name__)
-
-
-def _as_error(e: Exception) -> Error:
-    """`e` as an episode-level `Error`. Call inside the `except` handling `e` — the
-    traceback comes from the active exception context."""
-    return Error(
-        type=type(e).__name__,
-        message=str(e),
-        status_code=getattr(e, "status_code", None),
-        traceback=traceback.format_exc(),
-    )
 
 
 @dataclass
@@ -271,12 +259,16 @@ class Env(ABC, Generic[ConfigT]):
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.run() exceeded its "
-                    f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
+                expired, e = (
+                    e,
+                    TimeoutError(
+                        f"{type(self).__name__}.run() exceeded its "
+                        f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
+                    ),
                 )
+                e.__cause__ = expired  # where the deadline found the episode
                 episode.is_timeout = True
-            episode.errors.append(_as_error(e))
+            episode.errors.append(Error.of(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return episode
         try:
@@ -286,12 +278,16 @@ class Env(ABC, Generic[ConfigT]):
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.finalize() exceeded its "
-                    f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
+                expired, e = (
+                    e,
+                    TimeoutError(
+                        f"{type(self).__name__}.finalize() exceeded its "
+                        f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
+                    ),
                 )
+                e.__cause__ = expired  # where the deadline found the episode
                 episode.is_timeout = True
-            episode.errors.append(_as_error(e))
+            episode.errors.append(Error.of(e))
             return episode
         # Both hooks and every trace concluded — stamp the attempt's verdict
         # (retry history merges into `errors` later without touching it).

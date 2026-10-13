@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import math
 import shlex
@@ -18,7 +19,12 @@ from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import (
+    SandboxError,
+    http_status,
+    missing_file_kind,
+    sandbox_error_kind,
+)
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -29,6 +35,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
+from verifiers.v1.utils.retries import retrying
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -61,6 +68,17 @@ _RESTORE_WAIT_ATTEMPTS = 420
 """Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
 copies the checkpoint's data first, and a large box's takes longer than a boot."""
 
+_CHECKPOINT_DEADLINE_SECONDS = 900
+"""Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
+the first of a box holding several GB can take minutes."""
+
+_CHECKPOINT_DELETE_DEADLINE_SECONDS = 300
+"""How long a checkpoint delete keeps retrying the platform's 409. It refuses while a
+box started from the checkpoint, or the checkpoint's source box, still runs, and boxes
+stop asynchronously after their delete."""
+_CHECKPOINT_DELETE_MAX_DELAY_SECONDS = 30
+"""Longest wait between two tries of a refused checkpoint delete."""
+
 
 BASE_LABELS: list[str] = []
 
@@ -69,36 +87,28 @@ class _JobDied(Exception):
     """A background job's wrapper died before it wrote the job's exit status."""
 
 
-_TRANSIENT_ATTEMPTS = 4
-"""Tries of a repeatable sandbox API call that the gateway failed transiently."""
-_TRANSIENT_MARKERS = (
-    "bad gateway",
-    "http 502",
-    "http 503",
-    "http 504",
-    "upstream unavailable",
-    "failed to route",
-    "(unavailable)",
-)
+_API_ATTEMPTS = 4
+"""Tries of a repeatable sandbox API call (a job poll, a checkpoint delete) that failed
+in transit."""
 
 
-def _transient(error: BaseException) -> bool:
-    """Whether a sandbox API error is the gateway's, which a repeat can ride out. A
-    terminated sandbox or a missing file is not."""
-    text = str(error).lower()
-    return any(marker in text for marker in _TRANSIENT_MARKERS)
+def _in_transit(error: BaseException) -> bool:
+    """Whether a sandbox API call failed in transit (a gateway error, a timeout, a
+    dropped connection: `sandbox_error_kind` "io"), so a repeat can ride it out. A lost
+    box, a refusal, or a missing file is final."""
+    return sandbox_error_kind(error) == "io"
 
 
-async def _repeatable(call):
-    """Run a repeatable sandbox API call, repeating it through transient gateway errors."""
-    for attempt in range(_TRANSIENT_ATTEMPTS):
-        try:
+async def _repeat(call, *, attempts: int = _API_ATTEMPTS, initial: float = 1.0):
+    """Run an idempotent sandbox API call, repeating it while it fails in transit."""
+    async for attempt in retrying(
+        when=_in_transit,
+        retries=attempts - 1,
+        initial=initial,
+        label="prime sandbox API call",
+    ):
+        with attempt:
             return await call()
-        except Exception as e:
-            if attempt == _TRANSIENT_ATTEMPTS - 1 or not _transient(e):
-                raise
-            logger.warning("prime: transient sandbox API error, retrying: %s", e)
-            await asyncio.sleep(2**attempt)
 
 
 @dataclass
@@ -113,6 +123,9 @@ class _SharedClient:
 # calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
 # that created it.
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
+
+_discards: set[asyncio.Task] = set()
+"""Background deletes of abandoned checkpoints, held so they are not collected."""
 
 
 def set_base_sandbox_labels(labels: list[str]) -> None:
@@ -305,7 +318,9 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+            raise SandboxError(
+                f"prime sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
@@ -337,12 +352,15 @@ class PrimeRuntime(Runtime):
             except TimeoutError as e:
                 raise SandboxError(
                     "prime egress policy was not applied within 60s on sandbox "
-                    f"{self.info.id}; refusing to start the agent unrestricted"
+                    f"{self.info.id}; refusing to start the agent unrestricted",
+                    kind=sandbox_error_kind(e),
                 ) from e
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(f"prime egress policy failed: {e}") from e
+            raise SandboxError(
+                f"prime egress policy failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
@@ -367,7 +385,7 @@ class PrimeRuntime(Runtime):
             next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
             misses = 0
             while True:
-                result = await _repeatable(
+                result = await _repeat(
                     lambda: self._client.get_background_job(
                         self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
                     )
@@ -395,15 +413,18 @@ class PrimeRuntime(Runtime):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
         except _JobDied as e:
-            raise SandboxError(f"prime exec failed: {e}") from None
+            raise SandboxError(f"prime exec failed: {e}", kind="exec") from None
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
+            raise SandboxError(
+                f"prime exec failed: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
         if missing is not None:
-            raise SandboxError(f"prime exec output unavailable: {missing}")
+            raise SandboxError(f"prime exec output unavailable: {missing}", kind="io")
         if result.exit_code is None:
-            raise SandboxError("prime exec completed without an exit code")
+            raise SandboxError("prime exec completed without an exit code", kind="exec")
         return ProgramResult(
             exit_code=result.exit_code,
             stdout=result.stdout or "",
@@ -442,8 +463,99 @@ class PrimeRuntime(Runtime):
                 user=self.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime live process failed to start: {e}") from e
+            raise SandboxError(
+                f"prime live process failed to start: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
         return PrimeProcess(process)
+
+    @property
+    def restored(self) -> bool:
+        # the same test start() uses to pick the checkpoint over the image
+        return bool(self.config.checkpoint)
+
+    async def checkpoint(self) -> str:
+        try:
+            # Shielded through the id capture, as in start(): a cancel that aborts the
+            # POST mid-flight would leave a durable checkpoint nobody has the id of.
+            requested = await run_shielded(self._client.checkpoint(self.info.id))
+        except Exception as e:
+            raise SandboxError(
+                f"prime checkpoint failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
+        try:
+            durable = await self._client.wait_for_checkpoint(
+                requested.id, timeout_seconds=_CHECKPOINT_DEADLINE_SECONDS
+            )
+        except BaseException as e:
+            # Never handed out (failed or cancelled): delete it rather than leak it.
+            self._discard_checkpoint(requested.id)
+            if isinstance(e, Exception):
+                raise SandboxError(
+                    f"prime checkpoint failed: {e}", kind=sandbox_error_kind(e)
+                ) from e
+            raise
+        return durable.id
+
+    def _discard_checkpoint(self, checkpoint_id: str) -> None:
+        """Delete a checkpoint no caller got the id of, in the background: a delete
+        waits out the platform's 409 while the checkpoint is still being created."""
+
+        async def discard() -> None:
+            try:
+                await self.delete_checkpoint(checkpoint_id)
+            except Exception as e:  # noqa: BLE001 - best effort; the platform expires it
+                logger.warning(
+                    "prime: failed to delete abandoned checkpoint %s: %s",
+                    checkpoint_id,
+                    e,
+                )
+
+        task = asyncio.get_running_loop().create_task(discard())
+        _discards.add(task)
+        task.add_done_callback(_discards.discard)
+
+    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+        """`DELETE /sandbox/checkpoints/{id}`: an empty body or a 404 is success; a 409
+        (the checkpoint is in use or still being created) is retried with backoff for up
+        to `_CHECKPOINT_DELETE_DEADLINE_SECONDS`. Uses the live client when this runtime
+        holds one, else a short-lived client of its own."""
+        async with contextlib.AsyncExitStack() as stack:
+            client = self._client
+            if client is None:
+                from prime_sandboxes import AsyncSandboxClient
+
+                client = await stack.enter_async_context(AsyncSandboxClient())
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _CHECKPOINT_DELETE_DEADLINE_SECONDS
+            delay = 1.0
+            while True:
+                try:
+                    await _repeat(
+                        lambda: client.client.request(
+                            "DELETE", f"/sandbox/checkpoints/{checkpoint_id}"
+                        )
+                    )
+                    return
+                except json.JSONDecodeError:
+                    return  # the platform answers a delete with an empty body
+                except Exception as e:
+                    status = http_status(e)
+                    if status == 404:
+                        return
+                    if status != 409 or loop.time() + delay > deadline:
+                        raise SandboxError(
+                            f"prime checkpoint delete failed: {e}",
+                            kind=sandbox_error_kind(e),
+                        ) from e
+                    logger.info(
+                        "prime: checkpoint %s not deletable yet, retrying in %.0fs: %s",
+                        checkpoint_id,
+                        delay,
+                        e,
+                    )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _CHECKPOINT_DELETE_MAX_DELAY_SECONDS)
 
     async def expose(self, port: int) -> str:
         raise SandboxError(
@@ -464,7 +576,10 @@ class PrimeRuntime(Runtime):
                 user=self.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime background launch failed: {e}") from e
+            raise SandboxError(
+                f"prime background launch failed: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
@@ -495,10 +610,15 @@ class PrimeRuntime(Runtime):
                         async for chunk in process.stderr:
                             stderr = (stderr + chunk)[-500:]
                         if await process.wait():
-                            raise SandboxError(stderr.decode(errors="replace").strip())
+                            detail = stderr.decode(errors="replace").strip()
+                            raise SandboxError(
+                                detail, kind=missing_file_kind(detail, "io")
+                            )
                         return data.getvalue()
             except Exception as exc:
-                raise SandboxError(f"read {path!r}: {exc}") from exc
+                raise SandboxError(
+                    f"read {path!r}: {exc}", kind=sandbox_error_kind(exc, "io")
+                ) from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
@@ -509,14 +629,16 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await _repeatable(
+                await _repeat(
                     lambda: self._client.download_file(
                         self.info.id, target, str(download)
                     )
                 )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+            raise SandboxError(
+                f"read {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def write(self, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
@@ -528,13 +650,15 @@ class PrimeRuntime(Runtime):
         )
         if self.user is None:
             try:
-                await _repeatable(
+                await _repeat(
                     lambda: self._client.upload_bytes(
                         self.info.id, target, data, filename=PurePosixPath(target).name
                     )
                 )
             except Exception as e:
-                raise SandboxError(f"write {path!r}: {e}") from e
+                raise SandboxError(
+                    f"write {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+                ) from e
             return
         # Uploads act as the default user: stage the bytes, then copy them in as the user.
         root = self.with_user(None)
@@ -547,7 +671,9 @@ class PrimeRuntime(Runtime):
         finally:
             await root.run(["rm", "-f", staged], {})
         if result.exit_code != 0:
-            raise SandboxError(f"write {path!r}: {result.stderr.strip()[-500:]}")
+            raise SandboxError(
+                f"write {path!r}: {result.stderr.strip()[-500:]}", kind="io"
+            )
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

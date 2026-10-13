@@ -185,6 +185,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
+    async def restore(self, trace: Trace, runtime: Runtime) -> None:
+        """Runs instead of `setup` when the run's box started from a checkpoint: the
+        box's files are as they were, but no process survived. Restart the services the
+        task needs here."""
+        return
+
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 

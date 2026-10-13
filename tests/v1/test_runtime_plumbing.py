@@ -139,6 +139,7 @@ async def test_a_job_whose_wrapper_died_is_reported_not_polled_forever(
     runtime._client = client = JobClient([RUNNING], ["dead"])
     with pytest.raises(SandboxError) as caught:
         await runtime.run(["true"], {})
+    assert caught.value.kind == "exec"
     assert "died without an exit status" in str(caught.value)
     assert client.probes == prime._LIVENESS_MISSES
 
@@ -176,7 +177,7 @@ async def test_repeats_stop_at_a_real_error_or_the_attempt_budget(no_sleep):
         raise RuntimeError("HTTP 404: no such file")
 
     with pytest.raises(RuntimeError, match="404"):
-        await prime._repeatable(missing)
+        await prime._repeat(missing)
     assert calls == 1
 
     calls = 0
@@ -187,9 +188,10 @@ async def test_repeats_stop_at_a_real_error_or_the_attempt_budget(no_sleep):
         raise RuntimeError("upstream unavailable")
 
     with pytest.raises(RuntimeError, match="upstream unavailable"):
-        await prime._repeatable(down)
-    assert calls == prime._TRANSIENT_ATTEMPTS
-    assert no_sleep == [1, 2, 4]
+        await prime._repeat(down)
+    assert calls == prime._API_ATTEMPTS
+    # Exponential from 1 s, plus up to 1 s of jitter.
+    assert [int(delay) for delay in no_sleep] == [1, 2, 4]
 
 
 class CreatingClient:

@@ -31,7 +31,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -185,6 +185,12 @@ class Rollout:
         return self._closed
 
     @property
+    def owns_runtime(self) -> bool:
+        """Whether this rollout provisions (and tears down) its box, rather than
+        borrowing a live one."""
+        return self._borrowed_runtime is None
+
+    @property
     def failure(self) -> Exception | None:
         """The original exception most recently captured onto the trace."""
         return self._failure
@@ -270,11 +276,14 @@ class Rollout:
                 if self._timeouts.setup is None
                 else loop.time() + self._timeouts.setup
             )
+            # A box started from a checkpoint already holds setup's files.
+            restored = runtime.restored
+            setup = self.task.restore if restored else self.task.setup
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(TaskError, "task setup"),
+                boundary(TaskError, "task restore" if restored else "task setup"),
             ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+                await invoke(setup, {"trace": self.trace, "runtime": runtime})
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "harness setup"),
@@ -450,6 +459,24 @@ class Rollout:
         self.trace.timing.agent.start = now
         self.trace.notify()
         return not self._session.stopped
+
+    async def checkpoint(self, turns: int | None = None) -> Checkpoint:
+        """Checkpoint the box this rollout owns and record it on the trace, matching
+        the conversation at `turns` (default: the turns completed now; the rule is on
+        `Checkpoint`). The record is written once the checkpoint is restorable: a
+        failed or cancelled checkpoint raises and leaves no record behind."""
+        runtime = self.runtime
+        if not self.owns_runtime:
+            raise ValueError(
+                "a borrowed box is its owner's to checkpoint; this rollout does not "
+                "own its box"
+            )
+        if runtime is None or not runtime.supports_checkpoint:
+            raise ValueError(f"{type(runtime).__name__} has no filesystem checkpoints")
+        if turns is None:
+            turns = self.trace.num_turns
+        checkpoint_id = await runtime.checkpoint()
+        return self.trace.record_checkpoint(checkpoint_id, turns)
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:

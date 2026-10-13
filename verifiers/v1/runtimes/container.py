@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, missing_file_kind
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.runtimes.subprocess import SubprocessProcess
 from verifiers.v1.utils.aio import run_shielded
@@ -129,7 +129,7 @@ class ContainerProcess(RuntimeProcess):
         )
         if result.exit_code != 0 and await self.poll() is None:
             raise SandboxError(
-                f"container process signal failed: {result.stderr.strip()}"
+                f"container process signal failed: {result.stderr.strip()}", kind="exec"
             )
 
 
@@ -269,7 +269,8 @@ class ContainerRuntime(Runtime):
         except TimeoutError as error:
             stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
             raise SandboxError(
-                f"container live process failed to start: {stderr or 'PID unavailable'}"
+                f"container live process failed to start: {stderr or 'PID unavailable'}",
+                kind="exec",
             ) from error
         except BaseException:
             await run_shielded(_abort_process_startup(proc, self, pidfile))
@@ -277,7 +278,8 @@ class ContainerRuntime(Runtime):
         stderr = await run_shielded(_abort_process_startup(proc, self, pidfile))
         raise SandboxError(
             f"container client exited with code {returncode} before reporting its PID: "
-            f"{stderr or ready.stderr.strip()}"
+            f"{stderr or ready.stderr.strip()}",
+            kind="exec",
         )
 
     async def run_background(
@@ -291,7 +293,8 @@ class ContainerRuntime(Runtime):
         )
         if result.exit_code != 0:
             raise SandboxError(
-                f"container background process failed: {result.stderr.strip()}"
+                f"container background process failed: {result.stderr.strip()}",
+                kind="exec",
             )
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
@@ -300,8 +303,9 @@ class ContainerRuntime(Runtime):
             *self._exec({}), *argv, "--", path
         )
         if code != 0:
+            detail = stderr.decode(errors="replace").strip()
             raise SandboxError(
-                f"read {path!r}: {stderr.decode(errors='replace').strip()}"
+                f"read {path!r}: {detail}", kind=missing_file_kind(detail, "io")
             )
         return data
 
@@ -316,5 +320,5 @@ class ContainerRuntime(Runtime):
         )
         if code != 0:
             raise SandboxError(
-                f"write {path!r}: {stderr.decode(errors='replace').strip()}"
+                f"write {path!r}: {stderr.decode(errors='replace').strip()}", kind="io"
             )

@@ -99,6 +99,13 @@ async def provision_runtime(
         await runtime.stop()
 
 
+def restore_config(config: RuntimeConfig, checkpoint: str) -> RuntimeConfig:
+    """`config` starting its box from `checkpoint` (a `Runtime.checkpoint()` id)."""
+    if not isinstance(config, PrimeConfig):
+        raise TypeError(f"{config.type} runtimes cannot start from a checkpoint")
+    return config.model_copy(update={"checkpoint": checkpoint})
+
+
 def runtime_is_local(config: RuntimeConfig) -> bool:
     """Whether a runtime of this config exchanges host-local URLs without a public
     tunnel, read off the runtime class without provisioning one."""
@@ -136,6 +143,7 @@ __all__ = [
     "SubprocessRuntimeInfo",
     "make_runtime",
     "provision_runtime",
+    "restore_config",
     "runtime_is_local",
     "set_base_sandbox_labels",
 ]

@@ -21,7 +21,7 @@ from typing import ClassVar, Literal
 from pydantic import model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, sandbox_error_kind
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -166,7 +166,9 @@ class ModalProcess(RuntimeProcess):
         stderr = await proc.stderr.read.aio()
         exit_code = await proc.wait.aio()
         if exit_code != 0 and await self._process.poll.aio() is None:
-            raise SandboxError(f"modal exec process signal failed: {stderr.strip()}")
+            raise SandboxError(
+                f"modal exec process signal failed: {stderr.strip()}", kind="exec"
+            )
 
 
 class ModalRuntime(Runtime):
@@ -207,7 +209,9 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise SandboxError(f"modal sandbox provisioning failed: {e}") from e
+            raise SandboxError(
+                f"modal sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
 
     async def _create_sandbox(self, app) -> None:
         """Create the sandbox and take ownership of the handle, as one shielded step.
@@ -271,7 +275,9 @@ class ModalRuntime(Runtime):
                     outbound_cidr_allowlist=cidrs,
                 )
         except Exception as e:
-            raise SandboxError(f"modal egress policy failed: {e}") from e
+            raise SandboxError(
+                f"modal egress policy failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
         logger.info(
             "modal: egress policy applied on sandbox %s (domains=%s cidrs=%s)",
             self.info.id,
@@ -288,7 +294,10 @@ class ModalRuntime(Runtime):
         try:
             tunnels = await self._sandbox.tunnels.aio()
         except Exception as e:
-            raise SandboxError(f"modal tunnels unavailable (port {port}): {e}") from e
+            raise SandboxError(
+                f"modal tunnels unavailable (port {port}): {e}",
+                kind=sandbox_error_kind(e),
+            ) from e
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 
@@ -305,7 +314,9 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"modal exec failed: {e}") from e
+            raise SandboxError(
+                f"modal exec failed: {e}", kind=sandbox_error_kind(e, "exec")
+            ) from e
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout or "",
@@ -360,13 +371,17 @@ class ModalRuntime(Runtime):
                             self._sandbox = None
                     raise SandboxError(
                         "modal live process failed to start: "
-                        f"{ready.stderr.strip() or 'PID unavailable'}"
+                        f"{ready.stderr.strip() or 'PID unavailable'}",
+                        kind="exec",
                     )
                 await asyncio.sleep(0.05)
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(f"modal live process failed to start: {e}") from e
+            raise SandboxError(
+                f"modal live process failed to start: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -377,7 +392,7 @@ class ModalRuntime(Runtime):
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
             raise SandboxError(
-                f"modal background launch failed: {result.stderr.strip()}"
+                f"modal background launch failed: {result.stderr.strip()}", kind="exec"
             )
 
     def _abs(self, path: str) -> str:
@@ -393,7 +408,9 @@ class ModalRuntime(Runtime):
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+            raise SandboxError(
+                f"read {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Create the parent first (Modal's write does not mkdir).
@@ -404,7 +421,9 @@ class ModalRuntime(Runtime):
             )
             await self._sandbox.filesystem.write_bytes.aio(data, target)
         except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+            raise SandboxError(
+                f"write {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async API can't run once the loop is gone): terminate

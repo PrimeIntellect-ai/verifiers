@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, model_validator
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, sandbox_error_kind
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -265,7 +265,10 @@ class E2BProcess(RuntimeProcess):
         except Exception as e:
             with contextlib.suppress(Exception):
                 await self.kill()
-            error = SandboxError(f"e2b live process connection failed: {e}")
+            error = SandboxError(
+                f"e2b live process connection failed: {e}",
+                kind=sandbox_error_kind(e, "io"),
+            )
             self._stdout_queue.put_nowait(error)
             self._stderr_queue.put_nowait(error)
             raise error from e
@@ -286,7 +289,9 @@ class E2BProcess(RuntimeProcess):
         try:
             await self._handle.send_stdin(data)
         except Exception as e:
-            raise SandboxError(f"e2b live process stdin failed: {e}") from e
+            raise SandboxError(
+                f"e2b live process stdin failed: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def wait(self) -> int:
         assert self._wait_task is not None
@@ -312,7 +317,10 @@ class E2BProcess(RuntimeProcess):
             )
         except Exception as e:
             if self._exit_code is None:
-                raise SandboxError(f"e2b live process signal failed: {e}") from e
+                raise SandboxError(
+                    f"e2b live process signal failed: {e}",
+                    kind=sandbox_error_kind(e, "exec"),
+                ) from e
 
 
 @asynccontextmanager
@@ -432,7 +440,9 @@ class E2BRuntime(Runtime):
             # every command passes `cwd`, so only the directory itself is needed.
             await self._sandbox.files.make_dir(self.config.workdir, user=_USER)
         except Exception as e:
-            raise SandboxError(f"e2b sandbox provisioning failed: {e}") from e
+            raise SandboxError(
+                f"e2b sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup; the update replaces all rules atomically."""
@@ -442,7 +452,9 @@ class E2BRuntime(Runtime):
         try:
             await self._sandbox.update_network(network)
         except Exception as e:
-            raise SandboxError(f"e2b egress policy failed: {e}") from e
+            raise SandboxError(
+                f"e2b egress policy failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
         logger.info(
             "e2b: egress policy applied on sandbox %s (%s)", self.info.id, network
         )
@@ -490,7 +502,9 @@ class E2BRuntime(Runtime):
         except CommandExitException as e:  # non-zero exit is a result, not a failure
             result = e
         except Exception as e:
-            raise SandboxError(f"e2b exec failed: {e}") from e
+            raise SandboxError(
+                f"e2b exec failed: {e}", kind=sandbox_error_kind(e, "exec")
+            ) from e
         return ProgramResult(
             result.exit_code,
             self._after_marker(result.stdout or ""),
@@ -524,7 +538,8 @@ class E2BRuntime(Runtime):
                     return None
                 error = reconnect_error
         raise SandboxError(
-            f"e2b durable program connection failed: {cause}; reconnect failed: {error}"
+            f"e2b durable program connection failed: {cause}; reconnect failed: {error}",
+            kind=sandbox_error_kind(error, "io"),
         ) from error
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -600,7 +615,9 @@ class E2BRuntime(Runtime):
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(f"e2b durable program failed: {e}") from e
+            raise SandboxError(
+                f"e2b durable program failed: {e}", kind=sandbox_error_kind(e, "exec")
+            ) from e
         finally:
             with contextlib.suppress(Exception):
                 await asyncio.gather(
@@ -627,7 +644,10 @@ class E2BRuntime(Runtime):
                 timeout=0,
             )
         except Exception as e:
-            raise SandboxError(f"e2b live process failed to start: {e}") from e
+            raise SandboxError(
+                f"e2b live process failed to start: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
         try:
             process.attach(_byte_handle(handle))
         except SandboxError:
@@ -642,7 +662,9 @@ class E2BRuntime(Runtime):
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
-            raise SandboxError(f"e2b background launch failed: {result.stderr.strip()}")
+            raise SandboxError(
+                f"e2b background launch failed: {result.stderr.strip()}", kind="exec"
+            )
 
     def _abs(self, path: str) -> str:
         if path.startswith("/"):
@@ -659,7 +681,9 @@ class E2BRuntime(Runtime):
                 )
             )
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+            raise SandboxError(
+                f"read {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def write(self, path: str, data: bytes) -> None:
         target = self._abs(path)
@@ -669,7 +693,9 @@ class E2BRuntime(Runtime):
             )
             await self._sandbox.files.write(target, data, user=_USER)
         except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+            raise SandboxError(
+                f"write {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox: E2B proxies every sandbox port at a

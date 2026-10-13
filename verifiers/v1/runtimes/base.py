@@ -19,7 +19,7 @@ from typing import ClassVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, missing_file_kind
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -240,6 +240,40 @@ class Runtime(ABC):
         runtime.home = home if user is not None else None
         return runtime
 
+    @property
+    def restored(self) -> bool:
+        """Whether this box started from a checkpoint (`restore_config`) rather than its
+        image: it already holds a past run's files, but none of its processes."""
+        return False
+
+    @property
+    def supports_checkpoint(self) -> bool:
+        """Whether `checkpoint()` and `delete_checkpoint()` are implemented for this
+        runtime instance."""
+        return (
+            type(self).checkpoint is not Runtime.checkpoint
+            and type(self).delete_checkpoint is not Runtime.delete_checkpoint
+        )
+
+    async def checkpoint(self) -> str:
+        """Save the box's filesystem and return the checkpoint's id once it can be
+        restored (`restore_config`). Files survive; running processes do not. A
+        checkpoint that fails or is cancelled before it is restorable is not left
+        behind for the caller to clean up. Recording it on a trace is the caller's
+        (`Rollout.checkpoint`)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no filesystem checkpoints"
+        )
+
+    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+        """Delete a checkpoint this runtime's provider holds (a `checkpoint()` id).
+        Works on a runtime that was never started or is already torn down: the
+        checkpoint outlives its box. A checkpoint that no longer exists counts as
+        deleted. Raises `SandboxError` when the provider refuses the delete."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no filesystem checkpoints"
+        )
+
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
         the box is gone — some surface it as `exec`'s own non-zero result,
@@ -401,7 +435,10 @@ class Runtime(ABC):
             {},
         )
         if result.exit_code:
-            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+            detail = result.stderr.strip()[-500:]
+            raise SandboxError(
+                f"read {path!r}: {detail}", kind=missing_file_kind(detail, "io")
+            )
         return base64.b64decode(result.stdout)
 
     @abstractmethod

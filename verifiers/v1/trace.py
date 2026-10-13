@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.errors import ProviderError, stop_condition
+from verifiers.v1.errors import ProviderError, error_cause, error_kind, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -86,6 +86,27 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    kind: str | None = Field(default=None, exclude_if=lambda kind: kind is None)
+    """A `SandboxError`'s kind (`errors.SandboxErrorKind`) when it is known; left out
+    of the record otherwise."""
+    cause: str | None = Field(default=None, exclude_if=lambda cause: cause is None)
+    """The type of the exception a boundary wrapped into this error
+    (`errors.error_cause`); left out of the record otherwise."""
+
+    @classmethod
+    def of(cls, error: BaseException) -> Error:
+        """The record of `error`, its traceback included except for a provider error,
+        whose message already carries the actionable upstream diagnostic."""
+        return cls(
+            type=type(error).__name__,
+            message=str(error),
+            status_code=getattr(error, "status_code", None),
+            kind=error_kind(error),
+            cause=error_cause(error),
+            traceback=None
+            if isinstance(error, ProviderError)
+            else "".join(traceback.format_exception(error)),
+        )
 
 
 class VersionInfo(BaseModel):
@@ -130,6 +151,17 @@ class TraceTask(BaseModel, Generic[DataT]):
 
 class InterceptRecord(BaseModel):
     handler: str
+
+
+class Checkpoint(BaseModel):
+    """A filesystem checkpoint of the run's box (`Rollout.checkpoint`), recorded on the
+    trace once it is restorable."""
+
+    id: str
+    """The runtime's checkpoint id, to start a box from (`checkpoint=`)."""
+    turns: int
+    """The model turns the run had completed when the box was checkpointed: the box
+    matches the conversation as of that turn."""
 
 
 class Reward(BaseModel):
@@ -403,6 +435,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    """Checkpoints of the run's box taken for this trace (`Rollout.checkpoint`), in
+    order, each recorded once it is restorable."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -441,6 +476,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
+
+    def record_checkpoint(
+        self, checkpoint_id: str, turns: int | None = None
+    ) -> Checkpoint:
+        """Record a checkpoint of the run's box, matching the conversation at `turns`
+        (default: the turns completed now). Returns the record."""
+        checkpoint = Checkpoint(
+            id=checkpoint_id, turns=self.num_turns if turns is None else turns
+        )
+        self.checkpoints.append(checkpoint)
+        self.notify()
+        return checkpoint
 
     def notify(self) -> None:
         """The trace just changed shape (a phase span, a committed turn)."""
@@ -742,18 +789,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
-        self.errors.append(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-                # Provider errors already carry the actionable upstream diagnostic.
-                # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else "".join(traceback.format_exception(error)),
-            )
-        )
+        self.errors.append(Error.of(error))
         self.ok = False
         self.stop(stop_condition(error))
 

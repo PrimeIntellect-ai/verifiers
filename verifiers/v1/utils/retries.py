@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
+    retry_if_exception,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
@@ -46,13 +47,16 @@ def retrying(
     *,
     on: type[BaseException] | tuple[type[BaseException], ...] = Exception,
     give_up: type[BaseException] | tuple[type[BaseException], ...] = (),
+    when: Callable[[BaseException], bool] | None = None,
     retries: int,
+    initial: float = 0.5,
     label: str | None = None,
 ) -> AsyncRetrying:
-    """The shared retry policy: retry on `on` (minus `give_up`) up to `retries`
-    times with exponential backoff + jitter, logging each retry. `label` names the
-    operation in the log; omitted, it falls back to the retried callable's name, so
-    the `async for attempt in retrying(...)` form should pass it."""
+    """The shared retry policy: retry on `on` (minus `give_up`, and only errors `when`
+    accepts) up to `retries` times with exponential backoff from `initial` seconds +
+    jitter, logging each retry. `label` names the operation in the log; omitted, it
+    falls back to the retried callable's name, so the `async for attempt in
+    retrying(...)` form should pass it."""
 
     def _log(state: RetryCallState) -> None:
         exc = state.outcome.exception()
@@ -65,10 +69,13 @@ def retrying(
             exc,
         )
 
+    retry = retry_if_exception_type(on) & retry_if_not_exception_type(give_up)
+    if when is not None:
+        retry = retry & retry_if_exception(when)
     return AsyncRetrying(
         stop=stop_after_attempt(retries + 1),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
-        retry=retry_if_exception_type(on) & retry_if_not_exception_type(give_up),
+        wait=wait_exponential_jitter(initial=initial, max=30),
+        retry=retry,
         before_sleep=_log,
         reraise=True,
     )
