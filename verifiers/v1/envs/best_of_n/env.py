@@ -32,13 +32,13 @@ class BestOfNEnv(vf.Env[BestOfNEnvConfig]):
                 tg.create_task(agents.agent.run(task))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        """The sibling comparison: `best` marks the argmax-reward attempt (ties
-        share; a degenerate all-equal rollout marks every sibling); `pass_at_n` —
-        whether any sibling reached the threshold — is a rollout-level fact,
+        """The sibling comparison: `best` marks the highest-reward successful
+        attempt (ties share; failed attempts are never best); `pass_at_n` —
+        whether any successful sibling reached the threshold — is a rollout-level fact,
         recorded identically on every sibling so flat consumers see it without
         reconstructing the group."""
-        top = max(t.reward for t in episode.traces)
-        solved = float(top >= self.config.threshold)
+        top = max((t.reward for t in episode.traces if t.ok), default=None)
+        solved = float(top is not None and top >= self.config.threshold)
         for trace in episode.traces:
-            trace.record_metric("best", float(trace.reward == top))
+            trace.record_metric("best", float(trace.ok and trace.reward == top))
             trace.record_metric("pass_at_n", solved)
