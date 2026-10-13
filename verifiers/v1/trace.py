@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 import traceback
 import uuid
@@ -8,7 +9,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    FiniteFloat,
+    PrivateAttr,
+    computed_field,
+    field_serializer,
+)
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -133,8 +141,8 @@ class InterceptRecord(BaseModel):
 
 
 class Reward(BaseModel):
-    score: float
-    weight: float = 1.0
+    score: FiniteFloat
+    weight: FiniteFloat = 1.0
 
     @property
     def value(self) -> float:
@@ -407,7 +415,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
     preceding error)."""
-    metrics: dict[str, float | None] = Field(default_factory=dict)
+    metrics: dict[str, FiniteFloat | None] = Field(default_factory=dict)
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
@@ -683,7 +691,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return "\n\n".join(blocks)
 
     def record_metric(self, name: str, value: float) -> None:
-        self.metrics[name] = float(value)
+        v = float(value)
+        if not math.isfinite(v):
+            raise ValueError(f"metric {name!r} is not finite: {v}")
+        self.metrics[name] = v
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
         for name, value in values.items():
