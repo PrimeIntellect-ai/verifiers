@@ -78,20 +78,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - behavior: Single-Turn
-            tests: tests/integration/test_single_turn.py
-          - behavior: Agentic
-            tests: tests/integration/test_agentic.py
-          - behavior: Tools
-            tests: tests/integration/test_tools.py
-          - behavior: User
-            tests: tests/integration/test_user.py
-          - behavior: Judging
-            tests: tests/integration/test_judging.py
+          - behavior: Simple Single-Turn
+            tests: tests/integration/test_simple_single_turn.py
+          - behavior: Simple Multi-Turn
+            tests: tests/integration/test_simple_multi_turn.py
+          - behavior: Simple Multi-Turn Tool
+            tests: tests/integration/test_simple_multi_turn_tool.py
+          - behavior: Stateful Tool
+            tests: tests/integration/test_stateful_tool.py
+          - behavior: Shared Tool
+            tests: tests/integration/test_shared_tool.py
+          - behavior: Multimodal Tool
+            tests: tests/integration/test_multimodal_tool.py
+          - behavior: User Echo
+            tests: tests/integration/test_user_echo.py
+          - behavior: Resume Tool
+            tests: tests/integration/test_resume_tool.py
+          - behavior: User Sim
+            tests: tests/integration/test_user_sim.py
+          - behavior: Agent User
+            tests: tests/integration/test_agent_user.py
+          - behavior: Rubric Judge
+            tests: tests/integration/test_rubric_judge.py
+          - behavior: Agentic Judge
+            tests: tests/integration/test_agentic_judge.py
           - behavior: Multi-Agent
             tests: tests/integration/test_multi_agent.py
-          - behavior: Replay
-            tests: tests/integration/test_replay.py
           - behavior: Examples
             tests: tests/integration/test_examples.py
     env:
@@ -151,7 +163,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: integration-${{ matrix.behavior }}-results
+          name: integration-results-${{ strategy.job-index }}
           path: test-results.xml
 
   delivery:

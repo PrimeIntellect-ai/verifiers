@@ -14,9 +14,10 @@ supported, what is not, and why:
 - `prime` provisions real sandboxes and runs in CI with its secrets; it exposes no
   ports, so a tool server lives there only colocated with its harness
 - a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
-  shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
-  switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
-  native session)
+  shell task), a shell (`EXECUTES_CODE`; `browser-use` drives a browser instead), MCP
+  tools (`SUPPORTS_MCP`), a user that can be switched to (`supports_user`), or an
+  exchange that resumes (`SUPPORTS_RESUME` or a native session)
+- `browser-use` needs a browser image, which the grid pins on docker only
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -24,8 +25,7 @@ Every cell carries its axes' marks, so `-m` selects subsets:
     uv run pytest tests/integration -n 8 -m "docker and codex"
     uv run pytest tests/integration -n 8 -m e2b                                                      # local
 
-`terminus-2` (drives the host tmux) and `browser_use` (needs a browser image; it has its
-own single-turn test) stay outside the grid.
+`terminus-2` (drives the host tmux) stays outside the grid.
 """
 
 import shutil
@@ -50,7 +50,12 @@ HARNESSES: list[str | dict] = [
     "openclaw",
     "mini-swe-agent",
     "prime-agent",
+    "browser-use",
 ]
+BROWSER_IMAGE = (
+    "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
+    "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+)
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 EXTERNAL = ("modal", "e2b")
@@ -65,10 +70,12 @@ def mark(name: str) -> pytest.MarkDecorator:
     return getattr(pytest.mark, name.replace("-", "_"))
 
 
-def runtime_config(runtime: str) -> dict:
+def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
     if runtime == "e2b":
         config["memory"] = 2.0  # the default box is too small to install an agent CLI
+    if harness is not None and harness_id(harness) == "browser-use":
+        config["image"] = BROWSER_IMAGE
     return config
 
 
@@ -97,10 +104,14 @@ def unsupported(
         return f"needs {runtime} on the host"
     if runtime == "subprocess" and cls.NEEDS_CONTAINER:
         return f"{name} needs a container runtime"
+    if name == "browser-use" and runtime != "docker":
+        return f"{name} needs a browser image, pinned on docker only"
     if "reply" in needs and name == "mini-swe-agent":
         return f"{name} finishes by submitting a shell task, not by replying"
     if "shell" in needs and not cls.EXECUTES_CODE:
         return f"{name} gives the model no shell"
+    if "shell" in needs and name == "browser-use":
+        return f"{name} drives a browser, not a shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
     if "resume" in needs and not resumes(cls):
@@ -140,7 +151,7 @@ def grid(
             cells.append(
                 pytest.param(
                     harness,
-                    runtime,
+                    runtime_config(runtime, harness),
                     marks=marks,
                     id=f"{harness_id(harness)}-in-{runtime}",
                 )

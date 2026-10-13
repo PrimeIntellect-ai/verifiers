@@ -35,8 +35,8 @@ LIVE_FIXTURES = {"run_v1", "run_v1_server", "live_ctx"}
 
 @pytest.fixture
 def harness_runtime(request) -> dict:
-    """The runtime config placing the harness: a runtime type from the grid, or a
-    full config for a one-off variant."""
+    """The runtime config placing the harness: a config built by the grid, or a
+    runtime type from a runtime-only grid."""
     param = request.param
     return dict(param) if isinstance(param, dict) else runtime_config(param)
 

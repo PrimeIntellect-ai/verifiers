@@ -1,16 +1,51 @@
-"""Offline re-scoring: eval -> replay -> replay-the-replay agree."""
+"""Offline re-scoring: eval -> replay -> replay-the-replay agree, on a saved run built
+here rather than a live eval."""
 
 import json
 from pathlib import Path
 
 import pytest
+from reverse_text.taskset import ReverseTextData, ReverseTextTask
 
-from verifiers.v1.cli.output import saved_config_path
+import verifiers.v1 as vf
+from verifiers.v1.cli.output import CONFIG_DIR, RESOLVED_DIR, saved_config_path
 from verifiers.v1.cli.replay import run_replay
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
+from verifiers.v1.graph import MessageNode
+from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.trace_store import write_episode
 
 
-async def test_replay_round_trip(run_v1, tmp_path):
+async def saved_run(run_dir: Path) -> vf.Trace:
+    """A one-trace reverse-text run on disk, as `run_eval` leaves it: the resolved
+    config under `configs/resolved/` and a scored trace in `traces.jsonl`."""
+    config = EvalConfig(env={"taskset": {"id": "reverse-text"}}, rich=None, push=False)
+    resolved = run_dir / CONFIG_DIR / RESOLVED_DIR
+    resolved.mkdir(parents=True)
+    (resolved / "eval.json").write_text(json.dumps(config.model_dump(mode="json")))
+    data = ReverseTextData(idx=0, prompt="abc", answer="cba")
+    task = ReverseTextTask(data)
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="ReverseTextTask", data=data, key=task.key),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="abc")),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="<reversed_text>cba</reversed_text>"),
+                sampled=True,
+            ),
+        ],
+    )
+    trace.stop("agent_completed")
+    trace.ok = True
+    await task.score(trace)
+    write_episode(run_dir, vf.Episode(task=trace.task, traces=[trace], ok=True))
+    return trace
+
+
+async def test_replay_round_trip(tmp_path):
     """Offline re-scoring must preserve the saved task's wire form: replay reads traces as
     `Trace[WireTaskData, ...]`, so its own output dumps through that schema — the
     taskset-specific fields (reverse-text's `answer`) ride `model_extra` and must survive
@@ -18,15 +53,8 @@ async def test_replay_round_trip(run_v1, tmp_path):
     trace-only `@reward` silently stops running (the wire-narrowing regression). Trace-only
     rewards are deterministic given the transcript, so all three generations must agree."""
     run_dir = tmp_path / "run"
-    (source,) = await run_v1(
-        "reverse-text",
-        harness="null",
-        runtime={"type": "subprocess"},
-        output_dir=run_dir,
-        max_turns=2,
-    )
-    assert source.ok
-    assert "lcs" in source.rewards
+    source = await saved_run(run_dir)
+    assert source.rewards["lcs"].score == 1.0
 
     # Replay must not mix the source run's judge transcript into newly computed
     # judge calls. Seed a saved call directly because this task scores without a
