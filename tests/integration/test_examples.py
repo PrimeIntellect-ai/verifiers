@@ -72,8 +72,6 @@ def test_eval(taskset: str, tmp_path: Path):
         "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
         "--output-dir", str(tmp_path), "--run.dir", "run",
-        # The CI jobs share one model endpoint capped at 16 concurrent requests.
-        "--env.retries.rules", '[{"status_code": [429], "max_retries": 5}]',
     ]  # fmt: skip
     try:
         proc = subprocess.run(

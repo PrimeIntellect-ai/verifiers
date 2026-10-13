@@ -136,16 +136,11 @@ def _eval_config(
         runtime_cfg = dict(runtime)
         _configure_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
-    # The CI jobs share one model endpoint capped at 16 concurrent requests, so rate
-    # limits get a larger budget than other provider errors.
     retries = {
         "max_retries": 0,
         "rules": [
-            {"status_code": [429], "max_retries": 5},
-            *(
-                {"type": error_type, "max_retries": 2}
-                for error_type in ("ProviderError", "InterceptionError", "HarnessError")
-            ),
+            {"type": error_type, "max_retries": 2}
+            for error_type in ("ProviderError", "InterceptionError", "HarnessError")
         ],
     }
     env_cfg.setdefault("retries", retries)
