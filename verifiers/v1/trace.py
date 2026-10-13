@@ -585,8 +585,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def kept(self) -> bool:
-        """This trace is an earlier run's, returned by a durable call (`key=`) without
-        running again: its side effects on a box are not replayed (`verifiers.v1.durable`)."""
+        """This trace is an earlier run's, returned by a durable call without running
+        again: its side effects on a box are not replayed (`verifiers.v1.durable`)."""
         return self._kept
 
     @property

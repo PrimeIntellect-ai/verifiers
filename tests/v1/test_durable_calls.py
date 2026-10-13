@@ -13,6 +13,7 @@ checkpointing boxes of `test_agent_resume`.
 import asyncio
 import json
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from test_agent_resume import (  # noqa: F401 - fixtures
@@ -458,3 +459,155 @@ async def test_an_episode_run_again_skips_its_finished_calls(
     assert [t.id for t in again.traces] == [first.id, second.id]
     assert all(t.kept for t in again.traces) and model.requests == []
 
+
+# -- a multi-agent episode, crashed and run again ---------------------------------
+
+
+class StudioConfig(vf.EnvConfig):
+    writer: vf.AgentConfig = vf.AgentConfig(
+        runtime={"type": "subprocess"}, harness={"id": "null"}, save="per_call"
+    )
+    judge: vf.AgentConfig = vf.AgentConfig(
+        runtime={"type": "subprocess"}, harness={"id": "null"}, save="per_call"
+    )
+
+
+class StudioEnv(vf.Env[StudioConfig]):
+    """A writer drafts, host code derives the judge's brief from the draft and a seeded
+    draw, the judge reviews it. The scope is the env's trace labels, the lookup a
+    directory of traces; every call is durable by its seat and position."""
+
+    root: Path
+    precheck = False
+    """A later version of the code: a judge call inserted before the review."""
+    host: ClassVar[list[str]] = []
+    """What the host code between the calls computed, attempt by attempt."""
+
+    def trace_labels(self, task):
+        return {"job": "j1", "stage": "review"}
+
+    def durable(self, task):
+        return vf.Durable(vf.TraceDir(self.root))
+
+    async def run(self, task, agents):
+        draft = await agents.writer.run(task)
+        if not draft.ok:
+            raise RuntimeError("the draft failed")
+        pick = vf.episode_random().randrange(10**6)
+        brief = f"review {draft.last_reply!r} #{pick}"
+        StudioEnv.host.append(brief)
+        if StudioEnv.precheck:
+            await agents.judge.run(NotesTask(vf.TaskData(idx=1, prompt="precheck")))
+        review = await agents.judge.run(NotesTask(vf.TaskData(idx=1, prompt=brief)))
+        if not review.ok:
+            raise RuntimeError("the review failed")
+
+
+@pytest.fixture
+def studio(model, tmp_path, monkeypatch):
+    from verifiers.v1.utils import loaders
+
+    load = loaders.load_harness
+    monkeypatch.setattr(
+        loaders,
+        "load_harness",
+        lambda config: ScriptHarness(config) if config.id == "null" else load(config),
+    )
+    StudioEnv.root, StudioEnv.precheck, StudioEnv.host = tmp_path / "traces", False, []
+    env = StudioEnv(StudioConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    ctx = ModelContext(
+        model="scripted",
+        client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
+    )
+    return env, ctx
+
+
+async def crash_in_the_judges_second_write(env, ctx, monkeypatch):
+    """Run the episode until the judge's second tool call, then kill it there, as a
+    dying env server would: the judge's trace is left as its last per-call save."""
+    original = FakeRuntime.write
+    episode = asyncio.current_task()
+    writes = {"b.txt": 0}
+
+    async def write(self, path, data):
+        if path == "b.txt":
+            writes["b.txt"] += 1
+            if writes["b.txt"] == 2:  # the writer's is the first
+                episode.cancel()
+                await asyncio.Event().wait()
+        await original(self, path, data)
+
+    monkeypatch.setattr(FakeRuntime, "write", write)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await env.run_episode(task(), ctx)
+    finally:
+        monkeypatch.setattr(FakeRuntime, "write", original)
+        episode.uncancel()
+
+
+async def test_a_crashed_episode_reruns_from_the_top_on_its_traces(
+    model, studio, monkeypatch
+):
+    env, ctx = studio
+    await asyncio.create_task(crash_in_the_judges_second_write(env, ctx, monkeypatch))
+    store = vf.TraceDir(StudioEnv.root)
+    writer = store.latest({"call": {"key": "writer/0"}})
+    cut = store.latest({"call": {"key": "judge/0"}})
+    assert writer is not None and writer.ok and writer.labels["stage"] == "review"
+    assert cut is not None and not cut.is_completed and len(cut.checkpoints) == 2
+    model.requests.clear()
+    EVENTS.clear()
+
+    episode = await env.run_episode(task(), ctx)
+    assert episode.ok, episode.errors
+    # The host code between the calls computed the same brief from the kept draft
+    # and the same seeded draw.
+    assert len(StudioEnv.host) == 2 and StudioEnv.host[0] == StudioEnv.host[1]
+    # The writer ran nothing; the judge continued from its latest checkpoint.
+    draft, review = episode.traces
+    assert draft.kept and draft.id == writer.id
+    assert review.labels["call"]["key"] == "judge/0" and not review.kept
+    assert review.resumed_from == cut.id
+    assert EVENTS == ["restore"]
+    assert len(model.requests) == 2
+    sent = model.requests[0]["messages"]
+    assert sent[0]["content"] == StudioEnv.host[0]
+    assert sent[-1]["content"] == RETRY_NOTE
+
+    # Everything finished: run again, nothing runs.
+    model.requests.clear()
+    again = await env.run_episode(task(), ctx)
+    assert again.ok and model.requests == []
+    assert [t.id for t in again.traces] == [draft.id, review.id]
+    assert StudioEnv.host[2] == StudioEnv.host[0]
+
+
+async def test_a_code_change_that_shifts_positions_reruns_them(model, studio):
+    env, ctx = studio
+    first = await env.run_episode(task(), ctx)
+    assert first.ok, first.errors
+    [old_review] = [t for t in first.traces if t.labels["call"]["key"] == "judge/0"]
+    model.requests.clear()
+
+    # The new code inserts a judge call: the review moves to judge/1, and judge/0
+    # now holds another prompt, so its fingerprint no longer matches the old trace.
+    StudioEnv.precheck = True
+    episode = await env.run_episode(task(), ctx)
+    assert episode.ok, episode.errors
+    by_key = {t.labels["call"]["key"]: t for t in episode.traces}
+    assert sorted(by_key) == ["judge/0", "judge/1", "writer/0"]
+    assert by_key["writer/0"].kept
+    precheck, review = by_key["judge/0"], by_key["judge/1"]
+    assert precheck.last_reply == "done: precheck" and precheck.resumed_from is None
+    assert review.id != old_review.id and review.resumed_from is None
+    assert review.last_reply == old_review.last_reply
+    # The writer's call kept its position and fingerprint.
+    assert all(
+        m["messages"][0]["content"] in ("precheck", StudioEnv.host[-1])
+        for m in model.requests
+    )
+    model.requests.clear()
+    again = await env.run_episode(task(), ctx)
+    assert again.ok and model.requests == []
+    assert all(t.kept for t in again.traces) and len(again.traces) == 3

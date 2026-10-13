@@ -85,16 +85,36 @@ here, or an agentic/judge environment when a model must judge the result.
 `--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
 staging, or scoring failures (default: 2).
 
-## Resuming a crashed episode
+## Durable episodes
 
-`Env.durable(task)` returns the `vf.Durable` the episode's calls resolve through (see
-[Durable calls](agent.md#durable-calls)); `run_episode` installs it around `setup()` and
-`run()`, so every agent call in the episode is durable, keyed by its seat and position.
-Run again after a crash, the episode's calls return their finished traces without
-running (they joined the episode that made them, so they are not in this one), continue
-their cut-off runs from the latest checkpoint, and restore the boxes the seats share. An
-episode whose every call was kept is still whole. Host code in `run()` between agent
-calls must be deterministic given their results, or idempotent.
+`Env.durable(task)` returns the `vf.Durable` the episode's calls resolve through: the
+trace lookup over the run's trace store, and the scope (its `match`; left None, the
+episode's `trace_labels(task)`). `run_episode` installs it around `setup()` and `run()`,
+so every agent call in the episode is durable, keyed by its seat and position (see
+[Durable calls](agent.md#durable-calls)). Run again after a crash, the episode starts
+from the top: its calls return their finished traces without running (`trace.kept`;
+they are this episode's traces too, since the attempt that made them never landed),
+continue their cut-off runs from the latest checkpoint, and restore the boxes the seats
+share. Without `durable()`, nothing changes.
+
+The rule, for everything `run()` does:
+
+- **Anything expensive or nondeterministic is an agent run**, so it has a trace: a model
+  call, a long build, a judge (an agent with the null harness and the verdict in its
+  reply).
+- **Host code between agent runs is cheap and deterministic given the recorded
+  results.** It is run again on every attempt and must compute the same values from the
+  same traces; what it computes from a reply is recomputed, never stored.
+- **Randomness is seeded from the episode's identity**: `vf.episode_random()` returns a
+  `random.Random` seeded from the durable's scope (and any salt), so a rerun draws the
+  same numbers. Draw from it in a fixed order.
+- **External side effects are idempotent, or deferred to the caller's commit**: a write
+  to a database or a request to another service may happen once per attempt, so it must
+  be safe to repeat, or be returned in the outcome for the caller to apply once.
+
+Code changed between attempts is safe: a call whose inputs changed (its fingerprint) runs
+fresh, and so does every call whose position shifted onto another's trace. A call whose
+order is not stable (a call made only on some paths) takes a `key=`.
 
 ```python
 class ReviewEnv(vf.Env[ReviewConfig]):
@@ -102,10 +122,15 @@ class ReviewEnv(vf.Env[ReviewConfig]):
         return {"job": task.data.job}
 
     def durable(self, task):
-        return vf.Durable(MyTraceStore(), match=self.trace_labels(task))
+        return vf.Durable(MyTraceStore())  # scoped by trace_labels
 
     async def run(self, task, agents):
-        async with agents.coder.provision(task) as box:
-            await agents.coder.run(task, runtime=box)
-            await agents.reviewer.run(review(task), runtime=box)
+        async with agents.coder.provision(task) as box:          # coder/0
+            draft = await agents.coder.run(task, runtime=box)    # coder/1
+            rng = vf.episode_random()
+            focus = rng.choice(FOCUS_AREAS)                       # the same on a rerun
+            review = await agents.reviewer.run(                   # reviewer/0
+                review_task(draft.last_reply, focus), runtime=box
+            )
+        return ReviewOutcome(approved=review.last_reply.startswith("APPROVE"))
 ```

@@ -42,65 +42,65 @@ checkpointed or retried.
 
 With a `vf.Durable` installed (an env's `durable(task)` for its episodes, or
 `vf.use_durable`), every agent call survives a crash: `run`, `interaction` and
-`provision`. Each call is keyed by its position, `<agent name>/<n>` for the agent's n-th
-call since the durable was installed, taken when the call starts (so `asyncio.gather`
-keeps the order); `key=` names it instead, for a call whose order is not stable, and
-`durable=False` opts a call out. Its trace is labelled with the key and a fingerprint of
-what the result depends on (`trace.info["labels"]["call"]`), and before it runs, the
-newest earlier trace of the key is looked up in the run's trace store:
+`provision`. A call's identity is the durable's scope (for an episode, the env's
+`trace_labels`), the agent's name (its seat) and its position: the key `<seat>/<n>` names
+the agent's n-th call since the durable was installed, taken when the call starts (so
+`asyncio.gather` keeps the order). `key="draft"` names the call instead (`<seat>/draft`),
+for a call whose order is not stable; `durable=False` opts a call out. Its trace is
+labelled with the key and a fingerprint of what the result depends on
+(`trace.info["labels"]["call"]`), and before it runs, the latest earlier trace with the
+same scope and key is looked up in the run's trace store:
 
 - a finished ok trace with the same fingerprint is returned as it is, without running
   (`trace.kept` is True);
-- an unfinished or failed one with checkpoints is continued from its latest checkpoint;
+- an unfinished or failed one with the same fingerprint and checkpoints is continued from
+  its latest checkpoint;
 - anything else (nothing found, a changed fingerprint) runs fresh.
 
-Without a durable installed, calls are plain, exactly as before.
+Without a durable installed, calls are plain, exactly as before: RL rollouts stay fresh.
 
 ```python
-durable = vf.Durable(vf.TraceDir("traces"), match={"job": "j1"}, parts={"version": "3"})
+durable = vf.Durable(vf.TraceDir("traces"), match={"job": "j1"})
 with vf.use_durable(durable):
-    trace = await solver.run(task)                      # solver's call 0
-    async with solver.interaction(task) as exchange:    # call 1
+    trace = await solver.run(task)                      # solver/0
+    async with solver.interaction(task) as exchange:    # solver/1
         reply = await exchange.turn("hello")
-    async with solver.provision(task) as box:           # call 2
-        await solver.run(task, runtime=box)             # call 3
-        await reviewer.run(review_task, runtime=box)    # reviewer's call 0
-    await solver.run(task, key="lookup")                # named: takes no position
+    async with solver.provision(task) as box:           # solver/2 (the box)
+        await solver.run(task, runtime=box)             # solver/3
+        await reviewer.run(review_task, runtime=box)    # reviewer/0
+    await solver.run(task, key="lookup")                # solver/lookup: no position
 ```
 
-**The rule for env authors.** Run again after a crash, the same code makes the same calls
-in the same order, because every result it saw comes back as recorded: each call finds
-its own trace. Code changed so that positions shift meets traces whose fingerprints
-differ, and those calls run fresh, which is safe. So the host code between agent calls
-must be deterministic given those results: anything nondeterministic or with side
-effects (a clock, a random draw, a write to a database, a request to another service)
-must be idempotent or go through a durable step of its own; otherwise give the calls
-whose order depends on it a `key=`.
+See [Durable episodes](env.md#durable-episodes) for the rule host code between the calls
+must follow.
 
-- **The store.** `Durable.lookup` is a `vf.TraceLookup`: `find(labels)` returns every
-  stored trace whose labels contain `labels`, partial ones as of their latest save. A
-  training or eval run's store is prime-rl's, which writes every trace call by call;
-  `vf.TraceDir` is a directory of traces for tests and standalone use, which the calls
-  also write (a `vf.TraceSink`).
+- **The store.** `Durable.lookup` is a `vf.TraceLookup`: `latest(labels)` returns the
+  stored trace whose labels contain `labels` (a nested subset) that moved last (its latest
+  checkpoint, else its start), a partial one as of its latest save, or None. A training
+  or eval run's store is the caller's (prime-rl's live and finished trace stores, which
+  hold every trace call by call); `vf.TraceDir` is a directory of traces for tests and
+  standalone use, which the calls also write (a `vf.TraceSink`).
 - **The scope.** `Durable.match` holds the labels an earlier trace must carry besides the
-  key; the calls stamp them on their traces too. `durable.within(match)` is the same
-  store under another scope, and `durable=` on a call replaces the installed one.
+  key; left None, an episode takes its `trace_labels(task)`. The calls stamp it on their
+  traces too. `durable.within(match)` is the same store under another scope (a call
+  shared by every stage of a job), and `durable=` on a call replaces the installed one.
 - **The fingerprint.** The task's class, code (its source outside verifiers; pin it with
   `__code_version__`), data and config; the agent's model, sampling, harness and client;
-  `Durable.parts`; and the call's `depends=` (a `Path` by its contents).
-  `cache_inputs=` replaces the task and agent parts. Budgets are not parts: a raised
-  timeout, more turns or retries keep a finished call, while a changed prompt, model or
-  harness runs it again.
+  `Durable.parts` (a pipeline version); and the call's `depends=` (a `Path` by its
+  contents). `cache_inputs=` replaces the task and agent parts. Budgets are not parts: a
+  raised timeout, more turns or retries keep a finished call, while a changed prompt,
+  model or harness runs it again.
 - **Interactions.** A finished exchange replays: each `turn(message)` that matches the
   recorded one returns the recorded segment. A cut-off one replays the turns its latest
   checkpoint covers and continues live from there. A driver that sends something else
   continues live from the checkpoint at the end of the turns it got (with per-call saves,
   every final reply has one); without one, the turn raises.
-- **Boxes.** Every run on a durable box is labelled with the box's key, and a later
-  `provision` under the key starts the box from the latest checkpoint those runs
-  recorded. Durable runs on it then continue from their own latest checkpoint no newer
-  than the box's: seats that take turns on a box resume exactly. A durable run on a box
-  that was not restored this way runs fresh.
+- **Boxes.** Every run on a durable box is labelled with the box's key and the checkpoint
+  the box was at when the run started, and a later `provision` under the key starts the
+  box from the latest checkpoint of the run on it that moved last. Durable runs on it then
+  continue from their own latest checkpoint no newer than the box's: seats that take turns
+  on a box resume exactly. A durable run on a box that was not restored this way runs
+  fresh.
 - **Explicit continuations.** A call passing `resume=`, `at=`, `note=` or `checkpoint=`
   without `key=` is a plain call.
 
