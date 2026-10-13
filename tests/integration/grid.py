@@ -9,8 +9,9 @@ the stack cannot run is collected as a skip with its reason, so the suite states
 supported, what is not, and why:
 
 - a `NEEDS_CONTAINER` harness (every agent program) never runs on the host (`subprocess`)
-- `podman` / `apptainer` need their engine on the host
-- `prime` / `modal` / `e2b` provision real sandboxes: local-only, CI deselects their marks
+- `podman` / `apptainer` need their engine on the host; CI deselects their marks
+- `modal` / `e2b` are external sandboxes: local-only, CI deselects their marks
+- `prime` provisions real sandboxes and runs in CI with its secrets
 - a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
   shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
   switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
@@ -18,9 +19,9 @@ supported, what is not, and why:
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
-    uv run pytest tests/integration -n 4 -m "not prime and not modal and not e2b"  # CI
-    uv run pytest tests/integration -n 4 -m "docker and codex"
-    uv run pytest tests/integration -n 4 -m prime                                  # local
+    uv run pytest tests/integration -n 8 -m "not podman and not apptainer and not modal and not e2b"  # CI
+    uv run pytest tests/integration -n 8 -m "docker and codex"
+    uv run pytest tests/integration -n 8 -m e2b                                                      # local
 
 `terminus-2` (drives the host tmux) and `browser_use` (needs a browser image; it has its
 own single-turn test) stay outside the grid.
@@ -51,7 +52,7 @@ HARNESSES: list[str | dict] = [
 ]
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
-REMOTE = ("prime", "modal", "e2b")
+EXTERNAL = ("modal", "e2b")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
 
 
