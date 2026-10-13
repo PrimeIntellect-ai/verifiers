@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
+from verifiers.v1.runtimes.prime import run_labels
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
@@ -106,8 +107,9 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
         is network-bound and rate-capped (512/min, run-wide via the shared
         `tunnel_limiter`), so transient failures are retried; a terminal one raises
-        `TunnelError`. While held, frpc is restarted if the tunnel goes down. The tunnel is
-        torn down on exit."""
+        `TunnelError`. While held, frpc is restarted if the tunnel goes down. The tunnel
+        carries the run labels (`run_labels`), so a crashed run's tunnels can be swept
+        (`runtimes.sweep`), and is torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.errors import TunnelError
@@ -117,7 +119,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         try:
             async for attempt in retrying(retries=3, label=label):
                 with attempt:
-                    client = TunnelClient(local_port=port)
+                    client = TunnelClient(local_port=port, labels=run_labels())
                     async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
         except Exception as e:

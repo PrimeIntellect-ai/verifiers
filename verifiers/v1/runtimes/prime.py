@@ -137,6 +137,12 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     BASE_LABELS = list(labels)
 
 
+def run_labels() -> list[str]:
+    """The labels every Prime sandbox and tunnel this process opens carries, whatever its
+    config adds: the base labels and the run scope. ``runtimes.sweep`` deletes by them."""
+    return list(dict.fromkeys([*BASE_LABELS, run_scope()]))
+
+
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"

@@ -88,7 +88,11 @@ class DockerRuntime(ContainerRuntime):
         self.is_local = host is None or host.is_local
         self.info = (
             host.info.model_copy(
-                update={"image": self.config.image, "workdir": self.config.workdir}
+                update={
+                    "image": self.config.image,
+                    "workdir": self.config.workdir,
+                    "image_digest": None,
+                }
             )
             if host
             else self.info_cls(**self.config.model_dump())
@@ -135,6 +139,7 @@ class DockerRuntime(ContainerRuntime):
                 runtime.info.id = container
             runtime.info.image = runtime.config.image
             runtime.info.workdir = runtime.config.workdir
+            runtime.info.image_digest = await runtime._image_digest(container)
             runtime._service_url = service_url
             if host is None and service_url is not None:
                 runtime._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
@@ -320,12 +325,39 @@ class DockerRuntime(ContainerRuntime):
             await self._proxy.start(listener=await self._container_listener())
         else:
             await self._proxy.start("127.0.0.1")
+        self.info.image_digest = await self._image_digest(self._container)
         logger.info(
-            "%s: started container %s (image=%s)",
+            "%s: started container %s (image=%s, digest=%s)",
             self.engine,
             self._container,
             self.config.image,
+            self.info.image_digest,
         )
+
+    async def _image_digest(self, container: str) -> str | None:
+        """What `container`'s image resolved to: its registry digest
+        (`<repo>@sha256:...`, the one for the configured repo when several), else the
+        local image id. None when the engine cannot tell; never fails the box."""
+        with contextlib.suppress(Exception):
+            code, data, _ = await self._communicate_host(
+                self.engine, "inspect", "--format", "{{.Image}}", container
+            )
+            image = data.decode().strip()
+            if code or not image:
+                return None
+            code, data, _ = await self._communicate_host(
+                self.engine,
+                "image",
+                "inspect",
+                "--format",
+                "{{json .RepoDigests}}",
+                image,
+            )
+            digests = (json.loads(data) or []) if not code else []
+            name = self.config.image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+            ours = [d for d in digests if d.split("@")[0].rsplit("/", 1)[-1] == name]
+            return (ours or digests or [image])[0]
+        return None
 
     def host_url(self, url: str) -> str:
         if self._host is not None:

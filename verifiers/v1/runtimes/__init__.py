@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.prime import (
     PrimeConfig,
     PrimeRuntime,
     PrimeRuntimeInfo,
+    run_labels,
     set_base_sandbox_labels,
 )
 from verifiers.v1.runtimes.subprocess import (
@@ -144,6 +145,7 @@ __all__ = [
     "make_runtime",
     "provision_runtime",
     "restore_config",
+    "run_labels",
     "runtime_is_local",
     "set_base_sandbox_labels",
 ]
