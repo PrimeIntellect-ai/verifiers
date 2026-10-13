@@ -20,9 +20,11 @@ the run's trace store (`TraceLookup.latest`):
 Run again after a crash, the same code makes the same calls in the same order, since the
 results it saw are the recorded ones: each finds its own trace. Code changed so that
 positions shift meets traces whose fingerprints differ, and those calls run fresh: safe,
-never stale. Host code between agent calls that is nondeterministic or has side effects
-must therefore be idempotent, or go through a durable step of its own. Without a durable
-installed, calls are plain, exactly as before.
+never stale. Host code between agent calls must therefore be cheap and deterministic
+given their results: anything expensive or nondeterministic is an agent run of its own
+(a judge is an agent with the null harness), randomness comes from `episode_random()`,
+and an external side effect is idempotent or left to the caller's commit. Without a
+durable installed, calls are plain, exactly as before.
 
 The trace is the record: there is no store of its own. What verifiers ships is the
 lookup protocol (`TraceLookup`), the labels, and the resolution; the store is the
@@ -61,6 +63,7 @@ import inspect
 import json
 import logging
 import os
+import random
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
@@ -477,6 +480,21 @@ def box_checkpoint(
             Checkpoint(id=at["id"], turns=0, restored=True, time=at.get("time") or 0.0)
         )
     return max(found, key=lambda c: c.time or 0.0, default=None)
+
+
+def episode_random(*salt: Any) -> random.Random:
+    """A `random.Random` seeded from the episode's identity (the installed durable's
+    scope) and `salt`: an episode run again after a crash draws the same numbers, so
+    host code between its agent calls stays deterministic. Take one per episode (or
+    per purpose, by `salt`) and draw from it in a fixed order. Without a durable
+    installed, an unseeded one: nothing reruns."""
+    durable = current_durable()
+    if durable is None:
+        return random.Random()
+    seed = hashlib.sha256(
+        json.dumps([durable.scope, list(salt)], sort_keys=True, default=str).encode()
+    ).digest()
+    return random.Random(int.from_bytes(seed[:8], "big"))
 
 
 def observe(

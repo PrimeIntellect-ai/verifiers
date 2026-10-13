@@ -50,6 +50,7 @@ from verifiers.v1.durable import (
     TraceLookup,
     TraceSink,
     current_durable,
+    episode_random,
     use_durable,
 )
 from verifiers.v1.env import Env
@@ -268,6 +269,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TraceLookup",
     "TraceSink",
     "current_durable",
+    "episode_random",
     "use_durable",
     "GroupInfo",
     "TRACE_VERSION",

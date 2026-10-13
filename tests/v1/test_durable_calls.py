@@ -149,6 +149,24 @@ async def test_a_key_overrides_the_position_and_durable_false_opts_out(model, st
     assert len(model.requests) == 12
 
 
+async def test_a_key_is_the_seats_and_never_a_position(model, store):
+    with vf.use_durable(vf.Durable(store)), pytest.raises(ValueError, match="position"):
+        await make(model).run(task(), key="0")
+
+
+def test_episode_random_is_seeded_by_the_scope(store):
+    def draws(match):
+        with vf.use_durable(vf.Durable(store, match=match)):
+            return [vf.episode_random().random(), vf.episode_random("b").random()]
+
+    assert draws({"job": "j1"}) == draws({"job": "j1"})
+    assert draws({"job": "j1"}) != draws({"job": "j2"})
+    one = draws({"job": "j1"})
+    assert one[0] != one[1]
+    # Without a durable nothing reruns: an unseeded generator.
+    assert vf.episode_random().random() != vf.episode_random().random()
+
+
 async def test_a_durable_call_manages_its_own_resume(model, store):
     with pytest.raises(TypeError, match="resumes itself"):
         await make(model).run(task(), key="solve", note="hi")
