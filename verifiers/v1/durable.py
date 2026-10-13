@@ -451,8 +451,6 @@ class Resolved:
     label: dict[str, Any]
     kept: Trace | None = None
     resume: Trace | None = None
-    previous: Trace | None = None
-    """The latest earlier trace of the key, whatever became of it."""
 
 
 def resolve_call(
@@ -472,14 +470,14 @@ def resolve_call(
     if old.get("fingerprint") != label["fingerprint"]:
         changed = changed_parts(old.get("parts") or {}, parts) or ["fingerprint"]
         logger.info("call %r runs fresh: %s changed", key, ", ".join(changed))
-        return Resolved(label, previous=previous)
+        return Resolved(label)
     if previous.is_completed and previous.ok:
         kept = previous.model_copy(deep=True)
         kept._kept = True
-        return Resolved(label, kept=kept, previous=previous)
+        return Resolved(label, kept=kept)
     if previous.checkpoints:
-        return Resolved(label, resume=previous, previous=previous)
-    return Resolved(label, previous=previous)
+        return Resolved(label, resume=previous)
+    return Resolved(label)
 
 
 def box_checkpoint(
