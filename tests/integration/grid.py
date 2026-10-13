@@ -166,6 +166,21 @@ def grid(
     return cells
 
 
+def skip_harness(cells: list, harness: str, reason: str) -> list:
+    """Skip one harness's cells for a limit no capability flag declares. Each use names
+    why, so a reader sees the gap and when it can go."""
+    return [
+        pytest.param(
+            *cell.values,
+            marks=[*cell.marks, pytest.mark.skip(reason=reason)],
+            id=cell.id,
+        )
+        if harness_id(cell.values[0]) == harness
+        else cell
+        for cell in cells
+    ]
+
+
 def placements(
     harness_runtimes: tuple[str, ...] = tuple(RUNTIMES),
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),

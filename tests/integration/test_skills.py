@@ -2,30 +2,19 @@
 installs (skill-codeword-v1), across the harness x runtime grid."""
 
 import pytest
-from grid import grid, harness_id
+from grid import grid, skip_harness
 
-
-def skip_rlm(cells: list) -> list:
-    # TODO: fix skill discovery in the upstream nano-rlm harness, then drop this skip.
-    # The model often fails to find a SKILL.md installed for rlm within the turn cap.
-    return [
-        pytest.param(
-            *cell.values,
-            marks=[
-                *cell.marks,
-                pytest.mark.skip(reason="nano-rlm skill discovery is flaky"),
-            ],
-            id=cell.id,
-        )
-        if harness_id(cell.values[0]) == "rlm"
-        else cell
-        for cell in cells
-    ]
+# TODO: fix skill discovery in the upstream nano-rlm harness, then drop this skip.
+SKILLS = skip_harness(
+    grid(needs=("skills",)),
+    "rlm",
+    "nano-rlm often fails to discover an installed SKILL.md within the turn cap",
+)
 
 
 @pytest.mark.parametrize(
     "harness,harness_runtime",
-    skip_rlm(grid(needs=("skills",))),
+    SKILLS,
     indirect=True,
 )
 async def test_skills(run_v1, harness, harness_runtime, tmp_path):
