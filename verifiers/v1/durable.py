@@ -47,6 +47,14 @@ replaces the task and agent parts. Budgets (timeouts, turn and token limits, ret
 saves) are not parts: raising a timeout keeps a finished call, while a changed prompt,
 model or harness reruns it.
 
+A continuation (`agent.run(resume=trace, note=...)`, `agent.interaction(resume=trace)`)
+is a durable call too, by its position or `key`, so a stage that continues a seat's
+conversation from an earlier stage keeps its own turns across a crash. Its fingerprint
+holds the trace it continues (its origin) by id, with `at` and `note`
+(`resume_part`): a finished continuation is kept, a cut-off one continues from its own
+latest checkpoint (not the origin's), and a continuation of another origin (the earlier
+stage ran again) or with another note runs fresh from that origin.
+
 A box from `agent.provision(task)` is durable the same way: every run on it is
 labelled with the box's key and the checkpoint the box was at when the run started
 (`labels["box"]`), and a later provision under the key starts its box from the latest
@@ -367,11 +375,15 @@ def call_parts(
     durable: Durable | None,
     depends: Any = None,
     cache_inputs: Any = None,
+    resume: Trace | None = None,
+    at: str | int | None = None,
+    note: str | None = None,
 ) -> dict[str, str]:
     """What a call's result depends on, hashed part by part: the task (`task_parts`),
     the agent (`agent_parts`), the durable's `parts` and the call's `depends`.
     `cache_inputs`, when given, replaces the task and agent parts with its own hash
-    (`{}`: nothing but the durable's parts and `depends`)."""
+    (`{}`: nothing but the durable's parts and `depends`). A continuation (`resume`)
+    adds the trace it continues, by id, with its `at` and `note` (`resume_part`)."""
     framework = durable.framework if durable is not None else ()
     if cache_inputs is not None:
         parts = {"inputs": _hash(cache_inputs)}
@@ -381,7 +393,16 @@ def call_parts(
         parts.update(durable.parts)
     if depends is not None:
         parts["depends"] = depends_hash(depends)
+    if resume is not None:
+        parts["resume"] = resume_part(resume, at, note)
     return parts
+
+
+def resume_part(resume: Trace, at: str | int | None, note: str | None) -> str:
+    """The fingerprint part of a continuation: the id of the trace it continues (its
+    origin), the checkpoint it continues from (`at`, as given) and its `note`. Another
+    origin (an earlier stage run again) or another note runs the continuation fresh."""
+    return _hash({"trace": resume.id, "at": at, "note": note})
 
 
 def box_parts(

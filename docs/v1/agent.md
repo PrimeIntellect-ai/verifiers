@@ -69,6 +69,12 @@ with vf.use_durable(durable):
         await solver.run(task, runtime=box)             # solver/3
         await reviewer.run(review_task, runtime=box)    # reviewer/0
     await solver.run(task, key="lookup")                # solver/lookup: no position
+    await solver.run(resume=trace, note="and now?")     # solver/4: continues solver/0
+
+with vf.use_durable(durable):                           # a crashed attempt, run again
+    trace = await solver.run(task)                      # solver/0: kept, nothing runs
+    async with solver.interaction(task) as exchange:    # solver/1: replays
+        reply = await exchange.turn("hello")            #   the recorded segment
 ```
 
 See [Durable episodes](env.md#durable-episodes) for the rule host code between the calls
@@ -94,15 +100,23 @@ must follow.
   recorded one returns the recorded segment. A cut-off one replays the turns its latest
   checkpoint covers and continues live from there. A driver that sends something else
   continues live from the checkpoint at the end of the turns it got (with per-call saves,
-  every final reply has one); without one, the turn raises.
+  every final reply has one); without one, the turn raises (before any turn was
+  replayed, the exchange runs fresh).
 - **Boxes.** Every run on a durable box is labelled with the box's key and the checkpoint
   the box was at when the run started, and a later `provision` under the key starts the
   box from the latest checkpoint of the run on it that moved last. Durable runs on it then
   continue from their own latest checkpoint no newer than the box's: seats that take turns
   on a box resume exactly. A durable run on a box that was not restored this way runs
   fresh.
-- **Explicit continuations.** A call passing `resume=`, `at=`, `note=` or `checkpoint=`
-  without `key=` is a plain call.
+- **Continuations.** A call passing `resume=` (with `at=` and `note=`) is durable too, by
+  its position or `key=`: a stage that continues a seat's conversation from an earlier
+  stage keeps its own turns across a crash. Its fingerprint holds the trace it continues
+  (its origin) by id, with `at` and `note`. A finished continuation is kept, a cut-off one
+  continues from its own latest checkpoint (not the origin's), and a continuation of
+  another origin (the earlier stage ran again) or with another note runs fresh from that
+  origin. Without `task=`, the origin's recorded task is fingerprinted. A call passing
+  `checkpoint=` (or `at=`/`note=` without `resume=`) is plain without `key=` and refused
+  with it.
 
 A kept trace restores the conversation, not the box: it is not run again, so whatever it
 did to a box it ran on is not redone. Code that needs the box as the calls left it uses a

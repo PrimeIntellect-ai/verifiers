@@ -394,6 +394,148 @@ async def test_a_replaying_exchange_steers_only_when_live(model, store):
                 await exchange.steer("hey")
 
 
+# -- continuations (resume=) ----------------------------------------------------
+
+
+async def test_a_continuation_is_kept_after_a_crash(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        origin = await agent.run(task(), key="draft")
+        model.requests.clear()
+        first = await agent.run(resume=origin, note="again", key="review")
+        assert first.ok, first.errors
+        assert not first.kept and first.resumed_from == origin.id
+        assert first.labels["call"]["key"] == "agent/review"
+        assert "resume" in first.labels["call"]["parts"]
+        assert len(model.requests) == 1
+        again = await agent.run(resume=origin, note="again", key="review")
+    assert again.kept and again.id == first.id
+    assert len(model.requests) == 1
+
+
+async def test_a_continuation_is_durable_by_its_position_too(model, store):
+    agent = make(model, save="per_call")
+
+    async def stages() -> list[vf.Trace]:
+        with vf.use_durable(vf.Durable(store)):
+            origin = await agent.run(task())  # agent/0
+            return [origin, await agent.run(resume=origin, note="again")]  # agent/1
+
+    first = await stages()
+    assert [t.labels["call"]["key"] for t in first] == ["agent/0", "agent/1"]
+    model.requests.clear()
+    again = await stages()
+    assert all(t.kept for t in again) and model.requests == []
+    assert [t.id for t in again] == [t.id for t in first]
+
+
+async def test_a_cut_off_continuation_resumes_from_its_own_checkpoint(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        origin = await agent.run(task(), key="draft")
+        assert [c.id for c in origin.checkpoints] == ["ckpt-1", "ckpt-2", "ckpt-3"]
+        FakeRuntime.doomed["b.txt"] = box_lost
+        cut = await agent.run(resume=origin, at=0, note="again", key="review")
+        assert not cut.ok and cut.resumed_from == origin.id
+        # The box it started from (the origin's), then its own per-call saves.
+        assert [c.id for c in cut.checkpoints] == ["ckpt-1", "ckpt-4", "ckpt-5"]
+        model.requests.clear()
+        EVENTS.clear()
+        resumed = await agent.run(resume=origin, at=0, note="again", key="review")
+    assert resumed.ok, resumed.errors
+    # Its own trace and latest checkpoint, not the origin's.
+    assert resumed.resumed_from == cut.id
+    assert FakeRuntime.made[-1].source == "ckpt-5"
+    assert EVENTS == ["restore"]
+    sent = model.requests[0]["messages"]
+    assert roles(sent) == ["user", "user", "assistant", "tool", "user"]
+    assert [m["content"] for m in sent if m["role"] == "user"] == [
+        "start",
+        "again",
+        RETRY_NOTE,
+    ]
+
+
+async def test_a_continuation_of_another_origin_runs_fresh(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        origin = await agent.run(task(), key="draft")
+        first = await agent.run(resume=origin, note="again", key="review")
+        # The earlier stage ran again (another trace): its continuation reruns.
+        rerun = await agent.run(task(), key="redraft")
+        fresh = await agent.run(resume=rerun, note="again", key="review")
+        assert not fresh.kept and fresh.id != first.id
+        assert fresh.resumed_from == rerun.id
+        # Another note is another continuation too.
+        noted = await agent.run(resume=rerun, note="other", key="review")
+        assert not noted.kept and noted.last_reply == "done: other"
+        # The latest one of the key is kept.
+        assert (await agent.run(resume=rerun, note="other", key="review")).kept
+
+
+async def test_a_durable_continuation_still_refuses_a_checkpoint(model, store):
+    with vf.use_durable(vf.Durable(store)), pytest.raises(TypeError, match="itself"):
+        await make(model).run(task(), key="solve", checkpoint="ckpt-1")
+
+
+async def test_an_exchange_continuing_a_trace_replays_after_a_crash(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.interaction(task(None), key="round1") as one:
+            await one.turn("first")
+        origin = one.trace
+
+        async def round_two():
+            # The origin ends on the agent's reply: the first turn continues it.
+            async with agent.interaction(resume=origin, key="round2") as two:
+                replies = [(await two.turn(m)).last_reply for m in ("second", "third")]
+            return two, replies
+
+        model.requests.clear()
+        two, replies = await round_two()
+        assert replies == ["done: second", "done: third"]
+        assert two.trace.resumed_from == origin.id and not two.kept
+        sent = model.requests[0]["messages"]
+        assert [m["content"] for m in sent if m["role"] == "user"] == [
+            "first",
+            "second",
+        ]
+        model.requests.clear()
+        again, replayed = await round_two()
+    assert again.kept and again.trace.id == two.trace.id
+    assert replayed == replies and model.requests == []
+
+
+async def test_a_cut_off_exchange_continuation_resumes_its_own_trace(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        origin = await agent.run(task(), key="draft")
+        FakeRuntime.doomed["b.txt"] = box_lost
+        async with agent.interaction(
+            resume=origin, at=0, note="again", key="talk"
+        ) as exchange:
+            await exchange.turn()
+        cut = exchange.trace
+        assert not cut.ok and cut.resumed_from == origin.id
+        model.requests.clear()
+        async with agent.interaction(
+            resume=origin, at=0, note="again", key="talk"
+        ) as exchange:
+            segment = await exchange.turn()
+            assert segment.last_reply == f"done: {RETRY_NOTE}"
+        resumed = exchange.trace
+    assert resumed.ok, resumed.errors
+    assert resumed.resumed_from == cut.id
+    assert FakeRuntime.made[-1].source == "ckpt-5"
+    assert roles(model.requests[0]["messages"]) == [
+        "user",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+
+
 # -- an episode -----------------------------------------------------------------
 
 

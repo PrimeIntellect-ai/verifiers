@@ -112,6 +112,11 @@ The rule, for everything `run()` does:
   to a database or a request to another service may happen once per attempt, so it must
   be safe to repeat, or be returned in the outcome for the caller to apply once.
 
+A stage that continues a seat's conversation from an earlier one (a reviewer across
+rounds) passes the earlier trace: `agents.reviewer.interaction(resume=round_one.trace)`
+is durable like any other call, and a rerun of the earlier stage (a new trace) reruns
+it.
+
 Code changed between attempts is safe: a call whose inputs changed (its fingerprint) runs
 fresh, and so does every call whose position shifted onto another's trace. A call whose
 order is not stable (a call made only on some paths) takes a `key=`.

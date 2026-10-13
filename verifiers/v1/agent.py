@@ -811,11 +811,12 @@ class _Recorded:
 
 
 def _recorded_turns(
-    conversation: Messages, trace: Trace, task: Task
+    conversation: Messages, trace: Trace, task: Task, skip: int = 0
 ) -> list[_Recorded]:
     """Split a recorded exchange into the caller's turns. A user message is the
     caller's unless it is a note the framework added (a retry or resume note) or a
-    steer; a prompted task's opening is its prompt."""
+    steer; a prompted task's opening is its prompt. The first `skip` messages are a
+    continuation's origin conversation, which the first turn continues: no turn's."""
     inner = {RETRY_NOTE, MODEL_RETRY_NOTE, *(steer.text for steer in trace.steers)}
 
     def callers(message) -> bool:
@@ -829,7 +830,7 @@ def _recorded_turns(
     else:
         opening = sum(1 for m in prompt if m.role != "system")
     turns: list[_Recorded] = []
-    index = 0
+    index = skip
     while index < len(conversation):
         start = index
         if not turns and prompt is not None:
@@ -894,9 +895,10 @@ class DurableInteraction:
     segment holds only what came after the cut). A caller that sends a different
     message, or more turns than a finished exchange had, continues live from the
     checkpoint taken at the end of the turns it was given (a per-call save of a final
-    reply, or `checkpoint()`); with none, the turn raises. Steering, `checkpoint()` and
-    `latest_checkpoint` act on the live exchange only. Without anything recorded, the
-    exchange is live from the start, as a plain `interaction()`."""
+    reply, or `checkpoint()`); with none, the turn raises, unless no turn was replayed
+    yet: then the exchange runs fresh. Steering, `checkpoint()` and `latest_checkpoint`
+    act on the live exchange only. Without anything recorded, the exchange is live from
+    the start, as a plain `interaction()`."""
 
     def __init__(
         self,
@@ -905,6 +907,8 @@ class DurableInteraction:
         stack: AsyncExitStack,
         recorded: Trace | None = None,
         checkpoints: list[Checkpoint] | None = None,
+        *,
+        skip: int = 0,
     ) -> None:
         self._task = task
         self._open_live = open_live
@@ -916,14 +920,16 @@ class DurableInteraction:
         self._turns: list[_Recorded] = []
         self._cuts: list[tuple[int, Checkpoint]] = []
         self._next = 0
-        self._position = 0
+        self._position = skip
+        """Where the turns given so far end in the recorded conversation; a
+        continuation's starts after its origin's conversation (`skip`)."""
         self._done = False
         self._horizon = 0
         self._complete = 0
         if recorded is None:
             return
         self._conversation = recorded.conversation_at(None)
-        self._turns = _recorded_turns(self._conversation, recorded, task)
+        self._turns = _recorded_turns(self._conversation, recorded, task, skip)
         for checkpoint in checkpoints or []:
             cut = recorded.conversation_at(checkpoint.turns)
             if _same_input(cut, self._conversation[: len(cut)]):
@@ -998,7 +1004,8 @@ class DurableInteraction:
         at: str | None = None,
         note: str | None = None,
     ) -> Interaction:
-        """Open the live exchange (fresh, or continuing `resume` at `at`)."""
+        """Open the live exchange: fresh (the call's own opening), or continuing
+        `resume` at `at`."""
         if self._live is None:
             self._live = await self._stack.enter_async_context(
                 self._open_live(resume, at, note)
@@ -1075,6 +1082,10 @@ class DurableInteraction:
                 None,
             )
             return await live.turn(message)
+        if self._next == 0:
+            # Nothing was replayed: the exchange runs fresh, from its own opening.
+            live = await self.go_live()
+            return await live.turn(message)
         raise RuntimeError(
             f"cannot continue the recorded exchange at turn {self._next + 1}: the "
             "caller's turn differs from the recorded one (or goes past it) and no "
@@ -1105,6 +1116,20 @@ def _call_labels(found: Durable | None, resolved: Resolved) -> dict:
     """The labels a durable call stamps: its scope's and its own (`CALL_LABEL`)."""
     labels = found.scope if found is not None else {}
     return merge_labels(labels, {CALL_LABEL: resolved.label})
+
+
+def _managed(
+    checkpoint: str | None,
+    resume: Trace | None,
+    at: str | int | None,
+    note: str | None,
+) -> list[str]:
+    """The arguments a durable call cannot take: it picks its own start. `checkpoint`
+    never, `at` and `note` only with `resume` (a durable continuation)."""
+    given = {"checkpoint": checkpoint}
+    if resume is None:
+        given.update(at=at, note=note)
+    return [name for name, value in given.items() if value is not None]
 
 
 def _maybe_durable(key: str | None, durable: Durable | bool | None) -> bool:
@@ -1416,14 +1441,17 @@ class Agent:
         fingerprint (task, task code, model, sampling, harness, client, `depends`;
         `cache_inputs` replaces the task and agent parts) runs fresh. `durable=False`
         opts out; a `Durable` replaces the installed one for this call (another
-        scope). A durable call manages `resume`, `at`, `note` and `checkpoint` itself:
-        a call passing them without `key` is a plain one."""
+        scope). A durable continuation (`resume=` an earlier trace, its origin, with
+        `at` and `note`) is durable the same way, the origin's id, `at` and `note` in
+        its fingerprint: a finished one is kept, a cut-off one continues from its own
+        latest checkpoint, and another origin runs it fresh from the origin. A call
+        passing `checkpoint` (or `at`/`note` without `resume`) without `key` is a
+        plain one."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
-            given = {"checkpoint": checkpoint, "resume": resume, "at": at, "note": note}
-            managed = [name for name, value in given.items() if value is not None]
-            if key is None and (managed or task is None):
+            managed = _managed(checkpoint, resume, at, note)
+            if key is None and (managed or (task is None and resume is None)):
                 durable = False
             # The position is taken here, before anything is awaited.
             found, key = plan_call(self.name, key, durable)
@@ -1440,6 +1468,9 @@ class Agent:
                     on_save=on_save,
                     depends=depends,
                     cache_inputs=cache_inputs,
+                    resume=resume,
+                    at=at,
+                    note=note,
                 )
             return await self.run(
                 task,
@@ -1554,6 +1585,24 @@ class Agent:
         ]
         return (previous, usable[-1].id) if usable else (None, None)
 
+    def _call_parts(
+        self,
+        task: Task | None,
+        found: Durable | None,
+        depends: object,
+        cache_inputs: object,
+        resume: Trace | None,
+        at: str | int | None,
+        note: str | None,
+    ) -> dict[str, str]:
+        """A durable call's fingerprint parts (`durable.call_parts`); a continuation
+        given no task fingerprints the task its origin recorded."""
+        if task is None:
+            if resume is None:
+                raise ValueError("a durable call (key=) needs its task")
+            task = resume.task.rebuild()
+        return call_parts(task, self, found, depends, cache_inputs, resume, at, note)
+
     async def _durable_run(
         self,
         task: Task | None,
@@ -1568,21 +1617,27 @@ class Agent:
         on_save: OnSave | None,
         depends: object,
         cache_inputs: object,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
     ) -> Trace:
         """A durable `run`: resolve the call by its traces, then return the kept one,
-        continue it, or run fresh (`verifiers.v1.durable`)."""
+        continue it, or run fresh (`verifiers.v1.durable`). A continuation of `resume`
+        runs fresh as that continuation; a cut-off one continues its own trace."""
         if managed:
             raise TypeError(f"a durable call (key=) resumes itself; drop {managed}")
-        if task is None:
-            raise ValueError("a durable call (key=) needs its task")
         resolved = resolve_call(
-            found, key, call_parts(task, self, found, depends, cache_inputs)
+            found,
+            key,
+            self._call_parts(task, found, depends, cache_inputs, resume, at, note),
         )
         if resolved.kept is not None:
             return resolved.kept
-        resume, at = self._continuation(resolved.resume, runtime)
-        if resolved.resume is not None and resume is None:
+        again, again_at = self._continuation(resolved.resume, runtime)
+        if resolved.resume is not None and again is None:
             logger.info("call %r runs fresh: its box cannot be restored", key)
+        if again is not None:
+            resume, at, note = again, again_at, RETRY_NOTE
         trace = await self.run(
             task,
             runtime=runtime,
@@ -1591,7 +1646,7 @@ class Agent:
             collect_artifacts=collect_artifacts,
             resume=resume,
             at=at,
-            note=RETRY_NOTE if resume is not None else None,
+            note=note,
             on_save=_chain_save(on_save, found),
             durable=False,
         )
@@ -1697,14 +1752,13 @@ class Agent:
         With a `Durable` installed the exchange is durable as `run` is
         (`DurableInteraction`): a finished one replays its recorded turns to the same
         caller, and a cut-off one replays them up to its latest checkpoint and
-        continues live from there. `key`, `depends`, `cache_inputs` and `durable` are
-        as for `run`."""
+        continues live from there; a continuation (`resume`) is durable too, as for
+        `run`. `key`, `depends`, `cache_inputs` and `durable` are as for `run`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
-            given = {"checkpoint": checkpoint, "resume": resume, "at": at, "note": note}
-            managed = [name for name, value in given.items() if value is not None]
-            if key is None and (managed or task is None):
+            managed = _managed(checkpoint, resume, at, note)
+            if key is None and (managed or (task is None and resume is None)):
                 durable = False
             found, key = plan_call(self.name, key, durable)
             if key is not None:
@@ -1722,6 +1776,9 @@ class Agent:
                     on_save=on_save,
                     depends=depends,
                     cache_inputs=cache_inputs,
+                    resume=resume,
+                    at=at,
+                    note=note,
                 ) as exchange:
                     yield exchange
                 return
@@ -1822,23 +1879,37 @@ class Agent:
         on_save: OnSave | None,
         depends: object,
         cache_inputs: object,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
     ) -> AsyncIterator[DurableInteraction]:
-        """A durable `interaction` (`DurableInteraction`)."""
-        if task is None:
-            raise ValueError("a durable call (key=) needs its task")
+        """A durable `interaction` (`DurableInteraction`); with `resume`, a durable
+        continuation of that trace."""
         resolved = resolve_call(
-            found, key, call_parts(task, self, found, depends, cache_inputs)
+            found,
+            key,
+            self._call_parts(task, found, depends, cache_inputs, resume, at, note),
         )
+        # The exchange as it opens: a continuation's on its origin's conversation (a
+        # prompt the first bare turn answers, or a prefix the first turn continues).
+        opening = (
+            self._opening(task, resume, at, note, None, runtime, interactive=True)
+            if resume is not None
+            else None
+        )
+        base = opening.task if opening is not None else task
+        assert base is not None
+        skip = len(opening.prefix or []) if opening is not None else 0
         recorded = resolved.kept
         checkpoints: list[Checkpoint] = []
         if recorded is None and resolved.resume is not None:
-            resume, at = self._continuation(resolved.resume, runtime)
-            if resume is not None:
-                recorded = resume
-                checkpoints = list(resume.checkpoints)
+            again, again_at = self._continuation(resolved.resume, runtime)
+            if again is not None:
+                recorded = again
+                checkpoints = list(again.checkpoints)
                 if runtime is not None:
                     # On a borrowed box, only those no newer than its restore point.
-                    limit = [c.id for c in checkpoints].index(at)
+                    limit = [c.id for c in checkpoints].index(again_at)
                     checkpoints = checkpoints[: limit + 1]
         elif recorded is not None and self.harness.SUPPORTS_RESUME:
             # A finished exchange goes live again only past its turns; on a borrowed
@@ -1852,22 +1923,32 @@ class Agent:
         labels = _call_labels(found, resolved)
         save = _chain_save(on_save, found)
 
-        def open_live(resume: Trace | None, at: str | None, note: str | None):
+        def open_live(
+            again: Trace | None, again_at: str | None, again_note: str | None
+        ):
+            if again is None:
+                # Fresh: the call's own opening (a continuation of its origin).
+                again, again_at, again_note = resume, at, note
             return self.interaction(
                 task,
                 runtime=runtime,
                 tools=tools,
                 on_trace=observe(on_trace, labels),
                 on_save=save,
-                resume=resume,
-                at=at,
-                note=note,
+                resume=again,
+                at=again_at,
+                note=again_note,
                 durable=False,
             )
 
         async with AsyncExitStack() as stack:
             exchange = DurableInteraction(
-                task, open_live, stack, recorded=recorded, checkpoints=checkpoints
+                base,
+                open_live,
+                stack,
+                recorded=recorded,
+                checkpoints=checkpoints,
+                skip=skip,
             )
             if recorded is None:
                 await exchange.go_live()
