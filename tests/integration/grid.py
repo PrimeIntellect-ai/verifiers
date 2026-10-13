@@ -2,8 +2,11 @@
 cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
-x every runtime. A cell the stack cannot run is collected as a skip with its reason, so
-the suite states what is supported, what is not, and why:
+x every runtime kind. The harness grid runs one local container engine (`docker`);
+`podman` / `apptainer` share its container runtime code and are exercised by the
+runtime-only grids (`placements`, `runtimes_grid`), where the harness is fixed. A cell
+the stack cannot run is collected as a skip with its reason, so the suite states what is
+supported, what is not, and why:
 
 - a `NEEDS_CONTAINER` harness (every agent program) never runs on the host (`subprocess`)
 - `podman` / `apptainer` need their engine on the host
@@ -49,6 +52,7 @@ HARNESSES: list[str | dict] = [
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 REMOTE = ("prime", "modal", "e2b")
+HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
 
 
 def harness_id(harness: str | dict) -> str:
@@ -119,7 +123,7 @@ def runtimes_grid(
 
 def grid(
     harnesses: Sequence[str | dict] = HARNESSES,
-    runtimes: Sequence[str] = RUNTIMES,
+    runtimes: Sequence[str] = HARNESS_RUNTIMES,
     *,
     needs: tuple[str, ...] = (),
 ) -> list:
