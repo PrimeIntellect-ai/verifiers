@@ -213,7 +213,6 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
-        kept: list[Trace] | None = None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes), sharing one semaphore
@@ -245,7 +244,6 @@ class Env(ABC, Generic[ConfigT]):
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
                 peers=peers,
-                kept=kept,
             )
 
         agents = Agents(self.config, make)
@@ -282,8 +280,7 @@ class Env(ABC, Generic[ConfigT]):
             if on_trace is not None:
                 on_trace(trace)
 
-        kept: list[Trace] = []
-        agents = self._episode_agents(ctx, episode.traces, minted, on_discard, kept)
+        agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.trace_labels()"):
@@ -297,14 +294,13 @@ class Env(ABC, Generic[ConfigT]):
                         await self.setup(agents)
                     async with boundary(EnvError, f"{type(self).__name__}.run()"):
                         outcome = await self.run(task, agents)
-                if isinstance(outcome, BaseModel):
-                    episode.outcome = outcome
-                if not episode.traces and not kept:
-                    async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                        raise ValueError(
-                            f"{type(self).__name__}.run() ran no agent — every "
-                            "episode must carry at least one run"
-                        )
+                        if isinstance(outcome, BaseModel):
+                            episode.outcome = outcome
+                        if not episode.traces:
+                            raise ValueError(
+                                f"{type(self).__name__}.run() ran no agent — every "
+                                "episode must carry at least one run"
+                            )
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):

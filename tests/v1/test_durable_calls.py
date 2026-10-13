@@ -428,11 +428,15 @@ async def test_an_episode_run_again_skips_its_finished_calls(
     model.requests.clear()
     episode = await env.run_episode(task(), ctx)
     assert episode.ok, episode.errors
-    # The finished call joined the first episode; this one ran only the second.
-    assert [t.labels["call"]["key"] for t in episode.traces] == ["solver/1"]
+    # The finished call was kept: the episode holds it and ran only the second.
+    first, second = episode.traces
+    assert first.kept and first.id == crashed.traces[0].id
+    assert second.labels["call"]["key"] == "solver/1" and not second.kept
     assert all(r["messages"][0]["content"] == "two" for r in model.requests)
     # Everything kept: the episode ran nothing and is still whole.
     model.requests.clear()
     again = await env.run_episode(task(), ctx)
     assert again.ok, again.errors
-    assert again.traces == [] and model.requests == []
+    assert [t.id for t in again.traces] == [first.id, second.id]
+    assert all(t.kept for t in again.traces) and model.requests == []
+

@@ -2015,12 +2015,8 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
         peers: dict[str, str] | None = None,
-        kept: list[Trace] | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
-        self._kept = kept if kept is not None else []
-        """Traces durable calls returned without running: not the episode's (they
-        joined an earlier one), but they count as the episode having run."""
         self._peers = peers
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
@@ -2101,7 +2097,9 @@ class _EpisodeAgent(Agent):
                 durable=durable,
             )
             if trace.kept:
-                self._kept.append(trace)
+                # A kept trace is part of this episode's result too: the attempt that
+                # made it never landed.
+                self._completed.append(trace)
             return trace
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -2164,7 +2162,7 @@ class _EpisodeAgent(Agent):
             ) as exchange:
                 yield exchange
             if isinstance(exchange, DurableInteraction) and exchange.kept:
-                self._kept.append(exchange.trace)
+                self._completed.append(exchange.trace)
             return
         trace: Trace | None = None
 
