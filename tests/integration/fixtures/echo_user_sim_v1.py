@@ -9,7 +9,6 @@ closes the interaction (the trace stops as `user_closed`).
 import verifiers.v1 as vf
 
 PHRASES = ["hello world", "goodbye world"]
-SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 
 
 def _key(text: str) -> str:
@@ -43,7 +42,10 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
         # first turn opens the conversation.
         async with agents.agent.interaction(task) as interaction:
             for phrase in task.data.phrases:
-                if (await interaction.turn(phrase)).terminated:
+                instruction = (
+                    f"Reply with exactly this phrase and nothing else: {phrase}"
+                )
+                if (await interaction.turn(instruction)).terminated:
                     break
 
 
@@ -55,7 +57,6 @@ class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
                     idx=0,
                     # No prompt: the scripted user opens the conversation.
                     prompt=None,
-                    system_prompt=SYSTEM,
                     phrases=self.config.phrases,
                 )
             )
