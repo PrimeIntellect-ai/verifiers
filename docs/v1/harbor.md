@@ -66,16 +66,39 @@ class OpenThoughtsTBLiteTaskset(
 Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. A separate verifier prefers `[verifier.environment].docker_image`, then `tests/Dockerfile` or `tests/docker-compose.yaml`, then the agent environment. A verifier section that only declares resources inherits the agent image and stages the task package's tests. Dedicated verifier builds are rejected unless `ignore_dockerfile` explicitly enables fallback. When `verifier_image` is `None`, the verifier uses the task's current `image` and stages the packaged tests. These changes leave `task.toml` unchanged.
 
 For images that need services or initialization normally started by their `ENTRYPOINT`,
-set `setup_command` on the task data in `load()`, for example
-`task.with_data(setup_command="bash /app/start-services.sh")`. This is a verifiers
-task-data field, not a Harbor `task.toml` setting. `HarborTask.setup` runs it with
-`sh -c` after staging the contents of `environment/` into the runtime's workdir and
-before `[environment.healthcheck]`. It also runs when no environment upload is needed.
-The command uses the runtime's workdir, task environment variables, and default user;
-a nonzero exit fails setup. It must finish (background any long-lived services) and
-be idempotent: every setup call runs it, including retries and separate verifier
-setup. Ensure the command and its files are available in each image that uses it.
-Unset or empty commands do nothing; image entrypoints are not replayed automatically.
+set an agent setup command in `task.toml`:
+
+```toml
+[environment]
+setup_command = "bash /app/start-services.sh"
+```
+
+`HarborTask.setup` runs it with `sh -c` after staging the contents of `environment/`
+into the runtime's workdir and before `[environment.healthcheck]`. It also runs when
+no environment upload is needed. The command uses the runtime's workdir, task
+environment variables, and default user; a nonzero exit fails setup.
+
+The agent command never runs in a separate verifier box by default, even when the
+verifier uses a fresh copy of the agent image. Opt in with an independent command:
+
+```toml
+[verifier]
+environment_mode = "separate"
+setup_command = "bash /app/start-verifier-services.sh"
+```
+
+The verifier command runs before its healthcheck, artifact restoration, and test
+staging. It must already be available in the verifier image or staged `environment/`
+files; a dedicated verifier image does not receive those files. It has no effect
+for shared grading or when `ignore_separate_verifier = true`.
+
+These command fields are verifiers extensions to Harbor's `task.toml` schema.
+Commands must be strings; unset or empty commands do nothing. Each command must
+finish (background any long-lived services) and be idempotent, since every setup
+attempt runs it, including retries. Image entrypoints are not replayed automatically.
+Python tasksets can also set `HarborData.setup_command` with
+`task.with_data(setup_command="bash /app/start-services.sh")`; separate verifiers
+use their own `VerifierConfig.setup_command`.
 
 To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 

@@ -25,11 +25,19 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -126,6 +134,17 @@ class HarborArtifact(Artifact):
     """The Compose service to collect from; the grader restores at the same path."""
 
 
+class _SetupCommands(BaseModel):
+    """Verifiers-specific task.toml fields that Harbor's schema does not preserve."""
+
+    agent: str | None = Field(
+        None, validation_alias=AliasPath("environment", "setup_command")
+    )
+    verifier: str | None = Field(
+        None, validation_alias=AliasPath("verifier", "setup_command")
+    )
+
+
 class VerifierConfig(BaseModel):
     """The box this task's verifier wants, when it wants one of its own.
 
@@ -136,6 +155,8 @@ class VerifierConfig(BaseModel):
     workdir: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     healthcheck: dict | None = None
+    setup_command: str | None = None
+    """Explicit `[verifier].setup_command` for this box; never inherits agent setup."""
     fresh_copy: bool = False
     """Whether this came from Harbor's fresh copy of `[environment]` rather than a
     declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
@@ -163,9 +184,10 @@ class HarborData(TaskData):
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
     setup_command: str | None = None
-    """Optional shell command run after staging environment/ and before the healthcheck.
-    Runs in the runtime's workdir as its default user on every setup, including in a
-    separate verifier. Must be idempotent and return after starting any services."""
+    """`[environment].setup_command`, run after staging environment/ and before health.
+    Runs in the agent runtime's workdir as its default user on every setup. Must be
+    idempotent and return after starting services. Separate verifiers opt in via
+    `verifier.setup_command` instead of inheriting this command."""
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
@@ -473,6 +495,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment
             if data.verifier_image is None
             else False,
+            "setup_command": verifier.setup_command,
             "env": dict(verifier.env),
             "healthcheck": verifier.healthcheck,
             "skills": [],
@@ -664,7 +687,14 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             f"{task_dir.name}: multi-step Harbor tasks are not supported; "
             "select single-step tasks with --taskset.tasks"
         )
+    # Harbor ignores these adapter-specific fields. Read and validate them from
+    # the source, not its resolved environment (which a verifier may inherit).
+    setup_commands = _SetupCommands.model_validate(
+        tomllib.loads(harbor_task.paths.config_path.read_text())
+    )
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
+    if verifier is not None:
+        verifier.setup_command = setup_commands.verifier
     environment = parsed.environment
     image = resolve_image(
         task_dir,
@@ -743,6 +773,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         upload_environment=upload_environment,
+        setup_command=setup_commands.agent,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
             include={"env", "healthcheck", "mcp_servers"}, mode="json"
