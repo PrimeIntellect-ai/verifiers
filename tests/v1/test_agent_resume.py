@@ -507,10 +507,10 @@ async def test_run_rejects_a_trace_ending_on_a_reply_without_note(model):
     assert len(FakeRuntime.made) == made
 
 
-async def test_a_borrowed_box_is_not_checkpointed(model):
+async def test_a_borrowed_box_without_an_owner_is_not_checkpointed(model):
     agent = make(model)
     async with (
-        agent.provision(task()) as box,
+        vf.runtimes.provision_runtime(vf.runtimes.SubprocessConfig()) as box,
         agent.interaction(task(), runtime=box) as interaction,
     ):
         await interaction.turn()

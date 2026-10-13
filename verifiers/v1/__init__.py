@@ -3,7 +3,14 @@ import logging as _logging
 from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.agent import (
+    Agent,
+    Agents,
+    Interaction,
+    Segment,
+    make_agent,
+)
+from verifiers.v1.box import Box, box_of
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -244,6 +251,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "WireEpisode",
     "WireOutcome",
     "Checkpoint",
+    "Box",
+    "box_of",
     "GroupInfo",
     "TRACE_VERSION",
     "AgentInfo",

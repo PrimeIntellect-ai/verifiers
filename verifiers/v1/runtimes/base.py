@@ -247,6 +247,23 @@ class Runtime(ABC):
         runtime.env = dict(env)
         return runtime
 
+    def adopt(self, other: "Runtime") -> "Runtime":
+        """Become the box `other` is, in place: this runtime and every view of it
+        (`with_env`, `with_user`: they share its physical state) now act on `other`'s
+        box, and `other` shares that state too. Returns a runtime holding the box this
+        one was, for its owner to tear down. Both must be the same runtime type."""
+        if type(other) is not type(self):
+            raise TypeError(
+                f"a {type(self).__name__} cannot adopt a {type(other).__name__}"
+            )
+        state = self.__dict__
+        old = copy.copy(self)
+        old.__dict__ = dict(state)
+        state.clear()
+        state.update(other.__dict__)
+        other.__dict__ = state
+        return old
+
     def with_user(self, user: str | None, home: str | None = None) -> "Runtime":
         """A view of this runtime whose commands and file I/O run as `user` (an existing
         user in the box) with `HOME` set to `home`; None returns the default user."""

@@ -10,6 +10,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
 from verifiers.v1 import steering
+from verifiers.v1.box import box_of
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -129,6 +130,7 @@ class Rollout:
         on_save: OnSave | None = None,
         resumes: Trace | None = None,
         peers: dict[str, str] | None = None,
+        restored: Checkpoint | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -141,6 +143,11 @@ class Rollout:
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
+        self._box = box_of(runtime)
+        """The owner of a borrowed box `Agent.provision` handed out: it checkpoints the
+        box for this run and restores it for a retry."""
+        self.box_generation = self._box.generation if self._box is not None else 0
+        """Which of the owner's boxes this run started on (`Box.replace`)."""
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
             task=TraceTask.of(task),
@@ -155,10 +162,15 @@ class Rollout:
             self.trace.resumed_from = resumes.id
             self.trace.info = copy.deepcopy(resumes.info)
         restored_from = (
-            getattr(runtime_config, "checkpoint", None) if runtime is None else None
+            getattr(runtime_config, "checkpoint", None)
+            if runtime is None
+            else restored.id
+            if restored is not None
+            else None
         )
         if restored_from is not None:
-            # The box starts from this checkpoint, matching the opening conversation.
+            # The box starts from this checkpoint, matching the opening conversation
+            # (a borrowed box: its owner restored it for this continuation).
             self.trace.checkpoints.append(
                 Checkpoint(id=restored_from, turns=0, restored=True, time=time.time())
             )
@@ -196,9 +208,19 @@ class Rollout:
         if self._messaging:
             self._session.peers = peers
         self._on_save = on_save
-        if agent_config.save == "per_call" and runtime is None:
-            # Last, so it saves the response the harness will actually receive. A
-            # borrowed box is its owner's to checkpoint.
+        if runtime is None:
+            saves = agent_config.save == "per_call"
+        else:
+            # A borrowed box saves through its owner (`Box`), when the run or the
+            # provisioning agent saves per call; a box with no owner is never saved.
+            box = self._box
+            saves = (
+                box is not None
+                and box.can_checkpoint
+                and (agent_config.save == "per_call" or box.save)
+            )
+        if saves:
+            # Last, so it saves the response the harness will actually receive.
             self._session.response_interceptors.append(self.save_call)
         self._stack = AsyncExitStack()
         self._failed = False
@@ -541,27 +563,31 @@ class Rollout:
         `Checkpoint`). The record is written once the checkpoint is restorable: a
         failed or cancelled checkpoint raises and leaves no record behind."""
         runtime = self.runtime
-        if not self.owns_runtime:
+        if not self.owns_runtime and self._box is None:
             raise ValueError(
-                "a borrowed box is its owner's to checkpoint; this rollout does not "
-                "own its box"
+                "a borrowed box is its owner's to checkpoint, and this one has no "
+                "owner to do it (provision it with agent.provision)"
             )
         if runtime is None or not runtime.supports_checkpoint:
             raise ValueError(f"{type(runtime).__name__} has no filesystem checkpoints")
         if turns is None:
             turns = self.trace.num_turns
-        checkpoint_id = await runtime.checkpoint()
+        if self._box is not None and not self.owns_runtime:
+            checkpoint_id = (await self._box.checkpoint()).id
+        else:
+            checkpoint_id = await runtime.checkpoint()
         return self.trace.record_checkpoint(checkpoint_id, turns)
 
     async def save_call(self, response: Response) -> None:
         """Save the exchange as of this model response, before the harness receives it:
-        checkpoint the owned box and record it on the trace; `on_save` is called once
-        the call has committed to the trace. None of the response's
-        tool calls has run, so the box matches the conversation up to the request, plus
-        the response when it is a final reply (`Checkpoint` has the rule). Installed
-        only on an owned box whose runtime restores checkpoints (`Agent` checks the
-        config before provisioning). A checkpoint failing every try is logged and
-        skipped, so the previous one stands."""
+        checkpoint the box (an owned one directly, a borrowed one through its `Box`
+        owner) and record it on the trace; `on_save` is called once the call has
+        committed to the trace. None of the response's tool calls has run, so the box
+        matches the conversation up to the request, plus the response when it is a
+        final reply (`Checkpoint` has the rule). Installed only on a box whose runtime
+        restores checkpoints (`Agent` checks the config before provisioning). A
+        checkpoint failing every try is logged and skipped, so the previous one
+        stands."""
         trace = self.trace
         # The response is not committed yet: a final reply leaves the box as it is,
         # so the checkpoint matches the conversation with it.

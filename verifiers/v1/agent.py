@@ -9,6 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -17,6 +18,7 @@ from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
 
+from verifiers.v1.box import Box, box_of, provision_box
 from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
@@ -37,7 +39,6 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
-    provision_runtime,
     restore_config,
     runtime_is_local,
 )
@@ -193,8 +194,9 @@ class _Opening:
     """The trace a `resume=` continues."""
 
 
-Reopen = Callable[[Task, str | None, Trace], Awaitable["Rollout"]]
-"""Build and open a replacement rollout: `(task, checkpoint, the trace it replaces)`."""
+Reopen = Callable[[Task, str | None, Trace, "Rollout"], Awaitable["Rollout"]]
+"""Build and open a replacement rollout: `(task, checkpoint, the trace it replaces,
+the rollout it replaces)`."""
 
 
 @dataclass
@@ -235,7 +237,9 @@ class Interaction:
     again: on the same box after a model-side failure, else on a fresh box restored
     from the trace's latest checkpoint (`latest_checkpoint`; or the opening state):
     the failed attempt's rollout is closed with its errors (`failed_attempts`), and
-    `interaction.trace` becomes the replacement's."""
+    `interaction.trace` becomes the replacement's. A borrowed box is restored by its
+    owner (`box.Box.replace`, from the latest checkpoint any seat on it took), so every
+    seat on it continues on the restored box; it needs a checkpoint of this trace."""
 
     def __init__(
         self,
@@ -245,8 +249,10 @@ class Interaction:
         opening: _Opening | None = None,
         reopen: Reopen | None = None,
         retries: int = 0,
+        box: Box | None = None,
     ) -> None:
         self._run = run
+        self._box = box
         self._gate = gate
         self._opening = opening
         self._prefix = opening.prefix if opening is not None else None
@@ -673,6 +679,9 @@ class Interaction:
     def _reopens_opening(self, first: bool) -> bool:
         """Whether a retry reopens the interaction exactly as it opened: a first
         segment of the original attempt with nothing checkpointed past its opening."""
+        if self._box is not None:
+            # A borrowed box's opening state is whatever its seats left on it.
+            return False
         checkpoint = self.latest_checkpoint
         return first and (
             checkpoint is None or (checkpoint.turns == 0 and not self.failed_attempts)
@@ -680,6 +689,8 @@ class Interaction:
 
     def _resumable(self, first: bool) -> bool:
         """Whether a failed turn has a sound state to resume from."""
+        if self._box is not None:
+            return self.latest_checkpoint is not None and self._box.latest is not None
         return self._reopens_opening(first) or self.latest_checkpoint is not None
 
     async def _retry(
@@ -737,9 +748,10 @@ class Interaction:
             next_messages = None
             in_prompt = True
         steers = list(self.trace.steers)
-        failed = await self._run.close()
+        failed_run = self._run
+        failed = await failed_run.close()
         self.failed_attempts.append(failed)
-        self._run = await self._reopen(task, start, failed)
+        self._run = await self._reopen(task, start, failed, failed_run)
         # A steer the replacement's conversation does not hold (never delivered, or
         # delivered after the checkpoint) is queued again so the retry still hears it.
         prompt = task.data.prompt if isinstance(task.data.prompt, list) else []
@@ -767,6 +779,12 @@ class Interaction:
                 self._history_merged = True
                 trace.errors = [*history, *trace.errors]
             return trace
+
+
+def _box_start(runtime: Runtime | None, resumes: Trace | None) -> Checkpoint | None:
+    """The checkpoint a borrowed box was restored from, for a continuation on it."""
+    box = box_of(runtime)
+    return box.restored if box is not None and resumes is not None else None
 
 
 class Agent:
@@ -952,12 +970,7 @@ class Agent:
                 "pass task= to resume its conversation on a fresh box (or runtime= "
                 "to resume it in a live one)"
             )
-        if start is not None and runtime is not None:
-            raise ValueError(
-                "this trace restores its box from a checkpoint, so it cannot also "
-                "run on a borrowed runtime"
-            )
-        if start is not None:
+        if start is not None and runtime is None:
             try:
                 restore_config(self.runtime_config, start.id)
             except TypeError as e:
@@ -995,7 +1008,8 @@ class Agent:
             ) from e
         return _Opening(
             task=task,
-            checkpoint=start.id if start is not None else None,
+            # A borrowed box is as its owner restored it: only the cut is the trace's.
+            checkpoint=start.id if start is not None and runtime is None else None,
             prefix=prefix,
             source=resume,
         )
@@ -1048,7 +1062,8 @@ class Agent:
         ends on the agent's reply). A trace with no checkpoint resumes only with
         `task=` (on a fresh box) or `runtime=`. With `config.save = "per_call"`, the
         owned box is checkpointed after every model response, each checkpoint recorded
-        on the trace and handed to `on_save(trace, checkpoint)`."""
+        on the trace and handed to `on_save(trace, checkpoint)`; a box `provision`
+        handed out is checkpointed through its owner the same way (`box.Box`)."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         opening = self._opening(
@@ -1122,6 +1137,7 @@ class Agent:
             collect_artifacts=collect_artifacts,
             on_save=on_save,
             resumes=resumes,
+            restored=_box_start(runtime, resumes),
             **params,
         )
         try:
@@ -1193,6 +1209,7 @@ class Agent:
         )
         self._check_saves(runtime)
         shared_tools = dict(tools or {})
+        box = box_of(runtime)
 
         def make_run(
             task: Task, checkpoint: str | None, resumes: Trace | None
@@ -1203,10 +1220,18 @@ class Agent:
                 on_trace=on_trace,
                 on_save=on_save,
                 resumes=resumes,
+                restored=_box_start(runtime, resumes),
                 **self._rollout_params(task, runtime, shared_tools, checkpoint),
             )
 
-        async def reopen(task: Task, checkpoint: str | None, failed: Trace) -> Rollout:
+        async def reopen(
+            task: Task, checkpoint: str | None, failed: Trace, failed_run: Rollout
+        ) -> Rollout:
+            if box is not None:
+                # The owner restores the borrowed box for every seat on it; the run
+                # continues on it from its own conversation cut.
+                await box.replace(failed_run.box_generation)
+                checkpoint = None
             # A failed open is captured on the replacement: its step fails at once.
             replacement = make_run(task, checkpoint, failed)
             await replacement.open()
@@ -1217,8 +1242,9 @@ class Agent:
             run,
             gate=self._gate,
             opening=opening,
-            reopen=reopen if runtime is None else None,
+            reopen=reopen if runtime is None or box is not None else None,
             retries=self.config.interaction_retries,
+            box=box,
         )
         async with self._gate or nullcontext():
             opened = await run.open()
@@ -1310,17 +1336,27 @@ class Agent:
     ) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given and started from `checkpoint` when
-        given; share it via `run(..., runtime=box)`."""
+        given; share it via `run(..., runtime=box)`.
+
+        The box comes with its owner (`box.Box`): runs that borrow it checkpoint it
+        through the owner (per call when they or this agent save per call), and an
+        interaction retry on it has the owner restore it for every seat."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
+        start: Checkpoint | None = None
         if checkpoint is not None:
-            config = restore_config(config, checkpoint)
-        async with provision_runtime(config) as runtime:
+            restore_config(config, checkpoint)  # raises when the runtime cannot
+            start = Checkpoint(id=checkpoint, turns=0, time=time.time())
+        async with provision_box(
+            config,
             # Keep sandbox startup task-neutral: this box may later host another task.
-            runtime.env = dict(task.runtime_env()) if task is not None else {}
+            env=task.runtime_env() if task is not None else {},
+            checkpoint=start,
+            save=self.config.save == "per_call",
+        ) as runtime:
             yield runtime
 
 
