@@ -1,3 +1,5 @@
+"""The color-codeword example renders each color image once."""
+
 from color_codeword import taskset
 
 

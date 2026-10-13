@@ -9,8 +9,6 @@ from prime_tunnel import TunnelGoneError, TunnelStatus
 
 from verifiers.v1.interception.tunnel import prime
 
-pytestmark = pytest.mark.asyncio
-
 GONE = (None, "terminated", "expired")
 
 

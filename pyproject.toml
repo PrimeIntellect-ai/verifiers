@@ -212,7 +212,7 @@ known-first-party = ["verifiers"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-pythonpath = ["tests/integration", "tests/integration/fixtures"]
+pythonpath = ["tests/unit", "tests/integration", "tests/integration/fixtures"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
