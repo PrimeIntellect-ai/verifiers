@@ -869,6 +869,10 @@ class Rollout:
                 if span.start and not span.end:
                     span.end = now
             trace.split_agent_time()
+            # The final `ok` and closed spans are set after the last notify above:
+            # stream them, or a watcher (a durable-call lookup) sees the trace ended
+            # with `ok=False`.
+            trace.notify()
             if runtime is not None:
                 try:
                     await self.harness.cleanup(trace, runtime)

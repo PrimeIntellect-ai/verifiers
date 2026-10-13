@@ -611,3 +611,16 @@ async def test_a_code_change_that_shifts_positions_reruns_them(model, studio):
     again = await env.run_episode(task(), ctx)
     assert again.ok and model.requests == []
     assert all(t.kept for t in again.traces) and len(again.traces) == 3
+
+
+async def test_a_finished_run_streams_its_final_ok(model):
+    """The final `ok` is set after the rollout's last phase notify; a watcher (a
+    durable-call lookup reading the streamed trace) must still see it."""
+    seen: list[tuple[bool, bool]] = []
+
+    def watch(trace):
+        trace.watch(lambda t: seen.append((t.is_completed, t.ok)))
+
+    trace = await make(model).run(task(), on_trace=watch)
+    assert trace.ok, trace.errors
+    assert seen[-1] == (True, True)
