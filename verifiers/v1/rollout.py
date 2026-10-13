@@ -610,10 +610,14 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        await asyncio.gather(
+                        results = await asyncio.gather(
                             self.task.score(trace, runtime),
                             self.harness.score(trace, self._agent_runtime or runtime),
+                            return_exceptions=True,
                         )
+                        for result in results:
+                            if isinstance(result, BaseException):
+                                raise result
                 except TimeoutError:
                     self.timeout("scoring")
                 trace.timing.scoring.end = time.time()

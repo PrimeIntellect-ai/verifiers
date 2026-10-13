@@ -1,8 +1,14 @@
+import asyncio
+
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.loaders import load_harness
 
 PLUGGED_FNS_PY = """
 from verifiers.v1 import Trace
@@ -100,6 +106,75 @@ async def test_defer_scoring_defers_only_task_scoring() -> None:
     assert trace.rewards == {}
     await task.score(trace)
     assert set(trace.rewards) == {"fmt", "lcs"}
+
+
+async def test_rollout_close_waits_for_both_scorers_before_teardown() -> None:
+    class FakeRuntime:
+        stopped = False
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    task_started = asyncio.Event()
+    release_task = asyncio.Event()
+    harness_started = asyncio.Event()
+    harness_failed = asyncio.Event()
+    allow_harness_failure = asyncio.Event()
+    observation: dict[str, bool] = {}
+
+    async def slow_score(trace, runtime) -> None:
+        task_started.set()
+        await release_task.wait()
+        observation.update(
+            runtime_stopped=runtime.stopped,
+            trace_completed=trace.is_completed,
+        )
+        trace.record_reward("task", 1.0)
+
+    task.score = slow_score
+    harness = load_harness(HarnessConfig(id="null"))
+
+    async def failing_score(trace, runtime) -> None:
+        harness_started.set()
+        await allow_harness_failure.wait()
+        harness_failed.set()
+        raise RuntimeError("judge call failed")
+
+    harness.score = failing_score
+    run = Rollout(
+        task=task,
+        agent_config=vf.AgentConfig(model="m"),
+        harness=harness,
+        ctx=vf.ModelContext(model="m", client=vf.EvalClientConfig()),
+        runtime_config=vf.SubprocessConfig(),
+        timeouts=RolloutTimeouts(),
+        limits=RolloutLimits(),
+    )
+    run._opened = True
+    runtime = FakeRuntime()
+    run.runtime = runtime
+
+    close_task = asyncio.create_task(run.close())
+    await task_started.wait()
+    await harness_started.wait()
+    allow_harness_failure.set()
+    await harness_failed.wait()
+    await asyncio.sleep(0)
+
+    assert not close_task.done()
+    assert not runtime.stopped
+
+    release_task.set()
+    trace = await close_task
+
+    assert observation == {"runtime_stopped": False, "trace_completed": False}
+    assert trace.rewards["task"].score == 1.0
+    assert trace.is_completed
+    assert not trace.ok
+    assert trace.last_error is not None
+    assert "judge call failed" in trace.last_error.message
+    assert runtime.stopped
 
 
 def test_compare_stdout_results_accepts_token_equal_text() -> None:
