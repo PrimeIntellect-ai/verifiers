@@ -16,7 +16,6 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from functools import partial
 from typing import TypeVar
 
 import msgpack
@@ -204,8 +203,7 @@ class EnvClient:
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas. Server token streams
-        skip scalar validation while retaining native models and copied lists."""
+        episode returned is assembled from the same deltas."""
         assembly = EpisodeAssembly()
 
         def apply(delta: dict) -> None:
@@ -225,8 +223,7 @@ class EnvClient:
         )
         assert response.head is not None
         return await self._decode(
-            partial(WireEpisode.model_validate, context={"trusted_wire": True}),
-            assembly.finish(response.head, response.traces),
+            WireEpisode.model_validate, assembly.finish(response.head, response.traces)
         )
 
     async def close(self) -> None:
