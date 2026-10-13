@@ -12,7 +12,6 @@ from pydantic import BaseModel
 import verifiers.v1 as vf
 from verifiers.v1.agent import Agent
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import TraceTask
@@ -168,28 +167,23 @@ class OutcomeEnv(vf.Env[DuetConfig]):
         return Outcome(verdict="pass")
 
     async def finalize(self, task, episode):
-        episode.outcome.score = 0.5
+        outcome = episode.outcome_as(Outcome)
+        episode.outcome = outcome.model_copy(update={"score": 0.5}).model_dump()
 
 
-async def test_run_outcome_is_kept_typed_and_finalize_amends_it(stub_rollouts):
+async def test_run_outcome_round_trips_and_finalize_amends_it(stub_rollouts):
     episode = await env(OutcomeEnv).run_episode(task(), ctx())
     assert episode.ok
-    # In process, the outcome is the env's own model.
-    assert episode.outcome == Outcome(verdict="pass", score=0.5)
-    assert episode.outcome_as(Outcome) is episode.outcome
-    record = episode.to_record()
+    assert episode.outcome == {"verdict": "pass", "score": 0.5}
+    assert episode.outcome_as(Outcome) == Outcome(verdict="pass", score=0.5)
+    record = json.loads(json.dumps(episode.to_record()))
     assert record["outcome"] == {"verdict": "pass", "score": 0.5}
-    # On the wire it loads permissive, every field kept, and reads typed.
-    loaded = vf.WireEpisode.model_validate(json.loads(json.dumps(record)))
-    assert isinstance(loaded.outcome, vf.WireOutcome)
-    assert loaded.outcome.model_dump() == {"verdict": "pass", "score": 0.5}
-    assert loaded.outcome_as(Outcome) == Outcome(verdict="pass", score=0.5)
-    assert loaded.to_record()["outcome"] == record["outcome"]
-    # A consumer that has the model loads it typed.
-    typed = vf.Episode[
-        vf.WireTaskData, vf.State, WireAgentConfig, Outcome
-    ].model_validate(record)
-    assert typed.outcome == Outcome(verdict="pass", score=0.5)
+    # Every loader reads it: the wire loader and a plain `Episode`.
+    for loader in (vf.WireEpisode, vf.Episode):
+        loaded = loader.model_validate(record)
+        assert loaded.outcome_as(Outcome) == Outcome(verdict="pass", score=0.5)
+        assert loaded.to_record()["outcome"] == record["outcome"]
+        repr(loaded)
 
 
 class NonModelReturnEnv(PlainEnv):
@@ -204,6 +198,18 @@ async def test_non_model_return_is_ignored(stub_rollouts):
     assert episode.outcome is None
 
 
+class TraceReturnEnv(PlainEnv):
+    async def run(self, task, agents):
+        return await agents.solver.run(task)
+
+
+async def test_a_returned_trace_is_not_an_outcome(stub_rollouts):
+    episode = await env(TraceReturnEnv).run_episode(task(), ctx())
+    assert episode.ok
+    assert episode.outcome is None
+    assert "outcome" not in episode.to_record()
+
+
 class RetriedOutcomeEnv(vf.Env[DuetConfig]):
     attempts = 0
 
@@ -216,7 +222,7 @@ class RetriedOutcomeEnv(vf.Env[DuetConfig]):
 
     async def finalize(self, task, episode):
         if self.attempts == 1:
-            assert episode.outcome == Outcome(verdict="first")
+            assert episode.outcome_as(Outcome) == Outcome(verdict="first")
             raise ValueError("first attempt fails")
 
 
@@ -231,7 +237,7 @@ async def test_each_retry_attempt_starts_without_outcome(stub_rollouts):
 
 class FinalizeOnlyOutcomeEnv(PlainEnv):
     async def finalize(self, task, episode):
-        episode.outcome = Outcome(verdict="judged")
+        episode.outcome = Outcome(verdict="judged").model_dump(mode="json")
 
 
 async def test_finalize_may_set_the_outcome(stub_rollouts):

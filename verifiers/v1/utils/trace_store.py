@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from verifiers.v1.episode import EnvInfo, Episode, OutcomeT, WireEpisode
+from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
@@ -20,7 +20,7 @@ type_adapter = cache(TypeAdapter)
 
 
 def write_episode(
-    results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT, OutcomeT]
+    results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
@@ -50,7 +50,7 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
 
 async def append_episode(
     results_dir: Path,
-    episode: Episode[DataT, StateT, AgentConfigT, OutcomeT],
+    episode: Episode[DataT, StateT, AgentConfigT],
     lock: asyncio.Lock,
 ) -> None:
     """Append one finished rollout episode without blocking the event loop. The run's

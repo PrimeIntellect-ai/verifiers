@@ -154,8 +154,8 @@ class Env(ABC, Generic[ConfigT]):
         actually run at once is the run's bound, not this hook's
         (`--env.max-concurrent-agents`, one at a time by default).
         Optionally return a pydantic model, the env's outcome: the episode keeps it
-        as `episode.outcome` (`finalize()` may replace it; a consumer of the record
-        reads it typed with `episode.outcome_as(Model)`). Any other return value is
+        dumped as `episode.outcome` (`finalize()` may replace it; read it typed with
+        `episode.outcome_as(Model)`). Any other return value, a `Trace` included, is
         ignored."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
@@ -285,8 +285,12 @@ class Env(ABC, Generic[ConfigT]):
                         await self.setup(agents)
                     async with boundary(EnvError, f"{type(self).__name__}.run()"):
                         outcome = await self.run(task, agents)
-                        if isinstance(outcome, BaseModel):
-                            episode.outcome = outcome
+                        # A returned trace (`return await agents.x.run(task)`) is
+                        # already one of the episode's: not an outcome.
+                        if isinstance(outcome, BaseModel) and not isinstance(
+                            outcome, Trace
+                        ):
+                            episode.outcome = outcome.model_dump(mode="json")
                         if not episode.traces:
                             raise ValueError(
                                 f"{type(self).__name__}.run() ran no agent — every "
