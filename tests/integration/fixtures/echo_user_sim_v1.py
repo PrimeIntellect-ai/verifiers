@@ -26,12 +26,14 @@ class EchoUserSimData(vf.TaskData):
 class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
-        replies = [m.content for m in trace.assistant_messages]
-        phrases = self.data.phrases
-        if len(replies) < len(phrases):
-            return 0.0
-        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
-        return matched / len(phrases)
+        # Match each phrase to a later reply, in order: a harness may spend turns on
+        # tool calls, so replies and phrases need not pair up one to one.
+        replies = iter(_key(m.content or "") for m in trace.assistant_messages)
+        matched = sum(
+            any(_key(phrase) in reply for reply in replies)
+            for phrase in self.data.phrases
+        )
+        return matched / len(self.data.phrases)
 
 
 class EchoUserSimEnv(vf.SingleAgentEnv):
@@ -43,7 +45,8 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
         async with agents.agent.interaction(task) as interaction:
             for phrase in task.data.phrases:
                 instruction = (
-                    f"Reply with exactly this phrase and nothing else: {phrase}"
+                    "Answer directly without using tools or running code. Your "
+                    f"reply must contain this exact phrase: {phrase}"
                 )
                 if (await interaction.turn(instruction)).terminated:
                     break
