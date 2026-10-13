@@ -2,7 +2,7 @@
 
 Root setup creates the task's `agent_user` (images normally ship one) and hands it the
 workdir; the harness then installs, launches as that user, and answers a one-line prompt.
-With the e2e suite's scripted upstream answering, the run is deterministic: it fails only if
+With the integration suite's scripted upstream answering, the run is deterministic: it fails only if
 the harness can't set up or run without root.
 """
 

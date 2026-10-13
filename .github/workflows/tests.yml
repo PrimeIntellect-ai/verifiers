@@ -1,4 +1,4 @@
-name: Test
+name: Tests
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -11,14 +11,14 @@ on:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
-      - ".github/workflows/test.yml"
+      - ".github/workflows/tests.yml"
   push:
     branches: [main]
     paths:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
-      - ".github/workflows/test.yml"
+      - ".github/workflows/tests.yml"
 
 env:
   HF_HOME: ${{ github.workspace }}/.cache/huggingface
@@ -27,9 +27,10 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Verifiers
+  unit:
+    name: Unit (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
@@ -62,28 +63,37 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run deterministic v1 tests
-        run: |
-          uv run pytest tests/v1 -vv -n auto -m "not e2e" --cov=verifiers --cov-report=xml --cov-report=term
+      - name: Run unit tests
+        run: uv run pytest tests/unit -vv -n auto
 
-  v1-e2e:
-    name: V1 live E2E (Python 3.12, ${{ matrix.suite }})
+  integration:
+    name: Integration / ${{ matrix.behavior }}
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - suite: core
-            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "not (test_acp_resume_with_tool or test_agentic)"
-          - suite: harnesses
-            selection: tests/v1 --ignore=tests/v1/test_envs.py -k "test_acp_resume_with_tool or test_agentic"
-          - suite: examples
-            selection: tests/v1/test_envs.py
+          - behavior: Single-Turn
+            tests: tests/integration/test_single_turn.py
+          - behavior: Agentic
+            tests: tests/integration/test_agentic.py
+          - behavior: Tools
+            tests: tests/integration/test_tools.py
+          - behavior: User
+            tests: tests/integration/test_user.py
+          - behavior: Judging
+            tests: tests/integration/test_judging.py
+          - behavior: Multi-Agent
+            tests: tests/integration/test_multi_agent.py
+          - behavior: Replay
+            tests: tests/integration/test_replay.py
+          - behavior: Examples
+            tests: tests/integration/test_examples.py
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
@@ -115,7 +125,7 @@ jobs:
         run: uv sync
 
       - name: Resolve wiki-search corpus revision
-        if: matrix.suite == 'examples'
+        if: matrix.behavior == 'Examples'
         id: wiki-corpus
         run: |
           uv run python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -125,7 +135,7 @@ jobs:
           PY
 
       - name: Cache wiki-search index and embedding model
-        if: matrix.suite == 'examples'
+        if: matrix.behavior == 'Examples'
         uses: actions/cache@v6
         with:
           path: |
@@ -133,19 +143,19 @@ jobs:
             ~/.cache/chroma
           key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
 
-      - name: Run live v1 E2Es
+      - name: Run integration tests
         run: |
-          uv run pytest ${{ matrix.selection }} -vv -n 4 --dist worksteal -m "e2e and not prime and not modal and not e2b" --cov=verifiers --cov-report=xml --cov-report=term --durations=25 --junitxml=test-results.xml
+          uv run pytest ${{ matrix.tests }} -vv -n 4 --dist worksteal -m "not prime and not modal and not e2b" --durations=25 --junitxml=test-results.xml
 
-      - name: Upload E2E test results
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: v1-e2e-${{ matrix.suite }}-results
+          name: integration-${{ matrix.behavior }}-results
           path: test-results.xml
 
-  delivery-behaviors:
-    name: Nano-RLM delivery behaviors
+  delivery:
+    name: Integration / Delivery
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -165,7 +175,7 @@ jobs:
         env:
           VF_DELIVERY_BEHAVIORS: "1"
           VF_DELIVERY_OUTPUT: delivery-traces
-        run: uv run pytest tests/v1/test_delivery_behaviors.py -k rlm -v -n 2
+        run: uv run pytest tests/integration/test_delivery.py -k rlm -v -n 2
       - name: Upload timelines and traces
         if: always()
         uses: actions/upload-artifact@v7

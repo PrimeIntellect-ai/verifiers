@@ -1,4 +1,4 @@
-name: Sync Docs to Public Docs
+name: Docs
 
 on:
   push:

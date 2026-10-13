@@ -1,7 +1,7 @@
 """Executable delivery examples using real harness processes and scripted inference.
 
 Put `rlm`, `claude-agent-acp`, `claude`, and `node` on PATH, then run:
-    VF_DELIVERY_BEHAVIORS=1 uv run pytest tests/v1/test_delivery_behaviors.py -v -s
+    VF_DELIVERY_BEHAVIORS=1 uv run pytest tests/integration/test_delivery.py -v -s
 
 For nano-rlm alone, add `-k rlm`; neither subset needs PRIME_API_KEY.
 VF_DELIVERY_OUTPUT optionally selects a directory for timeline.json and normal

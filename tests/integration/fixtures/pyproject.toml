@@ -1,7 +1,7 @@
 [project]
 name = "vf-test-fixtures"
 version = "0.0.0"
-description = "v1 e2e test fixture tasksets — packaged so a sandbox runtime can install just this dir (its own pyproject) instead of climbing to the repo root."
+description = "integration test fixture tasksets — packaged so a sandbox runtime can install just this dir (its own pyproject) instead of climbing to the repo root."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]
 

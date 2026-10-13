@@ -2,8 +2,8 @@
 
 The smallest possible reward-1 taskset — no dataset, no tools, no reasoning required — so an
 end-to-end eval run is fast and deterministic. The reward is 1.0 when the phrase appears in
-the model's reply. It's a fixture taskset for the v1 e2e suite (in tests/v1/fixtures, resolved
-by id `echo-v1` via pytest's `pythonpath`).
+the model's reply. It's a fixture taskset for the integration suite (in tests/integration/fixtures,
+resolved by id `echo-v1` via pytest's `pythonpath`).
 """
 
 from pydantic import Field

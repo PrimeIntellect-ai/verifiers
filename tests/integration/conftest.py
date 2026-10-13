@@ -1,37 +1,14 @@
-"""Shared fixtures + helpers for the v1 end-to-end eval tests.
+"""Shared fixtures for the integration suite: REAL eval runs (a live model endpoint, real
+runtimes) with the smallest settings that still exercise the path, asserting on the
+resulting `Trace`(s). They need a model API key (`PRIME_API_KEY`); without one the
+model-driven tests skip.
 
-These tests run REAL eval runs (a live model endpoint, real runtimes) with the smallest
-settings that still exercise the path, then assert on the resulting `Trace`(s) — they are
-not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
-without one the `e2e`-marked tests skip (config parsing still runs).
-
-`run_v1` mirrors the eval CLI (`run_eval`, in-process); `run_v1_server` drives the same env
-through an env-server worker pool, the path prime-rl trains through. Placement coverage (harness x harness runtime x tool
-server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
-combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
-distinct networking. The full cross bought flake exposure and CI minutes, not coverage — add
-a combination to a test's list when it exercises a genuinely new reachability pair. The
-placement fixtures below are indirect-only: they translate a parametrized value, and using
-one without `indirect=True` fails loudly.
-
-Every combination carries its axes' pytest marks, so subsets select with `-m`:
-
-    uv run pytest tests/v1 -n auto                                # everything (needs remote setup)
-    uv run pytest tests/v1 -n auto -m "not e2e"                   # deterministic CI matrix
-    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal and not e2b"  # live CI job
-    uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
-    uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
-    uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
-    uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
-    uv run pytest tests/v1 -n auto -m e2b                         # only e2b (real sandboxes; local)
-
-Marks: runtimes `subprocess` / `docker` / `podman` / `apptainer` / `prime` / `modal` / `e2b`, placement `colocated`,
-harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `openclaw` / `codex` /
-`claude_code` / `hermes_agent`.
-A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
-combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
-prime/modal/e2b provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
-CI runs deterministic tests across the Python matrix and the remaining live E2Es once.
+Each behavior module fixes one task and fans it across the harness x runtime grid in
+`grid.py`, which also says why a cell is skipped. `run_v1` mirrors the eval CLI
+(`run_eval`, in-process); `run_v1_server` drives the same env through an env-server
+worker pool, the path prime-rl trains through. The placement fixtures below are
+indirect-only: they translate a parametrized value, and using one without
+`indirect=True` fails loudly.
 """
 
 import asyncio
@@ -39,6 +16,7 @@ import os
 from pathlib import Path
 
 import pytest
+from grid import runtime_config
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
@@ -49,17 +27,18 @@ from verifiers.v1.utils.loaders import harness_config_type
 
 CI_MODEL = "openai/gpt-5.6-luna"
 
-# Fixture tasksets (echo-v1, echo-agentic-v1) live in tests/v1/fixtures, added to the
-# path via `pythonpath` in pyproject so the loader resolves them by id (no install).
+# Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
+# added to the path via `pythonpath` in pyproject so the loader resolves them by id.
 
-# The placement fixtures translate one parametrized value each; the combinations live on
-# the tests (`indirect=True`), so coverage is a visible, curated list — never an implicit
-# cross product.
+LIVE_FIXTURES = {"run_v1", "run_v1_server", "live_ctx"}
 
 
 @pytest.fixture
-def harness_runtime(request) -> str | dict:
-    return request.param
+def harness_runtime(request) -> dict:
+    """The runtime config placing the harness: a runtime type from the grid, or a
+    full config for a one-off variant."""
+    param = request.param
+    return dict(param) if isinstance(param, dict) else runtime_config(param)
 
 
 @pytest.fixture
@@ -76,7 +55,7 @@ def tool_runtime(request) -> dict:
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
 # `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
 # dependencies at rollout.
-# `compact` (an example harness) and `terminus-2` (drives the host tmux) are excluded from e2e.
+# `compact` (an example harness) and `terminus-2` (drives the host tmux) are outside the grid.
 @pytest.fixture
 def harness(request) -> HarnessConfig:
     config = {"id": request.param} if isinstance(request.param, str) else request.param
@@ -97,13 +76,13 @@ def pytest_configure(config) -> None:
 
 
 def pytest_collection_modifyitems(config, items) -> None:
-    """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
-    rest of the suite (e.g. config parsing) still runs in a keyless environment."""
+    """Skip the model-driven tests when no model endpoint is configured; the rest
+    (scripted harness behaviors, the examples' own key check) decide for themselves."""
     if os.environ.get("PRIME_API_KEY"):
         return
     skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
     for item in items:
-        if "e2e" in item.keywords:
+        if LIVE_FIXTURES & set(getattr(item, "fixturenames", ())):
             item.add_marker(skip)
 
 
@@ -271,7 +250,7 @@ def run_v1_server():
 
 @pytest.fixture
 async def live_ctx():
-    """The e2e `ModelContext` (default model + endpoint config, provider-default sampling)
+    """The live `ModelContext` (default model + endpoint config, provider-default sampling)
     for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
     from verifiers.v1.clients import EvalClientConfig, ModelContext
     from verifiers.v1.types import SamplingConfig

@@ -2,7 +2,7 @@
 
 Each taskset runs with its required harness for one short, capped rollout, so a broken
 example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
-SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
+SWE/container tasksets need a docker/prime runtime and are covered by the agentic tests.
 """
 
 import os
@@ -10,8 +10,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.e2e
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 

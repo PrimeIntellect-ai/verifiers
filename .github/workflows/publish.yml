@@ -1,4 +1,4 @@
-name: Publish verifiers
+name: Publish
 
 # Versioning is git-driven via hatch-vcs (see pyproject.toml):
 # - Every push to `main` publishes a pre-release for the next release: the last
@@ -19,7 +19,7 @@ on:
       - main
 
 concurrency:
-  group: publish-verifiers-${{ github.ref }}
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

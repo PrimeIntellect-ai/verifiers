@@ -1,6 +1,6 @@
 """echo (v1, MCP tool): retrieve a stamped echo from a `vf.Toolset`, then report it.
 
-The v1 tool fixture for the e2e matrix. The task constructs an `EchoToolset`
+The v1 tool fixture for the integration grid. The task constructs an `EchoToolset`
 (`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
 CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.runtime.type`):
 it runs colocated in the harness's runtime or in its own runtime, and the harness
