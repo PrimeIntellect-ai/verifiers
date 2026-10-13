@@ -315,9 +315,15 @@ class Runtime(ABC):
         """Whether the box still executes anything. Not every runtime raises when
         the box is gone — some surface it as `exec`'s own non-zero result,
         indistinguishable from the command failing. One probe on the failure path
-        tells the two apart before we blame anyone."""
+        tells the two apart before we blame anyone. A probe that could not reach the
+        box (`io`, `quota` or `account`: the platform, not the box) raises that error:
+        it says nothing about the box."""
         try:
             return (await self.run(["true"], {})).exit_code == 0
+        except SandboxError as e:
+            if e.kind in ("io", "quota", "account"):
+                raise
+            return False  # the box is gone, or nothing typed says more
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 

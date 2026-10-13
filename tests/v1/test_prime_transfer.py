@@ -212,7 +212,7 @@ async def test_a_large_read_crosses_in_parts_and_leaves_only_the_file(
 async def test_reading_a_missing_file_fails_before_any_download(runtime, tmp_path):
     with pytest.raises(SandboxError) as caught:
         await runtime.read(str(tmp_path / "missing.txt"))
-    assert caught.value.kind == "unknown"
+    assert caught.value.kind == "missing"
     assert "no such file" in str(caught.value).lower()
     assert runtime._client.downloads == []
 

@@ -11,6 +11,7 @@ from pydantic import Field
 
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
 from verifiers.v1.task import Task, TaskConfig, TaskData
@@ -150,8 +151,8 @@ class NeMoGymEnv(SingleAgentEnv):
                     await client.get(resources_url)
                     config.resources_url = resources_url
                     return
-                except (FileNotFoundError, ValueError, httpx.HTTPError):
-                    pass
+                except (SandboxError, ValueError, httpx.HTTPError):
+                    pass  # no port file yet (a typed `missing` read), or not up
                 await asyncio.sleep(0.5)
         log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
         raise RuntimeError(f"NeMo Gym server did not start:\n{log}")

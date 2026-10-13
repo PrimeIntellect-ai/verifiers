@@ -22,6 +22,7 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
+import errno
 import re
 from collections.abc import AsyncIterator, Iterator
 from typing import Literal
@@ -63,17 +64,25 @@ class EnvError(RolloutError):
     traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
 
 
-SandboxErrorKind = Literal["account", "quota", "box_lost", "io", "exec", "unknown"]
+SandboxErrorKind = Literal[
+    "account", "quota", "box_lost", "missing", "disk_full", "io", "exec", "unknown"
+]
 """What a `SandboxError` means for the caller, set where the runtime raises it:
 
 - `account`: billing or auth refused account-wide (payment required, unauthorized,
   forbidden). Retrying is pointless until someone fixes the account.
-- `quota`: creation refused for capacity or rate (burst limits, 429 on create).
-- `box_lost`: the box is gone (terminated, not found, 410).
-- `io`: a transfer failed (upload, download, connection reset). Retryable. A read of a
-  file that does not exist is not one: the transfer worked, the file is absent.
+- `quota`: refused for capacity or rate (burst limits, 429, a full creation backlog).
+  Retryable later.
+- `box_lost`: the box itself is gone (terminated, out of memory, 410, its placement
+  lost). Never a path: what may take a missing path as absent may not take this.
+- `missing`: a path the operation named does not exist (ENOENT, the SDK's file not
+  found, 404). The transfer worked; the box is there.
+- `disk_full`: the box's disk is full (ENOSPC, 507). Repeating waits for nothing.
+- `io`: a transfer or the platform failed in transit (a dropped connection, a timeout,
+  a gateway 5xx, the platform unavailable). Retryable; an outage is held through.
 - `exec`: a command could not be run in a live box.
-- `unknown`: anything else, and every error raised without a kind."""
+- `unknown`: anything else (a request the box refuses, 413 or 422), and every error
+  raised without a kind."""
 
 
 class SandboxError(RolloutError):
@@ -108,6 +117,8 @@ _BOX_LOST_TYPES = frozenset(
     {"SandboxNotRunningError", "SandboxOOMError", "SandboxTimeoutError"}
 )
 _BOX_LOST_MARKERS = ("sandbox_not_found", "sandbox_terminated")
+_COMING_UP = frozenset({"PENDING", "PROVISIONING", "PAUSED"})
+"""`SandboxNotRunningError.status` values of a box that is not up (yet, or again)."""
 _IO_TYPES = frozenset(
     {
         "ConnectionError",
@@ -126,7 +137,6 @@ _IO_TYPES = frozenset(
         "DownloadTimeoutError",
     }
 )
-_GATEWAY_STATUSES = frozenset({502, 503, 504})
 _GATEWAY_MARKERS = (
     "bad gateway",
     "upstream unavailable",
@@ -137,7 +147,21 @@ _GATEWAY_MARKERS = (
 ride it out."""
 _MISSING_FILE_TYPES = frozenset({"SandboxFileNotFoundError", "FileNotFoundError"})
 _MISSING_FILE_MARKERS = ("no such file",)
+_DISK_FULL_MARKERS = ("no space left on device",)
 _HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+_ERRNO_KINDS: dict[int, SandboxErrorKind] = {
+    errno.ENOSPC: "disk_full",
+    errno.EDQUOT: "disk_full",
+    errno.ENOENT: "missing",
+    errno.ECONNRESET: "io",
+    errno.ECONNREFUSED: "io",
+    errno.ECONNABORTED: "io",
+    errno.EPIPE: "io",
+    errno.ETIMEDOUT: "io",
+    errno.EHOSTUNREACH: "io",
+    errno.ENETUNREACH: "io",
+}
+"""What an `OSError`'s errno says about a runtime operation."""
 
 
 def _leaf(error: BaseException) -> BaseException:
@@ -173,48 +197,123 @@ def http_status(error: BaseException) -> int | None:
 
 
 def missing_file_kind(detail: str, default: SandboxErrorKind) -> SandboxErrorKind:
-    """`default`, unless `detail` (a failed read's stderr) says the file is absent:
-    then `unknown`, since the transfer itself did not fail."""
+    """`default`, unless `detail` (a failed read's stderr) says the file is absent
+    (`missing`) or the disk is full (`disk_full`)."""
     text = detail.lower()
-    return "unknown" if any(m in text for m in _MISSING_FILE_MARKERS) else default
+    if any(m in text for m in _MISSING_FILE_MARKERS):
+        return "missing"
+    if any(m in text for m in _DISK_FULL_MARKERS):
+        return "disk_full"
+    return default
+
+
+def _status_kind(status: int) -> SandboxErrorKind | None:
+    """The kind an HTTP status from a sandbox provider names."""
+    if status in _ACCOUNT_STATUSES:
+        return "account"
+    if status == 429:
+        return "quota"
+    if status == 410:
+        return "box_lost"
+    if status == 404:
+        return "missing"
+    if status == 507:
+        return "disk_full"  # the box's disk, not the platform: a hold waits for nothing
+    if status in (413, 422):
+        return "unknown"  # the request itself is refused; the same one is again
+    if status == 408 or 500 <= status < 600:
+        return "io"
+    return None
+
+
+def _is_rpc(error: BaseException) -> bool:
+    """Whether `error` is a Connect RPC failure (connectrpc ships with prime-sandboxes;
+    without it nothing is one)."""
+    try:
+        from connectrpc.errors import ConnectError
+    except ImportError:
+        return False
+    return isinstance(error, ConnectError)
+
+
+def _rpc_kind(error: BaseException) -> SandboxErrorKind | None:
+    """The kind a Connect RPC failure's code names."""
+    if not _is_rpc(error):
+        return None
+    from connectrpc.code import Code
+
+    return {
+        Code.NOT_FOUND: "missing",
+        Code.DEADLINE_EXCEEDED: "io",
+        Code.UNAVAILABLE: "io",
+        Code.ABORTED: "io",
+        Code.RESOURCE_EXHAUSTED: "quota",
+        Code.PERMISSION_DENIED: "account",
+        Code.UNAUTHENTICATED: "account",
+    }.get(error.code)
+
+
+def _typed_kind(error: BaseException) -> SandboxErrorKind | None:
+    """The kind one failure's own typed evidence names: a typed `SandboxError`, the
+    SDK's or Python's exception type, an errno, an HTTP status, a Connect code."""
+    if isinstance(error, SandboxError):
+        return error.kind if error.kind != "unknown" else None
+    name = type(error).__name__
+    if name in _ACCOUNT_TYPES:
+        return "account"
+    if name in _BOX_LOST_TYPES:
+        status = getattr(error, "status", None)
+        # A box not running yet is coming up; one that stopped is gone.
+        return "io" if status in _COMING_UP else "box_lost"
+    if name in _MISSING_FILE_TYPES:
+        return "missing"
+    if isinstance(error, OSError) and error.errno in _ERRNO_KINDS:
+        return _ERRNO_KINDS[error.errno]
+    status = http_status(error)
+    if status is not None and (kind := _status_kind(status)) is not None:
+        return kind
+    if _is_rpc(error):
+        # Its code is the evidence (httpx has a `ConnectError` of the same name).
+        return _rpc_kind(error)
+    if name in _IO_TYPES or isinstance(error, TimeoutError):
+        return "io"
+    return None
+
+
+def _marked_kind(error: BaseException) -> SandboxErrorKind | None:
+    """The kind one failure's message names, when nothing typed did."""
+    text = str(error).lower()
+    if any(m in text for m in _ACCOUNT_MARKERS):
+        return "account"
+    if any(m in text for m in _QUOTA_MARKERS):
+        return "quota"
+    if any(m in text for m in _BOX_LOST_MARKERS):
+        return "box_lost"
+    if any(m in text for m in _MISSING_FILE_MARKERS):
+        return "missing"
+    if any(m in text for m in _DISK_FULL_MARKERS):
+        return "disk_full"
+    if any(m in text for m in _GATEWAY_MARKERS):
+        return "io"
+    return None
 
 
 def sandbox_error_kind(
     error: BaseException, default: SandboxErrorKind = "unknown"
 ) -> SandboxErrorKind:
     """Classify a runtime operation's failure (`SandboxErrorKind`). An exception group
-    is classified by its leaf, and the error's causes are searched too: the first one
-    that names an account refusal, a quota refusal, a lost box, a missing file, or a
-    broken transfer (a dropped connection, a timeout, a gateway 502/503/504) decides. An already-typed `SandboxError` keeps its kind. With no
-    such sign, the operation's `default` stands."""
-    for current in _chain(error):
-        if isinstance(current, SandboxError) and current.kind != "unknown":
-            return current.kind
-        name = type(current).__name__
-        text = str(current).lower()
-        status = http_status(current)
-        if (
-            status in _ACCOUNT_STATUSES
-            or name in _ACCOUNT_TYPES
-            or any(m in text for m in _ACCOUNT_MARKERS)
-        ):
-            return "account"
-        if status == 429 or any(m in text for m in _QUOTA_MARKERS):
-            return "quota"
-        if (
-            status == 410
-            or name in _BOX_LOST_TYPES
-            or any(m in text for m in _BOX_LOST_MARKERS)
-        ):
-            return "box_lost"
-        if name in _MISSING_FILE_TYPES or any(m in text for m in _MISSING_FILE_MARKERS):
-            return "unknown"
-        if (
-            name in _IO_TYPES
-            or status in _GATEWAY_STATUSES
-            or any(m in text for m in _GATEWAY_MARKERS)
-        ):
-            return "io"
+    is classified by its leaf, and the failures it was raised from or during are read
+    too. Typed evidence decides first, anywhere in that chain: a typed `SandboxError`,
+    the exception's type, an errno, an HTTP status, a Connect RPC code. Only when none
+    names a kind does the message text (a marker such as "payment required" or
+    "sandbox_not_found") decide. With neither, the operation's `default` stands."""
+    chain = list(_chain(error))
+    for current in chain:
+        if (kind := _typed_kind(current)) is not None:
+            return kind
+    for current in chain:
+        if (kind := _marked_kind(current)) is not None:
+            return kind
     return default
 
 

@@ -168,7 +168,12 @@ class SubprocessRuntime(Runtime):
 
     async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
         if max_bytes is None:
-            return await asyncio.to_thread((self.workdir / path).read_bytes)
+            try:
+                return await asyncio.to_thread((self.workdir / path).read_bytes)
+            except OSError as exc:
+                raise SandboxError(
+                    f"read {path!r}: {exc}", kind=sandbox_error_kind(exc, "io")
+                ) from exc
 
         # Leave special files to the cancellable shell path without opening a
         # FIFO and waking its writer. A nonblocking open and descriptor check
@@ -193,8 +198,13 @@ class SubprocessRuntime(Runtime):
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, data)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
+        except OSError as exc:
+            raise SandboxError(
+                f"write {path!r}: {exc}", kind=sandbox_error_kind(exc, "io")
+            ) from exc
 
     async def teardown(self) -> None:
         """Stop and reap background servers before their event loop closes."""

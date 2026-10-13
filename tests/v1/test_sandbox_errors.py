@@ -2,6 +2,7 @@
 Prime SDK clients: no sandbox is created."""
 
 import asyncio
+import errno
 import json
 import pickle
 
@@ -45,6 +46,19 @@ def raised_from(outer: Exception, inner: BaseException) -> Exception:
     return outer
 
 
+def status_error(status: int, body: dict | None = None) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://api.example/sandbox")
+    response = httpx.Response(status, json=body or {}, request=request)
+    return httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+
+def connect_error(code: str) -> Exception:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+
+    return ConnectError(getattr(Code, code), "rpc failed")
+
+
 @pytest.mark.parametrize(
     ("error", "kind"),
     [
@@ -60,8 +74,22 @@ def raised_from(outer: Exception, inner: BaseException) -> Exception:
         (RuntimeError("failed to route request (unavailable)"), "io"),
         (httpx.ReadError("connection reset by peer"), "io"),
         (ConnectionResetError("reset"), "io"),
-        (SandboxFileNotFoundError("HTTP 404: missing"), "unknown"),
-        (FileNotFoundError("/app/out.txt"), "unknown"),
+        (SandboxFileNotFoundError("HTTP 404: missing"), "missing"),
+        (FileNotFoundError("/app/out.txt"), "missing"),
+        (SandboxNotRunningError("sb1", status="PENDING"), "io"),
+        (OSError(errno.ENOSPC, "No space left on device"), "disk_full"),
+        (OSError(errno.ENOENT, "gone"), "missing"),
+        (status_error(507), "disk_full"),
+        (status_error(404), "missing"),
+        (status_error(413), "unknown"),
+        (status_error(422), "unknown"),
+        (status_error(500), "io"),
+        (connect_error("NOT_FOUND"), "missing"),
+        (connect_error("UNAVAILABLE"), "io"),
+        (connect_error("RESOURCE_EXHAUSTED"), "quota"),
+        (connect_error("PERMISSION_DENIED"), "account"),
+        (connect_error("CANCELED"), "exec"),
+        (RuntimeError("write failed: No space left on device"), "disk_full"),
         (SandboxImagePullError("sb1", "ERROR", "IMAGE_PULL_FAILED"), "exec"),
         (RuntimeError("something else"), "exec"),
     ],
@@ -82,6 +110,22 @@ def test_sandbox_error_kind_reads_causes_groups_and_typed_errors():
     # no sign at all: the operation's default
     assert sandbox_error_kind(RuntimeError("?")) == "unknown"
     assert sandbox_error_kind(RuntimeError("?"), "io") == "io"
+
+
+def test_typed_evidence_beats_message_text():
+    """The same words from two providers mean two things: a status, errno or code
+    anywhere in the chain decides before any marker does."""
+    wrapped = raised_from(RuntimeError("payment required?"), httpx.ReadError("reset"))
+    assert sandbox_error_kind(wrapped) == "io"
+    # A 404 that says "sandbox_not_found" in its text is still a status first.
+    assert (
+        sandbox_error_kind(
+            raised_from(RuntimeError("sandbox_not_found"), status_error(404))
+        )
+        == "missing"
+    )
+    # Text decides only when nothing typed does.
+    assert sandbox_error_kind(RuntimeError("sandbox_not_found")) == "box_lost"
 
 
 def test_recorded_errors_carry_a_known_kind_only():
@@ -195,7 +239,7 @@ async def test_prime_io_and_exec_failures_are_typed(runtime, no_sleep):
     )
     with pytest.raises(SandboxError) as read:
         await runtime.read("missing.txt")
-    assert read.value.kind == "unknown"
+    assert read.value.kind == "missing"
     assert str(read.value) == "read 'missing.txt': HTTP 404: no such file"
     with pytest.raises(SandboxError) as run:
         await runtime.run(["true"], {})
@@ -364,3 +408,52 @@ async def test_prime_checkpoint_cancelled_while_waiting_is_deleted(runtime):
         await task
     await asyncio.gather(*prime._discards)
     assert client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")]
+
+
+class Probed(Runtime):
+    """A runtime whose `run` raises a scripted error: what `alive()` makes of it."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    async def start(self) -> None: ...
+
+    async def run(self, argv, env) -> ProgramResult:
+        raise self.error
+
+    async def _read(self, path, max_bytes=None) -> bytes:
+        raise NotImplementedError
+
+    async def write(self, path, data) -> None: ...
+
+
+async def test_alive_tells_a_gone_box_from_an_unreachable_platform():
+    assert not await Probed(SandboxError("gone", kind="box_lost")).alive()
+    assert not await Probed(SandboxError("?")).alive()
+    assert not await Probed(RuntimeError("?")).alive()
+    # The probe never reached the box: that says nothing about it, so it raises.
+    for kind in ("io", "quota", "account"):
+        with pytest.raises(SandboxError) as caught:
+            await Probed(SandboxError("unreachable", kind=kind)).alive()
+        assert caught.value.kind == kind
+
+
+async def test_subprocess_reads_and_writes_raise_typed_errors(tmp_path):
+    from verifiers.v1.runtimes import SubprocessConfig, SubprocessRuntime
+
+    runtime = SubprocessRuntime(SubprocessConfig())
+    await runtime.start()
+    try:
+        with pytest.raises(SandboxError) as missing:
+            await runtime.read("nope.txt")
+        assert missing.value.kind == "missing"
+        with pytest.raises(SandboxError) as capped:
+            await runtime.read("nope.txt", max_bytes=10)
+        assert capped.value.kind == "missing"
+        await runtime.write("dir/file.txt", b"x")
+        with pytest.raises(SandboxError) as clash:
+            await runtime.write("dir/file.txt/below", b"x")  # a file is not a dir
+        assert clash.value.kind == "io"
+    finally:
+        await runtime.stop()
