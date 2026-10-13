@@ -5,11 +5,14 @@ import json
 import logging
 from typing import Literal
 
+from pydantic import PositiveInt
+
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.pi_config import PiCompactionConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -92,6 +95,10 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    context_window: PositiveInt | None = None
+    """Override the native model context window for custom model endpoints."""
+    compaction: PiCompactionConfig | None = None
+    """Override native compaction settings; omitted values keep Prime Agent's defaults."""
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -228,7 +235,23 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             }
         }
         models_path = f"{agent_dir}/models.json"
+        model_config = models["providers"][PROVIDER]["models"][0]
+        if self.config.context_window is not None:
+            model_config["contextWindow"] = self.config.context_window
+        if ctx.sampling.max_tokens is not None:
+            model_config["maxTokens"] = ctx.sampling.max_tokens
         await runtime.write(models_path, json.dumps(models).encode())
+        if self.config.compaction is not None:
+            await runtime.write(
+                f"{agent_dir}/settings.json",
+                json.dumps(
+                    {
+                        "compaction": self.config.compaction.model_dump(
+                            by_alias=True, exclude_none=True
+                        )
+                    }
+                ).encode(),
+            )
         secured = await runtime.run(["chmod", "600", models_path], {})
         if secured.exit_code != 0:
             raise RuntimeError(
