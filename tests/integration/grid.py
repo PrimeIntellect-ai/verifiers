@@ -72,8 +72,13 @@ def mark(name: str) -> pytest.MarkDecorator:
 
 def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
+    program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
+    # The default sandboxes are too small to install and run an agent CLI: e2b's box
+    # starves rlm's ACP startup, and prime's 1 CPU / 2 GB gets openclaw terminated.
     if runtime == "e2b":
-        config["memory"] = 2.0  # the default box is too small to install an agent CLI
+        config["memory"] = 2.0
+    if runtime == "prime" and program:
+        config.update(cpu=2.0, memory=4.0)
     if harness is not None and harness_id(harness) == "browser-use":
         config["image"] = BROWSER_IMAGE
     return config
