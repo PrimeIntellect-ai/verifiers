@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import secrets
 import shlex
 import shutil
@@ -333,6 +334,11 @@ async def serve_in_runtime(
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
     env = {
+        **{
+            key: os.environ[key]
+            for key in getattr(server.config, "forward_env", [])
+            if key in os.environ
+        },
         "VF_CONFIG": server.config.model_dump_json(),
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,

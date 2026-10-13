@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
@@ -17,11 +18,15 @@ class ToolsetConfig(BaseConfig):
     colocated: bool = False
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
+    forward_env: list[str] = Field(default_factory=list)
+    """Host variables passed to this tool server at launch; values are not saved in config."""
 
 
 class SharedToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
+    forward_env: list[str] = Field(default_factory=list)
+    """Host variables passed to this tool server at launch; values are not saved in config."""
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
