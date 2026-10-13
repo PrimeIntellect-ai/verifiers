@@ -14,8 +14,9 @@ supported, what is not, and why:
 - `prime` provisions real sandboxes and runs in CI with its secrets; it exposes no
   ports, so a tool server lives there only colocated with its harness
 - a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
-  shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
-  switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
+  shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), skills
+  (`SUPPORTS_SKILLS`), a user that can be switched to (`supports_user`), a network
+  policy (`NetworkPolicyConfig`), or an exchange that resumes (`SUPPORTS_RESUME` or a
   native session)
 - `kimi-code` cannot install in a prime sandbox: code.kimi.com resets the connection
 
@@ -35,6 +36,7 @@ from collections.abc import Sequence
 import pytest
 from pydantic import TypeAdapter
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, _runtime_cls
 from verifiers.v1.utils.loaders import harness_class
@@ -83,6 +85,11 @@ def runtime_supports_user(runtime: str) -> bool:
     return _runtime_cls(config).supports_user
 
 
+def runtime_supports_network_policy(runtime: str) -> bool:
+    config = TypeAdapter(RuntimeConfig).validate_python({"type": runtime})
+    return isinstance(config, NetworkPolicyConfig)
+
+
 def resumes(cls: type[Harness]) -> bool:
     """The same rule as `Agent.interaction`: transcript replay, a native resume, or a
     rollout-scoped session."""
@@ -111,10 +118,14 @@ def unsupported(
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
+    if "skills" in needs and not cls.SUPPORTS_SKILLS:
+        return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
     if "user" in needs and not runtime_supports_user(runtime):
         return f"{runtime} cannot run commands as another user"
+    if "network" in needs and not runtime_supports_network_policy(runtime):
+        return f"{runtime} has no network policy"
     return None
 
 

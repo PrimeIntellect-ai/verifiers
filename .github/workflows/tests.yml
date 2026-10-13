@@ -98,6 +98,14 @@ jobs:
             tests: tests/integration/test_user_sim.py
           - behavior: Agent User
             tests: tests/integration/test_agent_user.py
+          - behavior: Tool Gate
+            tests: tests/integration/test_tool_gate.py
+          - behavior: Network Policy
+            tests: tests/integration/test_network_policy.py
+          - behavior: Skills
+            tests: tests/integration/test_skills.py
+          - behavior: Limits
+            tests: tests/integration/test_limits.py
           - behavior: Rubric Judge
             tests: tests/integration/test_rubric_judge.py
           - behavior: Agentic Judge
