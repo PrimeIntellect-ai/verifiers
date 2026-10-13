@@ -12,7 +12,7 @@ import copy
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
@@ -798,6 +798,297 @@ class Interaction:
             return trace
 
 
+@dataclass(frozen=True)
+class _Recorded:
+    """One recorded turn of an exchange: the caller's input (`conversation[start:body]`;
+    None for a prompted task's opening) and the segment it got back
+    (`conversation[body:end]`)."""
+
+    input: Messages | None
+    start: int
+    body: int
+    end: int
+    segment: Segment
+
+
+def _recorded_turns(
+    conversation: Messages, trace: Trace, task: Task
+) -> list[_Recorded]:
+    """Split a recorded exchange into the caller's turns. A user message is the
+    caller's unless it is a note the framework added (a retry or resume note) or a
+    steer; a prompted task's opening is its prompt."""
+    inner = {RETRY_NOTE, MODEL_RETRY_NOTE, *(steer.text for steer in trace.steers)}
+
+    def callers(message) -> bool:
+        return message.role == "user" and message.content not in inner
+
+    prompt = task.data.prompt
+    if prompt is None:
+        opening = 0
+    elif isinstance(prompt, str):
+        opening = 1
+    else:
+        opening = sum(1 for m in prompt if m.role != "system")
+    turns: list[_Recorded] = []
+    index = 0
+    while index < len(conversation):
+        start = index
+        if not turns and prompt is not None:
+            index = min(opening, len(conversation))
+        else:
+            while index < len(conversation) and callers(conversation[index]):
+                index += 1
+            if index == start:  # a body without a caller turn: part of the last
+                index += 1
+                continue
+        body = index
+        while index < len(conversation) and not callers(conversation[index]):
+            index += 1
+        replies = [
+            m for m in conversation[body:index] if m.role in ("assistant", "tool")
+        ]
+        turns.append(
+            _Recorded(
+                input=None
+                if not turns and prompt is not None
+                else list(conversation[start:body]),
+                start=start,
+                body=body,
+                end=index,
+                segment=Segment(messages=replies),
+            )
+        )
+    return turns
+
+
+def _cut_at(trace: Trace, checkpoint: Checkpoint, conversation: Messages) -> Trace:
+    """`trace` as a continuation of `conversation` on `checkpoint`'s box: a copy whose
+    only checkpoint is it, at a conversation held in its task's prompt (a trace with
+    no nodes yet holds its conversation there, `Trace.conversation_at`)."""
+    data = trace.task.data.model_copy(update={"prompt": list(conversation)})
+    return trace.model_copy(
+        update={
+            "nodes": [],
+            "checkpoints": [checkpoint.model_copy(update={"turns": 0})],
+            "task": trace.task.model_copy(update={"data": data}),
+        }
+    )
+
+
+def _same_input(recorded: Messages | None, sent: Messages | None) -> bool:
+    if recorded is None or sent is None:
+        return recorded is None and sent is None
+    return [(m.role, m.content) for m in recorded] == [
+        (m.role, m.content) for m in sent
+    ]
+
+
+class DurableInteraction:
+    """A durable `agent.interaction(task)` (a `Durable` installed, `verifiers.v1.durable`):
+    an exchange kept by its traces, so code that drives it the same way gets the same
+    replies after a crash.
+
+    A finished exchange of the key replays: each `turn(message)` whose message matches
+    the recorded one returns the recorded segment without running anything. A cut-off
+    exchange replays the turns its latest checkpoint covers, then continues live from
+    that checkpoint (the turn in progress at the cut answers on `RETRY_NOTE`, so its
+    segment holds only what came after the cut). A caller that sends a different
+    message, or more turns than a finished exchange had, continues live from the
+    checkpoint taken at the end of the turns it was given (a per-call save of a final
+    reply, or `checkpoint()`); with none, the turn raises. Steering, `checkpoint()` and
+    `latest_checkpoint` act on the live exchange only. Without anything recorded, the
+    exchange is live from the start, as a plain `interaction()`."""
+
+    def __init__(
+        self,
+        task: Task,
+        open_live: Callable[..., object],
+        stack: AsyncExitStack,
+        recorded: Trace | None = None,
+        checkpoints: list[Checkpoint] | None = None,
+    ) -> None:
+        self._task = task
+        self._open_live = open_live
+        self._stack = stack
+        self._recorded = recorded
+        self._live: Interaction | None = None
+        self._over = False
+        self._conversation: Messages = []
+        self._turns: list[_Recorded] = []
+        self._cuts: list[tuple[int, Checkpoint]] = []
+        self._next = 0
+        self._position = 0
+        self._done = False
+        self._horizon = 0
+        self._complete = 0
+        if recorded is None:
+            return
+        self._conversation = recorded.conversation_at(None)
+        self._turns = _recorded_turns(self._conversation, recorded, task)
+        for checkpoint in checkpoints or []:
+            cut = recorded.conversation_at(checkpoint.turns)
+            if _same_input(cut, self._conversation[: len(cut)]):
+                self._cuts.append((len(cut), checkpoint))
+        self._done = recorded.is_completed and recorded.ok
+        self._horizon = (
+            len(self._conversation)
+            if self._done
+            else max((length for length, _ in self._cuts), default=0)
+        )
+        self._complete = len(self._turns)
+        """The recorded turns that finished: a cut-off exchange's last turn did not
+        unless it ends on a reply with no tool calls."""
+        if not self._done and self._turns:
+            final = self._conversation[self._turns[-1].end - 1]
+            if final.role != "assistant" or getattr(final, "tool_calls", None):
+                self._complete -= 1
+
+    @property
+    def kept(self) -> bool:
+        """Every turn so far came from the recorded exchange: nothing ran."""
+        return self._live is None and self._recorded is not None and self._done
+
+    @property
+    def live(self) -> Interaction | None:
+        """The live exchange, once the replay has handed over to it."""
+        return self._live
+
+    @property
+    def trace(self) -> Trace:
+        if self._live is not None:
+            return self._live.trace
+        assert self._recorded is not None
+        return self._recorded
+
+    @property
+    def runtime(self) -> Runtime | None:
+        return self._live.runtime if self._live is not None else None
+
+    @property
+    def task(self) -> Task:
+        return self._live.task if self._live is not None else self._task
+
+    @property
+    def failed_attempts(self) -> list[Trace]:
+        return self._live.failed_attempts if self._live is not None else []
+
+    @property
+    def latest_checkpoint(self) -> Checkpoint | None:
+        return self._live.latest_checkpoint if self._live is not None else None
+
+    def _require_live(self, what: str) -> Interaction:
+        if self._live is None:
+            raise RuntimeError(
+                f"{what} needs the live exchange; this one is replaying its recorded "
+                "turns (take the next turn first)"
+            )
+        return self._live
+
+    async def checkpoint(self) -> Checkpoint:
+        return await self._require_live("checkpoint()").checkpoint()
+
+    async def send(self, message: str, **kwargs) -> dict:
+        return await self._require_live("send()").send(message, **kwargs)
+
+    async def steer(self, message: str, **kwargs) -> dict:
+        return await self._require_live("steer()").steer(message, **kwargs)
+
+    async def go_live(
+        self,
+        resume: Trace | None = None,
+        at: str | None = None,
+        note: str | None = None,
+    ) -> Interaction:
+        """Open the live exchange (fresh, or continuing `resume` at `at`)."""
+        if self._live is None:
+            self._live = await self._stack.enter_async_context(
+                self._open_live(resume, at, note)
+            )
+        return self._live
+
+    async def turn(self, message: str | Messages | None = None) -> Segment:
+        """The next turn: replayed while it matches the recorded exchange, live
+        after (see the class docs)."""
+        if self._live is not None:
+            return await self._live.turn(message)
+        if self._over:
+            raise RuntimeError(
+                "the exchange is over (the run ended); read interaction.trace"
+            )
+        sent: Messages | None
+        if isinstance(message, str):
+            sent = [UserMessage(content=message)]
+        elif message is not None:
+            sent = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        else:
+            sent = None
+        recorded = self._turns[self._next] if self._next < len(self._turns) else None
+        matches = recorded is not None and _same_input(recorded.input, sent)
+        if (
+            matches
+            and recorded is not None
+            and self._next < self._complete
+            and recorded.end <= self._horizon
+        ):
+            self._next += 1
+            self._position = recorded.end
+            return recorded.segment
+        trace = self._recorded
+        assert trace is not None
+        if (
+            recorded is None
+            and self._done
+            and trace.stop_condition not in (None, "user_closed")
+        ):
+            # The recorded exchange ended itself after the turns it gave.
+            self._over = True
+            return Segment(messages=[], terminated=True)
+        if matches and recorded is not None:
+            inside = [
+                (length, c)
+                for length, c in self._cuts
+                if recorded.body <= length
+                and (length < recorded.end or self._next >= self._complete)
+            ]
+            if inside:
+                # The cut holds this turn's input: continue it where it was cut (on a
+                # note when the turn had begun answering).
+                length, checkpoint = max(inside, key=lambda item: item[0])
+                note = RETRY_NOTE if length > recorded.body else None
+                live = await self.go_live(trace, checkpoint.id, note)
+                return await live.turn()
+        # A checkpoint whose box is as the turns already given left it: its cut ends
+        # where they end, or holds no more than the next recorded input, which is
+        # dropped (it never touched the box).
+        position = self._position
+        last = recorded.body if recorded is not None else position
+        boundary = [
+            c
+            for length, c in self._cuts
+            if position <= length <= last
+            and position > 0
+            and self._conversation[position - 1].role == "assistant"
+        ]
+        if boundary:
+            live = await self.go_live(
+                _cut_at(trace, boundary[-1], self._conversation[:position]),
+                None,
+                None,
+            )
+            return await live.turn(message)
+        raise RuntimeError(
+            f"cannot continue the recorded exchange at turn {self._next + 1}: the "
+            "caller's turn differs from the recorded one (or goes past it) and no "
+            "checkpoint matches the turns already given; the driver must be "
+            "deterministic, or checkpoint at the end of each turn"
+        )
+
+    async def close(self) -> Trace:
+        if self._live is not None:
+            return await self._live.close()
+        return self.trace
+
+
 def _chain_save(on_save: OnSave | None, store: Durable | None) -> OnSave | None:
     """`on_save`, then the trace written to `store` when it is also the trace store."""
     if store is None or not isinstance(store.lookup, TraceSink):
@@ -1365,8 +1656,11 @@ class Agent:
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        key: str | None = None,
+        depends: object = None,
+        cache_inputs: object = None,
         durable: Durable | bool | None = None,
-    ) -> AsyncIterator[Interaction]:
+    ) -> AsyncIterator["Interaction | DurableInteraction"]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
         `Interaction`; `await interaction.turn("...")` sends one user turn and
@@ -1399,10 +1693,53 @@ class Agent:
         `turn(message)`, which continues it. `interaction.checkpoint()` checkpoints
         the box between turns. With `config.save = "per_call"`, the owned box is
         checkpointed after every model response (`on_save(trace, checkpoint)`);
-        `interaction.latest_checkpoint` holds the latest. `durable` is accepted for
-        the calls a durable env makes; an exchange is not durable yet."""
+        `interaction.latest_checkpoint` holds the latest.
+
+        With a `Durable` installed the exchange is durable as `run` is
+        (`DurableInteraction`): a finished one replays its recorded turns to the same
+        caller, and a cut-off one replays them up to its latest checkpoint and
+        continues live from there. `key`, `depends`, `cache_inputs` and `durable` are
+        as for `run`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        if durable is not False:
+            given = {"checkpoint": checkpoint, "resume": resume, "at": at, "note": note}
+            managed = [name for name, value in given.items() if value is not None]
+            if key is None and (managed or task is None):
+                durable = False
+            found, key = plan_call(self.name, key, durable)
+            if key is not None:
+                if managed:
+                    raise TypeError(
+                        f"a durable call (key=) resumes itself; drop {managed}"
+                    )
+                async with self._durable_interaction(
+                    task,
+                    key,
+                    found,
+                    runtime=runtime,
+                    tools=tools,
+                    on_trace=on_trace,
+                    on_save=on_save,
+                    depends=depends,
+                    cache_inputs=cache_inputs,
+                ) as exchange:
+                    yield exchange
+                return
+            async with self.interaction(
+                task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
+                durable=False,
+            ) as plain:
+                yield plain
+            return
         self._check_resume_support()
         opening = self._opening(
             task, resume, at, note, checkpoint, runtime, interactive=True
@@ -1472,6 +1809,72 @@ class Agent:
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None
             finish(trace)
+
+    @asynccontextmanager
+    async def _durable_interaction(
+        self,
+        task: Task | None,
+        key: str,
+        found: Durable | None,
+        *,
+        runtime: Runtime | None,
+        tools: Mapping[str, SharedToolServer] | None,
+        on_trace: Callable[[Trace], None] | None,
+        on_save: OnSave | None,
+        depends: object,
+        cache_inputs: object,
+    ) -> AsyncIterator[DurableInteraction]:
+        """A durable `interaction` (`DurableInteraction`)."""
+        if task is None:
+            raise ValueError("a durable call (key=) needs its task")
+        resolved = resolve_call(
+            found, key, call_parts(task, self, found, depends, cache_inputs)
+        )
+        recorded = resolved.kept
+        checkpoints: list[Checkpoint] = []
+        if recorded is None and resolved.resume is not None:
+            resume, at = self._continuation(resolved.resume, runtime)
+            if resume is not None:
+                recorded = resume
+                checkpoints = list(resume.checkpoints)
+                if runtime is not None:
+                    # On a borrowed box, only those no newer than its restore point.
+                    limit = [c.id for c in checkpoints].index(at)
+                    checkpoints = checkpoints[: limit + 1]
+        elif recorded is not None and self.harness.SUPPORTS_RESUME:
+            # A finished exchange goes live again only past its turns; on a borrowed
+            # box nothing says the box matches, so it never does.
+            if runtime is None:
+                try:
+                    restore_config(self.runtime_config, "probe")
+                    checkpoints = list(recorded.checkpoints)
+                except TypeError:
+                    pass
+        labels = _call_labels(found, resolved)
+        save = _chain_save(on_save, found)
+
+        def open_live(resume: Trace | None, at: str | None, note: str | None):
+            return self.interaction(
+                task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=observe(on_trace, labels),
+                on_save=save,
+                resume=resume,
+                at=at,
+                note=note,
+                durable=False,
+            )
+
+        async with AsyncExitStack() as stack:
+            exchange = DurableInteraction(
+                task, open_live, stack, recorded=recorded, checkpoints=checkpoints
+            )
+            if recorded is None:
+                await exchange.go_live()
+            yield exchange
+        if exchange.live is not None and found is not None:
+            found.write(exchange.live.trace)
 
     def _rollout_params(
         self,
@@ -1731,14 +2134,39 @@ class _EpisodeAgent(Agent):
         at: str | int | None = None,
         note: str | None = None,
         on_save: OnSave | None = None,
+        key: str | None = None,
+        depends: object = None,
+        cache_inputs: object = None,
         durable: Durable | bool | None = None,
-    ) -> AsyncIterator[Interaction]:
+    ) -> AsyncIterator["Interaction | DurableInteraction"]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
         `Env.run` stays crash-safe. Setup, each active segment, and close acquire
         an agent permit independently; the interaction holds no permit while awaiting
         its caller, so peer interactions still interleave where an episode plays one
         agent at a time."""
+        if _maybe_durable(key, durable):
+            # The durable exchange resolves first; its live exchange comes back
+            # through here, `durable=False`.
+            async with super().interaction(
+                task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
+                key=key,
+                depends=depends,
+                cache_inputs=cache_inputs,
+                durable=durable,
+            ) as exchange:
+                yield exchange
+            if isinstance(exchange, DurableInteraction) and exchange.kept:
+                self._kept.append(exchange.trace)
+            return
         trace: Trace | None = None
 
         def remember(current: Trace) -> None:

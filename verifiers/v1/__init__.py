@@ -6,6 +6,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.agent import (
     Agent,
     Agents,
+    DurableInteraction,
     Interaction,
     Segment,
     make_agent,
@@ -262,6 +263,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Box",
     "box_of",
     "Durable",
+    "DurableInteraction",
     "TraceDir",
     "TraceLookup",
     "TraceSink",

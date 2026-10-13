@@ -1,7 +1,7 @@
 """Durable agent calls, found by their traces.
 
 With a `Durable` installed (`use_durable`, or `Env.durable` for an episode), every agent
-call (`Agent.run`, `Agent.provision`) is durable. Its key is its
+call (`Agent.run`, `Agent.interaction`, `Agent.provision`) is durable. Its key is its
 position, `<agent name>/<n>` for the agent's n-th call since the durable was installed
 (taken when the call starts, so `asyncio.gather` keeps the order), unless it names one
 (`key=`, for a call order that is not stable); `durable=False` opts a call out. The trace

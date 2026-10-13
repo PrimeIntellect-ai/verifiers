@@ -1,5 +1,6 @@
-"""Durable calls (`verifiers.v1.durable`): with a durable installed, `agent.run`
-finds its earlier traces (by position, or by `key=`) through a `TraceLookup` and return the finished one, continue a cut-off one from its latest
+"""Durable calls (`verifiers.v1.durable`): with a durable installed, `agent.run` and
+`agent.interaction` find their earlier traces (by position, or by `key=`) through a
+`TraceLookup` and return the finished one, continue a cut-off one from its latest
 checkpoint, or run fresh; `Env.durable(task)` installs one for an episode.
 
 Deterministic, no API key: the scripted model, in-process harness and fake
@@ -261,6 +262,116 @@ async def test_a_call_whose_box_cannot_be_restored_runs_fresh(
         )
         fresh = await make(model).run(task(), key="solve")
     assert fresh.ok and fresh.resumed_from is None
+
+
+# -- interaction(key=) ----------------------------------------------------------
+
+
+async def drive(agent, prompt=None, messages=("first", "second"), **kwargs):
+    replies = []
+    async with agent.interaction(task(prompt), key="talk", **kwargs) as exchange:
+        for message in messages:
+            replies.append((await exchange.turn(message)).last_reply)
+    return exchange, replies
+
+
+async def test_a_finished_exchange_replays_to_the_same_driver(model, store):
+    agent = make(model)
+    with vf.use_durable(vf.Durable(store)):
+        first, replies = await drive(agent)
+        assert replies == ["done: first", "done: second"]
+        assert first.trace.ok and not first.kept
+        model.requests.clear()
+        again, replayed = await drive(agent)
+    assert replayed == replies
+    assert again.kept and again.trace.id == first.trace.id
+    assert model.requests == []
+
+
+async def test_an_exchange_is_durable_by_its_position_too(model, store):
+    agent = make(model)
+
+    async def driver() -> tuple[vf.Trace, list[str]]:
+        replies = []
+        async with agent.interaction(task(None)) as exchange:
+            for message in ("first", "second"):
+                replies.append((await exchange.turn(message)).last_reply)
+        return exchange.trace, replies
+
+    with vf.use_durable(vf.Durable(store)):
+        first, replies = await driver()
+    assert first.labels["call"]["key"] == "agent/0"
+    model.requests.clear()
+    with vf.use_durable(vf.Durable(store)):
+        again, replayed = await driver()
+    assert replayed == replies and again.id == first.id and again.kept
+    assert model.requests == []
+
+
+async def test_a_driver_that_diverges_continues_live_from_a_turn_end(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        first, _ = await drive(agent)
+        model.requests.clear()
+        again, replies = await drive(agent, messages=("first", "changed"))
+    assert replies == ["done: first", "done: changed"]
+    assert not again.kept
+    assert again.trace.resumed_from == first.trace.id
+    sent = model.requests[0]["messages"]
+    assert [m["content"] for m in sent if m["role"] == "user"] == ["first", "changed"]
+    # It continued on the box as the first turn left it.
+    assert FakeRuntime.made[-1].files() == {"a.txt": b"a.txt", "b.txt": b"b.txt"}
+
+
+async def test_a_diverging_driver_without_a_checkpoint_raises(model, store):
+    agent = make(model)
+    with vf.use_durable(vf.Durable(store)):
+        await drive(agent)
+        with pytest.raises(RuntimeError, match="deterministic"):
+            await drive(agent, messages=("first", "changed"))
+
+
+async def test_a_cut_off_exchange_replays_then_continues_at_its_checkpoint(
+    model, store
+):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.interaction(task(), key="talk") as exchange:
+            await exchange.turn()
+        failed = exchange.trace
+        assert not failed.ok and len(failed.checkpoints) == 2
+        model.requests.clear()
+        async with agent.interaction(task(), key="talk") as exchange:
+            segment = await exchange.turn()
+            assert segment.last_reply == f"done: {RETRY_NOTE}"
+            assert exchange.live is not None
+            segment = await exchange.turn("more")
+            assert segment.last_reply == "done: more"
+        resumed = exchange.trace
+        assert resumed.ok, resumed.errors
+        assert resumed.resumed_from == failed.id
+        assert roles(model.requests[0]["messages"]) == [
+            "user",
+            "assistant",
+            "tool",
+            "user",
+        ]
+        # Finished now: the same driver replays it.
+        model.requests.clear()
+        async with agent.interaction(task(), key="talk") as exchange:
+            assert (await exchange.turn()).last_reply == f"done: {RETRY_NOTE}"
+            assert (await exchange.turn("more")).last_reply == "done: more"
+        assert exchange.kept and model.requests == []
+
+
+async def test_a_replaying_exchange_steers_only_when_live(model, store):
+    agent = make(model)
+    with vf.use_durable(vf.Durable(store)):
+        await drive(agent)
+        async with agent.interaction(task(None), key="talk") as exchange:
+            with pytest.raises(RuntimeError, match="live exchange"):
+                await exchange.steer("hey")
 
 
 # -- an episode -----------------------------------------------------------------

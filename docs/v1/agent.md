@@ -41,7 +41,8 @@ checkpointed or retried.
 ## Durable calls
 
 With a `vf.Durable` installed (an env's `durable(task)` for its episodes, or
-`vf.use_durable`), every agent call survives a crash: `run` and `provision`. Each call is keyed by its position, `<agent name>/<n>` for the agent's n-th
+`vf.use_durable`), every agent call survives a crash: `run`, `interaction` and
+`provision`. Each call is keyed by its position, `<agent name>/<n>` for the agent's n-th
 call since the durable was installed, taken when the call starts (so `asyncio.gather`
 keeps the order); `key=` names it instead, for a call whose order is not stable, and
 `durable=False` opts a call out. Its trace is labelled with the key and a fingerprint of
@@ -59,8 +60,10 @@ Without a durable installed, calls are plain, exactly as before.
 durable = vf.Durable(vf.TraceDir("traces"), match={"job": "j1"}, parts={"version": "3"})
 with vf.use_durable(durable):
     trace = await solver.run(task)                      # solver's call 0
-    async with solver.provision(task) as box:           # call 1
-        await solver.run(task, runtime=box)             # call 2
+    async with solver.interaction(task) as exchange:    # call 1
+        reply = await exchange.turn("hello")
+    async with solver.provision(task) as box:           # call 2
+        await solver.run(task, runtime=box)             # call 3
         await reviewer.run(review_task, runtime=box)    # reviewer's call 0
     await solver.run(task, key="lookup")                # named: takes no position
 ```
@@ -88,6 +91,11 @@ whose order depends on it a `key=`.
   `cache_inputs=` replaces the task and agent parts. Budgets are not parts: a raised
   timeout, more turns or retries keep a finished call, while a changed prompt, model or
   harness runs it again.
+- **Interactions.** A finished exchange replays: each `turn(message)` that matches the
+  recorded one returns the recorded segment. A cut-off one replays the turns its latest
+  checkpoint covers and continues live from there. A driver that sends something else
+  continues live from the checkpoint at the end of the turns it got (with per-call saves,
+  every final reply has one); without one, the turn raises.
 - **Boxes.** Every run on a durable box is labelled with the box's key, and a later
   `provision` under the key starts the box from the latest checkpoint those runs
   recorded. Durable runs on it then continue from their own latest checkpoint no newer
