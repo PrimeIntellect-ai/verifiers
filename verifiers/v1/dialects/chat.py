@@ -26,6 +26,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     parse_sse_event,
 )
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -293,12 +294,30 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        # An upstream that fails mid-stream keeps HTTP 200 and sends an error
+        # payload (then usually [DONE]) — vLLM and OpenRouter both document this
+        # shape. Surface it as the provider failure it is, or `[DONE]` would let
+        # the partial turn commit as a successful "stop".
+        if (error := chunk.get("error")) is not None:
+            if isinstance(error, dict):
+                message = str(error.get("message") or error)
+                code = error.get("code")
+            else:
+                message, code = str(error), None
+            status = code if isinstance(code, int) and 400 <= code < 600 else 502
+            raise model_error(message, status_code=status)
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
         for choice in chunk.get("choices") or []:
             if choice.get("index", 0) != 0:
                 continue
+            if choice.get("finish_reason") == "error":
+                detail = (choice.get("delta") or {}).get("error") or choice.get("error")
+                raise model_error(
+                    str(detail or "upstream stream ended with finish_reason=error"),
+                    status_code=502,
+                )
             self.finish_reason = choice.get("finish_reason") or self.finish_reason
             delta = choice.get("delta") or {}
             for key in ("content", "reasoning_content", "reasoning"):
