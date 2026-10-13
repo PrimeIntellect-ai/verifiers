@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.modal import ModalConfig
     from verifiers.v1.runtimes.prime import PrimeConfig
+    from verifiers.v1.trace import Trace
 
 
 class DockerConfig(ContainerConfig, NetworkPolicyConfig):
@@ -101,6 +102,26 @@ class DockerRuntime(ContainerRuntime):
         self._cut = False
         # Helper containers carry the run label, including for borrowed containers.
         self._label_args = ["--label", f"verifiers.run={run_scope()}"]
+
+    @property
+    def supports_checkpoint(self) -> bool:
+        # A container on a host VM (Harbor Compose) is saved with its host: the checkpoint holds
+        # the Docker daemon's data, so a host restored from it brings the container back.
+        return self._host is not None and self._host.supports_checkpoint
+
+    @property
+    def restored(self) -> bool:
+        return self._host is not None and self._host.restored
+
+    async def checkpoint(self, trace: "Trace | None" = None) -> str:
+        if not self.supports_checkpoint:
+            raise NotImplementedError(f"{type(self).__name__} has no filesystem checkpoints")
+        return await self._host.checkpoint(trace)
+
+    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+        if not self.supports_checkpoint:
+            raise NotImplementedError(f"{type(self).__name__} has no filesystem checkpoints")
+        await self._host.delete_checkpoint(checkpoint_id)
 
     @classmethod
     @contextlib.asynccontextmanager
