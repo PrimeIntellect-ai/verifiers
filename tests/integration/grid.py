@@ -5,20 +5,20 @@ Each behavior module fixes one task and fans it over `grid(...)`: every bundled 
 x every runtime kind. The harness grid runs one local container engine (`docker`);
 `podman` / `apptainer` share its container runtime code and are exercised by the
 runtime-only grids (`placements`, `runtimes_grid`), where the harness is fixed. A cell
-the stack cannot run is collected as a skip with its reason, so the suite states what is
-supported, what is not, and why:
+the stack cannot run is collected as a skip with its reason. Every reason derives from a
+capability the code declares, never from a list of names, so the grid follows the code:
 
-- a `NEEDS_CONTAINER` harness (every agent program) never runs on the host (`subprocess`)
-- `podman` / `apptainer` need their engine on the host; CI deselects their marks
-- `modal` / `e2b` are external sandboxes: local-only, CI deselects their marks
-- `prime` provisions real sandboxes and runs in CI with its secrets; it exposes no
-  ports, so a tool server lives there only colocated with its harness
-- a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
-  shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), skills
-  (`SUPPORTS_SKILLS`), a user that can be switched to (`supports_user`), a network
-  policy (`NetworkPolicyConfig`), or an exchange that resumes (`SUPPORTS_RESUME` or a
-  native session)
-- `kimi-code` cannot install in a prime sandbox: code.kimi.com resets the connection
+- `Harness.NEEDS_CONTAINER`: the harness never runs on the host (`subprocess`)
+- `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
+  (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
+  skills, or a resumable exchange
+- `Runtime.supports_user`, `Runtime.supports_expose`, `NetworkPolicyConfig`: the
+  behavior needs a user switch, a tool server reachable from another runtime, or a
+  network policy
+- `podman` / `apptainer` need their engine on the host
+
+CI deselects `podman`, `apptainer`, `modal` and `e2b` by mark: local engines and external
+sandboxes.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -80,9 +80,12 @@ def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     return config
 
 
+def runtime_cls(runtime: str) -> type:
+    return _runtime_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
+
+
 def runtime_supports_user(runtime: str) -> bool:
-    config = TypeAdapter(RuntimeConfig).validate_python({"type": runtime})
-    return _runtime_cls(config).supports_user
+    return runtime_cls(runtime).supports_user
 
 
 def runtime_supports_network_policy(runtime: str) -> bool:
@@ -110,10 +113,6 @@ def unsupported(
         return f"needs {runtime} on the host"
     if runtime == "subprocess" and cls.NEEDS_CONTAINER:
         return f"{name} needs a container runtime"
-    if name == "kimi-code" and runtime == "prime":
-        return "code.kimi.com resets connections from prime sandboxes"
-    if "reply" in needs and name == "mini-swe-agent":
-        return f"{name} finishes by submitting a shell task, not by replying"
     if "shell" in needs and not cls.EXECUTES_CODE:
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
@@ -184,10 +183,13 @@ def placements(
             ]
             if missing:
                 marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
-            elif tool_runtime == "prime":
+            elif (
+                tool_runtime != "colocated"
+                and not runtime_cls(tool_runtime).supports_expose
+            ):
                 marks.append(
                     pytest.mark.skip(
-                        reason="prime VM sandboxes expose no ports; a tool server "
+                        reason=f"{tool_runtime} cannot expose a port; a tool server "
                         "there is reachable only colocated"
                     )
                 )

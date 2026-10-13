@@ -147,6 +147,9 @@ class Runtime(ABC):
     use a host `Tunnel` inward plus `expose` outward."""
 
     supports_user: ClassVar[bool] = False
+    supports_expose: ClassVar[bool] = True
+    """Whether `expose` can publish a port inside this runtime to the outside, so a
+    server here is reachable from another runtime."""
     """Whether `with_user` can run this runtime's commands as another existing user."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
