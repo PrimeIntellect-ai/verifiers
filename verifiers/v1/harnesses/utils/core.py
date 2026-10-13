@@ -463,8 +463,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
@@ -521,15 +519,8 @@ async def main() -> None:
         else:
             mcp_tools, dispatch, servers = [], {}, {}
         tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+        # The whole opening conversation, system prompt included (`launch_chat_program`).
+        messages = list(initial)
         compactor = Compactor(
             client,
             args.model,
