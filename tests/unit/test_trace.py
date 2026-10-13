@@ -3,7 +3,6 @@
 import json
 
 import pytest
-from judge_traces import full_trace_fixture
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import resolve_agent
@@ -235,8 +234,8 @@ def test_wire_trace_round_trip(history_type):
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
 
 
-def test_transcript():
-    transcript = full_trace_fixture().transcript
+def test_transcript(make_full_trace):
+    transcript = make_full_trace().transcript
     assert "[user]\nCapital of France?" in transcript
     assert '[tool_call search({"q": "france"})]' in transcript
     assert "[tool search]\nTOOL RESULT: Paris is the capital." in transcript

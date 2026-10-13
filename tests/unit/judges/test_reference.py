@@ -1,10 +1,6 @@
 """The built-in `reference` judge: verdict parsing, prompt inputs, and configurable labels."""
 
 import pytest
-from judge_traces import (
-    QAData,
-    make_trace,
-)
 from pydantic import Field
 
 import verifiers.v1 as vf
@@ -22,7 +18,7 @@ def test_reference_parse():
         judge.parse(JudgeResponse(text="gibberish"))
 
 
-async def test_reference_score(fake_judge_model):
+async def test_reference_score(fake_judge_model, make_trace):
     trace = make_trace()
     verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
         trace.task.data, trace
@@ -77,12 +73,12 @@ async def test_reference_score(fake_judge_model):
         await judge.score(trace.task.data, trace)
 
 
-async def test_reference_score_messages_prompt(fake_judge_model):
+async def test_reference_score_messages_prompt(fake_judge_model, qa_data):
     # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
     from verifiers.v1.types import TextContentPart
     from verifiers.v1.types import UserMessage as UM
 
-    task = QAData(
+    task = qa_data(
         idx=0,
         prompt=[UM(content=[TextContentPart(text="Capital of France?")])],
         answer="Paris",
@@ -134,7 +130,7 @@ async def test_reference_question_field(fake_judge_model):
         await judge.score(task, trace)
 
 
-async def test_reference_list_answer(fake_judge_model):
+async def test_reference_list_answer(fake_judge_model, make_trace):
     # A list-valued answer field is judged as multiple acceptable answers, one per line.
     class MultiTask(vf.TaskData):
         aliases: list[str] = Field(default_factory=list)
@@ -147,7 +143,7 @@ async def test_reference_list_answer(fake_judge_model):
     assert "Paris\nLutetia" in fake_judge_model[0]
 
 
-async def test_reference_choices(fake_judge_model):
+async def test_reference_choices(fake_judge_model, make_trace):
     # Verdict labels are configurable; the positive (first) label scores 1.0 and the
     # default prompt asks for the configured labels (not a hardcoded yes/no).
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(choices=("A", "B")))

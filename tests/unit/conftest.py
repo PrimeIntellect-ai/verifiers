@@ -1,4 +1,7 @@
-"""Judge-test traces and a faked judge model, shared by the judge and trace tests."""
+"""Traces shared by the judge and trace unit tests: a one-turn Q/A trace and a multi-turn
+trace with reasoning and a tool call."""
+
+import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
@@ -9,7 +12,7 @@ class QAData(vf.TaskData):
     answer: str = ""
 
 
-def make_trace(
+def _make_trace(
     reply: str = "It is Paris.",
     answer: str = "Paris",
     task_cls: type[QAData] = QAData,
@@ -33,7 +36,7 @@ def make_trace(
     )
 
 
-def full_trace_fixture() -> vf.Trace:
+def _make_full_trace() -> vf.Trace:
     """A multi-turn trace: user -> assistant (reasoning + tool call) -> tool -> final reply."""
     from verifiers.v1.types import ToolCall, ToolMessage
 
@@ -74,3 +77,18 @@ def full_trace_fixture() -> vf.Trace:
             ),
         ],
     )
+
+
+@pytest.fixture
+def make_trace():
+    return _make_trace
+
+
+@pytest.fixture
+def make_full_trace():
+    return _make_full_trace
+
+
+@pytest.fixture
+def qa_data():
+    return QAData

@@ -2,11 +2,6 @@
 Judge model calls are faked at `Judge.complete`; no network."""
 
 import pytest
-from judge_traces import (
-    QAData,
-    full_trace_fixture,
-    make_trace,
-)
 from pydantic import Field
 
 import verifiers.v1 as vf
@@ -26,7 +21,7 @@ text = "The response is polite."
 """
 
 
-class JudgedTask(vf.Task[QAData]):
+class JudgedTask(vf.Task):
     @vf.reward
     async def own(self, trace) -> float:
         return 0.25
@@ -132,18 +127,18 @@ def test_reward_name_fallback():
     assert MyQualityJudge().reward_name == "my_quality"
 
 
-async def test_base_judge_score_raises():
+async def test_base_judge_score_raises(make_trace, qa_data):
     with pytest.raises(NotImplementedError, match="implements no `score`"):
-        await vf.Judge().score(task=QAData(idx=0, prompt="q"), trace=make_trace())
+        await vf.Judge().score(task=qa_data(idx=0, prompt="q"), trace=make_trace())
 
 
-async def test_view_modes(fake_judge_model):
+async def test_view_modes(fake_judge_model, make_full_trace):
     # last_reply (default): the judge sees only the final reply.
-    trace = full_trace_fixture()
+    trace = make_full_trace()
     await vf.ReferenceJudge().score(trace.task.data, trace)
     assert "TOOL RESULT" not in fake_judge_model[0]
     # full_trace: the whole transcript (minus reasoning) fills {response}.
-    trace = full_trace_fixture()
+    trace = make_full_trace()
     await vf.ReferenceJudge(vf.ReferenceJudgeConfig(view="full_trace")).score(
         trace.task.data, trace
     )
@@ -151,7 +146,9 @@ async def test_view_modes(fake_judge_model):
     assert "SECRET REASONING" not in fake_judge_model[1]
 
 
-async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model):
+async def test_config_prompt_overrides_class_template(
+    tmp_path, fake_judge_model, make_trace
+):
     # Config `prompt` is a file path; the same {field} placeholders work.
     file = tmp_path / "judge.txt"
     file.write_text("Q:{question} A:{answer} R:{response}")
@@ -167,7 +164,7 @@ async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model
         vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=tmp_path / "missing.txt"))
 
 
-async def test_error_attribution(monkeypatch, tmp_path):
+async def test_error_attribution(monkeypatch, tmp_path, make_trace):
     # The policy: a MODEL failure scores 0.0; a JUDGE failure errors the rollout (raises
     # out of Task.score as a TaskError) so training skips the sample instead of
     # punishing the model for a broken judge.
@@ -218,7 +215,7 @@ def test_judge_composition_weights_are_finite():
                 ScoreConfig.model_validate({field: weight})
 
 
-async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
+async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model, make_trace):
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(RUBRIC_TOML)
     cfg = JudgedConfig.model_validate(

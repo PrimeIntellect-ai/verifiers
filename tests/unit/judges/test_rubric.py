@@ -3,10 +3,6 @@
 import json
 
 import pytest
-from judge_traces import (
-    full_trace_fixture,
-    make_trace,
-)
 
 import verifiers.v1 as vf
 from verifiers.v1.judge import Judge, JudgeResponse
@@ -40,10 +36,10 @@ def test_rubric_config_requires_path():
         vf.TaskConfig.model_validate({"judges": [{"id": "rubric"}]})
 
 
-async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
+async def test_rubric_view_full_trace(tmp_path, fake_judge_model, make_full_trace):
     # The rubric judge's default view: criteria are judged against the whole transcript.
     judge = rubric_judge(tmp_path)
-    trace = full_trace_fixture()
+    trace = make_full_trace()
     await judge.score(trace.task.data, trace)
     assert all("TOOL RESULT" in prompt for prompt in fake_judge_model)
     assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
@@ -98,7 +94,7 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-async def test_rubric_score(tmp_path, fake_judge_model):
+async def test_rubric_score(tmp_path, fake_judge_model, make_trace):
     # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75, from ONE
     # judge call; each verdict lands as a `<name>/<criterion>` metric.
     judge = rubric_judge(tmp_path)
@@ -108,7 +104,7 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     assert len(trace.info["judge_calls"]) == 1  # one call for the whole rubric
 
 
-async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
+async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch, make_trace):
     # A reply that doesn't verdict exactly the rubric's criteria is a judge failure: raise
     # (-> rollout error), don't guess or silently score 0.
     async def wrong_names(self, messages, *, trace=None, schema=None, parse=None, **s):
@@ -122,7 +118,7 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
         await judge.score(trace.task.data, trace)
 
 
-async def test_rubric_choices_normalize(tmp_path, monkeypatch):
+async def test_rubric_choices_normalize(tmp_path, monkeypatch, make_trace):
     # Ordered choices (worst→best) score by rank: "partial" of ["none","partial","good"] -> 0.5.
     async def graded(self, messages, *, trace=None, schema=None, parse=None, **s):
         v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "partial"}]}
@@ -135,7 +131,7 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch):
     assert trace.metrics == {"q/depth": 0.5}
 
 
-async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
+async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch, make_trace):
     # A verdict that isn't one of the criterion's choices is a judge failure, not a 0.
     async def off_menu(self, messages, *, trace=None, schema=None, parse=None, **s):
         v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "maybe"}]}
@@ -160,7 +156,7 @@ def test_rubric_choices_validation(tmp_path):
         ).criteria
 
 
-async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
+async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make_trace):
     # off by default: no reference block in the prompt.
     t = make_trace()
     await rubric_judge(tmp_path).score(t.task.data, t)
