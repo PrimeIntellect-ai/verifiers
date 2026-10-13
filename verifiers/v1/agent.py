@@ -1098,14 +1098,17 @@ class DurableInteraction:
             self._box_at = point
             return self._box
 
-    def _replay_point(self) -> Checkpoint | None:
-        """The checkpoint whose box is as the turns given so far left it: the first one
-        whose cut ends where they end, or holds no more than the next recorded input
-        (which never touched the box)."""
-        position = self._position
+    def _settled_cuts(self) -> list[tuple[int, Checkpoint]]:
+        """The cuts whose box is as the turns given so far left it: each ends where they
+        end, or holds no more than the next recorded input (which never touched the
+        box)."""
         recorded = self._turns[self._next] if self._next < len(self._turns) else None
-        last = recorded.body if recorded is not None else position
-        found = [(length, c) for length, c in self._cuts if position <= length <= last]
+        last = recorded.body if recorded is not None else self._position
+        return [(n, c) for n, c in self._cuts if self._position <= n <= last]
+
+    def _replay_point(self) -> Checkpoint | None:
+        """The first of the `_settled_cuts`' checkpoints."""
+        found = self._settled_cuts()
         return min(found, key=lambda item: item[0])[1] if found else None
 
     @property
@@ -1207,18 +1210,14 @@ class DurableInteraction:
                 note = RETRY_NOTE if length > recorded.body else None
                 live = await self.go_live(trace, checkpoint.id, note, start=checkpoint)
                 return await live.turn()
-        # A checkpoint whose box is as the turns already given left it: its cut ends
-        # where they end, or holds no more than the next recorded input, which is
-        # dropped (it never touched the box).
+        # A checkpoint whose box is as the turns already given left it (the next
+        # recorded input, if its cut holds it, is dropped), after an agent reply.
         position = self._position
-        last = recorded.body if recorded is not None else position
-        boundary = [
-            c
-            for length, c in self._cuts
-            if position <= length <= last
-            and position > 0
-            and self._conversation[position - 1].role == "assistant"
-        ]
+        boundary = (
+            [c for _, c in self._settled_cuts()]
+            if position > 0 and self._conversation[position - 1].role == "assistant"
+            else []
+        )
         if boundary:
             # A box restored for the replay at one of them holds what the driver wrote
             # to it since: the live exchange continues on it as it is.
