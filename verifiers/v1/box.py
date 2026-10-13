@@ -12,9 +12,9 @@ to the runtime, is what lets those borrowed runs be saved and recovered:
   box from the latest checkpoint any seat took and swaps it in under the same runtime
   object, so every seat sharing the box (and every view of it) sees the restored box. An
   interaction retry on a borrowed box goes through it (`AgentConfig.interaction_retries`).
-  After a crash, `agent.provision(task, key=...)` restores the box from the latest
-  checkpoint its runs recorded (`verifiers.v1.durable`), and their durable runs resume
-  against it.
+  After a crash, a durable `agent.provision(task)` restores the box from the latest
+  checkpoint its runs recorded or started on (`verifiers.v1.durable`), and their
+  durable runs resume against it.
 
 Seats that take turns on a box resume exactly; seats that change it at the same time
 resume each on its own latest checkpoint, with the box as of the latest of all.
@@ -80,10 +80,16 @@ class Box:
 
     @property
     def labels(self) -> dict[str, Any]:
-        """The labels every run on a durable box carries (`durable.BOX_LABEL`)."""
+        """The labels every run on a durable box carries (`durable.BOX_LABEL`), as of
+        the run's start: the box's key and fingerprint, and the checkpoint the box was
+        at then (its `latest`), so the run that moved last names the box's latest
+        checkpoint even before it takes one of its own (`durable.box_checkpoint`)."""
         if self.key is None:
             return {}
-        return {BOX_LABEL: {"key": self.key, "fingerprint": self.fingerprint}}
+        label: dict[str, Any] = {"key": self.key, "fingerprint": self.fingerprint}
+        if self.latest is not None:
+            label["checkpoint"] = {"id": self.latest.id, "time": self.latest.time}
+        return {BOX_LABEL: label}
 
     @property
     def can_checkpoint(self) -> bool:

@@ -8,7 +8,6 @@ what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
 
 import asyncio
-import copy
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -1104,7 +1103,7 @@ def _chain_save(on_save: OnSave | None, store: Durable | None) -> OnSave | None:
 
 def _call_labels(found: Durable | None, resolved: Resolved) -> dict:
     """The labels a durable call stamps: its scope's and its own (`CALL_LABEL`)."""
-    labels = copy.deepcopy(dict(found.match)) if found is not None else {}
+    labels = found.scope if found is not None else {}
     return merge_labels(labels, {CALL_LABEL: resolved.label})
 
 
@@ -1518,7 +1517,7 @@ class Agent:
         if box is not None and box.key is not None:
             store = box.durable
             if store is not None:
-                labels = merge_labels(copy.deepcopy(dict(store.match)), box.labels)
+                labels = merge_labels(store.scope, box.labels)
             else:
                 labels = box.labels
         watch = observe(on_trace, labels, drop=(CALL_LABEL, BOX_LABEL))

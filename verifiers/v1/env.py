@@ -175,15 +175,16 @@ class Env(ABC, Generic[ConfigT]):
         return {}
 
     def durable(self, task: Task) -> Durable | None:
-        """The durable this episode's calls resolve through (`verifiers.v1.durable`):
-        with one, every agent call in `run()` (`run`, `interaction`, `provision`) is
-        durable, keyed by its seat and position unless it names a `key=`, so an
-        episode run again after a crash returns its finished calls and continues its
-        cut-off ones from their checkpoints. Host code between the calls must then be
-        deterministic given their results, or idempotent. Its `match` is the scope
-        (typically this episode's `trace_labels(task)`, which every trace carries).
-        Called once per episode attempt, before `setup()`; a raise fails the episode.
-        Default: none (calls are plain)."""
+        """The trace lookup this episode's calls resolve through, as a `Durable`
+        (`verifiers.v1.durable`): with one, every agent call in `setup()` and `run()`
+        (`run`, `interaction`, `provision`) is durable, keyed by its seat and position
+        unless it names a `key=`, so an episode run again after a crash returns its
+        finished calls and continues its cut-off ones from their checkpoints. Host code
+        between the calls must then be cheap and deterministic given their results (see
+        docs/v1/env.md, "Durable episodes"). The scope is the durable's `match`; left
+        None, this episode's `trace_labels(task)`, which every trace carries. Called
+        once per episode attempt, before `setup()`; a raise fails the episode.
+        Default: none (calls are plain, as in RL training)."""
         return None
 
     def complete(self, episode: Episode) -> bool:
@@ -289,6 +290,8 @@ class Env(ABC, Generic[ConfigT]):
                     labels.update(self.trace_labels(task))
                 async with boundary(EnvError, f"{type(self).__name__}.durable()"):
                     calls = self.durable(task)
+                    if calls is not None and calls.match is None:
+                        calls = calls.within(labels)
                 with use_durable(calls):
                     async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                         await self.setup(agents)

@@ -1,13 +1,15 @@
 """Durable agent calls, found by their traces.
 
 With a `Durable` installed (`use_durable`, or `Env.durable` for an episode), every agent
-call (`Agent.run`, `Agent.interaction`, `Agent.provision`) is durable. Its key is its
-position, `<agent name>/<n>` for the agent's n-th call since the durable was installed
-(taken when the call starts, so `asyncio.gather` keeps the order), unless it names one
-(`key=`, for a call order that is not stable); `durable=False` opts a call out. The trace
-it makes is labelled with the key and a fingerprint of what its result depends on
-(`trace.info["labels"]["call"]`), and before it runs, the newest earlier trace carrying
-the same key is looked up in the run's trace store:
+call (`Agent.run`, `Agent.interaction`, `Agent.provision`) is durable. Its identity is
+the durable's scope (`match`: for an episode, the env's `trace_labels`), the agent's name
+(its seat) and its position: the key `<seat>/<n>` names the agent's n-th call since the
+durable was installed (taken when the call starts, so `asyncio.gather` keeps the order).
+A call may name its key instead (`key="draft"`: `<seat>/draft`, for a call order that is
+not stable); `durable=False` opts a call out. The trace it makes is labelled with the key
+and a fingerprint of what its result depends on (`trace.info["labels"]["call"]`), and
+before it runs, the latest earlier trace carrying the same scope and key is looked up in
+the run's trace store (`TraceLookup.latest`):
 
 - a finished ok trace with the same fingerprint returns as it is, without running
   (`Trace.kept`);
@@ -30,11 +32,13 @@ a directory of traces for tests and standalone use.
     durable = vf.Durable(lookup, match={"flow": {"job": "j1"}})
     with vf.use_durable(durable):            # or Env.durable(task) for an episode
         trace = await agent.run(task)        # durable as "agent/0"
-        other = await agent.run(task, key="solve")
+        other = await agent.run(task, key="solve")   # as "agent/solve"
 
-`Durable.match` is the scope: the labels an earlier trace must carry to count (an env
-stamps its `trace_labels` on every trace; the durable stamps `match` on the traces of
-its calls too, so a standalone caller finds them). The fingerprint hashes the task's
+`Durable.match` is the scope: the labels an earlier trace must carry to count. Left
+None, an episode's durable takes the env's `trace_labels(task)` (which every trace of
+the episode carries); an env whose labels hold something that changes between attempts
+of the same episode (an attempt number) names the scope without it. The durable stamps
+`match` on the traces of its calls too, so a standalone caller finds them. The fingerprint hashes the task's
 class, code, data and config, the agent's model, sampling, harness and client, the
 durable's `parts` (a pipeline version) and the call's `depends`; `cache_inputs`
 replaces the task and agent parts. Budgets (timeouts, turn and token limits, retries,
@@ -42,8 +46,9 @@ saves) are not parts: raising a timeout keeps a finished call, while a changed p
 model or harness reruns it.
 
 A box from `agent.provision(task)` is durable the same way: every run on it is
-labelled with the box's key (`labels["box"]`), and a later provision under the key
-starts its box from the latest checkpoint any of those runs recorded (see `Box`).
+labelled with the box's key and the checkpoint the box was at when the run started
+(`labels["box"]`), and a later provision under the key starts its box from the latest
+checkpoint of the run on it that moved last (`box_checkpoint`, see `Box`).
 """
 
 from __future__ import annotations
@@ -86,11 +91,12 @@ upgrading verifiers keeps every finished call."""
 class TraceLookup(Protocol):
     """Where a durable call finds its earlier traces: the run's trace store."""
 
-    def find(self, labels: Mapping[str, Any]) -> Iterable[Trace]:
-        """Every stored trace whose labels (`trace.info["labels"]`) contain `labels`
-        (`labels_match`), finished or not; a partial one as of its latest save. Order
-        does not matter. Called once per durable call, so it should not rescan the
-        whole store each time."""
+    def latest(self, labels: Mapping[str, Any]) -> Trace | None:
+        """Of the stored traces whose labels (`trace.info["labels"]`) contain `labels`
+        (`labels_match`: a nested subset), finished or not, the one that moved last
+        (`recency`: its latest checkpoint's time, else its start); a partial one as of
+        its latest save. None when there is none. Called once per durable call and per
+        durable box, so it should answer from an index, not rescan the store."""
         ...
 
 
@@ -109,22 +115,32 @@ class Durable:
     count (`match`, the scope), and what else every fingerprint holds (`parts`)."""
 
     lookup: TraceLookup
-    match: Mapping[str, Any] = field(default_factory=dict)
-    """Labels an earlier trace must carry, beyond the call's key: the scope. The
-    traces of this durable's calls are stamped with them."""
+    match: Mapping[str, Any] | None = None
+    """Labels an earlier trace must carry, beyond the call's key: the scope (the
+    episode's identity). The traces of this durable's calls are stamped with them.
+    None: an episode's `Env.trace_labels(task)`; outside an episode, no labels."""
     parts: Mapping[str, str] = field(default_factory=dict)
     """Fingerprint parts every call gets (e.g. `{"version": pipeline.version}`)."""
     framework: tuple[str, ...] = ()
     """Packages whose task classes count as framework code beyond `FRAMEWORK_PACKAGES`:
     editing them does not rerun a call."""
 
+    @property
+    def scope(self) -> dict[str, Any]:
+        """The scope's labels (`match`), a copy."""
+        return copy.deepcopy(dict(self.match or {}))
+
     def within(self, match: Mapping[str, Any]) -> Durable:
         """This durable with another scope: `match` replaces the scope's labels."""
         return replace(self, match=copy.deepcopy(dict(match)))
 
-    def find(self, labels: Mapping[str, Any]) -> list[Trace]:
-        query = merge_labels(copy.deepcopy(dict(self.match)), labels)
-        return [t for t in self.lookup.find(query) if labels_match(t.labels, query)]
+    def latest(self, labels: Mapping[str, Any]) -> Trace | None:
+        """The latest trace in the scope carrying `labels` (`TraceLookup.latest`)."""
+        query = merge_labels(self.scope, labels)
+        found = self.lookup.latest(query)
+        return (
+            found if found is not None and labels_match(found.labels, query) else None
+        )
 
     def write(self, trace: Trace) -> None:
         if isinstance(self.lookup, TraceSink):
@@ -174,12 +190,17 @@ def plan_call(
     next position of its agent (`<name>/<n>`, counted from 0 since the durable was
     installed); it is taken when the call starts, before it awaits anything, so calls
     started together (`asyncio.gather`) keep their order. A call with a key takes no
-    position. A key with no durable at all is a plain call, labelled with its key."""
+    position and is keyed `<name>/<key>`. A key with no durable at all is a plain call,
+    labelled with its key."""
     if durable is False:
         return None, None
     found = durable if isinstance(durable, Durable) else current_durable()
     if key is not None:
-        return found, key
+        if not key or key.isdigit():
+            raise ValueError(
+                f"key={key!r} would stand for a position; name the call (e.g. 'solve')"
+            )
+        return found, f"{name}/{key}"
     installed = _CURRENT.get()
     if installed is None:
         if found is not None:
@@ -387,14 +408,15 @@ def changed_parts(old: Mapping[str, Any], new: Mapping[str, str]) -> list[str]:
 
 
 def recency(trace: Trace) -> float:
-    """When a trace last moved: its start or its latest checkpoint, whichever is later."""
+    """When a trace last moved: its start or its latest checkpoint, whichever is later
+    (the order `TraceLookup.latest` picks by)."""
     times = [trace.timing.boot.start or 0.0]
     times.extend(c.time for c in trace.checkpoints if c.time is not None)
     return max(times)
 
 
 def latest(traces: Iterable[Trace]) -> Trace | None:
-    """The newest of `traces` (`recency`)."""
+    """The one of `traces` that moved last (`recency`)."""
     return max(traces, key=recency, default=None)
 
 
@@ -406,7 +428,7 @@ class Resolved:
     kept: Trace | None = None
     resume: Trace | None = None
     previous: Trace | None = None
-    """The newest earlier trace of the key, whatever became of it."""
+    """The latest earlier trace of the key, whatever became of it."""
 
 
 def resolve_call(
@@ -414,12 +436,12 @@ def resolve_call(
     key: str,
     parts: dict[str, str],
 ) -> Resolved:
-    """Look the call up: the newest earlier trace of `key` in the durable's scope
+    """Look the call up: the latest earlier trace of `key` in the durable's scope
     decides (see the module docs). Without a durable the call runs fresh."""
     label = {"key": key, "fingerprint": fingerprint(parts), "parts": parts}
     if durable is None:
         return Resolved(label)
-    previous = latest(durable.find({CALL_LABEL: {"key": key}}))
+    previous = durable.latest({CALL_LABEL: {"key": key}})
     if previous is None:
         return Resolved(label)
     old = previous.labels.get(CALL_LABEL) or {}
@@ -439,15 +461,21 @@ def resolve_call(
 def box_checkpoint(
     durable: Durable | None, key: str, box_fingerprint: str
 ) -> Checkpoint | None:
-    """The latest checkpoint any run on box `key` recorded (by `Checkpoint.time`), from
-    the runs whose box label carries the same fingerprint."""
+    """The latest checkpoint of box `key`: of the latest run on it whose box label
+    carries the same fingerprint, its own latest checkpoint or the one the box was at
+    when it started (`Box.labels`), whichever is later. A run that moved last holds
+    the box's latest checkpoint either way: it took it, or the box was at it."""
     if durable is None:
         return None
-    found: list[Checkpoint] = []
-    for trace in durable.find({BOX_LABEL: {"key": key}}):
-        label = trace.labels.get(BOX_LABEL) or {}
-        if label.get("fingerprint") == box_fingerprint:
-            found.extend(c for c in trace.checkpoints if c.time is not None)
+    trace = durable.latest({BOX_LABEL: {"key": key, "fingerprint": box_fingerprint}})
+    if trace is None:
+        return None
+    found = [c for c in trace.checkpoints if c.time is not None]
+    at = (trace.labels.get(BOX_LABEL) or {}).get("checkpoint")
+    if isinstance(at, Mapping) and at.get("id"):
+        found.append(
+            Checkpoint(id=at["id"], turns=0, restored=True, time=at.get("time") or 0.0)
+        )
     return max(found, key=lambda c: c.time or 0.0, default=None)
 
 
@@ -473,7 +501,8 @@ def observe(
 class TraceDir:
     """A directory of traces, one `<id>.json` record each: a `TraceLookup` and a
     `TraceSink` for tests and standalone use. Each write replaces the trace's file
-    atomically. `find` reads the files it has not read since they last changed."""
+    atomically. `latest` scans the directory, reading only the files that changed
+    since it last read them."""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
@@ -502,12 +531,12 @@ class TraceDir:
         self._cache[file] = (stat.st_mtime, stat.st_size, trace)
         return trace
 
-    def find(self, labels: Mapping[str, Any]) -> list[Trace]:
+    def latest(self, labels: Mapping[str, Any]) -> Trace | None:
         if not self.path.is_dir():
-            return []
+            return None
         found = []
         for file in sorted(self.path.glob("*.json")):
             trace = self._load(file)
             if trace is not None and labels_match(trace.labels, labels):
                 found.append(trace)
-        return found
+        return latest(found)

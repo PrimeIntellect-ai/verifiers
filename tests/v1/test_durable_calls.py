@@ -1,7 +1,8 @@
 """Durable calls (`verifiers.v1.durable`): with a durable installed, `agent.run` and
-`agent.interaction` find their earlier traces (by position, or by `key=`) through a
-`TraceLookup` and return the finished one, continue a cut-off one from its latest
-checkpoint, or run fresh; `Env.durable(task)` installs one for an episode.
+`agent.interaction` find their latest earlier trace (by seat and position, or by
+`key=`) through a `TraceLookup` and return the finished one, continue a cut-off one
+from its latest checkpoint, or run fresh; `Env.durable(task)` installs one for an
+episode, scoped by its trace labels.
 
 Deterministic, no API key: the scripted model, in-process harness and fake
 checkpointing boxes of `test_agent_resume`.
@@ -30,7 +31,7 @@ from test_agent_resume import (  # noqa: F401 - fixtures
 import verifiers.v1 as vf
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.durable import call_parts, labels_match, resolve_call
+from verifiers.v1.durable import call_parts, labels_match, latest, resolve_call
 from verifiers.v1.utils.retries import RETRY_NOTE
 
 
@@ -45,9 +46,9 @@ class Partial:
     def __init__(self, *records: dict) -> None:
         self.records = list(records)
 
-    def find(self, labels):
+    def latest(self, labels):
         traces = [vf.WireTrace.model_validate(r) for r in self.records]
-        return [t for t in traces if labels_match(t.labels, labels)]
+        return latest([t for t in traces if labels_match(t.labels, labels)])
 
 
 # -- run(key=) ------------------------------------------------------------------
@@ -66,7 +67,7 @@ async def test_a_finished_call_returns_its_trace_without_running(model, store):
     assert len(model.requests) == 3
     label = first.labels["call"]
     assert first.labels["job"] == "j1"
-    assert label["key"] == "solve"
+    assert label["key"] == "agent/solve"
     assert set(label["parts"]) >= {"task", "task_code", "data", "model", "harness"}
     # Another key, or another scope, runs.
     with vf.use_durable(vf.Durable(store, match={"job": "j2"})):
@@ -138,7 +139,7 @@ async def test_a_key_overrides_the_position_and_durable_false_opts_out(model, st
         named = await agent.run(task(), key="named")
         positioned = await agent.run(task())
         plain = await agent.run(task(), durable=False)
-    assert named.labels["call"]["key"] == "named"
+    assert named.labels["call"]["key"] == "agent/named"
     # A named call takes no position.
     assert positioned.labels["call"]["key"] == "agent/0"
     assert plain.info == {}
@@ -180,7 +181,7 @@ async def test_budgets_keep_a_call_and_its_inputs_rerun_it(model, store):
             )
         )
         parts = call_parts(task(), harness, durable)
-        assert resolve_call(durable, "solve", parts).kept is None
+        assert resolve_call(durable, "agent/solve", parts).kept is None
 
 
 async def test_depends_and_cache_inputs(model, store, tmp_path):
@@ -223,7 +224,7 @@ async def test_a_failed_call_continues_from_its_latest_checkpoint(model, store):
             "user",
         ]
         assert model.requests[0]["messages"][-1]["content"] == RETRY_NOTE
-        assert resumed.labels["call"]["key"] == "solve"
+        assert resumed.labels["call"]["key"] == "agent/solve"
         kept = await agent.run(task(), key="solve")
     assert kept.kept and kept.id == resumed.id
 

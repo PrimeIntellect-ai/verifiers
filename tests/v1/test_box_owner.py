@@ -160,9 +160,12 @@ async def test_two_seats_resume_on_the_box_their_owner_restores(
     with vf.use_durable(vf.Durable(store, match={"job": "j1"})):
         box, first, failed = await episode()
         assert first.ok and not failed.ok
-        assert first.labels["box"]["key"] == "box"
-        assert failed.labels["box"] == first.labels["box"]
-        assert failed.labels["call"]["key"] == "review"
+        assert first.labels["box"]["key"] == "agent/box"
+        assert "checkpoint" not in first.labels["box"]  # the box was fresh
+        assert failed.labels["box"]["fingerprint"] == first.labels["box"]["fingerprint"]
+        # The reviewer started on the box as the control agent's last save left it.
+        assert failed.labels["box"]["checkpoint"]["id"] == first.checkpoints[-1].id
+        assert failed.labels["call"]["key"] == "agent/review"
         assert failed.labels["job"] == "j1"
         latest = failed.checkpoints[-1]
         model.requests.clear()
@@ -206,3 +209,40 @@ async def test_a_durable_run_on_an_unrestored_box_runs_fresh(model, store):
         async with agent.provision(task(), durable=False) as box:
             fresh = await agent.run(task(), runtime=box, key="solve")
     assert fresh.ok and fresh.resumed_from is None
+
+
+async def test_a_box_restores_from_where_a_run_started_before_it_saved(
+    model, store, monkeypatch
+):
+    """The run that moved last on a durable box died before it took a checkpoint of
+    its own: the box comes back from the checkpoint it started on (its box label)."""
+    control = make(model, save="per_call")
+    reviewer = make(model, save="per_call")
+
+    async def episode():
+        async with control.provision(task(), key="box") as box:
+            first = await control.run(task("control"), runtime=box, key="control")
+            second = await reviewer.run(task("review"), runtime=box, key="review")
+            return box, first, second
+
+    with vf.use_durable(vf.Durable(store)):
+        FakeRuntime.failing_checkpoints = set(range(4, 100))  # the reviewer's saves
+        original = FakeRuntime.write
+        writes = {"b.txt": 0}
+
+        async def write(self, path, data):
+            if path == "b.txt":
+                writes["b.txt"] += 1
+                if writes["b.txt"] == 2:
+                    raise box_lost()
+            await original(self, path, data)
+
+        monkeypatch.setattr(FakeRuntime, "write", write)
+        box, first, failed = await episode()
+        assert first.ok and not failed.ok and failed.checkpoints == []
+        assert failed.labels["box"]["checkpoint"]["id"] == first.checkpoints[-1].id
+        FakeRuntime.failing_checkpoints = set()
+        box, kept, rerun = await episode()
+    assert kept.kept
+    assert box.source == first.checkpoints[-1].id
+    assert rerun.ok and rerun.resumed_from is None
