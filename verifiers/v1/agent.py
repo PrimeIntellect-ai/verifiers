@@ -9,7 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Generic, Literal, Self, cast
@@ -56,7 +56,13 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
-from verifiers.v1.utils.retries import RetryState, backoff
+from verifiers.v1.utils.retries import (
+    MODEL_RETRY_NOTE,
+    RETRY_NOTE,
+    RetryState,
+    backoff,
+    retryable_error,
+)
 
 __all__ = [
     "Agent",
@@ -187,6 +193,21 @@ class _Opening:
     """The trace a `resume=` continues."""
 
 
+Reopen = Callable[[Task, str | None, Trace], Awaitable["Rollout"]]
+"""Build and open a replacement rollout: `(task, checkpoint, the trace it replaces)`."""
+
+
+@dataclass
+class _TurnMark:
+    """Where the running turn's input lives, for an interaction retry: the trace it
+    was sent on, that trace's turns before it, and whether the trace's opening prompt
+    already holds it (a replacement restored during this turn)."""
+
+    trace: Trace
+    turns: int
+    in_prompt: bool = False
+
+
 @dataclass
 class _PendingMessage:
     text: str
@@ -208,7 +229,13 @@ class Interaction:
     background turn when idle. `interaction.trace` is live from
     the moment the interaction exists: watch tokens and turns mid-exchange, read
     rewards after close. Leaving the `interaction()` context closes the exchange
-    as `user_closed` and finishes the rollout — hooks and scoring included."""
+    as `user_closed` and finishes the rollout — hooks and scoring included.
+
+    With `AgentConfig.interaction_retries`, a turn that fails on infrastructure runs
+    again: on the same box after a model-side failure, else on a fresh box restored
+    from the trace's latest checkpoint (`latest_checkpoint`; or the opening state):
+    the failed attempt's rollout is closed with its errors (`failed_attempts`), and
+    `interaction.trace` becomes the replacement's."""
 
     def __init__(
         self,
@@ -216,10 +243,18 @@ class Interaction:
         gate: asyncio.Semaphore | None = None,
         *,
         opening: _Opening | None = None,
+        reopen: Reopen | None = None,
+        retries: int = 0,
     ) -> None:
         self._run = run
         self._gate = gate
+        self._opening = opening
         self._prefix = opening.prefix if opening is not None else None
+        self._reopen = reopen
+        self._retries = retries
+        self.failed_attempts: list[Trace] = []
+        """Completed traces of attempts an interaction retry replaced, errors kept."""
+        self._history_merged = False
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
@@ -239,12 +274,12 @@ class Interaction:
 
     @property
     def runtime(self) -> Runtime | None:
-        """The box the interaction runs on."""
+        """The box the current attempt runs on (a retry may replace it)."""
         return self._run.runtime
 
     @property
     def task(self) -> Task:
-        """The task the interaction runs."""
+        """The task the current attempt runs."""
         return self._run.task
 
     @property
@@ -556,6 +591,7 @@ class Interaction:
             # A turn's messages may arrive typed or as wire dicts (env code naturally
             # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
             messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        first = not self._started
         self._started = True
         step_messages = messages
         if self._prefix is not None:
@@ -563,9 +599,53 @@ class Interaction:
             # turn's relaunch (`Harness.resume` on the conversation).
             step_messages = [*self._prefix, *(messages or [])]
             self._prefix = None
-        turns_before = self.trace.num_turns
-        nodes_before = len(self.trace.nodes)
-        await self._run.step(step_messages, on_input=on_input)
+        retries_left = (
+            self._retries
+            if self._reopen is not None and self._opening is not None
+            else 0
+        )
+        turn_input = step_messages
+        mark = _TurnMark(self.trace, self.trace.num_turns)
+        # Only a failure of this turn is retried, never one a past turn left; a
+        # replacement that failed to open is this turn's failure.
+        was_ok = self._run.ok
+        while True:
+            turns_before = self.trace.num_turns
+            nodes_before = len(self.trace.nodes)
+            await self._run.step(step_messages, on_input=on_input)
+            if retries_left == 0 or self._run.ok or not was_ok:
+                break
+            failure = self._run.failure
+            if failure is None or not retryable_error(failure):
+                break
+            if await self._run.recover():
+                # The model call failed but the box is fine: continue on it, from
+                # the conversation as it stands, instead of restoring a checkpoint.
+                retries_left -= 1
+                was_ok = True
+                logger.warning(
+                    "interaction turn failed on a model call (%s: %s); continuing on "
+                    "the same box",
+                    type(failure).__name__,
+                    failure,
+                )
+                if len(self.trace.nodes) > nodes_before:
+                    step_messages = [UserMessage(content=MODEL_RETRY_NOTE)]
+                await asyncio.sleep(backoff(self._retries - retries_left - 1))
+                continue
+            if not self._resumable(first):
+                # Earlier turns changed the box and nothing checkpointed it: the
+                # opening box no longer matches the conversation, so there is nothing
+                # sound to resume.
+                break
+            retries_left -= 1
+            was_ok = True
+            step_messages, mark = await self._retry(
+                failure,
+                first=first,
+                turn_input=turn_input,
+                mark=mark,
+            )
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.
@@ -584,14 +664,93 @@ class Interaction:
         self._over = True
         return Segment(messages=[], terminated=True)
 
+    def _reopens_opening(self, first: bool) -> bool:
+        """Whether a retry reopens the interaction exactly as it opened: a first
+        segment of the original attempt with nothing checkpointed past its opening."""
+        checkpoint = self.latest_checkpoint
+        return first and (
+            checkpoint is None or (checkpoint.turns == 0 and not self.failed_attempts)
+        )
+
+    def _resumable(self, first: bool) -> bool:
+        """Whether a failed turn has a sound state to resume from."""
+        return self._reopens_opening(first) or self.latest_checkpoint is not None
+
+    async def _retry(
+        self,
+        failure: Exception,
+        *,
+        first: bool,
+        turn_input: Messages | None,
+        mark: _TurnMark,
+    ) -> tuple[Messages | None, _TurnMark]:
+        """Replace the failed rollout with one on a fresh box; return the messages the
+        retried step takes and where the turn's input now lives. A first segment with
+        nothing checkpointed past its opening reopens exactly as the interaction opened
+        and runs the same step. Otherwise the replacement starts from the trace's latest
+        checkpoint and the conversation cut at it (`Trace.conversation_at`), opened with
+        `RETRY_NOTE`, plus this turn's input when the cut predates it. A later turn with
+        no checkpoint is not retried: the opening box no longer matches the
+        conversation."""
+        assert self._reopen is not None and self._opening is not None
+        checkpoint = self.latest_checkpoint
+        reopens_opening = self._reopens_opening(first)
+        logger.warning(
+            "interaction turn failed (%s: %s); running it again on a fresh box from %s",
+            type(failure).__name__,
+            failure,
+            f"checkpoint {checkpoint.id} at turn {checkpoint.turns}"
+            if checkpoint is not None and not reopens_opening
+            else "its opening state",
+        )
+        if reopens_opening:
+            task = self._opening.task
+            start = self._opening.checkpoint
+            # The turn's own input: a same-box recovery's note means nothing here.
+            next_messages = turn_input
+            in_prompt = False
+        else:
+            assert checkpoint is not None
+            trace = self.trace
+            conversation = trace.conversation_at(checkpoint.turns)
+            # The cut holds this turn's input once a call of this turn committed and
+            # the cut reaches it.
+            held = mark.in_prompt or (
+                mark.trace is trace
+                and checkpoint.turns >= mark.turns
+                and trace.num_turns > mark.turns
+            )
+            task = self._opening.task.with_data(
+                prompt=[
+                    *conversation,
+                    UserMessage(content=RETRY_NOTE),
+                    *([] if held else (turn_input or [])),
+                ]
+            )
+            start = checkpoint.id
+            next_messages = None
+            in_prompt = True
+        failed = await self._run.close()
+        self.failed_attempts.append(failed)
+        self._run = await self._reopen(task, start, failed)
+        return next_messages, _TurnMark(self.trace, 0, in_prompt)
+
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
-        run, then the finished trace returns (also on `interaction.trace`)."""
+        run, then the finished trace returns (also on `interaction.trace`). After an
+        interaction retry, it also carries the replaced attempts' errors first."""
         await self._cancel_deliveries()
         async with self._lock, self._gate or nullcontext():
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
-            return await self._run.close()
+            trace = await self._run.close()
+            history = [e for failed in self.failed_attempts for e in failed.errors]
+            if history and not self._history_merged:
+                # As `Agent.run` retries do: success is the `ok` stamp, never
+                # errors-emptiness.
+                self._history_merged = True
+                trace.errors = [*history, *trace.errors]
+            return trace
 
 
 class Agent:
@@ -991,7 +1150,8 @@ class Agent:
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
-        apply here.
+        apply here; `config.interaction_retries` runs a turn that fails on
+        infrastructure again on a fresh box (never into a borrowed one).
 
         `resume`, `at` and `note` continue a trace (see `run`); without `note`, a
         conversation that ends on the agent's reply waits for the first
@@ -1020,11 +1180,19 @@ class Agent:
                 **self._rollout_params(task, runtime, shared_tools, checkpoint),
             )
 
+        async def reopen(task: Task, checkpoint: str | None, failed: Trace) -> Rollout:
+            # A failed open is captured on the replacement: its step fails at once.
+            replacement = make_run(task, checkpoint, failed)
+            await replacement.open()
+            return replacement
+
         run = make_run(opening.task, opening.checkpoint, opening.source)
         interaction = Interaction(
             run,
             gate=self._gate,
             opening=opening,
+            reopen=reopen if runtime is None else None,
+            retries=self.config.interaction_retries,
         )
         async with self._gate or nullcontext():
             opened = await run.open()

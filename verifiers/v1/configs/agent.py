@@ -60,6 +60,12 @@ class AgentConfig(BaseConfig):
     `on_save(trace, checkpoint)` sees it). An owned box needs a runtime with
     checkpoints; a checkpoint failing three tries is logged and skipped (the previous
     one stands). A borrowed box is never checkpointed."""
+    interaction_retries: int = Field(0, ge=0)
+    """Times an interaction turn that fails on infrastructure (a lost box or failed
+    transfer, a provider, harness or interception error; never a task error) runs
+    again: on the same box after a model-side failure, else on a fresh box restored
+    from the trace's latest checkpoint (or from the interaction's opening state when
+    the first turn has none). The failed attempt's trace keeps its errors."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

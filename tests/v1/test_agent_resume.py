@@ -1,5 +1,6 @@
 """Resuming from a trace: `Interaction.checkpoint`, `resume=` continuations (a trace
-record, round-tripped through JSON), and per-call saves (`AgentConfig.save`), all on `Trace.checkpoints`.
+record, round-tripped through JSON), per-call saves (`AgentConfig.save`) and
+interaction retries (`AgentConfig.interaction_retries`), all on `Trace.checkpoints`.
 
 Deterministic, no API key: a scripted OpenAI-compatible endpoint answers from the
 conversation alone, an in-process harness drives it through the real interception
@@ -7,6 +8,7 @@ server, and a subprocess runtime gains fake filesystem checkpoints.
 """
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -22,6 +24,7 @@ from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
+from verifiers.v1.utils.retries import RETRY_NOTE, retryable_error
 
 TOOLS = [
     {
@@ -137,6 +140,8 @@ class FakeRuntime(SubprocessRuntime):
     failing_checkpoints: ClassVar[set[int]] = set()
     """Checkpoint attempts (1-based, across boxes) that fail."""
     attempts: ClassVar[int] = 0
+    doomed: ClassVar[dict[str, Callable[[], Exception]]] = {}
+    """Paths whose next write raises the mapped error once."""
     made: ClassVar[list["FakeRuntime"]] = []
 
     def __init__(self, config, name=None) -> None:
@@ -155,6 +160,11 @@ class FakeRuntime(SubprocessRuntime):
     @property
     def restored(self) -> bool:
         return self.source is not None
+
+    async def write(self, path: str, data: bytes) -> None:
+        if (error := self.doomed.pop(path, None)) is not None:
+            raise error()
+        await super().write(path, data)
 
     async def checkpoint(self) -> str:
         FakeRuntime.attempts += 1
@@ -176,12 +186,19 @@ class FakeRuntime(SubprocessRuntime):
         return dict(self.store[self.source]) if self.source else {}
 
 
+def box_lost() -> Exception:
+    error = vf.SandboxError("sandbox terminated")
+    error.kind = "box_lost"  # the typed kind, before `SandboxError(kind=...)` lands
+    return error
+
+
 @pytest.fixture(autouse=True)
 def fake_boxes(monkeypatch):
     EVENTS.clear()
     FakeRuntime.store = {}
     FakeRuntime.failing_checkpoints = set()
     FakeRuntime.attempts = 0
+    FakeRuntime.doomed = {}
     FakeRuntime.made = []
     monkeypatch.setattr(
         rollout_module,
@@ -202,16 +219,21 @@ def fake_boxes(monkeypatch):
 class Endpoint:
     url: str
     requests: list[dict] = field(default_factory=list)
+    refuse: set[int] = field(default_factory=set)
+    """Indexes of requests the endpoint refuses (HTTP 400), as a provider would."""
 
 
 @pytest.fixture
 async def model():
     """The scripted endpoint, recording the requests it serves."""
     requests: list[dict] = []
+    refuse: set[int] = set()
 
     async def handle(request: web.Request) -> web.Response:
         body = await request.json()
         requests.append(body)
+        if len(requests) - 1 in refuse:
+            return web.json_response({"error": {"message": "refused"}}, status=400)
         return web.json_response(reply(body["messages"]))
 
     app = web.Application()
@@ -221,7 +243,7 @@ async def model():
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
-    yield Endpoint(f"http://127.0.0.1:{port}/v1", requests)
+    yield Endpoint(f"http://127.0.0.1:{port}/v1", requests, refuse)
     await runner.cleanup()
 
 
@@ -267,10 +289,22 @@ async def test_default_path_adds_no_save_hook(model):
     assert FakeRuntime.attempts == 0
     assert len(model.requests) == 3
     assert trace.agent.config.save == "off"
+    assert trace.agent.config.interaction_retries == 0
     # No save hook means no response interceptor: the server's rewrite path stays off.
     params = agent._rollout_params(task(), None, {})
     run = rollout_module.Rollout(task=task(), **params)
     assert run._session.response_interceptors == []
+
+
+async def test_default_interaction_does_not_retry(model):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model)
+    async with agent.interaction(task()) as interaction:
+        await interaction.turn()
+        assert interaction.failed_attempts == []
+    assert not interaction.trace.ok
+    assert interaction.trace.errors[-1].type == "SandboxError"
+    assert len(FakeRuntime.made) == 1
 
 
 # -- per-call saves -------------------------------------------------------------
@@ -524,6 +558,172 @@ async def test_a_trace_without_checkpoint_resumes_on_a_fresh_box_with_task(model
     assert trace.ok, trace.errors
     assert FakeRuntime.made[-1].source is None
     assert model.requests[0]["messages"][-1]["content"] == "more"
+
+
+# -- interaction retries --------------------------------------------------------
+
+
+async def test_interaction_retry_continues_from_the_latest_checkpoint(model):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    saves: list[tuple[vf.Trace, vf.Checkpoint]] = []
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.interaction(
+        task(), on_save=lambda t, c: saves.append((t, c))
+    ) as interaction:
+        segment = await interaction.turn()
+        assert segment.last_reply == f"done: {RETRY_NOTE}"
+        failed = interaction.failed_attempts
+    assert len(failed) == 1
+    assert not failed[0].ok
+    assert failed[0].is_completed
+    assert failed[0].errors[-1].type == "SandboxError"
+    final = interaction.trace
+    assert final is not failed[0]
+    assert final.ok, final.errors
+    assert [error.type for error in final.errors] == ["SandboxError"]
+    # The replacement box came from the checkpoint at call 2 (a.txt written, b.txt
+    # not).
+    assert FakeRuntime.made[-1].source == "ckpt-2"
+    assert FakeRuntime.made[-1].files() == {"a.txt": b"a.txt"}
+    assert EVENTS == ["setup", "restore"]
+    retried = model.requests[2]["messages"]
+    assert roles(retried) == ["user", "assistant", "tool", "user"]
+    assert retried[-1]["content"] == RETRY_NOTE
+    assert [(t is final, c.id) for t, c in saves] == [
+        (False, "ckpt-1"),
+        (False, "ckpt-2"),
+        (True, "ckpt-3"),
+        (True, "ckpt-4"),
+    ]
+    assert interaction.latest_checkpoint is saves[-1][1]
+    assert [(c.id, c.turns, c.restored) for c in final.checkpoints] == [
+        ("ckpt-2", 0, True),
+        ("ckpt-3", 0, False),
+        ("ckpt-4", 2, False),
+    ]
+
+
+async def test_a_continuation_links_its_source_and_carries_its_info(model):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.interaction(
+        task(), on_trace=lambda t: t.info.setdefault("minted", t.id)
+    ) as interaction:
+        interaction.trace.info["note"] = {"seat": "lead"}
+        await interaction.turn()
+    (failed,) = interaction.failed_attempts
+    retried = interaction.trace
+    # The retry continues the failed attempt: linked, its info carried over before
+    # any observer saw the replacement.
+    assert failed.resumed_from is None
+    assert retried.resumed_from == failed.id
+    assert retried.info == {"minted": failed.id, "note": {"seat": "lead"}}
+    assert retried.info["note"] is not failed.info["note"]
+    resumed = await make(model).run(resume=reload(retried), note="more")
+    assert resumed.resumed_from == retried.id
+    assert resumed.info == retried.info
+    assert "resumed_from" in resumed.to_record()
+    assert "resumed_from" not in failed.to_record()
+
+
+async def test_interaction_retry_without_checkpoints_reopens_the_opening(model):
+    FakeRuntime.doomed["b.txt"] = box_lost
+    agent = make(model, interaction_retries=2)
+    async with agent.interaction(task()) as interaction:
+        segment = await interaction.turn()
+        assert segment.last_reply == "done: start"
+    assert len(interaction.failed_attempts) == 1
+    assert interaction.trace.ok, interaction.trace.errors
+    assert EVENTS == ["setup", "setup"]
+    # The first segment, nothing checkpointed: the same opening, the same prompt.
+    assert roles(model.requests[2]["messages"]) == ["user"]
+
+
+class DiesOnSecondLaunch(ScriptHarness):
+    launches = 0
+
+    async def launch(self, *args, **kwargs) -> ProgramResult:
+        DiesOnSecondLaunch.launches += 1
+        if DiesOnSecondLaunch.launches == 2:
+            raise box_lost()
+        return await super().launch(*args, **kwargs)
+
+
+async def test_a_later_turn_retry_adds_its_input_after_an_earlier_checkpoint(model):
+    DiesOnSecondLaunch.launches = 0
+    agent = make(model, harness=DiesOnSecondLaunch, interaction_retries=1)
+    async with agent.interaction(task(prompt=None)) as interaction:
+        await interaction.turn("first")
+        await interaction.checkpoint()
+        segment = await interaction.turn("second")
+        assert len(interaction.failed_attempts) == 1
+    assert segment.last_reply == "done: second"
+    assert interaction.trace.ok, interaction.trace.errors
+    assert FakeRuntime.made[-1].source == "ckpt-1"
+    retried = model.requests[-1]["messages"]
+    # The checkpoint predates the failed turn: its message follows the retry note.
+    assert [m["content"] for m in retried if m["role"] == "user"] == [
+        "first",
+        RETRY_NOTE,
+        "second",
+    ]
+
+
+async def test_a_later_turn_with_no_checkpoint_is_not_retried(model):
+    DiesOnSecondLaunch.launches = 0
+    agent = make(model, harness=DiesOnSecondLaunch, interaction_retries=2)
+    async with agent.interaction(task(prompt=None)) as interaction:
+        first = await interaction.turn("first")
+        assert first.last_reply == "done: first"
+        await interaction.turn("second")
+        # The opening box lacks the first turn's files: no sound state to resume.
+        assert interaction.failed_attempts == []
+    assert not interaction.trace.ok
+    assert interaction.trace.errors[-1].type == "SandboxError"
+    assert len(FakeRuntime.made) == 1
+
+
+async def test_a_failed_model_call_is_retried_on_the_same_box(model):
+    model.refuse.add(1)
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.interaction(task()) as interaction:
+        segment = await interaction.turn()
+        assert interaction.failed_attempts == []
+    # The box survived: no replacement was provisioned or restored.
+    assert len(FakeRuntime.made) == 1
+    assert EVENTS == ["setup"]
+    trace = interaction.trace
+    assert trace.ok, trace.errors
+    assert [error.type for error in trace.errors] == ["ProviderError"]
+    assert segment.last_reply.startswith("done")
+
+
+async def test_task_error_is_not_retried(model):
+    FakeRuntime.doomed["b.txt"] = lambda: vf.TaskError("task broke")
+    agent = make(model, save="per_call", interaction_retries=3)
+    async with agent.interaction(task()) as interaction:
+        await interaction.turn()
+        assert interaction.failed_attempts == []
+    assert not interaction.trace.ok
+    assert interaction.trace.errors[-1].type == "TaskError"
+    assert len(FakeRuntime.made) == 1
+    assert len(model.requests) == 2
+
+
+def test_retry_classification():
+    assert retryable_error(box_lost())
+    io = vf.SandboxError("upload failed")
+    io.kind = "io"
+    assert retryable_error(io)
+    account = vf.SandboxError("Payment required")
+    account.kind = "account"
+    assert not retryable_error(account)
+    assert not retryable_error(vf.SandboxError("untyped"))
+    assert retryable_error(vf.ProviderError("503"))
+    assert retryable_error(vf.HarnessError("exited 1"))
+    assert retryable_error(vf.InterceptionError("connection reset"))
+    assert not retryable_error(vf.TaskError("setup failed"))
+    assert not retryable_error(ValueError("bug"))
 
 
 # -- the trace's task -----------------------------------------------------------
