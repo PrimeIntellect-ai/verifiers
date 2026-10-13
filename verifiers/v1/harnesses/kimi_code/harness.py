@@ -9,6 +9,7 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -16,24 +17,22 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-BINARY = "/tmp/vf-kimi-code/bin/kimi"
+KIMI_DIR = "/var/tmp/vf-kimi-code"
+KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
-ACP_COMMAND = [BINARY, "acp"]
+ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
 
+# From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
+# traffic from some sandbox providers' datacenter ranges (prime's among them).
 INSTALL = r"""
 set -e
-bin="/tmp/vf-kimi-code/bin/kimi"
-if [ -x "$bin" ] && [ "$("$bin" --version 2>/dev/null)" = "{version}" ]; then
-    exit 0
+packages=/var/tmp/vf-kimi-code
+export PATH="/var/tmp/vf-node/bin:$PATH"
+if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
+    npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
+        "@moonshot-ai/kimi-code@$VF_KIMI_VERSION" >/dev/null
+    printf %s "$VF_KIMI_VERSION" > "$packages/.version"
 fi
-command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
-installer=/tmp/vf-kimi-code-install.sh
-curl -fsSL https://code.kimi.com/kimi-code/install.sh -o "$installer"
-env \
-    KIMI_VERSION="{version}" \
-    KIMI_INSTALL_DIR=/tmp/vf-kimi-code \
-    KIMI_NO_MODIFY_PATH=1 \
-    bash "$installer"
 """
 
 
@@ -53,15 +52,15 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await ensure_node(runtime)
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
-        script = INSTALL.replace("{version}", self.config.version)
         await ensure_installed(
             runtime,
-            directory="/tmp/vf-kimi-code",
-            install=script,
-            env={},
+            directory=KIMI_DIR,
+            install=INSTALL,
+            env={"VF_KIMI_VERSION": self.config.version},
             label="Kimi Code",
         )
         await super().setup(runtime)
