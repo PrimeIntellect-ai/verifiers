@@ -1,6 +1,8 @@
 import os
+import secrets
+import shlex
 
-from pydantic import PositiveInt
+from pydantic import NonNegativeInt, PositiveInt
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
@@ -28,6 +30,26 @@ SEARCH_PROMPT = (
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
 
+# Appended when the harness has skills; the program has no skill discovery of its own.
+SKILLS_PROMPT = (
+    "Skills are folders under {root}. Each holds a SKILL.md card and the resources the "
+    "card names. Read a card with bash before you use its skill."
+)
+
+
+def skill_card_fields(card: str, folder: str) -> tuple[str, str]:
+    """A SKILL.md card's `name` and `description` from its front matter: single-line
+    `key: value` entries, quotes stripped. The name defaults to the card's folder."""
+    fields: dict[str, str] = {}
+    lines = card.splitlines()
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip().strip("\"'")
+    return fields.get("name") or folder, fields.get("description", "")
+
 
 class CompactionConfig(BaseConfig):
     """Context compaction policy for the bash agent loop."""
@@ -47,6 +69,16 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
+    model_retries: NonNegativeInt = 10
+    """Retries of a failed model call (429, 5xx, a dropped connection or stream), with
+    the OpenAI SDK's backoff capped at 8 s: 10 rides out about a minute of provider
+    errors. The interception relays a failure before its stream commits for the program
+    to retry, so this is the retry budget for those."""
+
+    command_timeout: PositiveInt = 3600
+    """Seconds one `bash` command may run. On expiry its whole process group is killed
+    and the model gets the output so far with a note."""
+
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
     for a fixed threshold, and `null` (`"None"` in TOML) to disable it."""
@@ -58,9 +90,35 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
     NEEDS_CONTAINER = False
+    SUPPORTS_SKILLS = True
+
+    def __init__(self, config: BashHarnessConfig) -> None:
+        super().__init__(config)
+        # Per instance: two sessions sharing one box never mix their skill sets.
+        self.skills_dir = f"/tmp/vf-bash-skills-{secrets.token_hex(8)}"
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
+        if self.config.skills:
+            await self.install_skills(runtime, self.skills_dir)
+
+    async def skills_listing(self, runtime: Runtime) -> str | None:
+        """The system-prompt section naming each installed skill: its card's name,
+        path and description."""
+        if not self.config.skills:
+            return None
+        root = shlex.quote(self.skills_dir)
+        found = await runtime.run(
+            ["sh", "-c", f"find {root} -name SKILL.md 2>/dev/null | sort"], {}
+        )
+        lines = [SKILLS_PROMPT.format(root=self.skills_dir)]
+        for path in filter(None, found.stdout.splitlines()):
+            card = (await runtime.read(path)).decode(errors="replace")
+            name, description = skill_card_fields(card, path.split("/")[-2])
+            lines.append(
+                f"- `{name}` ({path})" + (f": {description}" if description else "")
+            )
+        return "\n".join(lines)
 
     async def launch(
         self,
@@ -79,11 +137,16 @@ class BashHarness(Harness[BashHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
+        skills = await self.skills_listing(runtime)
         system_prompt = "\n\n".join(
-            p for p in (" ".join(fragments), system_prompt) if p
+            p for p in (" ".join(fragments), system_prompt, skills) if p
         )
         env = {**self.config.resolved_env}
-        args = ["--bash"]
+        args = [
+            "--bash",
+            f"--max-retries={self.config.model_retries}",
+            f"--command-timeout={self.config.command_timeout}",
+        ]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.compaction is not None:

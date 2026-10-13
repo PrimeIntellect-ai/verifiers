@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import subprocess
 import tempfile
 import traceback
@@ -158,23 +160,32 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str, timeout: int = 3600) -> str:
     # Output goes to files, not pipes: a process the command leaves running in the
     # background (a server started with `&`) would hold a pipe open and block the call
-    # until the timeout; with files the call returns when bash itself exits.
+    # until the timeout; with files the call returns when bash itself exits. The command
+    # runs in its own process group, so a timeout kills what it started too (a hung
+    # child would otherwise outlive `bash`), and the output so far is still returned.
+    note = ""
     try:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            subprocess.run(
+            process = subprocess.Popen(
                 ["bash", "-c", command],
                 stdout=out,
                 stderr=err,
-                timeout=3600,
-                check=False,
+                start_new_session=True,
             )
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                note = f"\nerror: command exceeded {timeout}s and was killed"
             out.seek(0)
             err.seek(0)
+            # Commands print binary freely; undecodable bytes must not lose the output.
             stdout = out.read().decode(errors="replace")
-            return stdout + err.read().decode(errors="replace")
+            return stdout + err.read().decode(errors="replace") + note
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -420,7 +431,7 @@ async def run_chat_loop(
                     content = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
+                        run_bash, tool_args.get("command", ""), args.command_timeout
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -463,6 +474,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    # Client retries per model call; the interception relays a pre-commit 429/5xx for
+    # the program's SDK to retry, so this is the only retry layer for them.
+    parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--command-timeout", type=int, default=3600)
     return parser.parse_args()
 
 
@@ -478,6 +493,7 @@ async def main() -> None:
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
+        max_retries=args.max_retries,
         timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
         http_client=DefaultAsyncHttpxClient(verify=certifi.where()),
     )
