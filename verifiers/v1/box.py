@@ -103,17 +103,17 @@ class Box:
             self.latest = Checkpoint(id=checkpoint_id, turns=0, time=time.time())
             return self.latest
 
-    async def replace(self, generation: int) -> bool:
-        """Start a fresh box from the latest checkpoint and swap it in for the box of
-        `generation` (what the failed run ran on); the old box is torn down. A box
-        another seat already replaced is left as it is. False when there is no
+    async def replace(self, generation: int, source: Checkpoint | None = None) -> bool:
+        """Start a fresh box from the latest checkpoint (or `source`) and swap it in for
+        the box of `generation` (what the failed run ran on); the old box is torn down.
+        A box another seat already replaced is left as it is. False when there is no
         checkpoint to restore from."""
         async with self._lock:
             if self.generation != generation:
                 return True
-            if self.latest is None:
+            source = source or self.latest
+            if source is None:
                 return False
-            source = self.latest
             logger.warning(
                 "box %s: restoring it from checkpoint %s on a fresh box",
                 self.runtime.name,

@@ -8,12 +8,18 @@ what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass, field, replace
-from typing import Generic, Literal, Self, cast
+from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -883,6 +889,52 @@ def _same_input(recorded: Messages | None, sent: Messages | None) -> bool:
     ]
 
 
+_OWNER_METHODS = frozenset({"start", "stop", "teardown"})
+
+
+class ReplayBox:
+    """`DurableInteraction.runtime` while the exchange replays its recorded turns and no
+    box is restored for the turns given so far: a stand-in for that box, restored on
+    first use. An awaited runtime method (`await exchange.runtime.read(path)`) restores
+    the box from the checkpoint recorded at the end of those turns
+    (`DurableInteraction.box`) and runs on it; `agent.run(runtime=...)` and
+    `agent.interaction(runtime=...)` take it as that box. Its other attributes are the
+    restored box's, so before the first use they raise AttributeError. Starting and
+    stopping it is the exchange's."""
+
+    def __init__(self, exchange: "DurableInteraction") -> None:
+        self._exchange = exchange
+
+    async def restore(self) -> Runtime:
+        """The box, restored (`DurableInteraction.box`)."""
+        return await self._exchange.box()
+
+    def __getattr__(self, name: str) -> Any:
+        exchange = self._exchange
+        if name.startswith("_") or name in _OWNER_METHODS:
+            raise AttributeError(name)
+        if inspect.iscoroutinefunction(getattr(Runtime, name, None)):
+
+            async def call(*args: Any, **kwargs: Any) -> Any:
+                runtime = await exchange.box()
+                return await getattr(runtime, name)(*args, **kwargs)
+
+            return call
+        if exchange._box is None:
+            raise AttributeError(
+                f"{name!r}: the replaying exchange's box is restored on first use; "
+                "await one of its methods, or `await interaction.box()`, first"
+            )
+        return getattr(exchange._box, name)
+
+
+async def _real_runtime(runtime: Runtime | ReplayBox | None) -> Runtime | None:
+    """The box a `ReplayBox` stands for, restored; any other runtime as it is."""
+    if isinstance(runtime, ReplayBox):
+        return await runtime.restore()
+    return runtime
+
+
 class DurableInteraction:
     """A durable `agent.interaction(task)` (a `Durable` installed, `verifiers.v1.durable`):
     an exchange kept by its traces, so code that drives it the same way gets the same
@@ -898,7 +950,19 @@ class DurableInteraction:
     reply, or `checkpoint()`); with none, the turn raises, unless no turn was replayed
     yet: then the exchange runs fresh. Steering, `checkpoint()` and `latest_checkpoint`
     act on the live exchange only. Without anything recorded, the exchange is live from
-    the start, as a plain `interaction()`."""
+    the start, as a plain `interaction()`.
+
+    The box. An exchange on a borrowed box (`runtime=`) has that box throughout. One
+    that owns its box has none while it replays: `runtime` is then a `ReplayBox`, and
+    the first use of it (or `await box()`) restores the box from the checkpoint
+    recorded at the end of the turns given so far (with per-call saves, every final
+    reply has one) and keeps it. A later replayed turn moves the kept box to that
+    turn's checkpoint, in place (`Runtime.adopt`: a reference to it stays valid). When
+    the replay hands over to the live exchange, the live exchange continues on the
+    kept box (borrowed from the exchange, with what the driver wrote to it since), moved
+    first to the checkpoint it continues from when that is another one. A replay that
+    never uses the box restores nothing; the live exchange then restores its own box
+    from the hand-over checkpoint, as before."""
 
     def __init__(
         self,
@@ -909,11 +973,23 @@ class DurableInteraction:
         checkpoints: list[Checkpoint] | None = None,
         *,
         skip: int = 0,
+        runtime: Runtime | None = None,
+        provision: Callable[[Checkpoint], AbstractAsyncContextManager[Runtime]]
+        | None = None,
     ) -> None:
         self._task = task
         self._open_live = open_live
         self._stack = stack
         self._recorded = recorded
+        self._borrowed = runtime
+        """The box the caller placed the exchange in (`runtime=`), if any."""
+        self._provision = provision
+        """Provisions a box restored from a checkpoint, for reads during the replay."""
+        self._box: Runtime | None = None
+        """The box restored for the replay, once something used it."""
+        self._box_at: Checkpoint | None = None
+        """The checkpoint `_box` was restored from."""
+        self._box_lock = asyncio.Lock()
         self._live: Interaction | None = None
         self._over = False
         self._conversation: Messages = []
@@ -966,8 +1042,71 @@ class DurableInteraction:
         return self._recorded
 
     @property
-    def runtime(self) -> Runtime | None:
-        return self._live.runtime if self._live is not None else None
+    def runtime(self) -> Runtime | ReplayBox | None:
+        """The box: the live exchange's; while replaying, the borrowed box
+        (`runtime=`), the box restored for the turns given so far, or a `ReplayBox`
+        that restores it on first use (see the class docs)."""
+        if self._live is not None:
+            return self._live.runtime
+        if self._borrowed is not None:
+            return self._borrowed
+        point = self._replay_point()
+        at_box = self._box_at
+        if (
+            self._box is not None
+            and at_box is not None
+            and point is not None
+            and at_box.id == point.id
+        ):
+            return self._box
+        return ReplayBox(self)
+
+    async def box(self) -> Runtime:
+        """The box as the turns given so far left it: the live exchange's, the borrowed
+        one, or, while replaying, the one restored for those turns, restored now when
+        it is not yet (see the class docs). Raises RuntimeError when no checkpoint
+        recorded there matches the box."""
+        if self._live is not None:
+            runtime = self._live.runtime
+            assert runtime is not None
+            return runtime
+        if self._borrowed is not None:
+            return self._borrowed
+        point = self._replay_point()
+        if point is None:
+            raise RuntimeError(
+                f"no checkpoint of the recorded exchange holds its box after turn "
+                f"{self._next}: restoring the box during a replay needs a checkpoint at "
+                "the end of each turn (save='per_call', or interaction.checkpoint())"
+            )
+        return await self._restore(point)
+
+    async def _restore(self, point: Checkpoint) -> Runtime:
+        """The replay's box, at `point`: provisioned from it the first time, moved to
+        it in place after (its owner's `Box.replace`)."""
+        async with self._box_lock:
+            if self._box is None:
+                if self._provision is None:
+                    raise RuntimeError("this exchange cannot restore its box")
+                self._box = await self._stack.enter_async_context(
+                    self._provision(point)
+                )
+            elif self._box_at is None or self._box_at.id != point.id:
+                owner = box_of(self._box)
+                assert owner is not None
+                await owner.replace(owner.generation, point)
+            self._box_at = point
+            return self._box
+
+    def _replay_point(self) -> Checkpoint | None:
+        """The checkpoint whose box is as the turns given so far left it: the first one
+        whose cut ends where they end, or holds no more than the next recorded input
+        (which never touched the box)."""
+        position = self._position
+        recorded = self._turns[self._next] if self._next < len(self._turns) else None
+        last = recorded.body if recorded is not None else position
+        found = [(length, c) for length, c in self._cuts if position <= length <= last]
+        return min(found, key=lambda item: item[0])[1] if found else None
 
     @property
     def task(self) -> Task:
@@ -1003,12 +1142,17 @@ class DurableInteraction:
         resume: Trace | None = None,
         at: str | None = None,
         note: str | None = None,
+        *,
+        start: Checkpoint | None = None,
     ) -> Interaction:
         """Open the live exchange: fresh (the call's own opening), or continuing
-        `resume` at `at`."""
+        `resume` at `at`, whose box is `start`. A box restored for the replay is moved
+        to `start` and the live exchange continues on it."""
         if self._live is None:
+            if self._box is not None and start is not None:
+                await self._restore(start)
             self._live = await self._stack.enter_async_context(
-                self._open_live(resume, at, note)
+                self._open_live(resume, at, note, self._box)
             )
         return self._live
 
@@ -1061,7 +1205,7 @@ class DurableInteraction:
                 # note when the turn had begun answering).
                 length, checkpoint = max(inside, key=lambda item: item[0])
                 note = RETRY_NOTE if length > recorded.body else None
-                live = await self.go_live(trace, checkpoint.id, note)
+                live = await self.go_live(trace, checkpoint.id, note, start=checkpoint)
                 return await live.turn()
         # A checkpoint whose box is as the turns already given left it: its cut ends
         # where they end, or holds no more than the next recorded input, which is
@@ -1076,10 +1220,21 @@ class DurableInteraction:
             and self._conversation[position - 1].role == "assistant"
         ]
         if boundary:
+            # A box restored for the replay at one of them holds what the driver wrote
+            # to it since: the live exchange continues on it as it is.
+            at_box = self._box_at
+            point = (
+                at_box
+                if self._box is not None
+                and at_box is not None
+                and any(c.id == at_box.id for c in boundary)
+                else boundary[-1]
+            )
             live = await self.go_live(
-                _cut_at(trace, boundary[-1], self._conversation[:position]),
+                _cut_at(trace, point, self._conversation[:position]),
                 None,
                 None,
+                start=point,
             )
             return await live.turn(message)
         if self._next == 0:
@@ -1485,6 +1640,7 @@ class Agent:
                 on_save=on_save,
                 durable=False,
             )
+        runtime = await _real_runtime(runtime)
         opening = self._opening(
             task, resume, at, note, checkpoint, runtime, interactive=False
         )
@@ -1626,6 +1782,7 @@ class Agent:
         runs fresh as that continuation; a cut-off one continues its own trace."""
         if managed:
             raise TypeError(f"a durable call (key=) resumes itself; drop {managed}")
+        runtime = await _real_runtime(runtime)
         resolved = resolve_call(
             found,
             key,
@@ -1753,7 +1910,9 @@ class Agent:
         (`DurableInteraction`): a finished one replays its recorded turns to the same
         caller, and a cut-off one replays them up to its latest checkpoint and
         continues live from there; a continuation (`resume`) is durable too, as for
-        `run`. `key`, `depends`, `cache_inputs` and `durable` are as for `run`."""
+        `run`. While it replays, `interaction.runtime` restores the box on first use
+        (`ReplayBox`, `DurableInteraction.box`). `key`, `depends`, `cache_inputs` and
+        `durable` are as for `run`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
@@ -1796,6 +1955,7 @@ class Agent:
             ) as plain:
                 yield plain
             return
+        runtime = await _real_runtime(runtime)
         self._check_resume_support()
         opening = self._opening(
             task, resume, at, note, checkpoint, runtime, interactive=True
@@ -1873,7 +2033,7 @@ class Agent:
         key: str,
         found: Durable | None,
         *,
-        runtime: Runtime | None,
+        runtime: Runtime | ReplayBox | None,
         tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         on_save: OnSave | None,
@@ -1885,6 +2045,7 @@ class Agent:
     ) -> AsyncIterator[DurableInteraction]:
         """A durable `interaction` (`DurableInteraction`); with `resume`, a durable
         continuation of that trace."""
+        runtime = await _real_runtime(runtime)
         resolved = resolve_call(
             found,
             key,
@@ -1924,14 +2085,17 @@ class Agent:
         save = _chain_save(on_save, found)
 
         def open_live(
-            again: Trace | None, again_at: str | None, again_note: str | None
+            again: Trace | None,
+            again_at: str | None,
+            again_note: str | None,
+            box: Runtime | None = None,
         ):
             if again is None:
                 # Fresh: the call's own opening (a continuation of its origin).
                 again, again_at, again_note = resume, at, note
             return self.interaction(
                 task,
-                runtime=runtime,
+                runtime=box if box is not None else runtime,
                 tools=tools,
                 on_trace=observe(on_trace, labels),
                 on_save=save,
@@ -1939,6 +2103,17 @@ class Agent:
                 at=again_at,
                 note=again_note,
                 durable=False,
+            )
+
+        def provision(checkpoint: Checkpoint) -> AbstractAsyncContextManager[Runtime]:
+            """A box restored from `checkpoint`, for the replay to read."""
+            return provision_box(
+                resolve_runtime_config(
+                    self.runtime_config, base, self._warned_resources
+                ),
+                env=base.runtime_env(),
+                checkpoint=checkpoint,
+                save=self.config.save == "per_call",
             )
 
         async with AsyncExitStack() as stack:
@@ -1949,6 +2124,8 @@ class Agent:
                 recorded=recorded,
                 checkpoints=checkpoints,
                 skip=skip,
+                runtime=runtime,
+                provision=provision,
             )
             if recorded is None:
                 await exchange.go_live()

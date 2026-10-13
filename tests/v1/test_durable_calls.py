@@ -20,6 +20,7 @@ from test_agent_resume import (  # noqa: F401 - fixtures
     EVENTS,
     FakeRuntime,
     NotesTask,
+    RestoreConfig,
     ScriptHarness,
     box_lost,
     fake_boxes,
@@ -30,6 +31,8 @@ from test_agent_resume import (  # noqa: F401 - fixtures
 )
 
 import verifiers.v1 as vf
+import verifiers.v1.box as box_module
+import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.durable import call_parts, labels_match, latest, resolve_call
@@ -534,6 +537,114 @@ async def test_a_cut_off_exchange_continuation_resumes_its_own_trace(model, stor
         "tool",
         "user",
     ]
+
+
+# -- the box during a replay -------------------------------------------------------
+
+
+@pytest.fixture
+def restorable_boxes(monkeypatch) -> list[str | None]:
+    """The boxes a replay restores (`provision_box`) are fake checkpointing boxes too;
+    returns the checkpoints they were made from, in order."""
+    sources: list[str | None] = []
+
+    def fake(config, name=None):
+        sources.append(getattr(config, "checkpoint", None))
+        return FakeRuntime(config, name)
+
+    def restore(config, checkpoint):
+        return RestoreConfig(**config.model_dump(), checkpoint=checkpoint)
+
+    monkeypatch.setattr(runtimes_module, "make_runtime", fake)
+    monkeypatch.setattr(box_module, "make_runtime", fake)
+    monkeypatch.setattr(box_module, "restore_config", restore)
+    return sources
+
+
+async def read_or_none(runtime, path: str) -> bytes | None:
+    try:
+        return await runtime.read(path)
+    except vf.SandboxError:
+        return None
+
+
+async def logging_driver(agent, messages, seen, held=None):
+    """Reads the log the previous turn left in the box after each turn, then logs
+    this turn there: host code that reads and writes the box between turns."""
+    async with agent.interaction(task(None), key="talk") as exchange:
+        for message in messages:
+            await exchange.turn(message)
+            seen.append(await read_or_none(exchange.runtime, "log.txt"))
+            await exchange.runtime.write("log.txt", f"after {message}".encode())
+            if held is not None:
+                held.append(await exchange.box())
+    return exchange
+
+
+async def test_a_replay_reads_the_box_each_turn_left(model, store, restorable_boxes):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        live: list = []
+        first = await logging_driver(agent, ("first", "second"), live)
+        assert first.trace.ok and live == [None, b"after first"]
+        model.requests.clear()
+        restorable_boxes.clear()
+        replayed: list = []
+        held: list = []
+        again = await logging_driver(agent, ("first", "second"), replayed, held)
+    assert again.kept and model.requests == []
+    # Each read saw the box as that turn left it, restored from its checkpoint.
+    assert replayed == live
+    assert restorable_boxes == ["ckpt-3", "ckpt-4"]
+    # Moved in place: a reference to the box stays the box.
+    assert held[0] is held[1]
+    assert held[0].stopped
+
+
+async def test_the_live_exchange_continues_on_the_box_the_replay_restored(
+    model, store, restorable_boxes
+):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        await logging_driver(agent, ("first", "second"), [])
+        model.requests.clear()
+        restorable_boxes.clear()
+        seen: list = []
+        exchange = await logging_driver(agent, ("first", "second", "third"), seen)
+    assert seen == [None, b"after first", b"after second"]
+    # Live from the third turn, on the box restored for the second (no new box): what
+    # the driver wrote to it after the second turn was still there.
+    assert not exchange.kept and exchange.live is not None
+    assert exchange.live.trace.agent.runtime.borrowed
+    assert restorable_boxes == ["ckpt-3", "ckpt-4"]
+    assert [m["messages"][-1]["content"] for m in model.requests] == ["third"]
+
+
+async def test_a_replay_that_never_reads_restores_nothing(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        await drive(agent)
+        FakeRuntime.made.clear()
+        async with agent.interaction(task(None), key="talk") as exchange:
+            await exchange.turn("first")
+            await exchange.turn("second")
+            assert isinstance(exchange.runtime, vf.ReplayBox)
+            assert FakeRuntime.made == []
+            # Past the recorded turns, the live exchange restores its own box.
+            assert (await exchange.turn("third")).last_reply == "done: third"
+            assert [box.source for box in FakeRuntime.made] == ["ckpt-4"]
+
+
+async def test_a_replay_without_turn_end_checkpoints_cannot_read(
+    model, store, restorable_boxes
+):
+    agent = make(model)
+    with vf.use_durable(vf.Durable(store)):
+        await drive(agent)
+        async with agent.interaction(task(None), key="talk") as exchange:
+            await exchange.turn("first")
+            with pytest.raises(RuntimeError, match="checkpoint"):
+                await exchange.runtime.read("a.txt")
 
 
 # -- an episode -----------------------------------------------------------------

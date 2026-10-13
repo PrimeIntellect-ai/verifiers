@@ -8,6 +8,7 @@ from verifiers.v1.agent import (
     Agents,
     DurableInteraction,
     Interaction,
+    ReplayBox,
     Segment,
     make_agent,
 )
@@ -265,6 +266,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "box_of",
     "Durable",
     "DurableInteraction",
+    "ReplayBox",
     "TraceDir",
     "TraceLookup",
     "TraceSink",

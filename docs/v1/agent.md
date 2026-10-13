@@ -75,6 +75,7 @@ with vf.use_durable(durable):                           # a crashed attempt, run
     trace = await solver.run(task)                      # solver/0: kept, nothing runs
     async with solver.interaction(task) as exchange:    # solver/1: replays
         reply = await exchange.turn("hello")            #   the recorded segment
+        notes = await exchange.runtime.read("notes.md") #   restores the box at this turn
 ```
 
 See [Durable episodes](env.md#durable-episodes) for the rule host code between the calls
@@ -102,6 +103,17 @@ must follow.
   continues live from the checkpoint at the end of the turns it got (with per-call saves,
   every final reply has one); without one, the turn raises (before any turn was
   replayed, the exchange runs fresh).
+- **The box during a replay.** An exchange that owns its box has no live box while it
+  replays, so `exchange.runtime` is a `vf.ReplayBox`: the first awaited method on it
+  (`await exchange.runtime.read(path)`), or `await exchange.box()`, restores the box from
+  the checkpoint recorded at the end of the turns given so far and keeps it. A later
+  replayed turn moves the kept box to its own checkpoint in place, so a reference to it
+  stays valid. When the replay hands over to the live exchange, the live exchange
+  continues on the kept box (as a borrowed box), with whatever the driver wrote to it
+  since; it is moved first only when the live exchange continues from another checkpoint
+  (a cut-off turn). A replay that never uses the box restores nothing, and the live
+  exchange restores its own box at the hand-over, as before. An exchange on a borrowed
+  box (`runtime=`) has that box throughout.
 - **Boxes.** Every run on a durable box is labelled with the box's key and the checkpoint
   the box was at when the run started, and a later `provision` under the key starts the
   box from the latest checkpoint of the run on it that moved last. Durable runs on it then

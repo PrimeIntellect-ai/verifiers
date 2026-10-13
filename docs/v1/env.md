@@ -115,7 +115,9 @@ The rule, for everything `run()` does:
 A stage that continues a seat's conversation from an earlier one (a reviewer across
 rounds) passes the earlier trace: `agents.reviewer.interaction(resume=round_one.trace)`
 is durable like any other call, and a rerun of the earlier stage (a new trace) reruns
-it.
+it. Host code that reads the box between the turns of an exchange reads it the same on
+a rerun: while the exchange replays, `exchange.runtime` restores the box from the
+checkpoint of the turn it is at, on first use.
 
 Code changed between attempts is safe: a call whose inputs changed (its fingerprint) runs
 fresh, and so does every call whose position shifted onto another's trace. A call whose
