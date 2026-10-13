@@ -434,8 +434,8 @@ async def test_checkpoint_resume_round_trip(model):
     assert reopened.trace.num_turns == 1
     assert type(reopened.task) is NotesTask
     # The box it started from is on the trace, matching its opening conversation.
-    assert reopened.trace.checkpoints == [
-        vf.Checkpoint(id="ckpt-1", turns=0, restored=True)
+    assert [(c.id, c.turns, c.restored) for c in reopened.trace.checkpoints] == [
+        ("ckpt-1", 0, True)
     ]
 
 

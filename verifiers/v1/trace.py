@@ -255,6 +255,9 @@ class Checkpoint(BaseModel):
     """The trace's sampled turns the box's state reflects; see the class docs."""
     restored: bool = Field(default=False, exclude_if=lambda restored: not restored)
     """The run started from this checkpoint: an earlier run took it (and owns it)."""
+    time: float | None = Field(default=None, exclude_if=lambda time: time is None)
+    """When it was recorded (epoch seconds): orders the checkpoints of runs that share
+    one box. None on records written before it existed."""
 
 
 class Reward(BaseModel):
@@ -595,7 +598,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Record a checkpoint of the run's box, matching the conversation at `turns`
         (default: the turns completed now). Returns the record."""
         checkpoint = Checkpoint(
-            id=checkpoint_id, turns=self.num_turns if turns is None else turns
+            id=checkpoint_id,
+            turns=self.num_turns if turns is None else turns,
+            time=time.time(),
         )
         self.checkpoints.append(checkpoint)
         self.notify()

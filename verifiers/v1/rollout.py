@@ -160,7 +160,7 @@ class Rollout:
         if restored_from is not None:
             # The box starts from this checkpoint, matching the opening conversation.
             self.trace.checkpoints.append(
-                Checkpoint(id=restored_from, turns=0, restored=True)
+                Checkpoint(id=restored_from, turns=0, restored=True, time=time.time())
             )
         if on_trace is not None:
             on_trace(self.trace)
