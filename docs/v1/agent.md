@@ -81,14 +81,17 @@ with vf.use_durable(durable):                           # a crashed attempt, run
 See [Durable episodes](env.md#durable-episodes) for the rule host code between the calls
 must follow.
 
-- **The store.** `Durable.lookup` is a `vf.TraceLookup`: `latest(labels)` returns the
-  stored trace whose labels contain `labels` (a nested subset) that moved last (its latest
-  checkpoint, else its start), a partial one as of its latest save, or None. A training
-  or eval run's store is the caller's (prime-rl's live and finished trace stores, which
-  hold every trace call by call); `vf.TraceDir` is a directory of traces for tests and
-  standalone use, which the calls also write (a `vf.TraceSink`).
-- **The scope.** `Durable.match` holds the labels an earlier trace must carry besides the
-  key; left None, an episode takes its `trace_labels(task)`. The calls stamp it on their
+- **The store.** A call's identity is its ref, a hash of its scope and key
+  (`durable.call_ref`; a box's is `box_ref`, with its fingerprint), stamped on each of its
+  traces (`labels["call"]["ref"]`). `Durable.lookup` is a `vf.TraceLookup`: `get(ref)`
+  returns the stored trace carrying the ref that moved last (its latest checkpoint, else
+  its start), a partial one as of its latest save, or None. A store keeps one pointer per
+  ref, so this is a read, not a search. A training or eval run's store is the caller's
+  (prime-rl writes every trace call by call and keeps the pointers); `vf.TraceDir` is a
+  directory of traces for tests and standalone use, which the calls also write (a
+  `vf.TraceSink`).
+- **The scope.** `Durable.match` holds the labels that, with the key, make a call's ref;
+  left None, an episode takes its `trace_labels(task)`. The calls stamp it on their
   traces too. `durable.within(match)` is the same store under another scope (a call
   shared by every stage of a job), and `durable=` on a call replaces the installed one.
 - **The fingerprint.** The task's class, code (its source outside verifiers; pin it with

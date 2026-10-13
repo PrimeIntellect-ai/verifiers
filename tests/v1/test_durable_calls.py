@@ -35,7 +35,7 @@ import verifiers.v1.box as box_module
 import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.durable import call_parts, labels_match, latest, resolve_call
+from verifiers.v1.durable import call_parts, call_ref, latest, refs_of, resolve_call
 from verifiers.v1.utils.retries import RETRY_NOTE
 
 
@@ -50,9 +50,9 @@ class Partial:
     def __init__(self, *records: dict) -> None:
         self.records = list(records)
 
-    def latest(self, labels):
+    def get(self, ref):
         traces = [vf.WireTrace.model_validate(r) for r in self.records]
-        return latest([t for t in traces if labels_match(t.labels, labels)])
+        return latest([t for t in traces if ref in refs_of(t.labels)])
 
 
 # -- run(key=) ------------------------------------------------------------------
@@ -800,8 +800,9 @@ async def test_a_crashed_episode_reruns_from_the_top_on_its_traces(
     env, ctx = studio
     await asyncio.create_task(crash_in_the_judges_second_write(env, ctx, monkeypatch))
     store = vf.TraceDir(StudioEnv.root)
-    writer = store.latest({"call": {"key": "writer/0"}})
-    cut = store.latest({"call": {"key": "judge/0"}})
+    scope = env.trace_labels(task())
+    writer = store.get(call_ref(scope, "writer/0"))
+    cut = store.get(call_ref(scope, "judge/0"))
     assert writer is not None and writer.ok and writer.labels["stage"] == "review"
     assert cut is not None and not cut.is_completed and len(cut.checkpoints) == 2
     model.requests.clear()
@@ -872,3 +873,28 @@ async def test_a_finished_run_streams_its_final_ok(model):
     trace = await make(model).run(task(), on_trace=watch)
     assert trace.ok, trace.errors
     assert seen[-1] == (True, True)
+
+
+def test_a_ref_points_at_the_trace_that_moved_last(tmp_path):
+    """Seats on one box save in any order: a write from a run that moved earlier does
+    not take the box's ref from the one that moved later."""
+    store = vf.TraceDir(tmp_path)
+
+    def run_on_box(start: float, *saves: float) -> vf.Trace:
+        trace = vf.Trace(
+            task=vf.TraceTask(type="Task", data=vf.TaskData(prompt="hi")),
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            info={"labels": {"box": {"key": "b", "ref": "r"}}},
+        )
+        trace.timing.boot.start = start
+        trace.checkpoints = [vf.Checkpoint(id=f"c{t}", turns=0, time=t) for t in saves]
+        return trace
+
+    later, earlier = run_on_box(1.0, 10.0), run_on_box(2.0, 5.0)
+    store.write(later)
+    store.write(earlier)  # its final write comes last, but it moved first
+    assert store.get("r").id == later.id
+    earlier.checkpoints.append(vf.Checkpoint(id="c20", turns=1, time=20.0))
+    store.write(earlier)
+    assert store.get("r").id == earlier.id
+    assert store.get("other") is None

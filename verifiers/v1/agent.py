@@ -44,6 +44,7 @@ from verifiers.v1.durable import (
     Resolved,
     TraceSink,
     box_checkpoint,
+    box_ref,
     box_parts,
     call_parts,
     fingerprint,
@@ -2197,6 +2198,7 @@ class Agent:
         )
         found: Durable | None = None
         box_fingerprint: str | None = None
+        ref: str | None = None
         start: Checkpoint | None = None
         if checkpoint is not None:
             start = Checkpoint(id=checkpoint, turns=0, time=time.time())
@@ -2205,8 +2207,10 @@ class Agent:
         found, key = plan_call(self.name, key, durable)
         if key is not None:
             box_fingerprint = fingerprint(box_parts(task, self, found, depends))
+            scope = found.scope if found is not None else {}
+            ref = box_ref(scope, key, box_fingerprint)
             if start is None:
-                start = box_checkpoint(found, key, box_fingerprint)
+                start = box_checkpoint(found, ref)
                 if start is not None:
                     logger.info("box %r restores from checkpoint %s", key, start.id)
         if start is not None:
@@ -2219,6 +2223,7 @@ class Agent:
             save=self.config.save == "per_call",
             key=key,
             fingerprint=box_fingerprint,
+            ref=ref,
             durable=found,
         ) as runtime:
             yield runtime

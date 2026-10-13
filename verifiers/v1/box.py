@@ -56,6 +56,7 @@ class Box:
         save: bool = False,
         key: str | None = None,
         fingerprint: str | None = None,
+        ref: str | None = None,
         durable: Durable | None = None,
         restored: Checkpoint | None = None,
     ) -> None:
@@ -67,6 +68,8 @@ class Box:
         `save = "per_call"`), whatever their own `save`."""
         self.key = key
         self.fingerprint = fingerprint
+        self.ref = ref
+        """The box's durable address (`durable.box_ref`), when it has a key."""
         self.durable = durable
         self.restored = restored
         """The checkpoint the current box started from, if any."""
@@ -81,12 +84,16 @@ class Box:
     @property
     def labels(self) -> dict[str, Any]:
         """The labels every run on a durable box carries (`durable.BOX_LABEL`), as of
-        the run's start: the box's key and fingerprint, and the checkpoint the box was
-        at then (its `latest`), so the run that moved last names the box's latest
+        the run's start: the box's key, fingerprint and ref, and the checkpoint the box
+        was at then (its `latest`), so the run that moved last names the box's latest
         checkpoint even before it takes one of its own (`durable.box_checkpoint`)."""
         if self.key is None:
             return {}
-        label: dict[str, Any] = {"key": self.key, "fingerprint": self.fingerprint}
+        label: dict[str, Any] = {
+            "key": self.key,
+            "fingerprint": self.fingerprint,
+            "ref": self.ref,
+        }
         if self.latest is not None:
             label["checkpoint"] = {"id": self.latest.id, "time": self.latest.time}
         return {BOX_LABEL: label}
@@ -149,6 +156,7 @@ async def provision_box(
     save: bool = False,
     key: str | None = None,
     fingerprint: str | None = None,
+    ref: str | None = None,
     durable: Durable | None = None,
 ) -> AsyncIterator[Runtime]:
     """Provision a box from `config` (started from `checkpoint` when given) with its
@@ -162,6 +170,7 @@ async def provision_box(
             save=save and runtime.supports_checkpoint,
             key=key,
             fingerprint=fingerprint,
+            ref=ref,
             durable=durable,
             restored=checkpoint,
         )
