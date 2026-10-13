@@ -179,48 +179,6 @@ def test_bare_trace_round_trip(sampling):
         assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
 
 
-def test_runtime_info_records_the_pinned_image_digest_and_round_trips():
-    from verifiers.v1.runtimes.prime import PrimeRuntimeInfo
-
-    pinned = "team/env@sha256:" + "a" * 64
-    tr = vf.Trace(
-        agent=vf.AgentInfo(
-            config=vf.AgentConfig(), runtime=PrimeRuntimeInfo(image=pinned, id="sb1")
-        ),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(prompt="hi")),
-    )
-    rt = vf.WireTrace.model_validate(json.loads(tr.model_dump_json()))
-    assert rt.agent.runtime.image_digest == pinned
-    tagged = PrimeRuntimeInfo(image="team/env:v3")
-    assert tagged.image_digest is None
-    assert "image_digest" not in tagged.model_dump(mode="json")
-
-
-@pytest.mark.docker
-async def test_docker_box_records_what_its_image_resolved_to():
-    import shutil
-
-    from verifiers.v1.runtimes.container import cli
-    from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
-
-    image = "python:3.11-slim"
-    if shutil.which("docker") is None:
-        pytest.skip("needs docker")
-    inspected = await cli(
-        "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image
-    )
-    if inspected.exit_code:
-        pytest.skip(f"needs {image} pulled")
-    runtime = DockerRuntime(DockerConfig(image=image))
-    try:
-        await runtime.start()
-        digest = runtime.info.image_digest
-    finally:
-        await runtime.teardown()
-    assert digest is not None and "sha256:" in digest
-    assert digest in (json.loads(inspected.stdout) or [digest])
-
-
 def test_custom_task_state_round_trip(tmp_path):
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.

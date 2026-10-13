@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 
-from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -137,25 +136,6 @@ class BaseRuntimeInfo(BaseConfig):
     borrowed: bool = False
     """Whether the run was placed into a live box owned by someone else
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
-    image_digest: str | None = Field(
-        default=None, exclude_if=lambda digest: digest is None
-    )
-    """What the box's image resolved to: `<repo>@sha256:...` for an image from a
-    registry, else the local image id `sha256:...`. Docker and Podman ask the engine at
-    start; other runtimes know it only when the configured image is pinned by digest
-    (`<ref>@sha256:...`). None when unknown."""
-
-    def model_post_init(self, context: object) -> None:
-        super().model_post_init(context)
-        if self.image_digest is None:
-            self.image_digest = pinned_digest(getattr(self, "image", None))
-
-
-def pinned_digest(ref: object) -> str | None:
-    """The digest an image ref pins (`<repo>@sha256:<hex>`), else None."""
-    if not isinstance(ref, str) or "@sha256:" not in ref:
-        return None
-    return ref
 
 
 class Runtime(ABC):
