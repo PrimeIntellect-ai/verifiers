@@ -10,7 +10,7 @@ Survey items V5–V9, V11 and V24 of the pipeline unification plan (9 Oct 2026).
 | --- | --- | --- |
 | V5 prompt in a file, not argv | Present in c17b296f (d7c881ff), not on main; it also covers sft-gen's prompt-as-messages-file workaround. Tests added (4e56c3ec). | `harnesses/utils/launch.py` |
 | V6 dead Prime job probe | Present in c17b296f (463174c9), not on main. Tests added (4e56c3ec). | `runtimes/prime.py` `_job_alive` |
-| V7 Prime 502/503 repeats | Present in c17b296f (564d3e0b), not on main. Tests added (4e56c3ec). | `runtimes/prime.py` `_repeatable` |
+| V7 Prime 502/503 repeats | Present in c17b296f (564d3e0b), not on main. Tests added (4e56c3ec). | `runtimes/prime.py` `_repeat`, `PrimeRuntime._held` |
 | V8 restored-box creation wait | Present in c17b296f (fd09173a), not on main. Tests added (4e56c3ec). | `runtimes/prime.py` `_RESTORE_WAIT_ATTEMPTS` |
 | V9 uv interpreter per user | Present in c17b296f (fa47445b); **superseded on main** by e2253343 (#2753), which keys the interpreter by per-user script dir the same way and also bootstraps curl as root. Drop fa47445b when the integration branch rebases. | `runtimes/base.py` `prepare_uv_script` |
 | V11 retries | **Built** (43f376ee). `BashHarnessConfig.model_retries` (default 10). | `harnesses/bash`, `utils/core.py` |
