@@ -1273,18 +1273,30 @@ def _call_labels(found: Durable | None, resolved: Resolved) -> dict:
     return merge_labels(labels, {CALL_LABEL: resolved.label})
 
 
-def _managed(
+def _plan_durable(
+    name: str,
+    task: Task | None,
     checkpoint: str | None,
     resume: Trace | None,
     at: str | int | None,
     note: str | None,
-) -> list[str]:
-    """The arguments a durable call cannot take: it picks its own start. `checkpoint`
-    never, `at` and `note` only with `resume` (a durable continuation)."""
+    key: str | None,
+    durable: Durable | bool | None,
+) -> tuple[Durable | None, str | None]:
+    """`plan_call` for an agent call; `(None, None)` for a plain one. A durable call
+    picks its own start: `checkpoint`, and `at`/`note` without `resume`, make a call
+    plain without `key` and are refused with it; so does a call with no task."""
     given = {"checkpoint": checkpoint}
     if resume is None:
         given.update(at=at, note=note)
-    return [name for name, value in given.items() if value is not None]
+    managed = [arg for arg, value in given.items() if value is not None]
+    if key is None and (managed or (task is None and resume is None)):
+        durable = False
+    # The position is taken here, before anything is awaited.
+    found, key = plan_call(name, key, durable)
+    if key is not None and managed:
+        raise TypeError(f"a durable call (key=) resumes itself; drop {managed}")
+    return found, key
 
 
 def _maybe_durable(key: str | None, durable: Durable | bool | None) -> bool:
@@ -1605,17 +1617,14 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
-            managed = _managed(checkpoint, resume, at, note)
-            if key is None and (managed or (task is None and resume is None)):
-                durable = False
-            # The position is taken here, before anything is awaited.
-            found, key = plan_call(self.name, key, durable)
+            found, key = _plan_durable(
+                self.name, task, checkpoint, resume, at, note, key, durable
+            )
             if key is not None:
                 return await self._durable_run(
                     task,
                     key,
                     found,
-                    managed=managed,
                     runtime=runtime,
                     tools=tools,
                     on_trace=on_trace,
@@ -1765,7 +1774,6 @@ class Agent:
         key: str,
         found: Durable | None,
         *,
-        managed: list[str],
         runtime: Runtime | None,
         tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
@@ -1780,8 +1788,6 @@ class Agent:
         """A durable `run`: resolve the call by its traces, then return the kept one,
         continue it, or run fresh (`verifiers.v1.durable`). A continuation of `resume`
         runs fresh as that continuation; a cut-off one continues its own trace."""
-        if managed:
-            raise TypeError(f"a durable call (key=) resumes itself; drop {managed}")
         runtime = await _real_runtime(runtime)
         resolved = resolve_call(
             found,
@@ -1916,15 +1922,10 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
-            managed = _managed(checkpoint, resume, at, note)
-            if key is None and (managed or (task is None and resume is None)):
-                durable = False
-            found, key = plan_call(self.name, key, durable)
+            found, key = _plan_durable(
+                self.name, task, checkpoint, resume, at, note, key, durable
+            )
             if key is not None:
-                if managed:
-                    raise TypeError(
-                        f"a durable call (key=) resumes itself; drop {managed}"
-                    )
                 async with self._durable_interaction(
                     task,
                     key,
