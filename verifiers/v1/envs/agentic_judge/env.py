@@ -4,8 +4,9 @@ Two reusable envs share the grading protocol. `--env.id agentic-judge` provision
 a fresh box from the solver's runtime policy and restores only the task's collected
 artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
 solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
-criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
-observable trace record uploaded at `/tmp/trace.json`. Hidden reasoning and opaque
+criteria file) and writes its verdicts to a randomized `/tmp/vf-verdict-*.json`
+path, with the solver's observable trace record uploaded at `/tmp/trace.json`.
+Hidden reasoning and opaque
 provider state are omitted by default and may be explicitly included through the
 judge task config. `finalize()` validates the verdicts
 strictly onto the solver's trace — `judge/<name>` metrics plus a weighted-mean
@@ -18,6 +19,7 @@ value can disagree with the environment's security and artifact semantics.
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 from pydantic import FiniteFloat
@@ -31,7 +33,6 @@ from verifiers.v1.judges.rubric import (
 )
 from verifiers.v1.utils.compile import validate_pairing
 
-VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
 
 GRADE_PROMPT = """\
@@ -52,7 +53,7 @@ SOLVED = Criterion(
 )
 
 
-def _verdict_section(criteria: list[Criterion]) -> str:
+def _verdict_section(criteria: list[Criterion], verdict_file: str) -> str:
     listing = "\n".join(
         f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
         for c in criteria
@@ -64,7 +65,7 @@ Grade the attempt on these criteria:
 
 {listing}
 
-When you are done verifying, write your verdict as JSON to `{VERDICT_FILE}`:
+When you are done verifying, write your verdict as JSON to `{verdict_file}`:
 
     {{"verdicts": [{{"name": "<criterion name>", "reason": "<one sentence citing \
 what you verified>", "verdict": "<answer>"}}, ...]}}
@@ -129,10 +130,12 @@ class JudgeTask(vf.Task):
         data: vf.TaskData,
         files: dict[str, bytes],
         artifacts: dict[str, bytes | None],
+        verdict_file: str,
     ) -> None:
         super().__init__(data)
         self.files = files
         self.artifacts = artifacts
+        self.verdict_file = verdict_file
 
     @classmethod
     def from_trace(
@@ -155,6 +158,10 @@ class JudgeTask(vf.Task):
                 message = node["message"]
                 message.pop("reasoning_content", None)
                 message.pop("provider_state", None)
+        # An unpredictable, per-task path so a prior occupant of the box (e.g. the
+        # solver, in shared mode) cannot pre-plant a file or symlink at a verdict
+        # path it can guess in advance.
+        verdict_file = f"/tmp/vf-verdict-{uuid.uuid4().hex}.json"
         files = {TRACE_FILE: json.dumps(record).encode()}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
@@ -164,7 +171,11 @@ class JudgeTask(vf.Task):
         workspace_note = (
             SHARED_WORKSPACE_NOTE if share_runtime else ISOLATED_WORKSPACE_NOTE
         )
-        sections = [body, _verdict_section(config.criteria()), workspace_note]
+        sections = [
+            body,
+            _verdict_section(config.criteria(), verdict_file),
+            workspace_note,
+        ]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
@@ -180,6 +191,7 @@ class JudgeTask(vf.Task):
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,
+            verdict_file=verdict_file,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -188,7 +200,7 @@ class JudgeTask(vf.Task):
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
         # any file the solver chose.
-        await runtime.run(["rm", "-f", VERDICT_FILE, *self.files], env={})
+        await runtime.run(["rm", "-f", self.verdict_file, *self.files], env={})
         for path, content in self.files.items():
             await runtime.write(path, content)
 
@@ -197,11 +209,12 @@ class JudgeTask(vf.Task):
         file (or garbage) fails HERE — on the judge's own trace, the retryable
         unit — never silently."""
         try:
-            raw = await runtime.read(VERDICT_FILE)
+            raw = await runtime.read(self.verdict_file)
         except Exception as e:
             raise ValueError(
-                f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
-                'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
+                f"the judge wrote no verdict to {self.verdict_file}; its final "
+                'act must be writing {"verdicts": [{"name", "reason", "verdict"}, '
+                "...]} there"
             ) from e
         trace.info["verdict"] = RubricVerdicts.model_validate_json(raw).model_dump()
 
