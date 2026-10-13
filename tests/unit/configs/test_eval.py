@@ -7,7 +7,8 @@ import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 
-CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"))
+CONFIGS = sorted((Path(__file__).resolve().parents[3] / "configs").glob("*.toml"))
+assert CONFIGS, "found no configs/*.toml: the repo-root path is wrong"
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
