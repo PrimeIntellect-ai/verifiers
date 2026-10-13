@@ -20,7 +20,6 @@ the exact `prompt_ids + completion_ids` the model saw.
 
 from __future__ import annotations
 
-import binascii
 import hashlib
 import json
 import time
@@ -39,6 +38,13 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import RenderedTokens
 
+from verifiers.v1.routing import (
+    RoutingData,
+    complete_routing_capture,
+    decode_routing_payload,
+    slice_routing,
+    validate_ids,
+)
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
@@ -151,12 +157,11 @@ class MessageNode(BaseModel):
     `logprobs`. None means no trainer forward annotated this node."""
     loss_weights: dict[str, list[float]] | None = None
     """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
-    routed_experts: SkipJsonSchema[np.ndarray | None] = None
-    """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
-    top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
-    the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
-    concatenates these along the path into the trainer's router-replay input. Rides the wire as
-    a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    routed_experts: SkipJsonSchema[RoutingData | np.ndarray | None] = None
+    """This node's MoE routing for exactly its token span. Legacy capture is a uint8/uint16
+    ndarray [T,L,K]; full capture is immutable RoutingData with FP32 weights and row validity.
+    Branch.routed_experts concatenates both streams together. Raw bytes ride the msgpack
+    wire; dump-site excludes keep routing off JSON records."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
     """Sampling masks for this node's sampled tokens.
 
@@ -191,18 +196,28 @@ class MessageNode(BaseModel):
         return [round(value, decimals) for value in values]
 
     @field_serializer("routed_experts")
-    def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
-        """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
-        return None if arr is None else _encode_ndarray(arr)
+    def serialize_routing_field(
+        self, data: RoutingData | np.ndarray | None
+    ) -> dict | None:
+        if data is None:
+            return None
+        return (
+            data.to_wire() if isinstance(data, RoutingData) else _encode_ndarray(data)
+        )
 
     @field_validator("routed_experts", mode="before")
     @classmethod
-    def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
-        if value is None or isinstance(value, np.ndarray):
+    def deserialize_routing_field(cls, value: Any) -> RoutingData | np.ndarray | None:
+        if value is None or isinstance(value, RoutingData):
             return value
+        if isinstance(value, dict) and "__routing__" in value:
+            return RoutingData.from_wire(value)
         if isinstance(value, dict) and value.get("__nd__"):
-            return _decode_ndarray(value)
-        raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
+            value = _decode_ndarray(value)
+        if isinstance(value, np.ndarray):
+            validate_ids(value)
+            return value
+        raise ValueError(f"cannot build routing field from {type(value).__name__}")
 
     @field_serializer("sampling_mask")
     def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
@@ -658,34 +673,31 @@ def _attribute_routed_experts(
     prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
-    payload: Any,
+    capture: tuple[RoutingData | np.ndarray, int] | None,
 ) -> None:
-    """Attach each new node's slice of this turn's MoE expert-routing array. The `generate`
-    payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
-    0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
-    we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
-    the routing attributed when they were first created, except for the one position this turn
-    corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
-    array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
-    branch then reports no routing rather than misaligning."""
-    if payload is None:
+    """Own each new node's routing span. Full captures have already passed coverage and
+    reused-prefix guards. Keep the historical terminal padding rule only for legacy IDs."""
+    if capture is None:
         return
-    raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
-        payload["shape"]
-    )
-    off = path_len - int(payload.get("start", 0) or 0)
-    _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
+    arr, start = capture
+    off = path_len - start
+    if isinstance(arr, np.ndarray):
+        _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
         end = off + n
-        if n and 0 <= off and end <= arr.shape[0]:
-            # Own only this node's rows; a view would retain the turn's full-context array.
-            trace.nodes[nid].routed_experts = arr[off:end].copy()
+        if n and 0 <= off and end <= len(arr):
+            trace.nodes[nid].routed_experts = slice_routing(arr, off, end)
+        elif isinstance(arr, RoutingData):
+            if n:
+                raise ValueError(
+                    "full routing node span is outside captured token coverage"
+                )
         elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
-            # No forward pass follows the turn's final position, so it gets a placeholder: a
-            # copy of the previous row, appended to this node's slice of the array.
+            # No forward pass follows the turn's final position, so legacy IDs get a placeholder:
+            # a copy of the previous row, appended to this node's slice. Never used for full
+            # coefficients, whose terminal row is marked invalid instead.
             trace.nodes[nid].routed_experts = np.concatenate(
                 [arr[off:], arr[-1:]], axis=0
             )
@@ -779,15 +791,55 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
-    # Constant per renderer, so re-stamping every turn is idempotent.
-    if tokens is not None and tokens.mm_token_type_id_map:
-        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
     renderer_prompt_ids = (
         tokens.renderer_prompt_ids
         if tokens and tokens.renderer_prompt_ids is not None
         else prompt_ids
     )
+    # Decode and validate before adding nodes: malformed evidence must not partly commit.
+    capture = (
+        decode_routing_payload(tokens.routed_experts)
+        if tokens is not None and tokens.routed_experts is not None
+        else None
+    )
+    full_capture = capture is not None and isinstance(capture[0], RoutingData)
+    if full_capture:
+        data, start = capture
+        if start != 0:
+            raise ValueError(
+                "full routing replay does not support reused-prefix/delta capture; start must be 0"
+            )
+        # Full routing must stay aligned even on the construct-only train-client
+        # path. Backtracking/out-of-range spans would duplicate tokens and fail
+        # attribution after mutating the graph. Reject them before adding nodes.
+        # Spans index the renderer prompt; projecting them onto vLLM tokens keeps order.
+        spans = tokens.message_spans
+        if spans is not None:
+            if len(spans) != len(prompt):
+                raise ValueError("full routing message spans must match the prompt")
+            end = 0
+            for span in spans:
+                if span is None:
+                    continue
+                if not (
+                    isinstance(span, (list, tuple))
+                    and len(span) == 2
+                    and all(type(value) is int for value in span)
+                    and end <= span[0] <= span[1] <= len(renderer_prompt_ids)
+                ):
+                    raise ValueError(
+                        "full routing message spans must be ordered within prompt tokens"
+                    )
+                end = span[1]
+        capture = (
+            complete_routing_capture(
+                data,
+                total_tokens=len(tokens.prompt_ids) + len(tokens.completion_ids),
+                completion_tokens=len(tokens.completion_ids),
+            ),
+            start,
+        )
     renderer_spans = tokens.message_spans if tokens else None
     renderer_is_content = tokens.is_content if tokens else None
     idx = _head_index(trace)
@@ -823,7 +875,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     spans, is_content = _project_prompt_attribution(
         renderer_prompt_ids,
         prompt_ids,
-        trace.mm_token_type_id_map,
+        # Stamped onto the trace only once the turn passes the routing guards below.
+        (tokens.mm_token_type_id_map if tokens else None) or trace.mm_token_type_id_map,
         tokens.mm_placeholders if tokens else None,
         renderer_spans,
         renderer_is_content,
@@ -896,6 +949,22 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         path_len = end
         renderer_path_len = renderer_end
 
+    if prefix and (
+        full_capture
+        or any(
+            isinstance(trace.nodes[nid].routed_experts, RoutingData) for nid in prefix
+        )
+    ):
+        # Token identity does not prove route identity. In particular, a prior turn's
+        # invalid final row becomes live context here. Overlays/provenance are not in MVP.
+        raise ValueError(
+            "full routing replay does not support reused-prefix continuation or forks"
+        )
+
+    # Constant per renderer, so re-stamping every successful turn is idempotent.
+    if tokens is not None and tokens.mm_token_type_id_map:
+        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
+
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     cursor: int | None = None
@@ -962,9 +1031,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     # The prefix goes in too, so the position the previous turn could only pad can be corrected.
-    _attribute_routed_experts(
-        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
-    )
+    _attribute_routed_experts(trace, prefix, new_node_ids, path_len, capture)
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
