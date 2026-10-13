@@ -79,6 +79,22 @@ stop asynchronously after their delete."""
 _CHECKPOINT_DELETE_MAX_DELAY_SECONDS = 30
 """Longest wait between two tries of a refused checkpoint delete."""
 
+_TRANSFER_PART_BYTES = 128 * 1024 * 1024
+"""Largest single upload or download request. One gateway request of about 2 GB always
+fails, and one of 512 MB fails when the gateway drops the connection under load; a
+larger file crosses in parts of this size, joined (write) or cut (read) in the box."""
+_TRANSFER_ATTEMPTS = 3
+"""Tries of one transfer request that failed in transit (a timeout, a dropped
+connection, a gateway 5xx). A refused request, a missing file, or a lost box is final."""
+_TRANSFER_BACKOFF_SECONDS = 5
+"""Wait before a transfer request's second try; it doubles for each later try."""
+_TRANSFER_RETRIES = {
+    "attempts": _TRANSFER_ATTEMPTS,
+    "initial": _TRANSFER_BACKOFF_SECONDS,
+}
+"""`_repeat`'s budget for one upload or download request: every one is idempotent (an
+upload overwrites, a download rewrites its file)."""
+
 
 BASE_LABELS: list[str] = []
 
@@ -170,6 +186,11 @@ class PrimeConfig(NetworkPolicyConfig):
     ``checkpoint`` and ``wait_for_checkpoint``)."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    transfer_timeout: int = Field(600, gt=0)
+    """Seconds one upload or download request may take (the SDK's default is 300). A
+    file larger than one request part (128 MiB) takes one request per part. Many
+    concurrent transfers share the gateway's bandwidth: 512 MB requests have taken over
+    600 s while twenty boxes transferred at once."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -626,21 +647,16 @@ class PrimeRuntime(Runtime):
                     f"read {path!r}: {exc}", kind=sandbox_error_kind(exc, "io")
                 ) from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
-        # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                download = Path(directory) / "download"
-                await _repeat(
-                    lambda: self._client.download_file(
-                        self.info.id, target, str(download)
-                    )
-                )
-                return await asyncio.to_thread(download.read_bytes)
+            size = await self._file_size(target)
+            if size <= _TRANSFER_PART_BYTES:
+                return await self._download(target)
+            return await self._read_parts(target, size)
         except Exception as e:
             raise SandboxError(
                 f"read {path!r}: {e}", kind=sandbox_error_kind(e, "io")
@@ -656,11 +672,10 @@ class PrimeRuntime(Runtime):
         )
         if self.user is None:
             try:
-                await _repeat(
-                    lambda: self._client.upload_bytes(
-                        self.info.id, target, data, filename=PurePosixPath(target).name
-                    )
-                )
+                if len(data) <= _TRANSFER_PART_BYTES:
+                    await self._upload(target, data)
+                else:
+                    await self._write_parts(target, data)
             except Exception as e:
                 raise SandboxError(
                     f"write {path!r}: {e}", kind=sandbox_error_kind(e, "io")
@@ -680,6 +695,128 @@ class PrimeRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {result.stderr.strip()[-500:]}", kind="io"
             )
+
+    async def _file_size(self, target: str) -> int:
+        """`target`'s size in bytes, which picks one download or several. A missing
+        file fails here, before any transfer."""
+        result = await _repeat(
+            lambda: self._client.execute_command(
+                self.info.id, f"wc -c < {shlex.quote(target)}", timeout=60
+            ),
+            **_TRANSFER_RETRIES,
+        )
+        if result.exit_code:
+            detail = (result.stderr or "").strip()[-500:]
+            raise SandboxError(detail, kind=missing_file_kind(detail, "io"))
+        return int(result.stdout.strip())
+
+    async def _upload(self, target: str, data: bytes) -> None:
+        await _repeat(
+            lambda: self._client.upload_bytes(
+                self.info.id,
+                target,
+                data,
+                filename=PurePosixPath(target).name,
+                timeout=self.config.transfer_timeout,
+            ),
+            **_TRANSFER_RETRIES,
+        )
+
+    async def _download(self, target: str) -> bytes:
+        # The temporary file is removed on every exit, and its byte read stays off the event loop.
+        with tempfile.TemporaryDirectory() as directory:
+            download = Path(directory) / "download"
+            await _repeat(
+                lambda: self._client.download_file(
+                    self.info.id,
+                    target,
+                    str(download),
+                    timeout=self.config.transfer_timeout,
+                ),
+                **_TRANSFER_RETRIES,
+            )
+            return await asyncio.to_thread(download.read_bytes)
+
+    async def _write_parts(self, target: str, data: bytes) -> None:
+        """Upload `data` in `_TRANSFER_PART_BYTES` parts beside `target`, then join them
+        in the box and move the result onto `target` once its size checks out, so a
+        failed write never leaves a truncated `target`. The parts are removed on every
+        exit."""
+        stem = f"{target}.vf-part-{uuid.uuid4().hex[:12]}"
+        size = _TRANSFER_PART_BYTES
+        parts = [f"{stem}.{n:05d}" for n in range(math.ceil(len(data) / size))]
+        root = self.with_user(None)  # uploads land as the default user
+        try:
+            for n, part in enumerate(parts):
+                await self._upload(part, data[n * size : (n + 1) * size])
+            joined = await root.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'out=$1 size=$2 tmp=$3; shift 3; cat -- "$@" > "$tmp"'
+                        ' && [ "$(wc -c < "$tmp")" -eq "$size" ] && mv -f -- "$tmp" "$out"'
+                    ),
+                    "sh",
+                    target,
+                    str(len(data)),
+                    f"{stem}.tmp",
+                    *parts,
+                ],
+                {},
+            )
+            if joined.exit_code:
+                raise SandboxError(
+                    f"joining {len(parts)} uploaded parts failed "
+                    f"({joined.exit_code}): {joined.stderr.strip()[-500:]}",
+                    kind="io",
+                )
+        finally:
+            with contextlib.suppress(Exception):
+                await root.run(["sh", "-c", 'rm -f -- "$1".*', "sh", stem], {})
+
+    async def _read_parts(self, target: str, size: int) -> bytes:
+        """Download `target` (`size` bytes) as `_TRANSFER_PART_BYTES` parts cut in the
+        box one at a time, so the box holds at most one extra part (a failed read removes
+        it). A file that changes size while it is read fails the read."""
+        stem = f"{target}.vf-part-{uuid.uuid4().hex[:12]}"
+        root = self.with_user(None)
+        chunks: list[bytes] = []
+        try:
+            for n, offset in enumerate(range(0, size, _TRANSFER_PART_BYTES)):
+                part = f"{stem}.{n:05d}"
+                cut = await root.run(
+                    [
+                        "sh",
+                        "-c",
+                        'tail -c "+$2" -- "$1" | head -c "$3" > "$4"',
+                        "sh",
+                        target,
+                        str(offset + 1),
+                        str(_TRANSFER_PART_BYTES),
+                        part,
+                    ],
+                    {},
+                )
+                if cut.exit_code:
+                    raise SandboxError(
+                        f"cutting part {n} failed ({cut.exit_code}): "
+                        f"{cut.stderr.strip()[-500:]}",
+                        kind="io",
+                    )
+                chunks.append(await self._download(part))
+                await root.run(["rm", "-f", "--", part], {})
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await root.run(["sh", "-c", 'rm -f -- "$1".*', "sh", stem], {})
+            raise
+        data = b"".join(chunks)
+        if len(data) != size:
+            raise SandboxError(
+                f"{target} changed while it was read ({size} bytes became {len(data)})",
+                kind="io",
+            )
+        return data
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

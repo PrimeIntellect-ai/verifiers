@@ -184,7 +184,7 @@ async def test_prime_io_and_exec_failures_are_typed(runtime, no_sleep):
     runtime.info.id = "sb1"
     runtime._client = FakeSandboxClient(
         upload_bytes=httpx.WriteError("connection reset"),
-        download_file=SandboxFileNotFoundError("HTTP 404: no such file"),
+        execute_command=SandboxFileNotFoundError("HTTP 404: no such file"),
         start_background_job=SandboxNotRunningError("sb1", status="TERMINATED"),
     )
     with pytest.raises(SandboxError) as write:
