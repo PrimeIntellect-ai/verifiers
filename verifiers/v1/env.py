@@ -21,7 +21,7 @@ from verifiers.v1.configs.agent import (
     resolve_agent,
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
-from verifiers.v1.durable import Durable, merge_labels, use_durable
+from verifiers.v1.durable import Durable, observe, use_durable
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -33,7 +33,7 @@ from verifiers.v1.interception import (
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
-from verifiers.v1.trace import LABELS_KEY, Error, Trace, TraceTask
+from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -267,19 +267,10 @@ class Env(ABC, Generic[ConfigT]):
         `info`; `on_discard` its abandonment (a per-agent retry mints a replacement).
         A pydantic model returned by `run()` becomes `episode.outcome`."""
         episode = Episode(env=EnvInfo(id=self.config.env_id), task=TraceTask.of(task))
+        # Filled from `trace_labels` below; they land on each trace before any observer
+        # sees it, merged over what it carries (a durable call's or box's labels).
         labels: dict[str, JsonValue] = {}
-
-        def minted(trace: Trace) -> None:
-            # Labels land before any observer sees the trace; each trace gets its own
-            # copy, merged over what it carries (a durable call's or box's labels).
-            if labels:
-                current = trace.info.get(LABELS_KEY)
-                trace.info[LABELS_KEY] = merge_labels(
-                    dict(current) if isinstance(current, dict) else {}, labels
-                )
-            if on_trace is not None:
-                on_trace(trace)
-
+        minted = observe(on_trace, labels)
         agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
