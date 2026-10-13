@@ -2109,14 +2109,7 @@ class Agent:
 
         def provision(checkpoint: Checkpoint) -> AbstractAsyncContextManager[Runtime]:
             """A box restored from `checkpoint`, for the replay to read."""
-            return provision_box(
-                resolve_runtime_config(
-                    self.runtime_config, base, self._warned_resources
-                ),
-                env=base.runtime_env(),
-                checkpoint=checkpoint,
-                save=self.config.save == "per_call",
-            )
+            return self.provision(base, checkpoint=checkpoint.id, durable=False)
 
         async with AsyncExitStack() as stack:
             exchange = DurableInteraction(
