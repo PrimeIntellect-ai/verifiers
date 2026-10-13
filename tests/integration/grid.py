@@ -18,6 +18,7 @@ supported, what is not, and why:
   tools (`SUPPORTS_MCP`), a user that can be switched to (`supports_user`), or an
   exchange that resumes (`SUPPORTS_RESUME` or a native session)
 - `browser-use` needs a browser image, which the grid pins on docker only
+- `kimi-code` cannot install in a prime sandbox: code.kimi.com resets the connection
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -111,6 +112,8 @@ def unsupported(
         return f"{name} needs a container runtime"
     if name == "browser-use" and runtime != "docker":
         return f"{name} needs a browser image, pinned on docker only"
+    if name == "kimi-code" and runtime == "prime":
+        return "code.kimi.com resets connections from prime sandboxes"
     if "reply" in needs and name == "mini-swe-agent":
         return f"{name} finishes by submitting a shell task, not by replying"
     if "shell" in needs and not cls.EXECUTES_CODE:
