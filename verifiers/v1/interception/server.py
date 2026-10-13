@@ -42,6 +42,11 @@ from verifiers.v1 import graph, steering
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.clients.client import RelayReply
+from verifiers.v1.clients.gate import (
+    REJECTION_STATUSES,
+    RequestThrottle,
+    observe_throttle,
+)
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     TrainClientConfig,
@@ -90,7 +95,8 @@ KEEPALIVE_INTERVAL_SECONDS = 3
 KEEPALIVE_GRACE_SECONDS = 60
 # A committed stream can report a failure only as an SSE error event, which harness SDKs do
 # not retry, so a retryable failure (5xx/429) after commit is rerun here, up to this many
-# attempts in all, waiting longer before each (keepalives hold the stream meanwhile).
+# attempts in all, waiting longer before each (keepalives hold the stream meanwhile). With a
+# request gate on the endpoint, a 429/529 has already used the gate's retries: it is final.
 COMMITTED_TURN_ATTEMPTS = 5
 COMMITTED_TURN_BACKOFF_SECONDS = 2.0
 COMMITTED_TURN_BACKOFF_MAX_SECONDS = 30.0
@@ -101,6 +107,19 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+# Response header the stainless-generated SDKs obey over their own status rules.
+SHOULD_RETRY_HEADER = "x-should-retry"
+
+
+def _retryable(status: int, gated: bool) -> bool:
+    """Whether a failed turn's status is worth another try: a 5xx or a 429, except a
+    rejection (429/529) on a gated endpoint, which the request gate already retried
+    (`RequestGateConfig.max_rejections`) — the gate is the one retry layer for those."""
+    if gated and status in REJECTION_STATUSES:
+        return False
+    return status >= 500 or status == 429
+
+
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -261,6 +280,7 @@ async def _buffered_stream(
     pending: Awaitable[web.Response],
     trace_id: str,
     rerun: Callable[[], Awaitable[web.Response]] | None = None,
+    gated: bool = False,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
@@ -295,7 +315,7 @@ async def _buffered_stream(
                 if (
                     rerun is None
                     or attempt == COMMITTED_TURN_ATTEMPTS
-                    or (status < 500 and status != 429)
+                    or not _retryable(status, gated)
                 ):
                     break
                 delay = min(
@@ -572,6 +592,7 @@ class InterceptionServer(Interception):
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
+        throttle: RequestThrottle | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -620,6 +641,7 @@ class InterceptionServer(Interception):
                 if policy_paths
                 else None,
                 acp=acp,
+                throttle=throttle,
             )
         )
         session.trace.notify()
@@ -687,6 +709,7 @@ class InterceptionServer(Interception):
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        gated = session.ctx.client.request_gate is not None
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
@@ -876,28 +899,33 @@ class InterceptionServer(Interception):
             events: bytes | None = None
             node: int | None = None
             error: Exception | None = None
+            throttle: RequestThrottle | None = None
             started = time.time()
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
+                    # sampling imposed — recorded raw on the trace, per call. A request gate
+                    # on the endpoint reports its admission into `throttle`.
+                    with observe_throttle() as throttle:
+                        if relay:
+                            reply = await session.client.relay(
+                                dialect,
+                                body,
+                                headers=upstream_headers,
+                                session_id=session.trace.id,
+                            )
+                            call_response, events = await _collect_stream(
+                                dialect, reply
+                            )
+                        else:
+                            call_response = await session.client.get_response(
+                                dialect,
+                                body,
+                                session.ctx.sampling,
+                                headers=upstream_headers,
+                                session_id=session.trace.id,
+                                turn=turn,
+                            )
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -949,7 +977,8 @@ class InterceptionServer(Interception):
                         )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
-                    # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                    # Relay the provider's status so the harness SDK retries 5xx/429 and not
+                    # 4xx, and tells it not to retry one the request gate already retried.
                     error = e
                     session.error = e
                     logger.warning(
@@ -958,9 +987,13 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
+                    status = getattr(e, "status_code", 502)
                     return web.json_response(
                         dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                        status=status,
+                        headers={SHOULD_RETRY_HEADER: "false"}
+                        if gated and status in REJECTION_STATUSES
+                        else None,
                     )
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
@@ -994,6 +1027,9 @@ class InterceptionServer(Interception):
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
+                    throttle=throttle.model_copy()
+                    if throttle is not None and throttle.limit is not None
+                    else None,
                 )
                 if node is not None and steered and not session.released:
                     session.land_steers(steered, node, len(session.trace.calls) - 1)
@@ -1001,7 +1037,7 @@ class InterceptionServer(Interception):
 
         if streaming:
             return await _buffered_stream(
-                request, dialect, sample(), session.trace.id, rerun=sample
+                request, dialect, sample(), session.trace.id, rerun=sample, gated=gated
             )
         return await sample()
 

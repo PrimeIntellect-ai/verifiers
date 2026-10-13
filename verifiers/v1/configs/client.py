@@ -42,6 +42,44 @@ class ClientTimeoutConfig(BaseConfig):
     """Time to acquire a connection from the pool."""
 
 
+class RequestGateConfig(BaseConfig):
+    """A per-model cap on concurrent requests to this endpoint, shared by every process on
+    the host that uses the same endpoint, API key and model (see `clients.gate`). With
+    `adaptive`, the limit shrinks on provider rejections (429/529) and grows back on
+    successes (AIMD), so the load settles under a provider limit that is lower than
+    `max_concurrent` or shared with other users of the key."""
+
+    max_concurrent: int = Field(ge=1)
+    """Most requests in flight at once, per model."""
+    min_concurrent: int = Field(1, ge=1)
+    """Lowest limit the adaptive gate shrinks to."""
+    adaptive: bool = True
+    """Shrink the limit on 429/529 and grow it back on success; off, the limit stays at
+    `max_concurrent`."""
+    decrease_factor: float = Field(0.75, gt=0, lt=1)
+    """Factor applied to the limit on a rejection."""
+    decrease_cooldown: float = Field(2.0, ge=0)
+    """Seconds after a decrease in which further rejections do not decrease again: one
+    burst of rejections is one signal."""
+    max_rejections: int = Field(10, ge=0)
+    """Rejections absorbed per request (each waits, then queues again). The next one is
+    returned to the caller, who sees the provider's 429 as before."""
+    backoff: float = Field(1.0, gt=0)
+    """Base wait in seconds after a rejection without `Retry-After`; doubles per rejection."""
+    max_backoff: float = Field(60.0, gt=0)
+    """Longest wait after a rejection, `Retry-After` included."""
+    dir: str | None = None
+    """Directory of the shared gate state (`flock`ed slot files). None = a host-wide
+    directory under the system temp dir; a shared mount widens the scope where `flock`
+    works there."""
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> "RequestGateConfig":
+        if self.min_concurrent > self.max_concurrent:
+            raise ValueError("min_concurrent exceeds max_concurrent")
+        return self
+
+
 class BaseClientConfig(BaseConfig):
     """An OpenAI-compatible endpoint. The API key is read from an env var."""
 
@@ -53,6 +91,9 @@ class BaseClientConfig(BaseConfig):
     """Header names mapped to environment variables, resolved when building a client.
     Set environment values override static headers."""
     timeout: ClientTimeoutConfig = ClientTimeoutConfig()
+    request_gate: RequestGateConfig | None = None
+    """Per-model concurrent-request gate for every request sent through this endpoint
+    config (harness turns, nested agents, judges). None = no gate."""
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":

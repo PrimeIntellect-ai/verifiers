@@ -475,7 +475,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
     # Client retries per model call; the interception relays a pre-commit 429/5xx for
-    # the program's SDK to retry, so this is the only retry layer for them.
+    # the program's SDK to retry. A 429/529 a request gate already retried comes back
+    # with `x-should-retry: false`, which the SDK obeys.
     parser.add_argument("--max-retries", type=int, default=2)
     parser.add_argument("--command-timeout", type=int, default=3600)
     return parser.parse_args()

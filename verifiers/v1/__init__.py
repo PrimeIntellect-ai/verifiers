@@ -10,6 +10,7 @@ from verifiers.v1.clients import (
     ClientConfig,
     EvalClientConfig,
     ModelContext,
+    RequestGateConfig,
     TrainClientConfig,
     resolve_client,
 )
@@ -113,6 +114,7 @@ from verifiers.v1.trace import (
     InterceptRecord,
     ModelCall,
     PolicyEvent,
+    RequestThrottle,
     Reward,
     SteerRecord,
     TimeSpan,
@@ -249,6 +251,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EvalRunInfo",
     "EvalWorkInfo",
     "ModelCall",
+    "RequestThrottle",
     "ACPInfo",
     "ACP_SEMANTIC_EDGES_METADATA_KEY",
     "ParentLink",
@@ -296,6 +299,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "BaseClientConfig",
     "ClientConfig",
     "EvalClientConfig",
+    "RequestGateConfig",
     "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment

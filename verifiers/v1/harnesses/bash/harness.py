@@ -73,7 +73,9 @@ class BashHarnessConfig(HarnessConfig):
     """Retries of a failed model call (429, 5xx, a dropped connection or stream), with
     the OpenAI SDK's backoff capped at 8 s: 10 rides out about a minute of provider
     errors. The interception relays a failure before its stream commits for the program
-    to retry, so this is the retry budget for those."""
+    to retry, so this is the retry budget for those. With a request gate on the client,
+    the gate alone retries a 429/529: the interception marks one it relays as final
+    (`x-should-retry: false`), and the program does not retry it."""
 
     command_timeout: PositiveInt = 3600
     """Seconds one `bash` command may run. On expiry its whole process group is killed

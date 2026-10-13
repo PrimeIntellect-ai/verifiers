@@ -9,6 +9,7 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import build_async_httpx, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.gate import MODEL_EXTENSION
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     resolve_api_key,
@@ -134,11 +135,14 @@ class EvalClient(Client):
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
+        model = body.get("model")
         request = self.client.build_request(
             "POST",
             url,
             content=to_json(body, inf_nan_mode="null"),
             headers=headers,
+            # Names the model for the request gate, which then need not parse the body.
+            extensions={MODEL_EXTENSION: model} if isinstance(model, str) else None,
         )
         try:
             response = await self.client.send(request, stream=stream)
