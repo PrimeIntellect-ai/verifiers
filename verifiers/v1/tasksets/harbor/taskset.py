@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+VERIFIER_OUTPUT_BYTES = 16_000
+"""How much of the verifier's output, and of each file it leaves, a trace keeps."""
 MAX_REWARD_BYTES = 1024 * 1024
 # Booleans count as 1/0, as Harbor reads them (CyberGym's verifier writes flags alongside its reward).
 REWARD_JSON_ADAPTER = TypeAdapter(
@@ -379,6 +381,25 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
+    async def record_verifier_output(
+        self, runtime: Runtime, trace: Trace, result: ProgramResult
+    ) -> None:
+        """What the verifier reported, for whoever reads the grade: `test.sh`'s exit code and
+        output, and the text files it left in /logs/verifier besides the reward (test logs,
+        reports), each cut to its last VERIFIER_OUTPUT_BYTES."""
+        listing = (
+            "for f in $(find /logs/verifier -maxdepth 2 -type f ! -name reward.json "
+            "! -name reward.txt 2>/dev/null | sort | head -n 20); do "
+            'grep -Iq . "$f" 2>/dev/null || continue; '
+            f'printf "==> %s <==\\n" "$f"; tail -c {VERIFIER_OUTPUT_BYTES} "$f"; echo; done'
+        )
+        files = await runtime.run(["sh", "-c", listing], {})
+        trace.info["verifier"] = {
+            "exit_code": result.exit_code,
+            "output": (result.stdout + result.stderr)[-VERIFIER_OUTPUT_BYTES:],
+            "files": files.stdout[-4 * VERIFIER_OUTPUT_BYTES :],
+        }
+
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
@@ -388,6 +409,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         result = await runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
         )
+        await self.record_verifier_output(runtime, trace, result)
         scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
