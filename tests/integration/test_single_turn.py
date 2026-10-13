@@ -5,9 +5,7 @@ import pytest
 from grid import grid
 
 
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(needs=("reply",)), indirect=True
-)
+@pytest.mark.parametrize("harness,harness_runtime", grid(), indirect=True)
 async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",

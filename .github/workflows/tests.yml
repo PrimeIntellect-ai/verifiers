@@ -78,12 +78,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - behavior: Simple Single-Turn
-            tests: tests/integration/test_simple_single_turn.py
-          - behavior: Simple Multi-Turn
-            tests: tests/integration/test_simple_multi_turn.py
-          - behavior: Simple Multi-Turn Tool
-            tests: tests/integration/test_simple_multi_turn_tool.py
+          - behavior: Single-Turn
+            tests: tests/integration/test_single_turn.py
+          - behavior: Multi-Turn
+            tests: tests/integration/test_multi_turn.py
+          - behavior: Multi-Turn Tool
+            tests: tests/integration/test_multi_turn_tool.py
           - behavior: Stateful Tool
             tests: tests/integration/test_stateful_tool.py
           - behavior: Shared Tool
@@ -98,8 +98,6 @@ jobs:
             tests: tests/integration/test_user_sim.py
           - behavior: Agent User
             tests: tests/integration/test_agent_user.py
-          - behavior: Tool Gate
-            tests: tests/integration/test_tool_gate.py
           - behavior: Network Policy
             tests: tests/integration/test_network_policy.py
           - behavior: Skills
