@@ -14,10 +14,10 @@ supported, what is not, and why:
 - `prime` provisions real sandboxes and runs in CI with its secrets; it exposes no
   ports, so a tool server lives there only colocated with its harness
 - a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
-  shell task), a shell (`EXECUTES_CODE`; `browser-use` drives a browser instead), MCP
-  tools (`SUPPORTS_MCP`), a user that can be switched to (`supports_user`), or an
-  exchange that resumes (`SUPPORTS_RESUME` or a native session)
-- `browser-use` needs a browser image, which the grid pins on docker only
+  shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
+  switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
+  native session)
+- `browser-use` needs its Playwright image, which prime cannot pull (Docker Hub only)
 - `kimi-code` cannot install in a prime sandbox: code.kimi.com resets the connection
 
 Every cell carries its axes' marks, so `-m` selects subsets:
@@ -111,15 +111,13 @@ def unsupported(
     if runtime == "subprocess" and cls.NEEDS_CONTAINER:
         return f"{name} needs a container runtime"
     if name == "browser-use" and runtime != "docker":
-        return f"{name} needs a browser image, pinned on docker only"
+        return f"{name}'s browser image is on mcr.microsoft.com; prime pulls Docker Hub only"
     if name == "kimi-code" and runtime == "prime":
         return "code.kimi.com resets connections from prime sandboxes"
     if "reply" in needs and name == "mini-swe-agent":
         return f"{name} finishes by submitting a shell task, not by replying"
     if "shell" in needs and not cls.EXECUTES_CODE:
         return f"{name} gives the model no shell"
-    if "shell" in needs and name == "browser-use":
-        return f"{name} drives a browser, not a shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
     if "resume" in needs and not resumes(cls):
