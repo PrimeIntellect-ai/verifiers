@@ -532,12 +532,10 @@ def observe(
 class TraceDir:
     """A directory of traces, one `<id>.json` record each: a `TraceLookup` and a
     `TraceSink` for tests and standalone use. Each write replaces the trace's file
-    atomically. `latest` scans the directory, reading only the files that changed
-    since it last read them."""
+    atomically; `latest` reads the directory."""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        self._cache: dict[Path, tuple[float, int, Trace | None]] = {}
 
     def write(self, trace: Trace) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
@@ -547,27 +545,13 @@ class TraceDir:
             f.write(data)
         os.replace(tmp, self.path / f"{trace.id}.json")
 
-    def _load(self, file: Path) -> Trace | None:
-        try:
-            stat = file.stat()
-        except FileNotFoundError:
-            return None
-        cached = self._cache.get(file)
-        if cached is not None and cached[:2] == (stat.st_mtime, stat.st_size):
-            return cached[2]
-        try:
-            trace = WireTrace.model_validate_json(file.read_bytes())
-        except (OSError, ValueError):
-            trace = None
-        self._cache[file] = (stat.st_mtime, stat.st_size, trace)
-        return trace
-
     def latest(self, labels: Mapping[str, Any]) -> Trace | None:
-        if not self.path.is_dir():
-            return None
         found = []
         for file in sorted(self.path.glob("*.json")):
-            trace = self._load(file)
-            if trace is not None and labels_match(trace.labels, labels):
+            try:
+                trace = WireTrace.model_validate_json(file.read_bytes())
+            except (OSError, ValueError):
+                continue  # replaced or removed while the directory was read
+            if labels_match(trace.labels, labels):
                 found.append(trace)
         return latest(found)
