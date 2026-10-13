@@ -162,6 +162,10 @@ class HarborData(TaskData):
     """Host path to the task dir; used to stage tests/ to verify."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
+    setup_command: str | None = None
+    """Optional shell command run after staging environment/ and before the healthcheck.
+    Runs in the runtime's workdir as its default user on every setup, including in a
+    separate verifier. Must be idempotent and return after starting any services."""
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
@@ -227,6 +231,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             if result.exit_code:
                 raise RuntimeError(
                     f"environment setup failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
+        if self.data.setup_command:
+            result = await runtime.run(["sh", "-c", self.data.setup_command], {})
+            if result.exit_code:
+                raise RuntimeError(
+                    f"setup command failed (exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
         if self.data.healthcheck is not None:

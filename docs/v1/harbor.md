@@ -65,6 +65,18 @@ class OpenThoughtsTBLiteTaskset(
 
 Only include the fields you want to replace. `verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`. A separate verifier prefers `[verifier.environment].docker_image`, then `tests/Dockerfile` or `tests/docker-compose.yaml`, then the agent environment. A verifier section that only declares resources inherits the agent image and stages the task package's tests. Dedicated verifier builds are rejected unless `ignore_dockerfile` explicitly enables fallback. When `verifier_image` is `None`, the verifier uses the task's current `image` and stages the packaged tests. These changes leave `task.toml` unchanged.
 
+For images that need services or initialization normally started by their `ENTRYPOINT`,
+set `setup_command` on the task data in `load()`, for example
+`task.with_data(setup_command="bash /app/start-services.sh")`. This is a verifiers
+task-data field, not a Harbor `task.toml` setting. `HarborTask.setup` runs it with
+`sh -c` after staging the contents of `environment/` into the runtime's workdir and
+before `[environment.healthcheck]`. It also runs when no environment upload is needed.
+The command uses the runtime's workdir, task environment variables, and default user;
+a nonzero exit fails setup. It must finish (background any long-lived services) and
+be idempotent: every setup call runs it, including retries and separate verifier
+setup. Ensure the command and its files are available in each image that uses it.
+Unset or empty commands do nothing; image entrypoints are not replayed automatically.
+
 To create and reuse images for your tasks, build the Dockerfile with Docker, push it to a registry, and set the resulting image reference in the task data.
 
 On the `prime` runtime any pullable image reference just works: the first sandbox to use an image makes the platform build and cache what it needs from it (for VM sandboxes this build can take ~10 minutes — the eval dashboard marks affected rollouts as `build` and a warning is logged); every later sandbox on the same reference starts in seconds.
@@ -204,7 +216,7 @@ Under any other env, a separate-verifier task refuses to grade in the agent's bo
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
-- Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive, so `[environment.healthcheck]` cannot depend on entrypoint-based setup or services
+- Outside Compose, image `ENTRYPOINT`s are replaced with a keepalive; tasks that need their initialization or services must provide a `setup_command` as described above
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
