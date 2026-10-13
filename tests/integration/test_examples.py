@@ -19,6 +19,10 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
 
+# Single-turn text tasksets run on the chat loop: on the default bash harness a model
+# that reaches for the shell first is stopped before it answers.
+HARNESS = {"reverse_text": "null"}
+
 # Tasksets a capped single rollout can legitimately score 0 on, and why.
 NO_REWARD_FLOOR = {
     "proposer_solver": "learnability is 4 * rate * (1 - rate): 0 when the solver always succeeds",
@@ -72,8 +76,9 @@ def test_eval(taskset: str, tmp_path: Path):
         for seat in SEATS.get(taskset, ("agent",))
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
+    harness = ["--env.agent.harness.id", HARNESS[taskset]] if taskset in HARNESS else []
     cmd = [
-        "uv", "run", "--no-sync", "vf-eval", taskset,
+        "uv", "run", "--no-sync", "vf-eval", taskset, *harness,
         *model,
         "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
