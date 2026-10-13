@@ -216,7 +216,7 @@ class Rollout:
             box = self._box
             saves = (
                 box is not None
-                and box.can_checkpoint
+                and runtime.supports_checkpoint
                 and (agent_config.save == "per_call" or box.save)
             )
         if saves:

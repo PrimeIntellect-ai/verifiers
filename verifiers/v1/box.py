@@ -91,10 +91,6 @@ class Box:
             label["checkpoint"] = {"id": self.latest.id, "time": self.latest.time}
         return {BOX_LABEL: label}
 
-    @property
-    def can_checkpoint(self) -> bool:
-        return self.runtime.supports_checkpoint
-
     async def checkpoint(self) -> Checkpoint:
         """Checkpoint the box, one at a time across its seats. The caller records the
         returned id on its run's trace, with the turns its conversation is at."""
