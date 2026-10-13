@@ -11,7 +11,8 @@ supported, what is not, and why:
 - a `NEEDS_CONTAINER` harness (every agent program) never runs on the host (`subprocess`)
 - `podman` / `apptainer` need their engine on the host; CI deselects their marks
 - `modal` / `e2b` are external sandboxes: local-only, CI deselects their marks
-- `prime` provisions real sandboxes and runs in CI with its secrets
+- `prime` provisions real sandboxes and runs in CI with its secrets; it exposes no
+  ports, so a tool server lives there only colocated with its harness
 - a behavior's own needs: a reply to a chat task (`mini-swe-agent` only submits from a
   shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
   switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
@@ -164,6 +165,13 @@ def placements(
             ]
             if missing:
                 marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
+            elif tool_runtime == "prime":
+                marks.append(
+                    pytest.mark.skip(
+                        reason="prime VM sandboxes expose no ports; a tool server "
+                        "there is reachable only colocated"
+                    )
+                )
             cells.append(
                 pytest.param(
                     harness_runtime,
