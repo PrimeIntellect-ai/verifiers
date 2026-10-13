@@ -67,6 +67,11 @@ class AgentConfig(BaseConfig):
     from the trace's latest checkpoint (or from the interaction's opening state when
     the first turn has none). The failed attempt's trace keeps its errors."""
 
+    message_agents: bool = False
+    """Give the agent a `message_agent(seat, text)` tool that steers a sibling agent of
+    its env episode (that seat's running rollout takes the text as a user message before
+    its next model call). Inert outside an env episode; needs an MCP-capable harness."""
+
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
 

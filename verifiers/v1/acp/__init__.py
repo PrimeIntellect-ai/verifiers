@@ -291,7 +291,12 @@ class ACPHarnessSession(HarnessSession):
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         response = await self._request("steer", message=message, message_id=message_id)
         if not response.get("ok"):
-            raise RuntimeError(response.get("error") or "ACP steering failed")
+            error = response.get("error") or "ACP steering failed"
+            if error.startswith("NotImplementedError"):
+                # The agent does not advertise steering: the rollout steers through
+                # the interception instead.
+                raise NotImplementedError(error)
+            raise RuntimeError(error)
         result = response.get("result")
         if not isinstance(result, dict):
             raise TypeError("invalid ACP steering receipt")

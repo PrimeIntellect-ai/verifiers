@@ -5,6 +5,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.v1 import steering
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
@@ -17,6 +18,8 @@ from verifiers.v1.serve.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
+    SteerRequest,
+    SteerResponse,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
@@ -138,6 +141,18 @@ class EnvServer:
                     )
                 finally:
                     self._running.pop(request_id.decode(), None)
+            elif route == "steer":
+                steer = SteerRequest.model_validate(raw)
+                try:
+                    receipt = await steering.steer(
+                        steer.text,
+                        trace_id=steer.trace_id,
+                        sender=steer.sender,
+                        message_id=steer.message_id,
+                    )
+                except ValueError as error:
+                    receipt = steering.SteerReceipt(queued=False, reason=str(error))
+                response = SteerResponse(**receipt.model_dump())
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
                 running = self._running.get(target)

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
+from verifiers.v1 import steering
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -34,7 +35,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Checkpoint, SteerRecord, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -92,6 +93,14 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     return view
 
 
+def messaging_toolset():
+    """The `message_agent` toolset (`AgentConfig.message_agents`)."""
+    from verifiers.v1.mcp import ToolsetConfig
+    from verifiers.v1.messaging import AgentMessaging
+
+    return AgentMessaging(ToolsetConfig())
+
+
 SAVE_CHECKPOINT_ATTEMPTS = 3
 """Checkpoints tried for one per-call save: the platform fails one now and then."""
 SAVE_RETRY_DELAY = 1.0
@@ -119,6 +128,7 @@ class Rollout:
         collect_artifacts: bool = False,
         on_save: OnSave | None = None,
         resumes: Trace | None = None,
+        peers: dict[str, str] | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -182,6 +192,9 @@ class Rollout:
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
+        self._messaging = agent_config.message_agents and peers is not None
+        if self._messaging:
+            self._session.peers = peers
         self._on_save = on_save
         if agent_config.save == "per_call" and runtime is None:
             # Last, so it saves the response the harness will actually receive. A
@@ -195,6 +208,7 @@ class Rollout:
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
+        self._in_step = False
         self._agent_runtime: Runtime | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -211,6 +225,11 @@ class Rollout:
     def closed(self) -> bool:
         """Whether `close()` (or `abort()`) already ran — no further segments."""
         return self._closed
+
+    @property
+    def session(self) -> RolloutSession:
+        """This rollout's interception session (pending steers, interceptors)."""
+        return self._session
 
     @property
     def owns_runtime(self) -> bool:
@@ -279,6 +298,7 @@ class Rollout:
         interception slot and tool servers. Returns whether the exchange can
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
+        steering.register(self)
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
@@ -350,6 +370,8 @@ class Rollout:
                 await self.harness.setup(self._agent_runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
+                if self._messaging:
+                    toolsets = [*toolsets, messaging_toolset()]
             # `base_url` is the interception server's reachable URL for this rollout.
             # The harness reaches the model at `{base_url}/v1`; tool servers reach this
             # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -575,12 +597,66 @@ class Rollout:
 
         self._session.on_commit = report
 
-    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+    async def steer(
+        self,
+        message: str,
+        *,
+        message_id: str | None = None,
+        sender: str | None = None,
+        queue_when_idle: bool = False,
+    ) -> dict:
+        """Deliver a user message to the running agent: through the harness's native
+        mid-turn steering when it has it, else through the interception, which adds it
+        to the rollout's next model request (and keeps adding it to later requests
+        until the harness's own conversation carries it). A rollout with a user (an
+        interaction) between turns answers `promptRequired` so its owner can wake it,
+        unless `queue_when_idle` holds the message for the next turn's first model
+        call. Every accepted message is recorded on `trace.steers`; a `message_id`
+        already there is the same steer again (its text must match)."""
         if self._closed or not self.ok:
             raise RuntimeError("this rollout is closed or stopped")
-        if self._harness_session is None:
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("steering requires a nonempty user message")
+        if message_id is not None:
+            for record in self.trace.steers:
+                if record.id == message_id:
+                    if record.text != message:
+                        raise ValueError(
+                            "steering message ID reused with different content"
+                        )
+                    return {"outcome": "injected", "delivery": record.delivery}
+        if self._harness_session is not None:
+            try:
+                receipt = await self._harness_session.steer(
+                    message, message_id=message_id
+                )
+            except NotImplementedError:
+                receipt = None
+            if receipt is not None and (
+                receipt.get("outcome") != "promptRequired"
+                or (self._has_user and not queue_when_idle)
+            ):
+                if receipt.get("outcome") == "injected" and not (
+                    message_id is not None
+                    and any(record.id == message_id for record in self.trace.steers)
+                ):
+                    # A concurrent send of the same id, which the harness
+                    # deduplicated, is one steer.
+                    self.trace.steers.append(
+                        SteerRecord(
+                            id=message_id,
+                            text=message,
+                            sender=sender,
+                            time=time.time(),
+                            delivery="native",
+                            call=len(self.trace.calls),
+                        )
+                    )
+                    self.trace.notify()
+                return receipt
+        if self._has_user and not self._in_step and not queue_when_idle:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-        return await self._harness_session.steer(message, message_id=message_id)
+        return self._session.queue_steer(message, message_id=message_id, sender=sender)
 
     async def step(
         self,
@@ -610,6 +686,7 @@ class Rollout:
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
         try:
+            self._in_step = True
             async with asyncio.timeout_at(self.deadline_at):
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
@@ -642,6 +719,7 @@ class Rollout:
                 self.fail(e)
             return False
         finally:
+            self._in_step = False
             self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
@@ -665,6 +743,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        steering.unregister(self)
         if self._harness_session is not None:
             with contextlib.suppress(Exception):
                 await self._harness_session.close()
@@ -685,6 +764,7 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        steering.unregister(self)
         trace = self.trace
         runtime = self.runtime
         try:

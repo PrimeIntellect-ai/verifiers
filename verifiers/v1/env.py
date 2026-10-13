@@ -207,6 +207,8 @@ class Env(ABC, Generic[ConfigT]):
         `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
         gate = asyncio.Semaphore(limit) if limit else None
+        # Each seat's latest live trace id: what a `message_agent` call reaches.
+        peers: dict[str, str] = {}
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -228,6 +230,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                peers=peers,
             )
 
         agents = Agents(self.config, make)

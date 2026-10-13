@@ -33,6 +33,8 @@ from verifiers.v1.serve.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
+    SteerRequest,
+    SteerResponse,
 )
 from verifiers.v1.types import SamplingConfig
 
@@ -218,6 +220,29 @@ class EnvClient:
         assert response.head is not None
         return await self._validate_episode(
             assembly.finish(response.head, response.traces)
+        )
+
+    async def steer(
+        self,
+        text: str,
+        *,
+        trace_id: str,
+        sender: str | None = None,
+        message_id: str | None = None,
+        timeout: float | None = 30.0,
+    ) -> SteerResponse:
+        """Steer a running agent on the server: the rollout of `trace_id` (as streamed
+        in the run's deltas). `queued` says whether a running agent accepted it,
+        `reason` why not."""
+        return await self._request(
+            SteerRequest(
+                text=text,
+                trace_id=trace_id,
+                sender=sender,
+                message_id=message_id,
+            ),
+            SteerResponse,
+            timeout=timeout,
         )
 
     async def close(self) -> None:

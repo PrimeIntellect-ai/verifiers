@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.serve.delta import TraceSummary
+from verifiers.v1.steering import SteerReceipt
 from verifiers.v1.types import SamplingConfig
 
 
@@ -37,6 +38,21 @@ class CancelRequest(BaseRequest):
 class CancelResponse(BaseResponse):
     cancelled: bool = False
     """Whether a live run was found and aborted."""
+
+
+class SteerRequest(BaseRequest):
+    """Steer the running rollout of `trace_id` (`vf.steer`). A pool asks every worker;
+    the one running it answers."""
+
+    method: ClassVar[str] = "steer"
+    text: str
+    trace_id: str
+    sender: str | None = None
+    message_id: str | None = None
+
+
+class SteerResponse(BaseResponse, SteerReceipt):
+    """A `vf.steer` receipt on the wire."""
 
 
 class RunRequest(BaseRequest):

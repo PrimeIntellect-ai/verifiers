@@ -32,7 +32,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import OnSave, Rollout, RolloutTimeouts
+from verifiers.v1.rollout import OnSave, Rollout, RolloutTimeouts, messaging_toolset
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -334,13 +334,19 @@ class Interaction:
         keep its context open
         while more messages may arrive. A prompted task must start its opening
         turn first. Stable IDs deduplicate successful deliveries.
+        A harness without native steering takes a steered message through the
+        interception, before its next model call (`Rollout.steer`).
         """
         if mode not in ("steer", "queue"):
             raise ValueError("message mode must be 'steer' or 'queue'")
         return await self._send(message, message_id=message_id, mode=mode, wake=True)
 
     async def steer(
-        self, message: str, *, message_id: str | None = None, wake: bool = False
+        self,
+        message: str,
+        *,
+        message_id: str | None = None,
+        wake: bool = False,
     ) -> dict:
         """Inject a user message, optionally resuming an idle interaction.
 
@@ -730,9 +736,19 @@ class Interaction:
             start = checkpoint.id
             next_messages = None
             in_prompt = True
+        steers = list(self.trace.steers)
         failed = await self._run.close()
         self.failed_attempts.append(failed)
         self._run = await self._reopen(task, start, failed)
+        # A steer the replacement's conversation does not hold (never delivered, or
+        # delivered after the checkpoint) is queued again so the retry still hears it.
+        prompt = task.data.prompt if isinstance(task.data.prompt, list) else []
+        held_texts = {m.content for m in prompt if m.role == "user"}
+        for record in steers:
+            if record.text not in held_texts:
+                self._run.session.queue_steer(
+                    record.text, message_id=record.id, sender=record.sender
+                )
         return next_messages, _TurnMark(self.trace, 0, in_prompt)
 
     async def close(self) -> Trace:
@@ -810,6 +826,9 @@ class Agent:
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
+        # Env episode agents set this: the episode's seats to their live trace
+        # ids, which `message_agents` reaches.
+        self._peers: dict[str, str] | None = None
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -839,7 +858,11 @@ class Agent:
             await server.__aexit__(*exc)
 
     def _interception_for(
-        self, run_is_local: bool, task: Task, shared_tools: Mapping
+        self,
+        run_is_local: bool,
+        task: Task,
+        shared_tools: Mapping,
+        messaging: bool = False,
     ) -> Interception | None:
         """Which interception this run rides: an injected one always (its owner
         sized its reach); the owned server only when provably reachable from all
@@ -855,7 +878,10 @@ class Agent:
             # server was created; let the rollout size a scoped server instead.
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not task.toolsets(task.config)
+            run_is_local
+            and not shared_tools
+            and not messaging
+            and not task.toolsets(task.config)
         ):
             return self._server
         return None
@@ -1248,11 +1274,16 @@ class Agent:
             if checkpoint is not None:
                 runtime_config = restore_config(runtime_config, checkpoint)
             run_is_local = runtime_is_local(runtime_config)
+        messaging = (
+            [messaging_toolset()]
+            if self.config.message_agents and self._peers is not None
+            else []
+        )
         validate_pairing(
             harness,
             type(task),
             runtime_config,
-            tools=[*task.toolsets(task.config), *shared_tools.values()],
+            tools=[*task.toolsets(task.config), *shared_tools.values(), *messaging],
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -1266,8 +1297,11 @@ class Agent:
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
-            "interception": self._interception_for(run_is_local, task, shared_tools),
+            "interception": self._interception_for(
+                run_is_local, task, shared_tools, bool(messaging)
+            ),
             "runtime": runtime,
+            "peers": self._peers,
         }
 
     @asynccontextmanager
@@ -1312,8 +1346,10 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        peers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
+        self._peers = peers
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
@@ -1341,6 +1377,8 @@ class _EpisodeAgent(Agent):
             if trace.agent is not None:
                 trace.agent.name = self._name
                 trace.agent.trainable = self.trainable
+            if self._peers is not None:
+                self._peers[self._name] = trace.id
             # A per-agent retry mints a replacement: the abandoned attempt's trace
             # must leave live views (only the final one joins the episode).
             if last is not None and self._on_discard is not None:
