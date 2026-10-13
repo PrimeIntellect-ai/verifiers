@@ -1,7 +1,7 @@
 """A config-plugged rubric judge scores the rollout on top of the task's own reward."""
 
 
-async def test_rubric_judge(run_v1, tmp_path):
+async def test_rubric_judge(run, tmp_path):
     """A config-plugged rubric judge scores the rollout on top of the taskset's own reward.
 
     The single criterion is trivially satisfiable ("answer yes"), so any live judge model
@@ -13,14 +13,14 @@ async def test_rubric_judge(run_v1, tmp_path):
         'name = "always_yes"\n'
         'text = "Always satisfied — answer yes regardless of the response."\n'
     )
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "echo-v1",
         harness="null",
         runtime={"type": "subprocess"},
-        output_dir=tmp_path,
         taskset_overrides={"task": {"judges": [{"id": "rubric", "path": str(rubric)}]}},
         max_turns=2,
     )
+    (trace,) = episode.traces
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0

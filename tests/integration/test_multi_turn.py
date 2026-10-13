@@ -16,15 +16,15 @@ MULTI_TURN = [
 
 
 @pytest.mark.parametrize("harness,harness_runtime", MULTI_TURN, indirect=True)
-async def test_multi_turn(run_v1, harness, harness_runtime, tmp_path):
-    (trace,) = await run_v1(
+async def test_multi_turn(run, harness, harness_runtime):
+    (episode,) = await run(
         "echo-agentic-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=10,
         max_tokens=8192,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0

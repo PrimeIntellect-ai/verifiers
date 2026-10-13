@@ -36,6 +36,7 @@ from collections.abc import Sequence
 import pytest
 from pydantic import TypeAdapter
 
+import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, _runtime_cls
@@ -48,16 +49,26 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
-    {"id": "kimi-code", "transport": "responses"},
-    {"id": "pi", "transport": "responses"},
+    "kimi-code",
+    "pi",
     "openclaw",
     "mini-swe-agent",
     "prime-agent",
 ]
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
-EXTERNAL = ("modal", "e2b")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+
+
+def agent_seats(taskset: str, env_id: str = "") -> list[str]:
+    """The agent seats the env declares for `taskset`: `agent` for a plain taskset, its
+    own roles for a recipe env."""
+    config_cls = vf.env_config_type(taskset, env_id)
+    return [
+        name
+        for name, field in config_cls.model_fields.items()
+        if isinstance(field.default, vf.AgentConfig)
+    ]
 
 
 def harness_id(harness: str | dict) -> str:

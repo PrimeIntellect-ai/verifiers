@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
@@ -18,16 +19,6 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
-
-
-# Per-run caps are seat fields; recipe envs name their own seats.
-SEATS: dict[str, tuple[str, ...]] = {
-    "code_golf": ("golfer",),
-    "kuhn_poker": ("player0", "player1"),
-    "openenv_wordle": ("player",),
-    "proposer_solver": ("proposer", "solver"),
-    "wordle": ("player",),
-}
 
 
 def v1_tasksets() -> list[str]:
@@ -63,7 +54,7 @@ def test_eval(taskset: str, tmp_path: Path):
 
     caps = [
         flag
-        for seat in SEATS.get(taskset, ("agent",))
+        for seat in agent_seats(taskset)
         for flag in (f"--env.{seat}.max-turns", "16")
     ]
     cmd = [

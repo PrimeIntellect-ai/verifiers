@@ -11,20 +11,20 @@ import verifiers.v1 as vf
 @pytest.mark.parametrize(
     "harness,harness_runtime", grid(needs=("resume",)), indirect=True
 )
-async def test_user(run_v1, harness, harness_runtime, tmp_path):
+async def test_user(run, harness, harness_runtime):
     """Multi-turn, driven by a scripted user — an interaction loop in the env's
     `run()`. The task is prompt-less, so one run covers the whole exchange shape:
     the caller opens (the user speaks first), each later turn resumes the harness
     onto the conversation, and leaving the loop ends the exchange (`user_closed`).
     The user runs in the eval process itself, so there is no placement axis."""
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "echo-user-sim-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=6,
         max_tokens=8192,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.stop_condition == "user_closed"  # leaving the interaction ended it

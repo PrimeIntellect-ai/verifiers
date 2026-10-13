@@ -8,17 +8,17 @@ from grid import grid
 @pytest.mark.parametrize(
     "harness,harness_runtime", grid(needs=("resume", "mcp")), indirect=True
 )
-async def test_resume_tool(run_v1, harness, harness_runtime, tmp_path):
+async def test_resume_tool(run, harness, harness_runtime):
     """Each harness preserves context and MCP access across two segments."""
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "echo-acp-resume-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
         rollout_timeout=600,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0
@@ -27,7 +27,8 @@ async def test_resume_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
     assert trace.last_reply == segments[1]["last_reply"]
-    # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
+    # Kimi Code's resumed requests replay history that differs from the turns it
+    # sampled (seen on prime), so its graph forks instead of extending one branch.
     if harness.id != "kimi-code":
         assert trace.num_branches == 1
     assert "tool" in segments[1]["roles"]

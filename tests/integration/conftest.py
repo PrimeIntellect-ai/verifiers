@@ -4,10 +4,8 @@ resulting `Trace`(s). They need a model API key (`PRIME_API_KEY`); without one t
 model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
-`grid.py`, which also says why a cell is skipped. `run_v1` mirrors the eval CLI
-(`run_eval`, in-process); `run_v1_server` drives the same env through an env-server
-worker pool, the path prime-rl trains through. The placement fixtures below are
-indirect-only: they translate a parametrized value, and using one without
+`grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process,
+the calls the eval CLI makes. The placement fixtures below are indirect-only: they translate a parametrized value, and using one without
 `indirect=True` fails loudly.
 """
 
@@ -16,21 +14,21 @@ import os
 from pathlib import Path
 
 import pytest
-from grid import runtime_config
+from grid import agent_seats, runtime_config
 
-import verifiers.v1 as vf
-from verifiers.v1.cli.eval.runner import run_eval
+from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.trace import Trace
-from verifiers.v1.utils.loaders import harness_config_type
+from verifiers.v1.episode import Episode
+from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
 CI_MODEL = "openai/gpt-5.6-luna"
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
 
-LIVE_FIXTURES = {"run_v1", "run_v1_server", "live_ctx"}
+LIVE_FIXTURES = {"run", "live_ctx"}
 
 
 @pytest.fixture
@@ -47,8 +45,6 @@ def tool_runtime(request) -> dict:
     runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
-    if request.param == "docker":
-        return {"runtime": {"type": "docker", "allow": ["*"]}}
     return {"runtime": {"type": request.param}}
 
 
@@ -86,23 +82,19 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
-def _configure_prime_runtimes(config: dict) -> None:
-    """Configure every prime runtime config (nested — harness / tool): tag a `vf-ci` label
-    for optional cleanup, and pin a region that supports port exposure."""
+def _label_prime_runtimes(config: dict) -> None:
+    """Tag every prime runtime config (nested: harness / tool) with a `vf-ci` label, so
+    leftover sandboxes can be found and cleaned up."""
     if isinstance(config, dict):
         if config.get("type") == "prime":
             config.setdefault("labels", ["vf-ci"])
-            # `us` is required for prime's port exposure, which a tool server hosted in a
-            # sandbox needs to be reachable from outside it.
-            config.setdefault("region", "us")
         for value in config.values():
-            _configure_prime_runtimes(value)
+            _label_prime_runtimes(value)
 
 
 def _eval_config(
     taskset: str,
     *,
-    output_dir: Path,
     harness: str | HarnessConfig | None = "null",
     n: int = 1,
     num_tasks: int = 1,
@@ -115,8 +107,8 @@ def _eval_config(
     reasoning_effort: str | None = None,
     client: dict | None = None,
 ) -> EvalConfig:
-    """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
-    (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
+    """Build the smallest `EvalConfig` that still exercises the path, used by the `run`
+    fixture. `taskset_overrides` merges onto the
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one).
 
@@ -125,7 +117,7 @@ def _eval_config(
     seat and a multi-agent test pins its seats through `env` role fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     env_cfg = dict(env or {})
-    _configure_prime_runtimes(taskset_cfg)
+    _label_prime_runtimes(taskset_cfg)
     if harness:
         env_cfg.setdefault("agent", {})["harness"] = (
             harness_config_type(harness)(id=harness)
@@ -134,7 +126,7 @@ def _eval_config(
         )
     if runtime:
         runtime_cfg = dict(runtime)
-        _configure_prime_runtimes(runtime_cfg)
+        _label_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
     retries = {
         "max_retries": 0,
@@ -144,15 +136,9 @@ def _eval_config(
         ],
     }
     env_cfg.setdefault("retries", retries)
-    # Per-run caps live on the seats: resolve the env's declared roles and cap
-    # each one (a test's own seat dict wins over the shared defaults).
-    config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
-    seats = [
-        name
-        for name, field in config_cls.model_fields.items()
-        if isinstance(field.default, vf.AgentConfig)
-    ]
-    for seat in seats:
+    # Per-run caps live on the seats: cap each role the env declares (a test's own
+    # seat dict wins over the shared defaults).
+    for seat in agent_seats(taskset, env_cfg.get("id", "")):
         seat_cfg = env_cfg.setdefault(seat, {})
         seat_cfg.setdefault("max_turns", max_turns)
         seat_cfg.setdefault("max_output_tokens", max_tokens)
@@ -170,80 +156,34 @@ def _eval_config(
             "max_tokens": max_tokens,
             "reasoning_effort": reasoning_effort,
         },
-        rich=None,
-        output_dir=output_dir.parent,
-        run={"dir": output_dir.name},
         model=CI_MODEL,
-        push=False,
         **({"client": client} if client else {}),
     )
 
 
 @pytest.fixture
-def run_v1():
-    """Run a v1 taskset end-to-end in-process (`run_eval`) and return its traces."""
+def run():
+    """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
+    makes (`serving`, `slots`, `run_slot`, retries included), without its run
+    directory, platform push, or dashboard. The Examples job covers that CLI layer."""
 
-    async def _run(taskset: str, **kwargs) -> list[Trace]:
+    async def _run(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
-        records = await run_eval(config)
-        # The runner answers durability envelopes; the tests assert on traces.
-        return [t for r in records for t in r.traces]
-
-    return _run
-
-
-@pytest.fixture
-def run_v1_server():
-    """Run a v1 taskset through an env-server worker pool — the path prime-rl trains
-    through. Spawns the broker + a worker, so it's the only fixture that exercises
-    serving resources (shared tool servers, interception pool) being stood up by the
-    *server* rather than the in-process runner. Pinned to a single static worker for
-    determinism."""
-    import multiprocessing as mp
-
-    from verifiers.v1.serve import EnvClient, env_config_data, serve_env
-    from verifiers.v1.utils.loaders import load_taskset
-
-    async def _run(taskset: str, **kwargs) -> list[Trace]:
-        config = _eval_config(taskset, **kwargs)
-        tasks = list(load_taskset(config.env.taskset).select(config.select))
-        mpctx = mp.get_context("spawn")
-        address_queue: mp.Queue = mpctx.Queue()
-        proc = mpctx.Process(
-            target=serve_env,
-            kwargs={
-                "max_workers": 1,
-                "elastic": False,
-                "address": "tcp://127.0.0.1:0",
-                "address_queue": address_queue,
-                "config_data": env_config_data(config.env),
-                "max_concurrent": config.max_concurrent,
-            },
+        env = load_environment(config.env)
+        tasks = list(env.taskset.select(config.select))
+        ctx = ModelContext(
+            client=config.client, model=config.model, sampling=config.sampling
         )
-        proc.start()
-        try:
-            address = await asyncio.to_thread(address_queue.get, timeout=600)
-            client = EnvClient(address=address)
-            try:
-                await client.wait_for_server_startup(timeout=600)
-                episodes = await asyncio.gather(
+        async with env.serving():
+            return list(
+                await asyncio.gather(
                     *(
-                        client.run(
-                            client=config.client,
-                            model=config.model,
-                            sampling=config.sampling,
-                            task_data=task.data.model_dump(mode="json"),
-                        )
+                        env.run_slot(slot, ctx)
                         for task in tasks
-                        for _ in range(config.num_rollouts)
+                        for slot in env.slots(task, config.num_rollouts)
                     )
                 )
-            finally:
-                await client.close()
-        finally:
-            proc.terminate()
-            await asyncio.to_thread(proc.join, 10)
-        return [t for e in episodes for t in e.traces]
+            )
 
     return _run
 
@@ -251,10 +191,7 @@ def run_v1_server():
 @pytest.fixture
 async def live_ctx():
     """The live `ModelContext` (default model + endpoint config, provider-default sampling)
-    for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
-    from verifiers.v1.clients import EvalClientConfig, ModelContext
-    from verifiers.v1.types import SamplingConfig
-
+    for driving `Agent` directly — the agent-surface counterpart of `run`."""
     # Endpoint config only — each rollout builds and closes its own client.
     yield ModelContext(
         model=CI_MODEL,

@@ -14,15 +14,15 @@ SINGLE_TURN = skip_harness(
 
 
 @pytest.mark.parametrize("harness,harness_runtime", SINGLE_TURN, indirect=True)
-async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
-    (trace,) = await run_v1(
+async def test_single_turn(run, harness, harness_runtime):
+    (episode,) = await run(
         "echo-v1",
         harness=harness,
         runtime=harness_runtime,
         env={"agent": {"sampling": {"temperature": 0.0}}},
-        output_dir=tmp_path,
         max_turns=2,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
     assert trace.stop_condition == "agent_completed"

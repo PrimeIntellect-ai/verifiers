@@ -12,20 +12,18 @@ from grid import grid, runtimes_grid
 @pytest.mark.parametrize(
     "harness_runtime", runtimes_grid(needs=("user",)), indirect=True
 )
-async def test_agent_user_cannot_act_as_root(
-    run_v1, harness_runtime, preinstalled_tools, tmp_path
-):
+async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_tools):
     """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
     actions are denied, while its uv script, runtime file I/O, and colocated tool server
     all act as the user. With `preinstalled_tools`, the tool's package was first installed
     by the default user, as on a reused runtime."""
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "agent-user-v1",
         harness="agent-user-v1",
         runtime=harness_runtime,
-        output_dir=tmp_path,
         taskset_overrides={"preinstalled_tools": preinstalled_tools},
     )
+    (trace,) = episode.traces
     report = trace.info["agent_user_report"]
     for key in ("user", "uv_user", "written_owner", "tool_user"):
         assert report[key] == "vf-agent", key
@@ -44,17 +42,15 @@ async def test_agent_user_cannot_act_as_root(
 @pytest.mark.parametrize(
     "harness,harness_runtime", grid(needs=("user",)), indirect=True
 )
-async def test_agent_user_harness(
-    run_v1, harness, harness_runtime, scripted_model, tmp_path
-):
+async def test_agent_user_harness(run, harness, harness_runtime, scripted_model):
     """Each harness installs and runs a turn as a non-root agent user against a scripted
     upstream, so the run fails only if the harness can't set up or run without root."""
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "agent-user-harness-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         client=scripted_model,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1

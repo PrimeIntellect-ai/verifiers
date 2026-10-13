@@ -9,17 +9,17 @@ from grid import grid, placements
 
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=("mcp",)), indirect=True)
-async def test_tool(run_v1, harness, harness_runtime, tmp_path):
+async def test_tool(run, harness, harness_runtime):
     """Every MCP-capable harness reaches a tool colocated in its runtime."""
-    (trace,) = await run_v1(
+    (episode,) = await run(
         "echo-tool-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=6,
         max_tokens=8192,
         taskset_overrides={"task": {"tools": {"colocated": True}}},
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the
@@ -29,19 +29,18 @@ async def test_tool(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.parametrize("harness_runtime,tool_runtime", placements(), indirect=True)
-async def test_tool_placement(run_v1, harness_runtime, tool_runtime, tmp_path):
+async def test_tool_placement(run, harness_runtime, tool_runtime):
     """A `vf.Toolset` across its placement (`tool_runtime`: colocated in the harness's
-    runtime, or its own runtime) x the harness `runtime`, on the chat loop. Eval-wide
-    SHARED servers are a different scope (`Taskset.toolsets`) with their own
-    env-server-path coverage: `test_shared_tool`."""
-    (trace,) = await run_v1(
+    runtime, or its own runtime) x the harness `runtime`, on the chat loop. Eval-wide SHARED servers
+    are a different scope (`Taskset.toolsets`), covered by `test_shared_tool`."""
+    (episode,) = await run(
         "echo-tool-v1",
         harness="null",
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=6,
         taskset_overrides={"task": {"tools": tool_runtime}},
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0

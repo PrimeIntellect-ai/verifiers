@@ -17,14 +17,14 @@ SKILLS = skip_harness(
     SKILLS,
     indirect=True,
 )
-async def test_skills(run_v1, harness, harness_runtime, tmp_path):
-    (trace,) = await run_v1(
+async def test_skills(run, harness, harness_runtime):
+    (episode,) = await run(
         "skill-codeword-v1",
         harness=harness,
         runtime=harness_runtime,
-        output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
     )
+    (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.reward == 1.0, trace.last_reply
