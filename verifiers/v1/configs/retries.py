@@ -3,7 +3,7 @@
 import re
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictInt, field_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 from pydantic_config import BaseConfig
 
 StatusCode = (
@@ -46,3 +46,24 @@ class RetryConfig(BaseConfig):
     """Default budget for errors that match no rule. Matching rules override it."""
     rules: list[RetryRule] = Field(default_factory=list)
     """Ordered overrides; a matching rule may enable retries or deny them with zero."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_type_lists(cls, data):
+        """Read `include`/`exclude` exception-type lists, as configs and traces saved
+        before `rules` carry them: excluded types are denied first, then each included
+        type gets the old budget and everything else none. The old budget was shared
+        across included types; per-type rules bound a run at that budget per type."""
+        if not isinstance(data, dict) or not {"include", "exclude"} & data.keys():
+            return data
+        if "rules" in data:
+            raise ValueError("`include`/`exclude` cannot be combined with `rules`")
+        data = dict(data)
+        include = data.pop("include", None) or []
+        exclude = data.pop("exclude", None) or []
+        budget = data.get("max_retries", 0)
+        data["rules"] = [{"type": t, "max_retries": 0} for t in exclude]
+        if include:
+            data["rules"] += [{"type": t, "max_retries": budget} for t in include]
+            data["max_retries"] = 0
+        return data
