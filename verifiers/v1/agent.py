@@ -905,10 +905,6 @@ class ReplayBox:
     def __init__(self, exchange: "DurableInteraction") -> None:
         self._exchange = exchange
 
-    async def restore(self) -> Runtime:
-        """The box, restored (`DurableInteraction.box`)."""
-        return await self._exchange.box()
-
     def __getattr__(self, name: str) -> Any:
         exchange = self._exchange
         if name.startswith("_") or name in _OWNER_METHODS:
@@ -931,7 +927,7 @@ class ReplayBox:
 async def _real_runtime(runtime: Runtime | ReplayBox | None) -> Runtime | None:
     """The box a `ReplayBox` stands for, restored; any other runtime as it is."""
     if isinstance(runtime, ReplayBox):
-        return await runtime.restore()
+        return await runtime._exchange.box()
     return runtime
 
 
