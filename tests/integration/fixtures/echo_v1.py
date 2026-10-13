@@ -10,8 +10,6 @@ from pydantic import Field
 
 import verifiers.v1 as vf
 
-SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
-
 
 def _key(text: str) -> str:
     """Lenient comparison key: lowercase, alphanumerics only."""
@@ -64,7 +62,6 @@ class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
                         "Answer directly without using tools or running code. Your reply "
                         f"must contain this exact phrase: {phrase}"
                     ),
-                    system_prompt=SYSTEM,
                     answer=phrase,
                 ),
                 self.config.task,
