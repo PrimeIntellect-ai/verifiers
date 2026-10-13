@@ -9,7 +9,7 @@ are restored, and its ordinary metrics and rewards run there onto the solver's t
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -175,7 +175,13 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                         result = await self.verify(
                             verifier_task, verifier_solution, runtime
                         )
-                    return result, verifier_solution
+                    boxes = boxes.pop_all()
+                # Teardown is outside the stage deadlines — and, with the score
+                # already computed, outside the error boundary too: a failed
+                # cleanup must not void it into a retry (or an episode failure).
+                with suppress(Exception):
+                    await boxes.aclose()
+                return result, verifier_solution
             except Exception as error:  # noqa: BLE001 - retry the whole fresh box
                 last = error
         assert last is not None
