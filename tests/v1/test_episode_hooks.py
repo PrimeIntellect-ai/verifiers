@@ -59,7 +59,12 @@ def stub_rollouts(monkeypatch):
         return trace
 
     @asynccontextmanager
-    async def interaction(self, task, *, on_trace=None, **_):
+    async def interaction(self, task, *, on_trace=None, durable=None, **_):
+        if durable is not False:
+            # As `Agent.interaction` does for a plain call: through the subclass again.
+            async with self.interaction(task, on_trace=on_trace, durable=False) as t:
+                yield t
+            return
         trace = mint(self, task, on_trace)
         try:
             yield trace

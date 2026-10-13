@@ -46,7 +46,6 @@ from verifiers.v1.durable import (
     box_checkpoint,
     box_parts,
     call_parts,
-    current_durable,
     fingerprint,
     merge_labels,
     observe,
@@ -1294,14 +1293,6 @@ def _plan_durable(
     return found, key
 
 
-def _maybe_durable(key: str | None, durable: Durable | bool | None) -> bool:
-    """Whether a call may be durable: it names a key or a durable, or one is
-    installed. Without any, a call takes the plain path, exactly as without durability."""
-    if durable is False:
-        return False
-    return key is not None or durable is not None or current_durable() is not None
-
-
 def _box_start(runtime: Runtime | None, resumes: Trace | None) -> Checkpoint | None:
     """The checkpoint a borrowed box was restored from, for a continuation on it."""
     box = box_of(runtime)
@@ -2325,9 +2316,9 @@ class _EpisodeAgent(Agent):
         cache_inputs: object = None,
         durable: Durable | bool | None = None,
     ) -> Trace:
-        if _maybe_durable(key, durable):
-            # The durable call resolves first (it may run nothing); the run it makes
-            # comes back through here, `durable=False`.
+        if durable is not False:
+            # The call resolves as durable or plain first (a durable one may run
+            # nothing); the run it makes comes back through here, `durable=False`.
             trace = await super().run(
                 task,
                 runtime=runtime,
@@ -2390,9 +2381,9 @@ class _EpisodeAgent(Agent):
         an agent permit independently; the interaction holds no permit while awaiting
         its caller, so peer interactions still interleave where an episode plays one
         agent at a time."""
-        if _maybe_durable(key, durable):
-            # The durable exchange resolves first; its live exchange comes back
-            # through here, `durable=False`.
+        if durable is not False:
+            # The call resolves as durable or plain first; its live exchange comes
+            # back through here, `durable=False`.
             async with super().interaction(
                 task,
                 runtime=runtime,
