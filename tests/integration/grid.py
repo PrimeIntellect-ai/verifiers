@@ -17,7 +17,6 @@ supported, what is not, and why:
   shell task), a shell (`EXECUTES_CODE`), MCP tools (`SUPPORTS_MCP`), a user that can be
   switched to (`supports_user`), or an exchange that resumes (`SUPPORTS_RESUME` or a
   native session)
-- `browser-use` needs its Playwright image, which prime cannot pull (Docker Hub only)
 - `kimi-code` cannot install in a prime sandbox: code.kimi.com resets the connection
 
 Every cell carries its axes' marks, so `-m` selects subsets:
@@ -26,7 +25,8 @@ Every cell carries its axes' marks, so `-m` selects subsets:
     uv run pytest tests/integration -n 8 -m "docker and codex"
     uv run pytest tests/integration -n 8 -m e2b                                                      # local
 
-`terminus-2` (drives the host tmux) stays outside the grid.
+`terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
+prime cannot pull) stay outside the grid.
 """
 
 import shutil
@@ -51,12 +51,7 @@ HARNESSES: list[str | dict] = [
     "openclaw",
     "mini-swe-agent",
     "prime-agent",
-    "browser-use",
 ]
-BROWSER_IMAGE = (
-    "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
-    "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
-)
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 EXTERNAL = ("modal", "e2b")
@@ -80,8 +75,6 @@ def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
         config["memory"] = 2.0
     if runtime == "prime" and program:
         config.update(cpu=2.0, memory=4.0)
-    if harness is not None and harness_id(harness) == "browser-use":
-        config["image"] = BROWSER_IMAGE
     return config
 
 
@@ -110,8 +103,6 @@ def unsupported(
         return f"needs {runtime} on the host"
     if runtime == "subprocess" and cls.NEEDS_CONTAINER:
         return f"{name} needs a container runtime"
-    if name == "browser-use" and runtime != "docker":
-        return f"{name}'s browser image is on mcr.microsoft.com; prime pulls Docker Hub only"
     if name == "kimi-code" and runtime == "prime":
         return "code.kimi.com resets connections from prime sandboxes"
     if "reply" in needs and name == "mini-swe-agent":

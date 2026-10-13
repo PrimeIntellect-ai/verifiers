@@ -235,7 +235,6 @@ markers = [
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
-    "browser_use: integration cells on the browser_use harness",
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
