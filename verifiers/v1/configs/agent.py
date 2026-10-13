@@ -42,13 +42,13 @@ class AgentConfig(BaseConfig):
     sampling: SamplingConfig | None = None
     """Sampling values merged onto the run's sampling."""
 
-    max_turns: int | None = None
+    max_turns: int | None = Field(None, ge=1)
     """Max model turns per run (None = no limit)."""
-    max_input_tokens: int | None = None
+    max_input_tokens: int | None = Field(None, ge=1)
     """Max input tokens per run (None = no limit)."""
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(None, ge=1)
     """Max output tokens per run (None = no limit)."""
-    max_total_tokens: int | None = None
+    max_total_tokens: int | None = Field(None, ge=1)
     """Max total tokens per run (None = no limit)."""
 
     timeout: TimeoutConfig = TimeoutConfig()
