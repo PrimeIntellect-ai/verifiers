@@ -200,6 +200,10 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
 
 Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
+### A submit tool
+
+When the agent's output is a structured result rather than its final reply, give it a `submit` tool. There is no submit-tool class: [`examples/submit_tool.py`](../../examples/submit_tool.py) assembles it from the pieces above. Type the tool's argument as a pydantic model, so its schema reaches the agent and a call that does not validate returns to the agent as a tool error; record the result on the rollout's state; end the run with a `@vf.stop` once the result is there; remind an agent that stops without submitting from an `agent.interaction`, a bounded number of times; and in `finalize`, tell "never submitted" from "ran out of time" with `trace.is_timeout`. An agent timeout stops the rollout rather than failing it, so `finalize` still runs and can keep partial work.
+
 ## Using Judges
 
 If your reward is semantic, use an LLM judge.
