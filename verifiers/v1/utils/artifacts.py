@@ -281,14 +281,14 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
                 raise RuntimeError(
                     f"collect artifact {artifact.source!r}: {result.stderr.strip()[-1000:]}"
                 )
-            return await runtime.read(path, max_bytes=budget)
-        # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
-        await _run(
-            runtime,
-            f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
-            f"{shlex.quote(artifact.source.lstrip('/'))}",
-            f"collect artifact {artifact.source!r}",
-        )
+        else:
+            # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
+            await _run(
+                runtime,
+                f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
+                f"{shlex.quote(artifact.source.lstrip('/'))}",
+                f"collect artifact {artifact.source!r}",
+            )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
         archive, dropped = _drop_special_files(
