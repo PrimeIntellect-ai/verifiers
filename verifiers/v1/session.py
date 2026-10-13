@@ -146,6 +146,9 @@ class RolloutSession:
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     request_interceptors: list[Callable] = field(default_factory=list)
     response_interceptors: list[Callable] = field(default_factory=list)
+    on_commit: Callable[[], None] | None = None
+    """Called once right after the next model call commits to the trace (its request
+    and reply are on the trace), then cleared: per-call saves report from here."""
     request_stops: list[Callable] = field(default_factory=list)
     response_stops: list[Callable] = field(default_factory=list)
     on_turn_input: Callable[[], None] | None = None

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import time
 from collections.abc import Callable
@@ -37,6 +38,10 @@ from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
+
+OnSave = Callable[[Trace, Checkpoint], None]
+"""Observes each per-call save (`AgentConfig.save = "per_call"`): the live trace and the
+checkpoint just recorded on it. The caller persists what it needs."""
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,12 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     return view
 
 
+SAVE_CHECKPOINT_ATTEMPTS = 3
+"""Checkpoints tried for one per-call save: the platform fails one now and then."""
+SAVE_RETRY_DELAY = 1.0
+"""Seconds before the second checkpoint try; the third waits twice as long."""
+
+
 class Rollout:
     """Manages one rollout's lifecycle (open, step, close)."""
 
@@ -104,6 +115,8 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        on_save: OnSave | None = None,
+        resumes: Trace | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -118,17 +131,25 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.of(task),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
         )
+        if resumes is not None:
+            # A continuation (`resume=`, an interaction retry) links the trace it
+            # continues and carries its info, as one session's would.
+            self.trace.resumed_from = resumes.id
+            self.trace.info = copy.deepcopy(resumes.info)
+        restored_from = (
+            getattr(runtime_config, "checkpoint", None) if runtime is None else None
+        )
+        if restored_from is not None:
+            # The box starts from this checkpoint, matching the opening conversation.
+            self.trace.checkpoints.append(
+                Checkpoint(id=restored_from, turns=0, restored=True)
+            )
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [
@@ -159,6 +180,11 @@ class Rollout:
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
+        self._on_save = on_save
+        if agent_config.save == "per_call" and runtime is None:
+            # Last, so it saves the response the harness will actually receive. A
+            # borrowed box is its owner's to checkpoint.
+            self._session.response_interceptors.append(self.save_call)
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
@@ -477,6 +503,50 @@ class Rollout:
             turns = self.trace.num_turns
         checkpoint_id = await runtime.checkpoint()
         return self.trace.record_checkpoint(checkpoint_id, turns)
+
+    async def save_call(self, response: Response) -> None:
+        """Save the exchange as of this model response, before the harness receives it:
+        checkpoint the owned box and record it on the trace; `on_save` is called once
+        the call has committed to the trace. None of the response's
+        tool calls has run, so the box matches the conversation up to the request, plus
+        the response when it is a final reply (`Checkpoint` has the rule). Installed
+        only on an owned box whose runtime restores checkpoints (`Agent` checks the
+        config before provisioning). A checkpoint failing every try is logged and
+        skipped, so the previous one stands."""
+        trace = self.trace
+        # The response is not committed yet: a final reply leaves the box as it is,
+        # so the checkpoint matches the conversation with it.
+        turns = trace.num_turns + (0 if response.message.tool_calls else 1)
+        for attempt in range(1, SAVE_CHECKPOINT_ATTEMPTS + 1):
+            try:
+                checkpoint = await self.checkpoint(turns)
+                break
+            except Exception as error:  # noqa: BLE001 - a missed save only makes a later continuation start further back
+                if attempt < SAVE_CHECKPOINT_ATTEMPTS:
+                    await asyncio.sleep(SAVE_RETRY_DELAY * attempt)
+                    continue
+                logger.warning(
+                    "rollout %s: checkpoint for a per-call save failed %d times, "
+                    "keeping the previous one: %s: %s",
+                    trace.id,
+                    attempt,
+                    type(error).__name__,
+                    error,
+                )
+                return
+        if self._on_save is None:
+            return
+        on_save = self._on_save
+
+        def report() -> None:
+            # After the call commits: the trace now holds the request and reply that
+            # this checkpoint's conversation cut reaches, so a saved trace resumes exactly.
+            try:
+                on_save(trace, checkpoint)
+            except Exception:
+                logger.warning("rollout %s: on_save failed", trace.id, exc_info=True)
+
+        self._session.on_commit = report
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:

@@ -250,15 +250,7 @@ class Env(ABC, Generic[ConfigT]):
         each agent-run's trace at mint, after `trace_labels(task)` landed in its
         `info`; `on_discard` its abandonment (a per-agent retry mints a replacement).
         A pydantic model returned by `run()` becomes `episode.outcome`."""
-        episode = Episode(
-            env=EnvInfo(id=self.config.env_id),
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
-        )
+        episode = Episode(env=EnvInfo(id=self.config.env_id), task=TraceTask.of(task))
         labels: dict[str, JsonValue] = {}
 
         def minted(trace: Trace) -> None:

@@ -18,7 +18,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, drop_unanswered_tool_calls
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -253,9 +253,10 @@ copy_failed=$(
         """Run the next segment of an exchange this trace already carries: the user
         spoke (`messages`), the program answers — with the whole conversation behind
         it. The default relaunches the program on the accreted conversation (the
-        trace's current branch plus `messages`) as a Messages prompt: correct for any
-        stateless chat program, including the very first segment of an exchange the
-        user opens (an empty branch). A harness with its own session state overrides
+        trace's current branch, less tool calls a cut-off segment left unanswered,
+        plus `messages`) as a Messages prompt: correct for any stateless chat
+        program, including the very first segment of an exchange the user opens (an
+        empty branch). A harness with its own session state overrides
         this or returns a specialized session handle with a native continuation
         instead of replaying a conversation it already owns."""
         if not self.SUPPORTS_RESUME:
@@ -264,7 +265,9 @@ copy_failed=$(
                 "overrides resume() nor supports a Messages prompt for the default "
                 "relaunch-on-the-conversation."
             )
-        branch = trace.branches[-1].messages if trace.branches else []
+        branch = drop_unanswered_tool_calls(
+            trace.branches[-1].messages if trace.branches else []
+        )
         # `resolve_prompt` re-emits `data.system_prompt`; only de-duplicate those
         # system messages when it has something to re-emit. Explicit system
         # messages in a Messages prompt must survive a resumed segment.

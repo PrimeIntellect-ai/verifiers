@@ -32,7 +32,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.rollout import OnSave, Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -58,7 +58,13 @@ from verifiers.v1.utils.compile import (
 )
 from verifiers.v1.utils.retries import RetryState, backoff
 
-__all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
+__all__ = [
+    "Agent",
+    "AgentConfig",
+    "Agents",
+    "TimeoutConfig",
+    "make_agent",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +174,19 @@ class Segment:
         return ""
 
 
+@dataclass(frozen=True)
+class _Opening:
+    """Where a rollout starts: its task (prompt resolved), the checkpoint its box
+    starts from, and a conversation the first caller turn continues (a reopened trace
+    waiting on its user)."""
+
+    task: Task
+    checkpoint: str | None = None
+    prefix: Messages | None = None
+    source: Trace | None = None
+    """The trace a `resume=` continues."""
+
+
 @dataclass
 class _PendingMessage:
     text: str
@@ -191,9 +210,16 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
+    def __init__(
+        self,
+        run: "Rollout",
+        gate: asyncio.Semaphore | None = None,
+        *,
+        opening: _Opening | None = None,
+    ) -> None:
         self._run = run
         self._gate = gate
+        self._prefix = opening.prefix if opening is not None else None
         self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
@@ -211,16 +237,39 @@ class Interaction:
     def trace(self) -> Trace:
         return self._run.trace
 
+    @property
+    def runtime(self) -> Runtime | None:
+        """The box the interaction runs on."""
+        return self._run.runtime
+
+    @property
+    def task(self) -> Task:
+        """The task the interaction runs."""
+        return self._run.task
+
+    @property
+    def latest_checkpoint(self) -> Checkpoint | None:
+        """The current attempt's latest checkpoint (`trace.checkpoints`), if any: a
+        per-call save, a `checkpoint()`, or the one the attempt's box started from."""
+        checkpoints = self.trace.checkpoints
+        return checkpoints[-1] if checkpoints else None
+
     async def checkpoint(self) -> Checkpoint:
         """Checkpoint the box this interaction owns, between turns, and record it on
-        the trace (`trace.checkpoints`), matching the conversation so far: a run
-        started from it (`checkpoint=`) has the box as it is now. Waits for a running
-        turn to finish. A borrowed box raises (its owner checkpoints it)."""
+        the trace (`trace.checkpoints`), matching the conversation so far: what
+        `agent.run(resume=trace)` / `agent.interaction(resume=trace)` continue from.
+        Waits for a running turn to finish. A borrowed box raises (its owner
+        checkpoints it)."""
         async with self._lock:
             run = self._run
             if run.closed:
                 raise RuntimeError(
                     "this interaction is closed; checkpoint it while it is open"
+                )
+            if self._prefix is not None and not self.trace.nodes:
+                raise ValueError(
+                    "the reopened conversation is not on the trace until its first "
+                    "turn; checkpoint after a turn"
                 )
             return await run.checkpoint()
 
@@ -508,9 +557,15 @@ class Interaction:
             # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
             messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
         self._started = True
+        step_messages = messages
+        if self._prefix is not None:
+            # A reopened trace waiting on its user: its conversation leads this
+            # turn's relaunch (`Harness.resume` on the conversation).
+            step_messages = [*self._prefix, *(messages or [])]
+            self._prefix = None
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
-        await self._run.step(messages, on_input=on_input)
+        await self._run.step(step_messages, on_input=on_input)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.
@@ -663,15 +718,130 @@ class Agent:
                 "one (e.g. bash or null)."
             )
 
+    def _opening(
+        self,
+        task: Task | None,
+        resume: Trace | None,
+        at: str | int | None,
+        note: str | None,
+        checkpoint: str | None,
+        runtime: Runtime | None,
+        *,
+        interactive: bool,
+    ) -> _Opening:
+        """Resolve where a run starts. Resuming a trace opens on its conversation cut
+        at the checkpoint `at` (default: its latest; `Trace.conversation_at`) as the
+        prompt — how `Harness.resume` continues an exchange — continued by `note` as a
+        user message, on a box restored from that checkpoint; a conversation that ends
+        on the agent's reply with no `note` waits for an interaction's first
+        `turn(message)`. Everything that could make the continuation impossible is
+        checked here, before anything is provisioned."""
+        if resume is None:
+            if note is not None or at is not None:
+                raise ValueError(
+                    "note= and at= continue a trace; pass resume= with them"
+                )
+            if task is None:
+                raise ValueError("pass a task to run (or a trace to resume=)")
+            return _Opening(task=task, checkpoint=checkpoint)
+        if checkpoint is not None:
+            raise ValueError(
+                "a resumed trace starts from its own checkpoint; pass resume= or "
+                "checkpoint=, not both"
+            )
+        harness = self.harness
+        if not harness.SUPPORTS_RESUME:
+            raise ValueError(
+                f"Harness {harness.config.id!r} cannot resume a trace: that "
+                "relaunches it on the trace's conversation as a Messages prompt "
+                "(SUPPORTS_RESUME). Use a harness that has it (e.g. bash or null)."
+            )
+        start: Checkpoint | None = None
+        if resume.checkpoints:
+            start = resume.checkpoint_at(at)
+        elif at is not None:
+            raise ValueError(f"trace {resume.id} has no checkpoints; drop at=")
+        elif task is None and runtime is None:
+            raise ValueError(
+                f"trace {resume.id} has no checkpoint, so its box cannot be restored; "
+                "pass task= to resume its conversation on a fresh box (or runtime= "
+                "to resume it in a live one)"
+            )
+        if start is not None and runtime is not None:
+            raise ValueError(
+                "this trace restores its box from a checkpoint, so it cannot also "
+                "run on a borrowed runtime"
+            )
+        if start is not None:
+            try:
+                restore_config(self.runtime_config, start.id)
+            except TypeError as e:
+                raise ValueError(
+                    f"this trace's box is checkpoint {start.id!r}, but the agent's "
+                    f"{self.runtime_config.type} runtime cannot restore checkpoints: "
+                    f"{e}"
+                ) from e
+        task = task if task is not None else resume.task.rebuild()
+        messages = resume.conversation_at(start.turns if start is not None else None)
+        prefix: Messages | None = None
+        prompt: Messages | None
+        if note is not None:
+            prompt = [*messages, UserMessage(content=note)]
+        elif messages and messages[-1].role != "assistant":
+            prompt = messages
+        elif interactive:
+            prompt, prefix = None, messages or None
+        else:
+            raise ValueError(
+                "this trace's conversation is empty or ends on the agent's reply; "
+                "pass note= with the next user message"
+            )
+        task = task.with_data(prompt=prompt)
+        try:
+            harness.resolve_prompt(
+                task.data.model_copy(
+                    update={"prompt": prompt or [UserMessage(content="")]}
+                )
+            )
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"Harness {harness.config.id!r} cannot continue this trace's "
+                f"conversation: {e}"
+            ) from e
+        return _Opening(
+            task=task,
+            checkpoint=start.id if start is not None else None,
+            prefix=prefix,
+            source=resume,
+        )
+
+    def _check_saves(self, runtime: Runtime | None) -> None:
+        """`save = "per_call"` on a box the run owns needs a runtime that restores
+        checkpoints (a borrowed box is never checkpointed)."""
+        if self.config.save != "per_call" or runtime is not None:
+            return
+        try:
+            restore_config(self.runtime_config, "probe")
+        except TypeError as e:
+            raise ValueError(
+                f"save='per_call' checkpoints the run's box, but the agent's "
+                f"{self.runtime_config.type} runtime has no checkpoints to continue "
+                f"from: {e}"
+            ) from e
+
     async def run(
         self,
-        task: Task,
+        task: Task | None = None,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         checkpoint: str | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
+        on_save: OnSave | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -683,15 +853,36 @@ class Agent:
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        attempts' errors.
+
+        `resume` continues a trace (its record, e.g. loaded from JSON) from its
+        checkpoint `at` (an id or index into `resume.checkpoints`; default its latest):
+        the task is rebuilt from `resume.task` unless given, the box starts from the
+        checkpoint, and the program opens on the trace's conversation cut at it
+        (`Trace.conversation_at`) followed by `note` (required when that conversation
+        ends on the agent's reply). A trace with no checkpoint resumes only with
+        `task=` (on a fresh box) or `runtime=`. With `config.save = "per_call"`, the
+        owned box is checkpointed after every model response, each checkpoint recorded
+        on the trace and handed to `on_save(trace, checkpoint)`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        opening = self._opening(
+            task, resume, at, note, checkpoint, runtime, interactive=False
+        )
+        self._check_saves(runtime)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
         for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts, checkpoint
+                opening.task,
+                runtime,
+                tools,
+                on_trace,
+                collect_artifacts,
+                opening.checkpoint,
+                on_save,
+                resumes=opening.source,
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -728,6 +919,9 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         checkpoint: str | None,
+        on_save: OnSave | None = None,
+        *,
+        resumes: Trace | None = None,
     ) -> Trace:
         params = self._rollout_params(
             task, runtime, dict(shared_tools or {}), checkpoint
@@ -741,6 +935,8 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            on_save=on_save,
+            resumes=resumes,
             **params,
         )
         try:
@@ -760,12 +956,16 @@ class Agent:
     @asynccontextmanager
     async def interaction(
         self,
-        task: Task,
+        task: Task | None = None,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
+        on_save: OnSave | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -791,18 +991,41 @@ class Agent:
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
-        apply here."""
+        apply here.
+
+        `resume`, `at` and `note` continue a trace (see `run`); without `note`, a
+        conversation that ends on the agent's reply waits for the first
+        `turn(message)`, which continues it. `interaction.checkpoint()` checkpoints
+        the box between turns. With `config.save = "per_call"`, the owned box is
+        checkpointed after every model response (`on_save(trace, checkpoint)`);
+        `interaction.latest_checkpoint` holds the latest."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
-        params = self._rollout_params(task, runtime, dict(tools or {}), checkpoint)
-        run = Rollout(
-            task=task,
-            has_user=True,
-            on_trace=on_trace,
-            **params,
+        opening = self._opening(
+            task, resume, at, note, checkpoint, runtime, interactive=True
         )
-        interaction = Interaction(run, gate=self._gate)
+        self._check_saves(runtime)
+        shared_tools = dict(tools or {})
+
+        def make_run(
+            task: Task, checkpoint: str | None, resumes: Trace | None
+        ) -> Rollout:
+            return Rollout(
+                task=task,
+                has_user=True,
+                on_trace=on_trace,
+                on_save=on_save,
+                resumes=resumes,
+                **self._rollout_params(task, runtime, shared_tools, checkpoint),
+            )
+
+        run = make_run(opening.task, opening.checkpoint, opening.source)
+        interaction = Interaction(
+            run,
+            gate=self._gate,
+            opening=opening,
+        )
         async with self._gate or nullcontext():
             opened = await run.open()
             if not opened and (failure := run.failure) is not None:
@@ -813,14 +1036,18 @@ class Agent:
         try:
             yield interaction
         except Exception as e:
-            run.fail(e)
+            interaction._run.fail(e)
             raise
         except BaseException:
             await interaction._cancel_deliveries()
-            await run.abort()
+            await interaction._run.abort()
             raise
         finally:
-            trace = run.trace if run.closed else await interaction.close()
+            trace = (
+                interaction.trace
+                if interaction._run.closed
+                else await interaction.close()
+            )
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None
 
@@ -929,7 +1156,11 @@ class _EpisodeAgent(Agent):
         self._on_trace = on_trace
         self._on_discard = on_discard
 
-    def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
+    def _shared_for(
+        self, task: Task | None, resume: Trace | None = None
+    ) -> Mapping[str, SharedToolServer]:
+        if task is None and resume is not None:
+            task = resume.task.rebuild()
         return self._shared_tools if isinstance(task, self._task_cls) else {}
 
     def _watch(
@@ -956,22 +1187,30 @@ class _EpisodeAgent(Agent):
 
     async def run(
         self,
-        task: Task,
+        task: Task | None = None,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         checkpoint: str | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
+        on_save: OnSave | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task),
+                tools=tools if tools is not None else self._shared_for(task, resume),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
             )
         self._completed.append(trace)
         return trace
@@ -979,12 +1218,16 @@ class _EpisodeAgent(Agent):
     @asynccontextmanager
     async def interaction(
         self,
-        task: Task,
+        task: Task | None = None,
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         checkpoint: str | None = None,
+        resume: Trace | None = None,
+        at: str | int | None = None,
+        note: str | None = None,
+        on_save: OnSave | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1004,9 +1247,13 @@ class _EpisodeAgent(Agent):
             async with super().interaction(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task),
+                tools=tools if tools is not None else self._shared_for(task, resume),
                 on_trace=self._watch(remember),
                 checkpoint=checkpoint,
+                resume=resume,
+                at=at,
+                note=note,
+                on_save=on_save,
             ) as interaction:
                 yield interaction
         finally:

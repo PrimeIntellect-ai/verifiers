@@ -887,6 +887,9 @@ class InterceptionServer(Interception):
                         )
                     node = turn.commit(call_response)
                     session.consume_prepared(turn.tail)
+                    if (committed := session.on_commit) is not None:
+                        session.on_commit = None
+                        committed()
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is None:
                         stopped = await session.gate_tool_calls(node)

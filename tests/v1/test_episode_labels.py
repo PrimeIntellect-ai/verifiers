@@ -25,6 +25,7 @@ def stub_rollouts(monkeypatch):
         on_trace,
         collect_artifacts,
         checkpoint,
+        on_save,
         **_,
     ):
         trace = vf.Trace(

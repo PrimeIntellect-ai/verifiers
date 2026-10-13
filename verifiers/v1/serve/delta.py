@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HEADER_FIELDS = ("version", "id", "verifiers", "task")
-"""Sent once, when a trace first appears."""
+HEADER_FIELDS = ("version", "id", "verifiers", "task", "resumed_from")
+"""Sent once, when a trace first appears (all set when it is minted)."""
 
 LIST_FIELDS = (
     "nodes",

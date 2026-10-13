@@ -103,6 +103,18 @@ Message = Annotated[
 Messages = list[Message]
 
 
+def drop_unanswered_tool_calls(messages: Messages) -> Messages:
+    """`messages` less a trailing assistant message whose tool calls have no results.
+    A segment cut off mid-command (cancelled, timed out, its box lost) ends on one, and
+    providers reject that conversation. The results reach the trace only with the next
+    request, so the calls are either all answered or not at all: dropping them lets
+    the model decide again."""
+    messages = list(messages)
+    while messages and messages[-1].role == "assistant" and messages[-1].tool_calls:
+        messages.pop()
+    return messages
+
+
 class Tool(BaseModel):
     # Native declarations carry format, discovery, and provider-specific settings.
     model_config = ConfigDict(extra="allow")

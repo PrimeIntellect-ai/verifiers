@@ -1,6 +1,6 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SerializeAsAny, field_serializer, model_validator
 from pydantic_config import BaseConfig
@@ -53,6 +53,13 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    save: Literal["off", "per_call"] = "off"
+    """When the run's box is checkpointed: never, or after every model response
+    (`per_call`: an owned box is checkpointed before the harness receives the response,
+    the checkpoint is recorded on the trace (`Trace.checkpoints`), and the run's
+    `on_save(trace, checkpoint)` sees it). An owned box needs a runtime with
+    checkpoints; a checkpoint failing three tries is logged and skipped (the previous
+    one stands). A borrowed box is never checkpointed."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
