@@ -7,7 +7,7 @@ import pytest
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 
-CONFIGS = sorted((Path(__file__).resolve().parents[4] / "configs").glob("*.toml"))
+CONFIGS = sorted((Path(__file__).resolve().parents[2] / "configs").glob("*.toml"))
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
