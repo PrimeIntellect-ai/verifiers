@@ -1546,19 +1546,26 @@ class Agent:
             source=resume,
         )
 
+    def _restore_refusal(self) -> str | None:
+        """Why the agent's runtime cannot start a box from a checkpoint; None when it
+        can."""
+        try:
+            restore_config(self.runtime_config, "probe")
+        except TypeError as e:
+            return str(e)
+        return None
+
     def _check_saves(self, runtime: Runtime | None) -> None:
         """`save = "per_call"` on a box the run owns needs a runtime that restores
         checkpoints (a borrowed box is never checkpointed)."""
         if self.config.save != "per_call" or runtime is not None:
             return
-        try:
-            restore_config(self.runtime_config, "probe")
-        except TypeError as e:
+        if (refusal := self._restore_refusal()) is not None:
             raise ValueError(
                 f"save='per_call' checkpoints the run's box, but the agent's "
                 f"{self.runtime_config.type} runtime has no checkpoints to continue "
-                f"from: {e}"
-            ) from e
+                f"from: {refusal}"
+            )
 
     async def run(
         self,
@@ -1732,9 +1739,7 @@ class Agent:
         if previous is None or not self.harness.SUPPORTS_RESUME:
             return None, None
         if runtime is None:
-            try:
-                restore_config(self.runtime_config, "probe")
-            except TypeError:
+            if self._restore_refusal() is not None:
                 return None, None
             return previous, None
         box = box_of(runtime)
@@ -2076,12 +2081,8 @@ class Agent:
         elif recorded is not None and self.harness.SUPPORTS_RESUME:
             # A finished exchange goes live again only past its turns; on a borrowed
             # box nothing says the box matches, so it never does.
-            if runtime is None:
-                try:
-                    restore_config(self.runtime_config, "probe")
-                    checkpoints = list(recorded.checkpoints)
-                except TypeError:
-                    pass
+            if runtime is None and self._restore_refusal() is None:
+                checkpoints = list(recorded.checkpoints)
         labels = _call_labels(found, resolved)
         save = _chain_save(on_save, found)
 
