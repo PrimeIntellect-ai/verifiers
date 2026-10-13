@@ -131,7 +131,11 @@ class EnvClient:
             self._deltas.pop(request_id, None)
         response = response_type.model_validate(unpack(data))
         if not response.success:
-            raise RuntimeError(response.error or "env server request failed")
+            # A failed request is answered with the generic error shape, which also
+            # validates into response types whose own fields are all optional — read the
+            # error off that shape so the message survives.
+            detail = BaseResponse.model_validate(unpack(data))
+            raise RuntimeError(detail.error or f"{response_type.__name__} failed")
         return response
 
     async def _validate_episode(self, record: dict) -> WireEpisode:

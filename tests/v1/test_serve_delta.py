@@ -3,14 +3,18 @@ the episode the worker finished with."""
 
 import asyncio
 import copy
+import uuid
 
+import msgpack
 import numpy as np
 import pytest
+import zmq
 
 import verifiers.v1 as vf
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.semantic import ParentLink
+from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.delta import (
     DeltaStreamer,
     EpisodeAssembly,
@@ -19,6 +23,7 @@ from verifiers.v1.serve.delta import (
     pack,
     unpack,
 )
+from verifiers.v1.serve.pool import EnvServerPool
 from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
 
@@ -272,3 +277,68 @@ def test_finish_refuses_a_gap():
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
+
+
+class _DeadWorker:
+    """A pool worker entry whose process has exited (crash inside `serving()`)."""
+
+    index = 0
+    exitcode = 1
+
+    def is_alive(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_pool_fails_requests_pending_on_a_dead_worker():
+    """A run dispatched to a dead worker's DEALER is queued by ZMQ and would pend
+    forever — `health` must not keep calling such a pool ready, and the broker must
+    answer the request instead of leaving the client on a silent peer."""
+    pool = EnvServerPool(server_kwargs={}, max_workers=1, address="tcp://127.0.0.1:0")
+    client = EnvClient(address=pool.address)
+    raw = pool.ctx.socket(zmq.DEALER)  # a real identity: a ROUTER routes only to those
+    try:
+        raw.setsockopt(zmq.IDENTITY, b"dead-worker-test")
+        raw.connect(pool.address)
+        await asyncio.sleep(0.2)
+
+        assert await asyncio.wait_for(client.health(timeout=2.0), timeout=5.0) is False
+
+        request_id = uuid.uuid4().hex
+        pending = {
+            request_id.encode(): {
+                "client_id": b"dead-worker-test",
+                "worker": {"index": 0, "process": _DeadWorker()},
+                "method": b"run",
+            }
+        }
+        assert await pool._fail_pending(pending, in_flight=1) == 0
+        assert pending == {}
+
+        reply_id, kind, data = await asyncio.wait_for(raw.recv_multipart(), timeout=5.0)
+        body = msgpack.unpackb(data, raw=False)
+        assert (reply_id.decode(), kind) == (request_id, b"reply")
+        assert body["success"] is False
+        assert "exited with code 1" in body["error"]
+
+        # A cancel is a fire-and-forget notice, not a request whose failure the caller
+        # can act on: it keeps its own `cancelled=False` answer.
+        cancel_id = uuid.uuid4().hex
+        pending = {
+            cancel_id.encode(): {
+                "client_id": b"dead-worker-test",
+                "worker": {"index": 0, "process": _DeadWorker()},
+                "method": b"cancel",
+            }
+        }
+        assert await pool._fail_pending(pending, in_flight=1) == 0
+
+        reply_id, kind, data = await asyncio.wait_for(raw.recv_multipart(), timeout=5.0)
+        body = msgpack.unpackb(data, raw=False)
+        assert (reply_id.decode(), kind) == (cancel_id, b"reply")
+        assert body["success"] is True
+        assert body["cancelled"] is False
+    finally:
+        await client.close()
+        raw.close()
+        pool._shutdown()

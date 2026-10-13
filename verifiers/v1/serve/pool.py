@@ -15,9 +15,11 @@ holds the real client identity in `pending` and routes the reply back by `reques
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+broker dies. A worker that exits is noticed by the liveness sweep: every request still
+pending on it is answered with an error (so no client waits on a silent peer) and, once
+no worker is left, `health` reports unhealthy and the broker exits. TODO: downscale idle
+workers, per-worker restart-on-death, stats/lag monitors (v0 had them; omitted here —
+rollout errors are returned as data, not crashes, so worker death is rare).
 """
 
 import asyncio
@@ -36,14 +38,24 @@ import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import CancelResponse, HealthResponse
+from verifiers.v1.serve.types import BaseResponse, CancelResponse, HealthResponse
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
+_HEALTH_DOWN = msgpack.packb(
+    HealthResponse(success=False, error="no live env worker").model_dump(mode="json"),
+    use_bin_type=True,
+)
 _CANCEL_MISS = msgpack.packb(
     CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True
 )
+
+# A request never carries a deadline of its own (a healthy rollout has no default
+# duration), so the poll loop wakes on this interval purely to notice a worker that
+# died while requests were in flight on it. Without that sweep a run dispatched to a
+# dead worker's DEALER is queued by ZMQ and pends forever.
+_LIVENESS_INTERVAL_MS = 500
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -183,7 +195,25 @@ class EnvServerPool:
         try:
             in_flight = 0
             while True:
-                events = dict(await self._poller.poll())
+                events = dict(await self._poller.poll(_LIVENESS_INTERVAL_MS))
+                if self._reap_dead_workers():
+                    in_flight = await self._fail_pending(pending, in_flight)
+                if not any(w["process"].is_alive() for w in self.workers):
+                    # Nothing can serve a request any more. In-flight requests were just
+                    # failed by the sweep; let a health probe learn the same thing instead
+                    # of being told everything is fine, then exit. Error propagation must
+                    # precede shutdown — an exit alone leaves the untimed DEALER client
+                    # waiting on a peer that will never reply.
+                    if self.frontend in events:
+                        frames = await self.frontend.recv_multipart()
+                        if len(frames) == 4:
+                            client_id, request_id, method, _ = frames
+                            if method == b"health":
+                                await self.frontend.send_multipart(
+                                    [client_id, request_id, b"reply", _HEALTH_DOWN]
+                                )
+                    logger.error("EnvServerPool has no live workers left; exiting")
+                    return
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
                     # Drop malformed requests without skipping ready worker replies.
@@ -195,6 +225,7 @@ class EnvServerPool:
                     else:
                         client_id, request_id, method, payload = frames
                         if method == b"health":
+                            # Workers are alive at this point, so a run can be served.
                             await self.frontend.send_multipart(
                                 [client_id, request_id, b"reply", _HEALTH]
                             )
@@ -219,6 +250,7 @@ class EnvServerPool:
                                 pending[request_id] = {
                                     "client_id": client_id,
                                     "worker": worker,
+                                    "method": method,
                                 }
                                 in_flight += 1
                                 await worker["dealer"].send_multipart(
@@ -230,6 +262,7 @@ class EnvServerPool:
                             pending[request_id] = {
                                 "client_id": client_id,
                                 "worker": worker,
+                                "method": method,
                             }
                             in_flight += 1
                             # forward without client_id — the DEALER identity is the worker's
@@ -266,6 +299,63 @@ class EnvServerPool:
         finally:
             self._shutdown()
 
+    def _reap_dead_workers(self) -> bool:
+        """Drop workers whose process exited (a crash inside `serving()`, a task
+        failure at startup) and report whether any died. Their DEALER is closed and
+        unregistered so the poller stops watching it; the caller answers the requests
+        still pending on them."""
+        live, dead = [], []
+        for worker in self.workers:
+            (live if worker["process"].is_alive() else dead).append(worker)
+        if not dead:
+            return False
+        for worker in dead:
+            logger.error(
+                "EnvServerPool worker %d exited with code %s; failing its in-flight work",
+                worker["index"],
+                worker["process"].exitcode,
+            )
+            if self._poller is not None:
+                with contextlib.suppress(KeyError):
+                    self._poller.unregister(worker["dealer"])
+            with contextlib.suppress(Exception):
+                worker["dealer"].close()
+            with contextlib.suppress(Exception):
+                worker["pipe"].close()
+        self.workers = live
+        return True
+
+    async def _fail_pending(self, pending: dict[bytes, dict], in_flight: int) -> int:
+        """Close out every request still pending on a dead worker. A `run` gets an error
+        reply, so the client raises naming the worker instead of awaiting an answer that
+        can never come; a `cancel` is a fire-and-forget notice, so it keeps its own
+        `cancelled=False` meaning (`missed`) rather than a failure its caller cannot act
+        on. `health` is answered by the caller; without this a request dispatched to a
+        dead DEALER is queued by ZMQ and pends forever."""
+        live = {id(worker) for worker in self.workers}
+        for request_id, entry in list(pending.items()):
+            if id(entry["worker"]) in live:
+                continue
+            pending.pop(request_id)
+            in_flight -= 1
+            worker = entry["worker"]
+            if entry["method"] == b"cancel":
+                answer = CancelResponse(cancelled=False)
+            else:
+                answer = BaseResponse(
+                    success=False,
+                    error=(
+                        f"env worker {worker['index']} exited with code "
+                        f"{worker['process'].exitcode}; the request was not served"
+                    ),
+                )
+            data = msgpack.packb(answer.model_dump(mode="json"), use_bin_type=True)
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart(
+                    [entry["client_id"], request_id, b"reply", data]
+                )
+        return in_flight
+
     def _shutdown(self) -> None:
         for w in self.workers:
             with contextlib.suppress(Exception):
@@ -280,8 +370,11 @@ class EnvServerPool:
                     w["process"].kill()
             with contextlib.suppress(Exception):
                 w["dealer"].close()
-            with contextlib.suppress(OSError):
-                os.unlink(self._worker_path(w["index"]))
+            if os.path.exists(self._worker_path(w["index"])):
+                # A dead worker is dropped from `self.workers`, so a later spawn can
+                # reuse its index; unlink only while the path still exists.
+                with contextlib.suppress(OSError):
+                    os.unlink(self._worker_path(w["index"]))
         with contextlib.suppress(OSError):
             os.rmdir(self._ipc_dir)
         self.frontend.close()
