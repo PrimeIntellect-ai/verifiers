@@ -496,8 +496,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def num_output_tokens(self) -> int:
-        """Model-generated tokens across all turns, summed across branches."""
-        return sum(branch.num_output_tokens for branch in self.branches)
+        """Model-generated tokens, counted once per model call. Branches share prefix calls,
+        so summing per-branch counts would count those calls once per branch."""
+        usage = self.usage
+        return usage.completion_tokens if usage is not None else 0
 
     @computed_field
     @property
