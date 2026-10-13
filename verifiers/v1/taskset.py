@@ -25,6 +25,7 @@ import copy
 import itertools
 import logging
 import random
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Any, Generic, Self
@@ -37,6 +38,7 @@ from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
+    from verifiers.v1.episode import Episode
     from verifiers.v1.mcp import Toolset
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,8 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.config = config
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
+        self._cancels: list[str] = []
+        self._cancels_lock = threading.Lock()
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
@@ -171,6 +175,48 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
             transform if prev is None else lambda tasks: transform(prev(tasks))
         )
         return clone
+
+    def observe(self, task: TaskT, episode: Episode) -> None:
+        """Feedback: `task`, handed out by `load()`, finished as `episode` (its final
+        attempt, after retries and `finalize()`). A taskset that adapts what it yields
+        (a curriculum, a work queue) updates itself here. Called by the runner that
+        dispatched the task, once per task, from its event loop; never by verifiers
+        itself. Every dispatched task gets exactly one of `observe`, `on_failed` or
+        `on_cancelled`.
+        Keep it quick and non-blocking; an exception stops the run. Called on the
+        taskset object the runner iterates, which may be a view (`include`, `take`,
+        ...): a shallow copy that shares this taskset's attributes. Default: no-op."""
+
+    def on_failed(self, task: TaskT, error: BaseException) -> None:
+        """Feedback: `task`, handed out by `load()`, produced no episode at all (the
+        env server died, dispatch failed); `error` is why. A failed episode is not
+        this: it arrives through `observe`. Called by the runner like `observe`, with
+        the same rules. Default: no-op."""
+
+    def on_cancelled(self, task: TaskT) -> None:
+        """Feedback: `task`, handed out by `load()`, was stopped before it finished
+        because this taskset asked for it (`cancel`); no episode is kept. Called by the
+        runner like `observe`, with the same rules. A task whose episode landed before
+        the cancel reached it gets `observe` instead. Default: no-op."""
+
+    def cancel(self, key: str) -> None:
+        """Ask the runner to stop the dispatched task with this `key` (`Task.key`):
+        abort its episode wherever it runs and report it through `on_cancelled`. Only
+        for a task handed out and not yet reported back (a key the runner already
+        reported is ignored only if the cancel was asked before the report). Safe from
+        any thread, including the one iterating `load()`. Best effort: a task whose
+        episode lands first is reported as it finished, and a runner that does not poll
+        `cancelled()` lets every task finish."""
+        with self._cancels_lock:
+            self._cancels.append(key)
+
+    def cancelled(self) -> list[str]:
+        """The keys `cancel` asked for since the last call, oldest first. Called by
+        the runner that dispatched the tasks; each key is returned once."""
+        with self._cancels_lock:
+            keys = list(self._cancels)
+            self._cancels.clear()
+        return keys
 
     @classmethod
     def task_type(cls) -> type[Task]:

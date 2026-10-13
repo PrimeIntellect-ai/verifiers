@@ -199,3 +199,35 @@ def test_select_bounds_an_infinite_taskset() -> None:
     # The shuffle comes before the limit, so the limit cannot bound it.
     with pytest.raises(ValueError, match="infinite"):
         infinite().select(vf.SelectConfig(shuffle=True, limit=5))
+
+
+def test_feedback_hooks_default_to_no_ops():
+    taskset = finite()
+    first = next(iter(taskset))
+    episode = vf.Episode(task=vf.TraceTask(type="CountTask", data=first.data))
+    assert taskset.observe(first, episode) is None
+    assert taskset.on_failed(first, RuntimeError("env server died")) is None
+    assert taskset.take(1).observe(first, episode) is None
+
+
+def test_feedback_hooks_reach_the_taskset_through_a_view():
+    class Tracking(FiniteTaskset):
+        def __init__(self, config):
+            super().__init__(config)
+            self.events: list[tuple] = []
+
+        def observe(self, task, episode):
+            self.events.append(("observe", task.data.idx, episode.ok))
+
+        def on_failed(self, task, error):
+            self.events.append(("failed", task.data.idx, str(error)))
+
+    taskset = Tracking(vf.TasksetConfig())
+    view = taskset.include(idx=["2:4"])
+    a, b = list(view)
+    view.observe(
+        a, vf.Episode(task=vf.TraceTask(type="CountTask", data=a.data), ok=True)
+    )
+    view.on_failed(b, RuntimeError("gone"))
+    # a view is a shallow copy: its feedback reaches the original's state
+    assert taskset.events == [("observe", 2, True), ("failed", 3, "gone")]

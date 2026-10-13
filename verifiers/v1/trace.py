@@ -81,6 +81,10 @@ class Timing(BaseModel):
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
 
+LABELS_KEY = "labels"
+"""The `Trace.info` key holding an env episode's trace labels (`Env.trace_labels`)."""
+
+
 class Error(BaseModel):
     type: str
     message: str
@@ -445,7 +449,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     metrics: dict[str, float | None] = Field(default_factory=dict)
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
-    """Scratch space for task-specific metadata."""
+    """Scratch space for task-specific metadata. `info["labels"]` is reserved for the
+    labels an env episode stamps on every trace it mints (`Env.trace_labels`)."""
     root_reply: str | None = None
     """The root agent's response when a trace contains descendant branches."""
     state: StateT = Field(default_factory=State, exclude=True)
@@ -472,6 +477,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+
+    @property
+    def labels(self) -> dict[str, Any]:
+        """The labels its env episode stamped on this trace (`Env.trace_labels`), kept
+        in `info[LABELS_KEY]`; empty when none were."""
+        return self.info.get(LABELS_KEY) or {}
 
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""

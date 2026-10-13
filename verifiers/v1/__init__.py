@@ -48,6 +48,7 @@ from verifiers.v1.episode import (
     TrainRunInfo,
     TrainWorkInfo,
     WireEpisode,
+    WireOutcome,
     WorkInfo,
 )
 from verifiers.v1.errors import (
@@ -237,6 +238,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "EnvInfo",
     "Episode",
     "WireEpisode",
+    "WireOutcome",
     "Checkpoint",
     "GroupInfo",
     "TRACE_VERSION",
