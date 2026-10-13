@@ -33,6 +33,8 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
     field_serializer,
     field_validator,
 )
@@ -165,6 +167,20 @@ class MessageNode(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("token_ids", "mask", "logprobs", mode="wrap")
+    @classmethod
+    def deserialize_token_stream(
+        cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
+    ) -> Any:
+        if (
+            isinstance(info.context, dict)
+            and info.context.get("trusted_wire") is True
+            and isinstance(value, list)
+        ):
+            # Trusted server scalars are already typed; retain independent list ownership.
+            return value.copy()
+        return handler(value)
 
     @property
     def logical_ids(self) -> list[int]:
