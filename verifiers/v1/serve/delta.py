@@ -47,6 +47,7 @@ LIST_FIELDS = (
     "nodes",
     "calls",
     "errors",
+    "scoring_attempts",
     "extra_usage",
     "request_rewrites",
     "response_rewrites",

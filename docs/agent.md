@@ -35,6 +35,6 @@ restores collected artifacts into a fresh runtime before task scoring.
 `max_retries = 2`. Its rules select retryable errors; retries reuse the completed
 submission in a fresh scoring environment. Shared scoring is not retried.
 
-Failed isolated-scoring attempts are recorded in `trace.info["scoring_attempts"]`,
+Failed isolated-scoring attempts are recorded as typed entries in `trace.scoring_attempts`,
 with their attempt number, error, and added or changed diagnostic info and metrics.
 This history survives successful retries; failed rewards and submission state are discarded.

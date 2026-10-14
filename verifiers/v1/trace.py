@@ -88,6 +88,15 @@ class Error(BaseModel):
     traceback: str | None = None
 
 
+class ScoringAttempt(BaseModel):
+    """Diagnostics from a failed isolated scoring attempt, not committed scores."""
+
+    attempt: int = Field(ge=1)
+    error: Error
+    info: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+
+
 class VersionInfo(BaseModel):
     version: str
     commit: str | None = None
@@ -429,6 +438,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
+    scoring_attempts: list[ScoringAttempt] = Field(default_factory=list)
+    """Framework-owned failure diagnostics retained across isolated scoring retries."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)

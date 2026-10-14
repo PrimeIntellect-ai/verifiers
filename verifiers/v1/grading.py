@@ -15,7 +15,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, Trace
+from verifiers.v1.trace import Error, ScoringAttempt, Trace
 from verifiers.v1.utils.artifacts import restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
@@ -154,10 +154,6 @@ async def grade_task(
                     result.rewards,
                     result.metrics,
                 )
-                # Attempt history belongs to the controller, even if task code
-                # replaces its copy of info while producing a successful score.
-                if "scoring_attempts" in trace.info:
-                    result.info["scoring_attempts"] = trace.info["scoring_attempts"]
                 trace.info = result.info
                 try:
                     await stack.aclose()
@@ -170,30 +166,27 @@ async def grade_task(
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
             )
-            trace.info.setdefault("scoring_attempts", []).append(
-                {
-                    "attempt": attempt + 1,
-                    "error": recorded.model_dump(exclude_none=True),
-                    "info": copy.deepcopy(
+            trace.scoring_attempts.append(
+                ScoringAttempt(
+                    attempt=attempt + 1,
+                    error=recorded,
+                    info=copy.deepcopy(
                         {
                             key: value
                             for key, value in (
                                 result.info.items() if result is not None else ()
                             )
-                            if key != "scoring_attempts"
-                            and (
-                                key not in previous_info or value != previous_info[key]
-                            )
+                            if key not in previous_info or value != previous_info[key]
                         }
                     ),
-                    "metrics": {
+                    metrics={
                         key: value
                         for key, value in (
                             result.metrics.items() if result is not None else ()
                         )
                         if key not in previous_metrics or value != previous_metrics[key]
                     },
-                }
+                )
             )
             if attempt == retry.max_retries or retry.next_error([recorded]) is None:
                 raise
