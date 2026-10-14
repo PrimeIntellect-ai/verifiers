@@ -341,8 +341,8 @@ class Env(ABC, Generic[ConfigT]):
                         if not episode.traces and self.REQUIRES_AGENT:
                             raise ValueError(
                                 f"{type(self).__name__}.run() ran no agent — every "
-                                "episode must carry at least one run (an env whose "
-                                "episodes may not sets REQUIRES_AGENT = False)"
+                                "episode must carry at least one run (set "
+                                "REQUIRES_AGENT = False on an env that may run none)"
                             )
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
