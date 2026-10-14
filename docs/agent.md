@@ -91,6 +91,12 @@ whose workspace submissions depend on filesystem state. Compose sidecars stay al
 for evidence collection and grading. With an empty allowlist, split Compose keeps
 service DNS and internal connections while removing external egress.
 
+The Codex adapter runs its agent loop on the harness runtime and launches
+`codex exec-server` in the workspace over the deployment's stdio connection.
+Native shell and file tools use that workspace, including its working directory;
+the local executor is excluded. Custom skills are currently unsupported in this mode.
+Workspace-loss supervision and scoring follow the same deployment policy as RLM.
+
 Harnesses must explicitly support split execution. Unsupported harnesses and
 provider combinations fail before provisioning. Harnesses receive the workspace
 handle and a worker launch connection through `setup_execution`.

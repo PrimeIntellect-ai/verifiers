@@ -16,6 +16,7 @@ from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -59,6 +60,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    _execution_command: list[str] | None = None
+    _execution_cwd: str | None = None
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         # codex-acp returns terminal failures in metadata with stop_reason=end_turn; a
@@ -99,6 +104,33 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
         await super().setup(runtime)
 
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("Codex split execution does not yet support custom skills")
+
+    async def setup_execution(
+        self,
+        runtime: Runtime,
+        task_runtime: Runtime,
+        connection: ExecutionConnection,
+    ) -> None:
+        worker = type(self)(self.config)
+        await worker.setup(task_runtime)
+        self._execution_command = connection.command(
+            [
+                f"{NODE_BIN_DIR}/node",
+                CODEX_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
+                "exec-server",
+                "--listen",
+                "stdio",
+            ]
+        )
+        result = await task_runtime.run(["pwd", "-P"], {})
+        if result.exit_code:
+            raise RuntimeError(f"could not resolve execution cwd: {result.stderr}")
+        self._execution_cwd = result.stdout.strip()
+
     async def prepare_acp(
         self,
         ctx: ModelContext,
@@ -116,6 +148,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
         return ACPConfig(
             env=env,
+            cwd=self._execution_cwd,
             command=[
                 f"{NODE_BIN_DIR}/node",
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
@@ -196,6 +229,25 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             else ""
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
+        if self._execution_command is not None:
+            # Codex owns the stdio worker; deployment owns its execution target.
+            # Excluding the local environment prevents selecting the harness host.
+            await runtime.write(
+                f"{home}/environments.toml",
+                tomli_w.dumps(
+                    {
+                        "default": "workspace",
+                        "include_local": False,
+                        "environments": [
+                            {
+                                "id": "workspace",
+                                "program": self._execution_command[0],
+                                "args": self._execution_command[1:],
+                            }
+                        ],
+                    }
+                ).encode(),
+            )
 
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
@@ -223,6 +275,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             "multi_agent_v2": {"enabled": self.config.multi_agent},
             **{tool: False for tool in self.config.disabled_tools or []},
         }
+        if self._execution_command is not None:
+            features["deferred_executor"] = True
         if direct_mcp_namespaces:
             features["code_mode"] = {
                 "direct_only_tool_namespaces": list(

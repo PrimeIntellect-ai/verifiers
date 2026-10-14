@@ -57,6 +57,8 @@ class ACPConfig:
     prompt: str | Messages | None
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
+    cwd: str | None = None
+    """Session workspace path; may belong to a remote execution environment."""
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
 
@@ -329,6 +331,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
+            "cwd": self.config.cwd,
             "client_capabilities": self.config.client_capabilities or {},
             "tool_interception": {
                 "url": self.tool_interception_url,
