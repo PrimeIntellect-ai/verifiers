@@ -68,6 +68,11 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
             state.mcp_url = f"{state.resources_url}/{metadata['url_path'].lstrip('/')}"
             state.mcp_headers = state.headers | metadata["headers"]
 
+    async def restore(self, trace: Trace, runtime: Runtime) -> None:
+        # Setup touches no box, only the trace's state (never recorded) and the Gym
+        # session behind it, which no checkpoint holds: seed a new one.
+        await self.setup(trace, runtime)
+
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
         state = trace.state

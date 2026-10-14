@@ -190,7 +190,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         interaction retry, a durable call continuing its cut-off trace) on a box started
         from a checkpoint: the box's files are as they were, but no process survived.
         Restart the services the task needs here. A fresh run on such a box gets
-        `setup`."""
+        `setup`. `trace.state` is never recorded, so it starts empty here: rebuild what
+        `setup` put in it."""
         return
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:

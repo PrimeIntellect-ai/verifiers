@@ -110,6 +110,16 @@ class AdditionConfig(vf.TasksetConfig):
 
 These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
+## Setup and restore
+
+`Task.setup(trace, runtime)` prepares a run's box before the agent starts: files, services,
+and whatever the task's tools and scoring read from `trace.state`. A run that continues a
+trace on a box started from a checkpoint (a `resume=`, an interaction retry, a durable call
+continuing its cut-off trace) runs `Task.restore(trace, runtime)` instead: the box holds the
+files setup made, but no process survived, so restart the services there. `trace.state` is
+never recorded, so it starts empty in `restore` too: rebuild there what `setup` put in it.
+A run that continues no trace gets `setup`, even on a box started from a checkpoint.
+
 ## Task identity
 
 A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.
