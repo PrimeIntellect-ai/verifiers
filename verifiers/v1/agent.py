@@ -1302,6 +1302,21 @@ def _chain_save(on_save: OnSave | None, store: Durable | None) -> OnSave | None:
     return save
 
 
+def _call_store(found: Durable | None, runtime: Runtime | None) -> Durable | None:
+    """Where a durable call writes its trace: `found`, unless the durable box it runs on
+    writes its runs to the same store already (`Agent._box_watch`)."""
+    box = box_of(runtime)
+    if (
+        found is not None
+        and box is not None
+        and box.key is not None
+        and box.durable is not None
+        and box.durable.lookup is found.lookup
+    ):
+        return None
+    return found
+
+
 def _call_labels(found: Durable | None, resolved: Resolved) -> dict:
     """The labels a durable call stamps: its scope's and its own (`CALL_LABEL`)."""
     labels = found.scope if found is not None else {}
@@ -1829,6 +1844,7 @@ class Agent:
             logger.info("call %r runs fresh: its box cannot be restored", key)
         if again is not None:
             resume, at, note = again, again_at, RETRY_NOTE
+        store = _call_store(found, runtime)
         trace = await self.run(
             task,
             runtime=runtime,
@@ -1838,11 +1854,11 @@ class Agent:
             resume=resume,
             at=at,
             note=note,
-            on_save=_chain_save(on_save, found),
+            on_save=_chain_save(on_save, store),
             durable=False,
         )
-        if found is not None:
-            found.write(trace)
+        if store is not None:
+            store.write(trace)
         return trace
 
     async def _run_once(
@@ -2111,7 +2127,9 @@ class Agent:
             if runtime is None and self._restore_refusal() is None:
                 checkpoints = list(recorded.checkpoints)
         labels = _call_labels(found, resolved)
-        save = _chain_save(on_save, found)
+        # The live exchange runs on `runtime`, or on a box of its own (never durable).
+        store = _call_store(found, runtime)
+        save = _chain_save(on_save, store)
 
         def open_live(
             again: Trace | None,
@@ -2161,8 +2179,10 @@ class Agent:
             # cancelled, cut off), and a rerun must see that, not the last save.
             if found is not None and exchange is not None:
                 if exchange.live is not None:
-                    found.write(exchange.live.trace)
+                    if store is not None:
+                        store.write(exchange.live.trace)
                 elif exchange.ended:
+                    # A closed copy of the record: nothing else has written it.
                     found.write(exchange.trace)
 
     def _rollout_params(

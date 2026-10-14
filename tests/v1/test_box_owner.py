@@ -361,3 +361,30 @@ async def test_a_borrowed_retry_whose_box_will_not_start_ends_the_turn(
         assert not trace.ok and trace.resumed_from == failed.id
         assert "would not start" in trace.errors[-1].message
         assert vf.box_of(box).generation == 0
+
+
+class CountingDir(vf.TraceDir):
+    """A trace directory counting its writes, per trace."""
+
+    def __init__(self, path) -> None:
+        super().__init__(path)
+        self.writes: dict[str, int] = {}
+
+    def write(self, trace: vf.Trace) -> None:
+        self.writes[trace.id] = self.writes.get(trace.id, 0) + 1
+        super().write(trace)
+
+
+async def test_a_durable_call_on_a_durable_box_is_written_once_per_save(
+    model, tmp_path
+):
+    store = CountingDir(tmp_path / "traces")
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.provision(task(), key="box") as box:
+            ran = await agent.run(task(), runtime=box, key="solve")
+            async with agent.interaction(task(None), runtime=box, key="talk") as talk:
+                await talk.turn("hello")
+    # One write per per-call save and one when it finished, not one per path.
+    assert store.writes[ran.id] == len(ran.checkpoints) + 1
+    assert store.writes[talk.trace.id] == len(talk.trace.checkpoints) + 1
