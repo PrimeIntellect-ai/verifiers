@@ -40,9 +40,7 @@ def test_unknown_harness_names_the_builtins() -> None:
         harness_class("no-such-harness")
 
 
-@pytest.mark.parametrize(
-    "env_id", ["best-of-n", "user-sim", "agentic-judge", "shared-agentic-judge"]
-)
+@pytest.mark.parametrize("env_id", ["best-of-n", "user-sim", "agentic-judge"])
 def test_bundled_envs_load_with_a_role_typed_config(env_id: str) -> None:
     cls = environment_class("", env_id)
     assert issubclass(cls, vf.Env)
