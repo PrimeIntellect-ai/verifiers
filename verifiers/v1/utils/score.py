@@ -82,6 +82,18 @@ def parse_judge_choice(
         match = re.search(choice_re, text_upper[verdict.end() :])
         return choices_by_upper.get(match.group(1)) if match else None
 
+    # A reply that opens with its verdict ("Yes. The response...") is decided there, not
+    # by label words in the explanation ("no other value"). Single-letter labels are
+    # excluded: "A better choice..." opens with an article, not a verdict.
+    leading = re.match(
+        rf"[\s*_`'\"#>]*{choice_re}[*_`'\"]*{horizontal_space}*"
+        r"(?:[.,;:!)–—]|-(?!\w)|$)",
+        text_upper,
+        re.MULTILINE,
+    )
+    if leading and len(leading.group(1)) > 1:
+        return choices_by_upper.get(leading.group(1))
+
     matches = re.findall(choice_re, text_upper)
     return choices_by_upper.get(matches[-1]) if matches else None
 
