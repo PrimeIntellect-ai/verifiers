@@ -33,7 +33,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Attempt, Checkpoint, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -108,10 +108,12 @@ class Rollout:
         collect_artifacts: bool = False,
         resume: tuple[Trace, Checkpoint] | None = None,
         checkpoints: bool = False,
+        attempt: int = 0,
     ) -> None:
-        """`resume` continues a failed attempt's trace from one of its checkpoints:
-        the trace rewinds to it and this run boots its box from the snapshot instead
-        of setting the task up again. `checkpoints` snapshots the box before every
+        """`attempt` numbers this run among the trace's retries (stamped on the
+        errors it captures). `resume` continues a failed attempt's trace from one of
+        its checkpoints: the trace rewinds to it and this run boots its box from the
+        snapshot instead of setting the task up again. `checkpoints` snapshots the box before every
         turn (on a runtime that supports it) for a retry to resume from; the owner
         of the retries frees them (`Runtime.discard_checkpoints`) once the run is
         final — this rollout only frees them when it aborts."""
@@ -128,12 +130,14 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self._checkpoints = checkpoints
+        self._attempt = attempt
         self._resume: Checkpoint | None = None
         self.rewound_checkpoints: list[str] = []
         """Checkpoints the resumed trace dropped (taken after the one resumed from)."""
         if resume is not None:
             self.trace, self._resume = resume
             self.rewound_checkpoints = self.trace.rewind(self._resume)
+            self._resume.resumed = True
         else:
             self.trace = Trace(
                 task=TraceTask(
@@ -149,12 +153,6 @@ class Rollout:
             )
             if on_trace is not None:
                 on_trace(self.trace)
-        self.attempt = Attempt(
-            resumed_from=self._resume.id if self._resume is not None else None,
-            turns_kept=self.trace.num_turns,
-            timing=self.trace.timing,
-        )
-        self.trace.attempts.append(self.attempt)
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
@@ -231,7 +229,7 @@ class Rollout:
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
         self._failure = error
-        self.trace.record_error(error, stage=stage)
+        self.trace.record_error(error, attempt=self._attempt, stage=stage)
 
     def timeout(self, stage: str) -> None:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
@@ -260,7 +258,6 @@ class Rollout:
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info
-        self.attempt.runtime = runtime.info
         if (
             self._checkpoints
             and self._borrowed_runtime is None
@@ -628,7 +625,6 @@ class Rollout:
                 node=node,
                 tail=list(turn.tail),
                 state=state,
-                attempt=len(self.trace.attempts) - 1,
             )
         )
         logger.debug(
@@ -732,7 +728,6 @@ class Rollout:
                 await self._stack.aclose()
             trace.is_completed = True
             trace.ok = not self._failed
-            self.attempt.stop_condition = trace.stop_condition
             now = time.time()
             for span in (
                 trace.timing.boot,

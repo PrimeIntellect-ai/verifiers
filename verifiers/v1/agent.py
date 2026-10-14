@@ -699,6 +699,7 @@ class Agent:
                 collect_artifacts,
                 resume=(resumed, resume) if resumed is not None else None,
                 checkpoints=checkpoints,
+                attempt=attempt,
             )
             trace = run.trace
             snapshots.update(run.rewound_checkpoints)
@@ -757,6 +758,7 @@ class Agent:
         *,
         resume: tuple[Trace, Checkpoint] | None = None,
         checkpoints: bool = False,
+        attempt: int = 0,
     ) -> Rollout:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
@@ -770,6 +772,7 @@ class Agent:
             collect_artifacts=collect_artifacts,
             resume=resume,
             checkpoints=checkpoints,
+            attempt=attempt,
             **params,
         )
         try:
