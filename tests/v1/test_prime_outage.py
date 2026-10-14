@@ -120,11 +120,12 @@ async def test_a_placed_box_whose_placement_is_lost_is_gone_at_once(
 class Client:
     """The SDK client calls `PrimeRuntime.start` makes."""
 
-    def __init__(self, create=None, boot=None) -> None:
+    def __init__(self, create=None, boot=None, delete=None) -> None:
         self.create_calls = 0
         self.create_keys: list[str | None] = []
         self._create = create
         self._boot = boot
+        self._delete = delete
         self.deleted: list[str] = []
 
     async def create(self, request):
@@ -142,6 +143,8 @@ class Client:
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     async def delete(self, sandbox_id):
+        if self._delete is not None:
+            await self._delete()
         self.deleted.append(sandbox_id)
 
     async def aclose(self):
@@ -175,6 +178,18 @@ async def test_a_create_held_through_an_outage(monkeypatch, sleeps):
     await runtime.start()
     assert client.create_calls == 3 and runtime.placed
     await runtime.teardown()
+
+
+async def test_the_teardown_delete_is_held_through_an_outage(monkeypatch, sleeps):
+    """The box bills until it is deleted: an outage at teardown is ridden out, not
+    left to the box's idle timeout."""
+    outage = Flaky(*(httpx.ConnectError("api down") for _ in range(6)))
+    client = Client(delete=outage)
+    install(monkeypatch, client)
+    runtime = make(monkeypatch, outage_budget_s=300)
+    await runtime.start()
+    await runtime.teardown()
+    assert outage.calls == 7 and client.deleted == ["sb1"]
 
 
 async def test_a_create_whose_reply_was_lost_is_resent_with_its_idempotency_key(

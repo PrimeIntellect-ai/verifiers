@@ -255,7 +255,7 @@ class PrimeConfig(NetworkPolicyConfig):
     outage_budget_s: float = Field(0, ge=0)
     """Seconds an idempotent platform call (the create, whose every send carries one
     idempotency key so a repeat never makes a second box; the boot wait, a job poll, an
-    upload or download) is held and sent again through a provider outage (an `io` or
+    upload or download, the teardown's delete) is held and sent again through a provider outage (an `io` or
     `quota` failure: no route to the box, the API or file gateway dropping connections,
     a 5xx, a 429) before the error reaches the caller: minutes-long outages are ridden
     out instead of failing after a few tries. The waits go 1 s doubling to 30 s, with a
@@ -1008,7 +1008,8 @@ class PrimeRuntime(Runtime):
             return
         try:
             if self.info.id is not None:  # keep info.id available after teardown
-                await client.delete(self.info.id)
+                box = self.info.id
+                await self._held("delete", lambda: client.delete(box))
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
         finally:
