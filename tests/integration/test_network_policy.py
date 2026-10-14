@@ -1,7 +1,7 @@
 """A task's network policy holds during execution, and the model is told about it: the
 agent runs an egress probe under each policy the task data declares
 (network-policy-v1), with the agent's `network_notice` on or off, across every harness
-on prime."""
+on docker and prime."""
 
 import pytest
 from grid import grid
@@ -38,7 +38,7 @@ def prompt_text(trace) -> str:
 
 @pytest.mark.parametrize("notice", [True, False], ids=["notice-on", "notice-off"])
 @pytest.mark.parametrize(
-    "harness,harness_runtime", grid(runtimes=["prime"]), indirect=True
+    "harness,harness_runtime", grid(runtimes=["docker", "prime"]), indirect=True
 )
 async def test_network_policy(run, harness, harness_runtime, notice):
     episodes = await run(
