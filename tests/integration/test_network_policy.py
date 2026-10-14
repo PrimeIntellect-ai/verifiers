@@ -48,6 +48,9 @@ async def test_network_policy(run, harness, harness_runtime, notice):
         num_tasks=len(NOTICES),
         max_turns=6,
         max_tokens=4096,
+        # Each cell starts one box per task at once; on a CI runner, CLI installs in
+        # four parallel docker boxes outrun the default rollout cap.
+        rollout_timeout=600,
         env={"agent": {"network_notice": notice}},
     )
     by_name = {episode.task.data.name: episode for episode in episodes}
