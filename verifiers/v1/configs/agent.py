@@ -53,6 +53,11 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    checkpoint: bool = False
+    """Checkpoint the runtime's filesystem before every model turn, on a runtime that
+    supports it (prime). A retry resumes from the newest one (`retries.from_checkpoint`).
+    Each turn waits for its snapshot to be durable (a few seconds); the run frees its
+    snapshots when it is final."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
