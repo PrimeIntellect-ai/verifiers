@@ -11,7 +11,6 @@ from pydantic import Field
 import verifiers.v1 as vf
 from verifiers.v1.envs.agentic_judge import JudgeTaskConfig, ScoreConfig
 from verifiers.v1.envs.agentic_judge.env import TRACE_FILE, JudgeTask
-from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
@@ -37,22 +36,12 @@ def make_trace(
     answer: str = "Paris",
     task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
-    return vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    return vf.make_trace(
+        [UserMessage(content="Capital of France?"), AssistantMessage(content=reply)],
         task=vf.TraceTask(
             type="Task",
             data=task_cls(idx=0, prompt="Capital of France?", answer=answer),
         ),
-        nodes=[
-            MessageNode(
-                parent=None,
-                message=UserMessage(content="Capital of France?"),
-                sampled=False,
-            ),
-            MessageNode(
-                parent=0, message=AssistantMessage(content=reply), sampled=True
-            ),
-        ],
     )
 
 
@@ -295,15 +284,9 @@ async def test_reference_score_messages_prompt(fake_judge_model):
         prompt=[UM(content=[TextContentPart(text="Capital of France?")])],
         answer="Paris",
     )
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    trace = vf.make_trace(
+        [UserMessage(content="q"), AssistantMessage(content="It is Paris.")],
         task=vf.TraceTask(type="Task", data=task),
-        nodes=[
-            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
-            MessageNode(
-                parent=0, message=AssistantMessage(content="It is Paris."), sampled=True
-            ),
-        ],
     )
     assert await vf.ReferenceJudge().score(task, trace) == 1.0
     assert "Capital of France?" in fake_judge_model[0]
@@ -321,15 +304,9 @@ async def test_reference_question_field(fake_judge_model):
         question="Capital of France?",
         answer="Paris",
     )
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    trace = vf.make_trace(
+        [UserMessage(content="q"), AssistantMessage(content="It is Paris.")],
         task=vf.TraceTask(type="Task", data=task),
-        nodes=[
-            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
-            MessageNode(
-                parent=0, message=AssistantMessage(content="It is Paris."), sampled=True
-            ),
-        ],
     )
     await vf.ReferenceJudge(vf.ReferenceJudgeConfig(question_field="question")).score(
         task, trace
@@ -346,42 +323,27 @@ def full_trace_fixture() -> vf.Trace:
     """A multi-turn trace: user -> assistant (reasoning + tool call) -> tool -> final reply."""
     from verifiers.v1.types import ToolCall, ToolMessage
 
-    return vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    return vf.make_trace(
+        [
+            UserMessage(content="Capital of France?"),
+            AssistantMessage(
+                content="Let me look it up.",
+                reasoning_content="SECRET REASONING",
+                provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
+                tool_calls=[
+                    ToolCall(id="1", name="search", arguments='{"q": "france"}')
+                ],
+            ),
+            ToolMessage(
+                tool_call_id="1",
+                name="search",
+                content="TOOL RESULT: Paris is the capital.",
+            ),
+            AssistantMessage(content="It is Paris."),
+        ],
         task=vf.TraceTask(
             type="Task", data=QAData(idx=0, prompt="Capital of France?", answer="Paris")
         ),
-        nodes=[
-            MessageNode(
-                parent=None,
-                message=UserMessage(content="Capital of France?"),
-                sampled=False,
-            ),
-            MessageNode(
-                parent=0,
-                message=AssistantMessage(
-                    content="Let me look it up.",
-                    reasoning_content="SECRET REASONING",
-                    provider_state=[{"type": "reasoning", "data": "SECRET STATE"}],
-                    tool_calls=[
-                        ToolCall(id="1", name="search", arguments='{"q": "france"}')
-                    ],
-                ),
-                sampled=True,
-            ),
-            MessageNode(
-                parent=1,
-                message=ToolMessage(
-                    tool_call_id="1",
-                    name="search",
-                    content="TOOL RESULT: Paris is the capital.",
-                ),
-                sampled=False,
-            ),
-            MessageNode(
-                parent=2, message=AssistantMessage(content="It is Paris."), sampled=True
-            ),
-        ],
     )
 
 

@@ -100,6 +100,7 @@ from verifiers.v1.semantic import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.testing import make_trace
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
@@ -231,6 +232,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Trace",
     "TraceTask",
     "WireTrace",
+    "make_trace",
     "Reward",
     "EnvInfo",
     "Episode",

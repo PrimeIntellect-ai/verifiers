@@ -1,7 +1,6 @@
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
@@ -56,15 +55,9 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
         },
     )
     task = HookTask(HookData(idx=0, prompt="abc", answer="cba"), config)
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    trace = vf.make_trace(
+        [UserMessage(content="abc"), AssistantMessage(content="cba")],
         task=vf.TraceTask(type="HookTask", data=task.data),
-        nodes=[
-            MessageNode(parent=None, message=UserMessage(content="abc"), sampled=False),
-            MessageNode(
-                parent=0, message=AssistantMessage(content="cba"), sampled=True
-            ),
-        ],
     )
 
     # the plugged `single_turn` replaces the decorated one: no stop after one turn
@@ -91,8 +84,8 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
 
 async def test_defer_scoring_defers_only_task_scoring() -> None:
     task = HookTask(HookData(idx=0, prompt="abc"))
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+    trace = vf.make_trace(
+        (),
         task=vf.TraceTask(type="HookTask", data=task.data),
     )
 

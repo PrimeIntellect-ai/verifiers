@@ -25,6 +25,7 @@ from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
 )
+from verifiers.v1.testing import make_trace
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -767,3 +768,180 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+def test_make_trace_empty_trace_defaults():
+    for trace in (make_trace(), vf.make_trace([])):
+        assert trace.nodes == []
+        assert trace.messages == []
+        assert trace.num_turns == trace.num_branches == 0
+        assert trace.last_reply == ""
+        assert trace.task == vf.TraceTask(type="Task", data=vf.TaskData(idx=0))
+        assert trace.calls == []
+        assert trace.root_reply is None
+
+
+def test_make_trace_empty_reply_is_one_sampled_turn():
+    trace = vf.make_trace("")
+
+    assert len(trace.nodes) == 1
+    assert trace.nodes[0].parent is None
+    assert trace.nodes[0].message == vf.AssistantMessage(content="")
+    assert trace.nodes[0].sampled is True
+    assert trace.num_turns == 1
+    assert trace.last_reply == ""
+    assert trace.calls == []
+    assert trace.root_reply is None
+    assert trace.nodes[0].token_ids == []
+
+
+@pytest.mark.parametrize("raw", [" \t\n", " \t\n答案 🤖\t café\n"])
+def test_make_trace_preserves_raw_whitespace_and_unicode(raw):
+    trace = vf.make_trace(raw)
+
+    assert trace.messages == [vf.AssistantMessage(content=raw)]
+    assert trace.nodes[0].message.content == raw
+    assert trace.last_reply == raw.strip()
+    assert trace.num_turns == 1
+    assert trace.root_reply is None
+
+
+def test_make_trace_iterable_links_linearly_and_samples_assistants_by_default():
+    messages = [
+        vf.SystemMessage(content="system"),
+        vf.UserMessage(content="question"),
+        vf.AssistantMessage(content="first"),
+        vf.UserMessage(content="follow-up"),
+        vf.AssistantMessage(content="second"),
+    ]
+    trace = vf.make_trace(iter(messages))
+
+    assert trace.messages == messages
+    assert [node.parent for node in trace.nodes] == [None, 0, 1, 2, 3]
+    assert [node.sampled for node in trace.nodes] == [False, False, True, False, True]
+    assert trace.assistant_messages == [messages[2], messages[4]]
+    assert trace.num_turns == 2
+    assert trace.last_reply == "second"
+    assert trace.task == vf.TraceTask(type="Task", data=vf.TaskData(idx=0))
+
+
+def test_make_trace_sampled_assistants_ignore_context_after_last_reply():
+    messages = [
+        vf.UserMessage(content="prompt"),
+        vf.AssistantMessage(content="assistant context"),
+        vf.UserMessage(content="continue"),
+        vf.AssistantMessage(content="sampled one"),
+        vf.AssistantMessage(content="sampled two"),
+        vf.AssistantMessage(content="stored assistant context tail"),
+    ]
+    trace = vf.make_trace(messages, sampled={3, 4})
+
+    assert [node.sampled for node in trace.nodes] == [
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+    ]
+    assert trace.assistant_messages == [messages[3], messages[4]]
+    assert trace.last_message == messages[-1]
+    assert trace.last_reply == "sampled two"
+    assert trace.num_turns == 2
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "context",
+        [vf.UserMessage(content="prompt"), vf.AssistantMessage(content="context")],
+    ],
+)
+def test_make_trace_sampled_empty_collection_marks_no_turns(messages):
+    trace = vf.make_trace(messages, sampled=[])
+
+    assert trace.nodes
+    assert all(node.sampled is False for node in trace.nodes)
+    assert trace.assistant_messages == []
+    assert trace.num_turns == 0
+    assert trace.last_reply == ""
+    assert trace.root_reply is None
+
+
+def test_make_trace_tool_call_without_result_has_empty_reply():
+    message = vf.AssistantMessage(
+        tool_calls=[vf.ToolCall(id="call-1", name="lookup", arguments='{"q":"x"}')]
+    )
+    trace = vf.make_trace([message])
+
+    assert trace.messages == trace.assistant_messages == [message]
+    assert trace.last_reply == ""
+    assert trace.num_turns == 1
+    assert trace.tool_messages == []
+    assert trace.calls == []
+    assert trace.root_reply is None
+
+
+def test_make_trace_tool_call_result_and_reply_round_trip():
+    call = vf.ToolCall(id="call-1", name="lookup", arguments='{"q":"x"}')
+    messages = [
+        vf.UserMessage(content="find x"),
+        vf.AssistantMessage(content=None, tool_calls=[call]),
+        vf.ToolMessage(tool_call_id="call-1", content="result x"),
+        vf.AssistantMessage(content=" final answer "),
+    ]
+    trace = vf.make_trace(messages)
+
+    assert trace.messages == messages
+    assert [node.parent for node in trace.nodes] == [None, 0, 1, 2]
+    assert [node.sampled for node in trace.nodes] == [False, True, False, True]
+    assert trace.tool_messages == [messages[2]]
+    assert trace.num_turns == 2
+    assert trace.last_reply == "final answer"
+    assert trace.calls == []
+    assert trace.usage is None
+    assert (
+        trace.num_input_tokens == trace.num_output_tokens == trace.num_total_tokens == 0
+    )
+    assert all(
+        node.token_ids == node.mask == node.logprobs == [] for node in trace.nodes
+    )
+    assert trace.root_reply is None
+
+    restored = vf.Trace.model_validate_json(trace.model_dump_json())
+    assert restored.nodes == trace.nodes
+    assert restored.num_turns == 2
+    assert restored.last_reply == "final answer"
+    assert restored.nodes[1].message.tool_calls == [call]
+    assert restored.tool_messages == [messages[2]]
+    assert restored.calls == []
+    assert restored.root_reply is None
+
+
+def test_make_trace_preserves_custom_task_metadata_and_subclass():
+    task = vf.TraceTask(
+        type="CustomTask",
+        data=MyTask(idx=7, prompt="custom prompt", answer="gold"),
+        key="custom-key",
+        hash="custom-hash",
+    )
+    trace = vf.make_trace([vf.AssistantMessage(content="reply")], task=task)
+
+    assert trace.task == task
+    assert trace.task.type == "CustomTask"
+    assert isinstance(trace.task.data, MyTask)
+    assert trace.task.data.answer == "gold"
+    assert trace.task.key == "custom-key"
+    assert trace.task.hash == "custom-hash"
+
+
+@pytest.mark.parametrize("index", [-1, 4, 0, 1, 2])
+def test_make_trace_rejects_invalid_sampled_indices(index):
+    messages = [
+        vf.SystemMessage(content="system"),
+        vf.UserMessage(content="prompt"),
+        vf.ToolMessage(tool_call_id="call-1", content="result"),
+        vf.AssistantMessage(content="reply"),
+    ]
+    with pytest.raises(ValueError):
+        vf.make_trace(messages, sampled=[3, index])
