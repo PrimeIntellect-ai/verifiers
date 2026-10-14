@@ -314,3 +314,29 @@ async def test_a_restored_box_gets_the_longer_creation_wait(
     await runtime.teardown()
     assert client.waits == [attempts]
     assert prime._RESTORE_WAIT_ATTEMPTS > prime._BOOT_WAIT_ATTEMPTS
+
+
+# --- a borrowed box's deleted uv script is prepared again -----------------------------
+
+
+async def test_a_prepared_script_deleted_on_the_box_is_prepared_again(
+    tmp_path, monkeypatch
+):
+    # A privileged solver's `rm -rf /tmp/vf*` took the bash program out from under
+    # the solvability judge that borrowed its box next: the runtime's cache still
+    # named the script, so setup skipped it and the judge failed to start.
+    from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
+
+    monkeypatch.setattr(SubprocessRuntime, "scripts_dir", str(tmp_path / "scripts"))
+    monkeypatch.setattr(SubprocessRuntime, "_interpreters", {})
+    script = '# /// script\n# dependencies = []\n# ///\nprint("ran")\n'
+    runtime = SubprocessRuntime(SubprocessConfig())
+    await runtime.start()
+    try:
+        argv = await runtime.prepare_uv_script(script, activate=False)
+        (tmp_path / "scripts").joinpath(argv[-1].rsplit("/", 1)[-1]).unlink()
+        argv = await runtime.prepare_uv_script(script, activate=False)
+        result = await runtime.run(argv, {})
+    finally:
+        await runtime.teardown()
+    assert (result.exit_code, result.stdout) == (0, "ran\n")

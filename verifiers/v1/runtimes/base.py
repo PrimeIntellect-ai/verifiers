@@ -356,6 +356,14 @@ class Runtime(ABC):
             self.scripts_dir if self.user is None else f"{self.scripts_dir}-{self.user}"
         )
         path = f"{directory}/{digest}.py"
+        if path in self._uv_interpreters:
+            # A borrowed box's earlier runs may have deleted the script or its
+            # environment (an agent's `rm -rf /tmp/vf*`): prepare it again then.
+            present = await self.run(
+                ["test", "-f", path, "-a", "-x", self._uv_interpreters[path]], {}
+            )
+            if present.exit_code != 0:
+                self._uv_interpreters.pop(path, None)
         if path not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(path, asyncio.Lock()):
                 if self.user is not None and not self._curl_ready:
