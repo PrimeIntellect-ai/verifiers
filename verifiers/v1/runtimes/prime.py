@@ -904,8 +904,9 @@ class PrimeRuntime(Runtime):
     async def _write_parts(self, target: str, data: bytes) -> None:
         """Upload `data` in `_TRANSFER_PART_BYTES` parts beside `target`, then join them
         in the box and move the result onto `target` once its size checks out, so a
-        failed write never leaves a truncated `target`. The parts are removed on every
-        exit."""
+        failed write never leaves a truncated `target`. Each part is removed as soon as
+        it is appended, so the join needs one part's room beyond the file's own. The
+        parts are removed on every exit."""
         stem = f"{target}.vf-part-{uuid.uuid4().hex[:12]}"
         size = _TRANSFER_PART_BYTES
         parts = [f"{stem}.{n:05d}" for n in range(math.ceil(len(data) / size))]
@@ -918,8 +919,9 @@ class PrimeRuntime(Runtime):
                     "sh",
                     "-c",
                     (
-                        'out=$1 size=$2 tmp=$3; shift 3; cat -- "$@" > "$tmp"'
-                        ' && [ "$(wc -c < "$tmp")" -eq "$size" ] && mv -f -- "$tmp" "$out"'
+                        'out=$1 size=$2 tmp=$3; shift 3; : > "$tmp" || exit 1;'
+                        ' for p; do cat -- "$p" >> "$tmp" && rm -f -- "$p" || exit 1; done;'
+                        ' [ "$(wc -c < "$tmp")" -eq "$size" ] && mv -f -- "$tmp" "$out"'
                     ),
                     "sh",
                     target,

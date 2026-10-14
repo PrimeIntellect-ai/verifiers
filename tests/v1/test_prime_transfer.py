@@ -3,6 +3,7 @@ again, and nothing else is. The fake SDK client maps the box onto a local direct
 the runtime's commands run in a local shell, so the join and cut scripts run for real."""
 
 import asyncio
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -121,6 +122,31 @@ async def test_a_large_write_crosses_in_parts_and_leaves_only_the_file(
     assert len(uploads) == 78
     assert all(size <= PART and timeout == 42 for _, size, timeout in uploads)
     assert sorted(p.name for p in target.parent.iterdir()) == ["large.bin"]
+
+
+async def test_a_large_write_joins_in_about_the_files_own_room(
+    runtime, tmp_path, monkeypatch
+):
+    """The join removes each part once appended: the box never holds every part and the
+    joined copy at once (twice the file), which fails a write over half the free disk."""
+    shim, log = tmp_path / "bin", tmp_path / "held.log"
+    shim.mkdir()
+    (shim / "cat").write_text(  # `cat`, then log the bytes the parts and join hold
+        "#!/bin/sh\n"
+        f'{shutil.which("cat")} "$@" || exit\n'
+        "total=0\n"
+        f'for f in "{tmp_path}"/box/*.vf-part-*; do\n'
+        '  [ -f "$f" ] && total=$((total + $(wc -c < "$f")))\n'
+        "done\n"
+        f'echo "$total" >> "{log}"\n'
+    )
+    (shim / "cat").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+    target = tmp_path / "box" / "large.bin"
+    await runtime.write(str(target), DATA)
+    assert target.read_bytes() == DATA
+    held = [int(line) for line in log.read_text().split()]
+    assert max(held) <= len(DATA) + PART, "at most one part beyond the file"
 
 
 async def test_a_large_write_replaces_an_existing_file_whole(runtime, tmp_path):
