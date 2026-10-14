@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import math
+import re
 import shlex
 import tempfile
 import time
@@ -70,6 +71,8 @@ _BOOT_WAIT_ATTEMPTS = 180
 _RESTORE_WAIT_ATTEMPTS = 420
 """Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
 copies the checkpoint's data first, and a large box's takes longer than a boot."""
+_MISSING_CWD = re.compile(r"cwd '([^']+)' does not exist")
+"""The platform's refusal of a command whose working directory is not on the box."""
 
 _CHECKPOINT_DEADLINE_SECONDS = 900
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
@@ -473,23 +476,16 @@ class PrimeRuntime(Runtime):
                         self.config.image,
                         self.info.id,
                     )
-                await self._held(
-                    "boot",
-                    lambda: self._client.wait_for_creation(
-                        self.info.id,
-                        max_attempts=_RESTORE_WAIT_ATTEMPTS
-                        if self.config.checkpoint
-                        else _BOOT_WAIT_ATTEMPTS,
-                    ),
-                    attempts=1,
-                )
+                await self._boot()
                 logger.info(
                     "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
                 )
                 await self._held(
                     "workdir",
                     lambda: self._client.execute_command(
-                        self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+                        self.info.id,
+                        f"mkdir -p {shlex.quote(self.config.workdir)}",
+                        working_dir="/",
                     ),
                 )
                 self.placed = True
@@ -510,6 +506,43 @@ class PrimeRuntime(Runtime):
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
             ) from e
+
+    async def _boot(self) -> None:
+        """Wait for the created box to boot. The SDK's readiness probe runs in the
+        image's WORKDIR, so a box restored from a checkpoint whose filesystem lacks it
+        (a run on the box deleted it) never passes the probe: the directory is made
+        again from / and the wait runs once more."""
+
+        def wait() -> Any:
+            return self._client.wait_for_creation(
+                self.info.id,
+                max_attempts=_RESTORE_WAIT_ATTEMPTS
+                if self.config.checkpoint
+                else _BOOT_WAIT_ATTEMPTS,
+            )
+
+        try:
+            await self._held("boot", wait, attempts=1)
+        except Exception as e:
+            missing = _MISSING_CWD.search(str(e)) if self.config.checkpoint else None
+            if missing is None:
+                raise
+            logger.warning(
+                "prime: sandbox %s restored from %s lacks its image's working "
+                "directory %s; making it again",
+                self.info.id,
+                self.config.checkpoint,
+                missing.group(1),
+            )
+            await self._held(
+                "workdir",
+                lambda: self._client.execute_command(
+                    self.info.id,
+                    f"mkdir -p {shlex.quote(missing.group(1))}",
+                    working_dir="/",
+                ),
+            )
+            await self._held("boot", wait, attempts=1)
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""

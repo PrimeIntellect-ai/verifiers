@@ -299,3 +299,38 @@ async def test_a_command_on_a_box_whose_placement_is_lost_is_box_lost(monkeypatc
         await runtime.run(["true"], {})
     assert caught.value.kind == "box_lost"
     await runtime.teardown()
+
+
+async def test_a_box_restored_without_its_image_workdir_gets_it_back(
+    monkeypatch, sleeps
+):
+    """The SDK's readiness probe runs in the image's WORKDIR, so a box restored from a
+    checkpoint a run took after deleting it never passes the probe: the directory is
+    made again from / and the boot wait runs once more. A box booting from its image
+    with the same refusal fails as before."""
+    refused = RuntimeError(
+        "Connect RPC failed (invalid_argument): cwd '/app' does not exist"
+    )
+    commands: list[tuple[str, str | None]] = []
+
+    class Restoring(Client):
+        async def execute_command(self, sandbox_id, command, working_dir=None, **_):
+            commands.append((command, working_dir))
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    boot = Flaky(refused)
+    client = Restoring(boot=boot)
+    install(monkeypatch, client)
+    runtime = make(monkeypatch, checkpoint="ckpt-1", outage_budget_s=300)
+    await runtime.start()
+    assert boot.calls == 2 and runtime.placed
+    assert commands[0] == ("mkdir -p /app", "/")
+    assert all(working_dir == "/" for _, working_dir in commands)
+    await runtime.teardown()
+
+    client = Restoring(boot=Flaky(refused))
+    install(monkeypatch, client)
+    runtime = make(monkeypatch, outage_budget_s=300)
+    with pytest.raises(SandboxError, match="does not exist"):
+        await runtime.start()
+    await runtime.stop()
