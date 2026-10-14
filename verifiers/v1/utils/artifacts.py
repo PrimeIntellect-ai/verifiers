@@ -163,7 +163,9 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     # submission replaces the entire working directory (or one of its parents).
     workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
     await _run(
-        runtime, f"rm -rf -- {roots} && mkdir -p -- {workdir}", "clear artifact roots"
+        runtime,
+        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
+        "clear artifact roots",
     )
     for root, archive in collected.items():
         if archive is None:

@@ -371,7 +371,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         else:
             # Grading is trusted: a shared-box verifier must not inherit the agent
             # phase's network restrictions (Harbor test scripts install their tools).
-            await runtime.prepare_execution(None)
+            await runtime.backend.prepare_execution(None)
             await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 

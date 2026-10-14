@@ -220,7 +220,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
         def requires_runtime(fn) -> bool:
             param = inspect.signature(fn).parameters.get("runtime")
-            # A defaulted runtime parameter can still be called offline with None.
+            # A defaulted handle parameter can still be called offline with None.
             return param is not None and param.default is inspect.Parameter.empty
 
         judges = self.plugged_judges()

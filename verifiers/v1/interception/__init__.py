@@ -62,7 +62,7 @@ def make_interception(
     state_service_secrets: tuple[str, ...] = (),
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
-    `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
+    `make_backend`). With `requires_tunnel`, each server is exposed through its configured
     tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel, state_service_secrets)

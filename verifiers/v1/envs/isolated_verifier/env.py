@@ -18,7 +18,7 @@ from pydantic import Field, SerializationInfo, field_serializer
 import verifiers.v1 as vf
 from verifiers.v1.agent import resolve_rollout_timeouts
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_runtime
+from verifiers.v1.runtimes import Runtime, RuntimeConfig, provision_backend
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.retries import backoff
@@ -116,7 +116,10 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
             await invoke(task.setup, {"trace": solution, "runtime": runtime})
         await vf.restore(runtime, artifacts)
         async with boundary(TaskError, "verifier staging"):
-            await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
+            await invoke(
+                task.stage_verifier,
+                {"trace": solution, "runtime": runtime},
+            )
 
     async def verify(self, task: vf.Task, solution: vf.Trace, runtime: Runtime) -> Any:
         await task.score(solution, runtime)
@@ -156,8 +159,8 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                         # Only the successful controller and trace leave this scope.
                         verifier_task = copy.deepcopy(task)
                         verifier_solution = copy.deepcopy(solution)
-                        runtime = await boxes.enter_async_context(
-                            provision_runtime(
+                        backend = await boxes.enter_async_context(
+                            provision_backend(
                                 config,
                                 env=(
                                     verifier_task.runtime_env()
@@ -166,14 +169,14 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
                                 ),
                             )
                         )
-                        await runtime.prepare_setup()
+                        await backend.prepare_setup()
                         await self.stage_verifier(
-                            verifier_task, verifier_solution, runtime
+                            verifier_task, verifier_solution, backend.bind()
                         )
-                        await runtime.prepare_execution([])
+                        await backend.prepare_execution([])
                     async with asyncio.timeout(timeouts.scoring):
                         result = await self.verify(
-                            verifier_task, verifier_solution, runtime
+                            verifier_task, verifier_solution, backend.bind()
                         )
                     return result, verifier_solution
             except Exception as error:  # noqa: BLE001 - retry the whole fresh box

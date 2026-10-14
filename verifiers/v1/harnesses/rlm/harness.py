@@ -245,7 +245,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": runtime.env,
+            "kernel_env": dict(runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if self.config.builtin_tools is not None:

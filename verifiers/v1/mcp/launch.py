@@ -31,7 +31,7 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
-    provision_runtime,
+    provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
@@ -234,9 +234,11 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
     # Install as root; the agent user only runs the server.
-    runtime = agent if agent.user is None else agent.with_user(None)
+    runtime = (
+        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
+    )
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -250,18 +252,20 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime._mcp_install_lock:
+    async with runtime.backend._mcp_install_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
-        pending = [source for source in sources if source not in runtime._mcp_sources]
+        pending = [
+            source for source in sources if source not in runtime.backend._mcp_sources
+        ]
         if pending:
             setup = (
                 f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
                 f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
             )
-            if agent.user is not None:
+            if agent_runtime.user is not None:
                 setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-            if not runtime._mcp_sources:
+            if not runtime.backend._mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
@@ -276,8 +280,8 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
                     f"server {server.server_name!r} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime._mcp_sources.update(pending)
-        if agent.user is not None:
+            runtime.backend._mcp_sources.update(pending)
+        if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
             share = (
@@ -289,7 +293,7 @@ async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
             if result.exit_code != 0:
                 raise ToolsetError(
                     f"server {server.server_name!r} could not be shared with "
-                    f"{agent.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
+                    f"{agent_runtime.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
                 )
     return f"{venv}/bin/python"
 
@@ -388,7 +392,11 @@ async def serve_in_runtime(
 
 @contextlib.asynccontextmanager
 async def reachable_url(
-    service: Runtime, port: int, *, colocated: bool, consumer_is_local: bool
+    service_runtime: Runtime,
+    port: int,
+    *,
+    colocated: bool,
+    consumer_is_local: bool,
 ) -> AsyncIterator[str]:
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
     primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
@@ -402,8 +410,8 @@ async def reachable_url(
     if colocated:
         yield f"http://127.0.0.1:{port}"
         return
-    url = await service.expose(port)
-    if service.is_local and not consumer_is_local:
+    url = await service_runtime.expose(port)
+    if service_runtime.is_local and not consumer_is_local:
         async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
             yield public
     else:
@@ -444,7 +452,8 @@ async def _serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
+            backend = await stack.enter_async_context(provision_backend(cfg.runtime))
+            runtime = backend.bind()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime

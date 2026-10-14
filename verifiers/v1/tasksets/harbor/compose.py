@@ -17,12 +17,13 @@ from pathlib import Path
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
+    DockerBackend,
     DockerConfig,
-    DockerRuntime,
     ModalConfig,
     PrimeConfig,
+    Runtime,
     RuntimeConfig,
-    provision_runtime,
+    provision_backend,
 )
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
 from verifiers.v1.runtimes.container import cli
@@ -69,7 +70,7 @@ async def compose_services(
     *,
     trust_compose: bool = False,
     setup_timeout: float | None = None,
-) -> AsyncIterator[tuple[dict[str, DockerRuntime], Callable[[], Awaitable[str]]]]:
+) -> AsyncIterator[tuple[dict[str, Runtime], Callable[[], Awaitable[str]]]]:
     """Own one Compose attempt and lend its services until the context exits."""
     if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
         raise TypeError("Harbor Compose requires Docker, Prime VM or Modal VM")
@@ -96,7 +97,7 @@ async def compose_services(
     async def run_host(*argv: str) -> ProgramResult:
         if host is None:
             return await cli(*argv, env=compose_env)
-        return await host.run(list(argv), compose_env)
+        return await host.bind().run(list(argv), compose_env)
 
     async def compose(*args: str, timeout: float | None = None) -> str:
         async with asyncio.timeout(timeout):
@@ -183,15 +184,15 @@ async def compose_services(
                 if task.data.compose_host_image is not None:
                     host_config = {**host_config, "image": task.data.compose_host_image}
                 host = await stack.enter_async_context(
-                    provision_runtime(config.model_copy(update=host_config))
+                    provision_backend(config.model_copy(update=host_config))
                 )
                 if isinstance(config, PrimeConfig):
-                    install = await host.run(["sh", "-c", INSTALL_DOCKER], {})
+                    install = await host.bind().run(["sh", "-c", INSTALL_DOCKER], {})
                     if install.exit_code:
                         raise SandboxError(
                             f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                         )
-                await host.run_background(
+                await host.bind().run_background(
                     ["dockerd", "--host=unix:///var/run/docker.sock"],
                     {},
                     "/tmp/dockerd.log",
@@ -205,7 +206,7 @@ async def compose_services(
                         f"Loading host images failed: {loaded.stderr or loaded.stdout}"
                     )
                 root = "/harbor"
-                await host.write(
+                await host.bind().write(
                     "/tmp/harbor.tar.gz",
                     pack_dir_to_bytes(directory, compress=True).getvalue(),
                 )
@@ -296,7 +297,9 @@ async def compose_services(
             if host is None:
                 (directory / "overlay.json").write_text(json.dumps(overlay))
             else:
-                await host.write(f"{root}/overlay.json", json.dumps(overlay).encode())
+                await host.bind().write(
+                    f"{root}/overlay.json", json.dumps(overlay).encode()
+                )
             compose_argv += ["-f", f"{root}/overlay.json"]
 
             if local:
@@ -315,19 +318,22 @@ async def compose_services(
                     for address in published.splitlines()
                     if address.startswith("127.0.0.1:")
                 )
-            runtimes: dict[str, DockerRuntime] = {}
+            runtimes: dict[str, DockerBackend] = {}
             for line in containers.splitlines():
                 container, service = line.split()
                 runtimes[service] = await stack.enter_async_context(
-                    DockerRuntime.attach(
+                    DockerBackend.attach(
                         config,
                         container,
-                        host=host,
+                        host_backend=host,
                         service_url=service_url if service == "main" else None,
                     )
                 )
             if "main" not in runtimes:
                 raise SandboxError("Harbor Compose requires a main container")
-        yield runtimes, partial(compose, "stop", "main", timeout=60)
+        yield (
+            {name: backend.bind() for name, backend in runtimes.items()},
+            partial(compose, "stop", "main", timeout=60),
+        )
     finally:
         await run_shielded(stack.aclose())

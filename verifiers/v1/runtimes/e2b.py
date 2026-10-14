@@ -12,6 +12,8 @@ UTF-8 text with ``errors="replace"`` (lossy for bytes — `open_process` swaps t
 handle's decoders to latin-1 to recover exact bytes; see `E2BProcess`).
 """
 
+from __future__ import annotations
+
 import asyncio
 import codecs
 import contextlib
@@ -38,10 +40,11 @@ from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
-    Runtime,
+    RuntimeBackend,
     RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.paths import CACHE_DIR
 from verifiers.v1.utils.scope import run_scope
@@ -116,7 +119,7 @@ def _validate_egress_rules(allow: list[str], block: list[str]) -> None:
             )
 
 
-def _egress_update(config: "E2BConfig", routes: list[str] | None) -> dict:
+def _egress_update(config: E2BConfig, routes: list[str] | None) -> dict:
     """The complete egress policy for `update_network`, which replaces all rules
     atomically. None restores unrestricted egress for another trusted setup phase;
     otherwise `routes` (the interception and MCP endpoints) stay reachable alongside
@@ -161,7 +164,7 @@ class E2BConfig(NetworkPolicyConfig):
     env-server worker process (None/<= 0 disables it). Raise it to your plan's rate."""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "E2BConfig":
+    def _validate_egress(self) -> E2BConfig:
         if self.network_restricted:
             _validate_egress_rules(
                 [rule for rule in self.allow if rule != "*"],
@@ -334,7 +337,7 @@ async def _template_lock(name: str):
         os.close(fd)
 
 
-class E2BRuntime(Runtime):
+class E2BBackend(RuntimeBackend):
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: E2BConfig, name: str | None = None) -> None:
@@ -392,7 +395,7 @@ class E2BRuntime(Runtime):
             from e2b import AsyncSandbox
         except ModuleNotFoundError as e:
             raise ModuleNotFoundError(
-                "E2BRuntime requires the E2B SDK; install `verifiers[e2b]`."
+                "E2BBackend requires the E2B SDK; install `verifiers[e2b]`."
             ) from e
 
         try:
@@ -420,7 +423,7 @@ class E2BRuntime(Runtime):
                     self.info.id = self._sandbox.sandbox_id
 
             # Finish an accepted create request even if the rollout is cancelled so the
-            # surrounding provision_runtime finally can see and kill the sandbox.
+            # surrounding provision_backend finally can see and kill the sandbox.
             await run_shielded(_create())
             logger.info(
                 "e2b: sandbox %s up (image=%s, template=%s)",
@@ -448,7 +451,7 @@ class E2BRuntime(Runtime):
         )
 
     def _command(
-        self, argv: list[str], env: dict[str, str]
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> tuple[str, dict[str, str]]:
         """The wrapped command and its env.
 
@@ -460,7 +463,7 @@ class E2BRuntime(Runtime):
         profile that enabled tracing cannot echo the marker or the exec line to stderr
         after it. The caller-supplied PATH is restored after initialization so it has
         the same precedence as on other runtimes."""
-        command_env = self.process_env(env)
+        command_env = runtime.process_env(env)
         emit = f"printf %s {shlex.quote(self._marker)}"
         command = f"{emit}; {emit} >&2; exec {shlex.join(argv)}"
         if "PATH" in command_env:
@@ -475,10 +478,12 @@ class E2BRuntime(Runtime):
         _, sep, tail = text.partition(self._marker)
         return tail if sep else text
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         from e2b import CommandExitException  # importable once `start` succeeded
 
-        command, command_env = self._command(argv, env)
+        command, command_env = self._command(runtime, argv, env)
         try:
             result = await self._sandbox.commands.run(
                 command,
@@ -527,7 +532,9 @@ class E2BRuntime(Runtime):
             f"e2b durable program connection failed: {cause}; reconnect failed: {error}"
         ) from error
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run_program(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         """Run the rollout through a durable E2B process without ever replaying it."""
         from e2b import CommandExitException
 
@@ -542,6 +549,7 @@ class E2BRuntime(Runtime):
             'rc=$?; printf "%s\\n" "$rc" >"$status"; exit 0'
         )
         command, command_env = self._command(
+            runtime,
             [
                 "sh",
                 "-c",
@@ -555,7 +563,7 @@ class E2BRuntime(Runtime):
             env,
         )
         try:
-            handle = await self._sandbox.commands.run(
+            job = await self._sandbox.commands.run(
                 command,
                 background=True,
                 envs=command_env,
@@ -570,7 +578,7 @@ class E2BRuntime(Runtime):
             status: str | None = None
             while True:
                 try:
-                    await handle.wait()
+                    await job.wait()
                     break
                 except CommandExitException as e:
                     # The wrapper always exits 0, so this is the login shell failing
@@ -585,8 +593,8 @@ class E2BRuntime(Runtime):
                     status = await self._finished_status(status_path)
                     if status is not None:
                         break
-                    handle = await self._reconnect(handle.pid, status_path, e)
-                    if handle is None:  # finished while the stream was down
+                    job = await self._reconnect(job.pid, status_path, e)
+                    if job is None:  # finished while the stream was down
                         break
             stdout, stderr = await asyncio.gather(
                 self._sandbox.files.read(stdout_path, user=_USER),
@@ -609,13 +617,13 @@ class E2BRuntime(Runtime):
                     self._sandbox.files.remove(status_path, user=_USER),
                 )
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        command, command_env = self._command(argv, env)
+        command, command_env = self._command(runtime, argv, env)
         process = E2BProcess(self._sandbox, self._marker.encode())
         try:
-            handle = await self._sandbox.commands.run(
+            job = await self._sandbox.commands.run(
                 command,
                 background=True,
                 envs=command_env,
@@ -629,18 +637,18 @@ class E2BRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"e2b live process failed to start: {e}") from e
         try:
-            process.attach(_byte_handle(handle))
+            process.attach(_byte_handle(job))
         except SandboxError:
             with contextlib.suppress(Exception):
-                await handle.kill()
+                await job.kill()
             raise
         return process
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
-        result = await self.run(["sh", "-c", inner], env)
+        result = await runtime.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
             raise SandboxError(f"e2b background launch failed: {result.stderr.strip()}")
 
@@ -649,9 +657,11 @@ class E2BRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         if max_bytes is not None:
-            return await super()._read(path, max_bytes)
+            return await super()._read(runtime, path, max_bytes)
         try:
             return bytes(
                 await self._sandbox.files.read(
@@ -661,7 +671,7 @@ class E2BRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         target = self._abs(path)
         try:
             await self._sandbox.files.make_dir(
