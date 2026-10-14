@@ -14,7 +14,7 @@ class Env(ABC):
 
 verifiers comes with different pre-built `Env`s to use:
 
-- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The `agentic-judge` Env uses a fresh judge workspace; `shared-agentic-judge` borrows the solver workspace.
+- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The solver’s `ScoringConfig` selects the workspace used for both task scoring and agentic judging.
 - The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
 - The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
 
@@ -78,3 +78,10 @@ absolute paths support different workdirs. Fresh verification requires an isolat
 filesystem and cannot use the host subprocess runtime.
 
 A judge plugin is part of task scoring and receives the selected scoring runtime.
+`AgenticJudgeEnv` runs its separate judge agent through the solver's `on_score`
+callback, before the selected verifier workspace is torn down. Set
+`--env.solver.scoring.mode shared|isolated`, or leave it unset to honor the task default.
+Task scores and the agentic verdict share the verifier's scoring budget; isolated
+retries start in fresh workspaces and commit rewards only after judging succeeds.
+The judge borrows that workspace. Judge model and harness settings live under
+`env.judge`; workspace placement belongs to `env.solver.scoring`.

@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
@@ -20,7 +20,12 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
-from verifiers.v1.grading import bind_scoring_env, grade_task, verifier_runtime
+from verifiers.v1.grading import (
+    bind_scoring_env,
+    grade_task,
+    scoring_transaction,
+    verifier_runtime,
+)
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
@@ -108,7 +113,9 @@ class Rollout:
         runtime: Runtime | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> None:
+        self._on_score = on_score
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -654,12 +661,15 @@ class Rollout:
                 isolated = self._scoring_policy.mode == "isolated"
                 trace.timing.finalize.start = time.time()
                 scoring_elapsed = 0.0
-                if isolated and grader is not None:
+                early_metrics = (
+                    isolated and grader is not None
+                ) or self._on_score is not None
+                if early_metrics:
                     scoring_started = asyncio.get_running_loop().time()
                     # Metrics are best-effort: reserve at least 90% of a finite
                     # scoring budget for verification, with a 30-second ceiling.
-                    # Capture harness metrics while its runtime is still live, before
-                    # quiescing or stopping a colocated Compose workspace.
+                    # Capture solver metrics before stopping its workspace or letting
+                    # an agentic judge change files and execution state in place.
                     try:
                         async with (
                             asyncio.timeout(
@@ -709,9 +719,8 @@ class Rollout:
                 except TimeoutError:
                     self.timeout("finalize")
                     if isolated:
-                        if grader is None:
-                            # Deferred scoring normally captures metrics after finalize.
-                            # Keep them even when collection aborts before that point.
+                        if not early_metrics:
+                            # Deferred scoring has not captured metrics yet.
                             deadline = (
                                 asyncio.get_running_loop().time()
                                 + self._timeouts.scoring
@@ -742,7 +751,7 @@ class Rollout:
                     if self._timeouts.scoring is not None
                     else None
                 )
-                if not isolated or grader is None:
+                if not early_metrics:
                     # Collect metrics before a shared verifier can exhaust the budget.
                     metrics_budget = (
                         min(30.0, self._timeouts.scoring / 10)
@@ -773,26 +782,44 @@ class Rollout:
                                     self._grading_config,
                                     self._timeouts,
                                     self._scoring_policy,
+                                    on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")
+                                if self._on_score is not None:
+                                    self.fail(
+                                        TaskError(
+                                            "verification exceeded its scoring deadline"
+                                        )
+                                    )
                         else:
-                            scoring_runtime = runtime
-                            if not self._scoring_task.scoring_deferred:
-                                scoring_runtime = bind_scoring_env(
-                                    runtime, self._scoring_policy
-                                )
-                                await invoke(
-                                    self._scoring_task.stage_verifier,
-                                    {
-                                        "trace": trace,
-                                        "runtime": scoring_runtime,
-                                    },
-                                )
-                            await self._scoring_task.score(trace, scoring_runtime)
+                            with (
+                                scoring_transaction(trace)
+                                if self._on_score is not None
+                                else contextlib.nullcontext()
+                            ):
+                                scoring_runtime = runtime
+                                if not self._scoring_task.scoring_deferred:
+                                    scoring_runtime = bind_scoring_env(
+                                        runtime, self._scoring_policy
+                                    )
+                                    await invoke(
+                                        self._scoring_task.stage_verifier,
+                                        {
+                                            "trace": trace,
+                                            "runtime": scoring_runtime,
+                                        },
+                                    )
+                                await self._scoring_task.score(trace, scoring_runtime)
+                                if self._on_score is not None:
+                                    await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
+                    if self._on_score is not None:
+                        self.fail(
+                            TaskError("verification exceeded its scoring deadline")
+                        )
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure

@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from pathlib import PurePosixPath
 
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -24,6 +24,21 @@ from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def scoring_transaction(trace: Trace):
+    """Discard partial shared scores when a required scoring callback fails."""
+    saved = copy.deepcopy((trace.state, trace.rewards, trace.metrics, trace.info))
+    try:
+        yield
+    except BaseException:
+        # Failed judges still consume tokens and calls; retain their accounting.
+        judge_calls = trace.info.get("judge_calls")
+        trace.state, trace.rewards, trace.metrics, trace.info = saved
+        if judge_calls is not None:
+            trace.info["judge_calls"] = judge_calls
+        raise
 
 
 def verifier_runtime(
@@ -81,6 +96,7 @@ async def grade_task(
     policy: ScoringConfig,
     *,
     scoring_elapsed: float = 0.0,
+    on_score=None,
 ) -> None:
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -120,6 +136,8 @@ async def grade_task(
                         boundary(TaskError, "verifier scoring"),
                     ):
                         await grader.score(result, runtime)
+                        if on_score is not None:
+                            await on_score(result, runtime)
                 finally:
                     # Model-backed judges are billed even when an attempt fails.
                     # Preserve their accounting without committing partial rewards/state.
