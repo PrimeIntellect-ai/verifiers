@@ -826,6 +826,74 @@ async def test_an_exchange_cut_after_its_last_turn_replays_into_the_episode(
     assert [t.id for t in again.traces] == [cut.id] and again.traces[0].kept
 
 
+class ScopedEnv(vf.Env[PairConfig]):
+    """One solver run per episode, scoped by `labels`; it waits for `release` while
+    `hold` is set, so a test can start another episode beside it."""
+
+    root: Path
+    labels: ClassVar[dict] = {"job": "j1"}
+    hold: ClassVar[bool] = False
+    entered: ClassVar[asyncio.Event]
+    release: ClassVar[asyncio.Event]
+
+    def trace_labels(self, task):
+        return dict(ScopedEnv.labels)
+
+    def durable(self, task):
+        return vf.Durable(vf.TraceDir(self.root))
+
+    async def run(self, task, agents):
+        if ScopedEnv.hold:
+            ScopedEnv.entered.set()
+            await ScopedEnv.release.wait()
+        await agents.solver.run(task)
+
+
+@pytest.fixture
+def scoped(model, tmp_path, monkeypatch):
+    from verifiers.v1.utils import loaders
+
+    load = loaders.load_harness
+    monkeypatch.setattr(
+        loaders,
+        "load_harness",
+        lambda config: ScriptHarness(config) if config.id == "null" else load(config),
+    )
+    ScopedEnv.root, ScopedEnv.labels, ScopedEnv.hold = tmp_path, {"job": "j1"}, False
+    ScopedEnv.entered, ScopedEnv.release = asyncio.Event(), asyncio.Event()
+    env = ScopedEnv(PairConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    ctx = ModelContext(
+        model="scripted",
+        client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
+    )
+    return env, ctx
+
+
+async def test_a_durable_episode_needs_a_scope(model, scoped):
+    env, ctx = scoped
+    ScopedEnv.labels = {}
+    episode = await env.run_episode(task(), ctx)
+    assert not episode.ok and episode.traces == [] and model.requests == []
+    assert "scope that identifies it" in episode.errors[-1].message
+
+
+async def test_two_live_episodes_cannot_share_a_scope(model, scoped):
+    env, ctx = scoped
+    ScopedEnv.hold = True
+    first = asyncio.create_task(env.run_episode(task(), ctx))
+    await ScopedEnv.entered.wait()
+    ScopedEnv.hold = False  # only the first waits
+    # A second rollout of the task, labelled the same, would take the first's calls.
+    second = await env.run_episode(task(), ctx)
+    assert not second.ok and second.traces == []
+    assert "is running" in second.errors[-1].message
+    ScopedEnv.release.set()
+    assert (await first).ok
+    # Once the first landed, the scope is free: run again, it keeps its call.
+    again = await env.run_episode(task(), ctx)
+    assert again.ok and again.traces[0].kept
+
+
 # -- a multi-agent episode, crashed and run again ---------------------------------
 
 

@@ -97,6 +97,12 @@ they are this episode's traces too, since the attempt that made them never lande
 continue their cut-off runs from the latest checkpoint, and restore the boxes the seats
 share. Without `durable()`, nothing changes.
 
+The scope is the episode's identity, so it must be unique to the episode and the same
+each time it runs: two rollouts of one task need labels that tell them apart (a rollout
+index the runner puts in the task), or the second takes the first's calls as its own. An
+episode whose scope is empty fails, and so does one whose scope another episode running
+in the same process holds.
+
 The rule, for everything `run()` does:
 
 - **Anything expensive or nondeterministic is an agent run**, so it has a trace: a model

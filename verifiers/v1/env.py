@@ -2,9 +2,10 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import (
     Generic,
@@ -39,6 +40,38 @@ from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = logging.getLogger(__name__)
+
+
+_LIVE_SCOPES: set[str] = set()
+"""The durable scopes of the episodes running in this process."""
+
+
+@contextlib.contextmanager
+def _hold_scope(durable: Durable | None) -> Iterator[None]:
+    """Hold `durable`'s scope while one episode runs through it. The scope is the
+    episode's identity: two episodes with one scope would take each other's calls, so
+    an empty scope, or one another live episode holds, raises."""
+    if durable is None:
+        yield
+        return
+    scope = durable.scope
+    if not scope:
+        raise ValueError(
+            "a durable episode needs a scope that identifies it: set Durable.match, "
+            "or return labels unique to the episode from trace_labels(task)"
+        )
+    held = json.dumps(scope, sort_keys=True, default=str)
+    if held in _LIVE_SCOPES:
+        raise ValueError(
+            f"another episode with the durable scope {scope!r} is running: the scope "
+            "(Durable.match, or trace_labels(task)) must be unique to the episode, "
+            "e.g. carry its rollout index"
+        )
+    _LIVE_SCOPES.add(held)
+    try:
+        yield
+    finally:
+        _LIVE_SCOPES.discard(held)
 
 
 @dataclass
@@ -182,9 +215,13 @@ class Env(ABC, Generic[ConfigT]):
         finished calls and continues its cut-off ones from their checkpoints. Host code
         between the calls must then be cheap and deterministic given their results (see
         docs/v1/env.md, "Durable episodes"). The scope is the durable's `match`; left
-        None, this episode's `trace_labels(task)`, which every trace carries. Called
-        once per episode attempt, before `setup()`; a raise fails the episode.
-        Default: none (calls are plain, as in RL training)."""
+        None, this episode's `trace_labels(task)`, which every trace carries. The scope
+        is the episode's identity: unique to it (two rollouts of one task differ, e.g.
+        by a rollout index the runner puts in the task) and the same when it runs
+        again. An empty scope fails the episode, and so does one another episode
+        running in this process holds. Called once per episode attempt, before
+        `setup()`; a raise fails the episode. Default: none (calls are plain, as in RL
+        training)."""
         return None
 
     def complete(self, episode: Episode) -> bool:
@@ -273,13 +310,17 @@ class Env(ABC, Generic[ConfigT]):
         minted = observe(on_trace, labels)
         agents = self._episode_agents(ctx, episode.traces, minted, on_discard)
         try:
-            async with asyncio.timeout(self.config.timeout.episode):
+            async with (
+                asyncio.timeout(self.config.timeout.episode),
+                contextlib.AsyncExitStack() as held,
+            ):
                 async with boundary(EnvError, f"{type(self).__name__}.trace_labels()"):
                     labels.update(self.trace_labels(task))
                 async with boundary(EnvError, f"{type(self).__name__}.durable()"):
                     calls = self.durable(task)
                     if calls is not None and calls.match is None:
                         calls = calls.within(labels)
+                    held.enter_context(_hold_scope(calls))
                 with use_durable(calls):
                     async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                         await self.setup(agents)
