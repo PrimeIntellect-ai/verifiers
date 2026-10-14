@@ -35,7 +35,7 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && [ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ] && exit 0
+[ -x "$prefix/bin/prime-agent" ] && [ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
@@ -82,7 +82,7 @@ repacked="$(npm pack "$download_dir/package-root/package" \
 PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
     --no-fund --no-audit --loglevel=error --progress=false \
     "$download_dir/repacked/$repacked"
-[ -f "$HOME/.prime/agent/kernel-venv/.bootstrap-version" ]
+[ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ]
 """
 
 
@@ -166,6 +166,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             },
             label="prime-agent",
         )
@@ -276,6 +277,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
 
+    def _kernel_venv(self) -> str:
+        """One venv path for install and session, in the shared install dir so the
+        agent user can read the venv the root run bootstrapped."""
+        return f"{PRIME_AGENT_DIR}/{self.config.commit}/kernel-venv"
+
     @staticmethod
     def _root(trace: Trace) -> str:
         digest = hashlib.sha256(trace.id.encode()).hexdigest()[:16]
@@ -288,5 +294,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",
             "TMPDIR": f"{root}/tmp",
+            "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             "PRIME_AGENT_TELEMETRY": "0",
         }
