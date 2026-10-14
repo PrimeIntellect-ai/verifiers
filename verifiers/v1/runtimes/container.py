@@ -89,7 +89,7 @@ class ContainerProcess(RuntimeProcess):
         pidfile: str,
     ) -> None:
         self._process = process
-        self._runtime = runtime
+        self._runtime = runtime.backend.bind(env={}).with_user(runtime.user)
         self._pid = pid
         self._pidfile = pidfile
         self.stdout, self.stderr = process.stdout, process.stderr
@@ -138,6 +138,7 @@ async def _abort_process_startup(
     proc: RuntimeProcess, runtime: Runtime, pidfile: str
 ) -> str:
     """Kill a partially opened container process and reap its CLI client."""
+    runtime = runtime.backend.bind(env={}).with_user(runtime.user)
     # The target normally writes its PID immediately, but cancellation can win
     # that race. Wait briefly for the file before signalling the process group.
     cleanup = (
@@ -268,7 +269,7 @@ class ContainerBackend(RuntimeBackend):
                     # have written their PID and finished before the first poll.
                     returncode = await proc.poll()
                     ready = await self._run_host(
-                        *self._exec(runtime.process_env({}), user=runtime.user),
+                        *self._exec({}, user=runtime.user),
                         "cat",
                         pidfile,
                     )
@@ -312,7 +313,7 @@ class ContainerBackend(RuntimeBackend):
     ) -> bytes:
         argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         code, data, stderr = await self._communicate_host(
-            *self._exec(runtime.process_env({}), user=runtime.user), *argv, "--", path
+            *self._exec({}, user=runtime.user), *argv, "--", path
         )
         if code != 0:
             raise SandboxError(
@@ -323,7 +324,7 @@ class ContainerBackend(RuntimeBackend):
     async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
         code, _, stderr = await self._communicate_host(
-            *self._exec(runtime.process_env({}), user=runtime.user, stdin=True),
+            *self._exec({}, user=runtime.user, stdin=True),
             "sh",
             "-c",
             f"mkdir -p {parent} && cat > {shlex.quote(path)}",
