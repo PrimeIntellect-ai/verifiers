@@ -234,7 +234,9 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, agent: Runtime) -> str:
+    # Install as root; the agent user only runs the server.
+    runtime = agent if agent.user is None else agent.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -244,35 +246,51 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
+    python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime._mcp_install_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [source for source in sources if source not in runtime._mcp_sources]
-        if not pending:
-            return f"{venv}/bin/python"
-        setup = (
-            f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-            f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
-        )
-        if not runtime._mcp_sources:
-            # Failed installs can leave the venv behind; retain it when retrying.
-            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
-        # Drain remote writes and installs before cancellation releases the lock.
-        for source in pending:
-            name, data = await _cached_package(Path(source))
-            remote = f"{root}/{name}"
-            await run_shielded(runtime.write(remote, data))
-            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-        result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
-        if result.exit_code != 0:
-            raise ToolsetError(
-                f"server {server.server_name!r} install failed in runtime: "
-                f"{(result.stderr or result.stdout).strip()[-2000:]}"
+        if pending:
+            setup = (
+                f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+                f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+                'export PATH="$HOME/.local/bin:$PATH"; '
             )
-        runtime._mcp_sources.update(pending)
+            if agent.user is not None:
+                setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
+            if not runtime._mcp_sources:
+                # Failed installs can leave the venv behind; retain it when retrying.
+                setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+            # Drain remote writes and installs before cancellation releases the lock.
+            for source in pending:
+                name, data = await _cached_package(Path(source))
+                remote = f"{root}/{name}"
+                await run_shielded(runtime.write(remote, data))
+                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} install failed in runtime: "
+                    f"{(result.stderr or result.stdout).strip()[-2000:]}"
+                )
+            runtime._mcp_sources.update(pending)
+        if agent.user is not None:
+            # Root's uv lives in its home; copy it into the venv, open to the agent.
+            python_q = shlex.quote(python_dir)
+            share = (
+                'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+                f'cp "$(command -v uv)" {venv_q}/bin/uv; chmod -R a+rX {venv_q}; '
+                f"[ ! -d {python_q} ] || chmod -R a+rX {python_q}"
+            )
+            result = await run_shielded(runtime.run(["sh", "-c", share], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} could not be shared with "
+                    f"{agent.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
+                )
     return f"{venv}/bin/python"
 
 
@@ -338,12 +356,18 @@ async def serve_in_runtime(
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
+        path = "$HOME/.local/bin:$PATH"
+        if runtime.user is not None:
+            path = f"{PurePosixPath(python).parent}:{path}"
         command = [
             "sh",
             "-c",
-            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+            f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
     log = f"vf_tool_{server.server_name}.log"
+    if runtime.user is not None:
+        # The agent user may not be able to write the workdir.
+        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed

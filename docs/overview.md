@@ -2,6 +2,43 @@
 
 verifiers is a framework for defining tasks, running agents and harnesses, scoring them on set tasks, and using those for evaluations and reinforcement learning.
 
+The following concepts are important when creating or running tasksets, be it for evals or training:
+
+## Environment Hub
+
+The [Environment Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) is Prime Intellect's collection of user-created tasksets which are installable and ready to use with verifiers.
+
+## Taskset
+
+A taskset is the collection and loader for the work to evaluate or train on. Each task combines a serializable `TaskData` row (prompt, files, references, resource requirements) with its task class's behavior (lifecycle hooks, tools, metrics, and rewards). The taskset's `load()` method constructs those objects and declares their task/config types through `Taskset[TaskT, ConfigT]`.
+
+## Harness
+
+A harness is the program the model is run in, e.g. Claude Code, Codex or mini-swe-agent.
+
+## Agent
+
+An Agent is the combination of harness × model × runtime policy which produces a `Trace`.
+
+## Environment
+
+An environment has one or multiple agents and defines the control flow among them.
+
+## Toolset
+
+A set of tools defined by the taskset that are installed as MCP servers into the harnesses that support them.
+
+## Trace
+
+A trace records the message graph, rewards, metrics, errors, and one per-call record (`ModelCall`) per provider exchange (its model, sampling, finish reason, usage, timing, and any error), etc. When using verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers).
+
 ## Documentation
 
-- **[verifiers v1](v1/overview.md)** — The documentation for verifiers v1 (`verifiers.v1`), built around tasksets, harnesses, and traces. This is what environments should target. The legacy v0 stack (`import verifiers as vf`) has been removed.
+- [Getting started](getting_started.md) - How to install verifiers and the needed skills.
+- [Architecture](architecture.md) — How verifiers works behind-the-scenes
+- [Tasksets](tasksets.md) — How to create tasksets
+  - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
+- [Evaluation](evaluation.md) — How to evaluate tasksets
+- [Harnesses](harnesses.md) — How to build custom harnesses
+- [Agent](agent.md) — How to run standalone agents
+- [Env](env.md) — How to build multi-agent environments

@@ -1,0 +1,22 @@
+name: Docs
+
+on:
+  push:
+    tags:
+      # Sync docs on stable releases only, not on every commit to main.
+      - 'v*'
+      - '!v*dev*'
+  workflow_dispatch:
+
+jobs:
+  trigger-docs-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger public-docs workflow
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{ secrets.DOCS_SYNC_PAT }}
+          repository: PrimeIntellect-ai/public-docs
+          event-type: docs-updated
+          client-payload: '{"repo": "verifiers", "ref": "${{ github.sha }}"}'
+
