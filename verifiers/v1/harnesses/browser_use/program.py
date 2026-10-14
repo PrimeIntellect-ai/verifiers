@@ -195,8 +195,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--browser", default="chromium")
     parser.add_argument("--cdp-url", default="")
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
@@ -230,15 +228,8 @@ async def main() -> None:
     async with AsyncExitStack() as mcp_stack:
         mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
         tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+        # The whole opening conversation, system prompt included (`launch_chat_program`).
+        messages = list(initial)
         while True:
             message = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))
