@@ -215,14 +215,10 @@ class SamplingMask:
         """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
         form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
         if isinstance(sampling_mask, dict):
-            ids, counts = (
-                np.frombuffer(
-                    base64.b64decode(sampling_mask[key]["data"]),
-                    dtype=sampling_mask[key]["dtype"],
-                ).astype(np.int32, copy=False)
-                for key in ("ids", "counts")
+            return cls(
+                ids=_decode_packed(sampling_mask["ids"], np.int32),
+                counts=_decode_packed(sampling_mask["counts"], np.int32),
             )
-            return cls(ids=ids, counts=counts)
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -234,6 +230,11 @@ class SamplingMask:
             else np.empty(0, dtype=np.int32)
         )
         return cls(ids=ids, counts=counts)
+
+
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
+    return array.astype(dtype, copy=False)
 
 
 class PayloadSegment(BaseModel):
