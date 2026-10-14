@@ -586,7 +586,7 @@ class ChatDialect(Dialect[ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
-        overrides = sampling.wire_args()
+        overrides = sampling.model_dump(exclude_none=True)
         max_token_keys = {"max_tokens", "max_completion_tokens"}
         max_tokens_overridden = not max_token_keys.isdisjoint(overrides)
         steered = {

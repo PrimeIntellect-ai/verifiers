@@ -754,7 +754,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
     ) -> RawRequest:
         # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
-        s = sampling.wire_args()
+        s = sampling.model_dump(exclude_none=True)
         max_tokens = s.pop("max_tokens", None)
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_reasoning = s.pop("reasoning", None)

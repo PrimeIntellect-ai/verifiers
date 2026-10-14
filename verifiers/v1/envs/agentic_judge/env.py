@@ -1,21 +1,11 @@
-"""Agentic judging: a solver plays the task, then a judge verifies the work.
+"""A solver followed by an agentic judge in the selected verifier workspace.
 
-Two reusable envs share the grading protocol. `--env.id agentic-judge` provisions
-a fresh box from the solver's runtime policy and restores only the task's collected
-artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
-solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
-criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
-observable trace record uploaded at `/tmp/trace.json`. Hidden reasoning and opaque
-provider state are omitted by default and may be explicitly included through the
-judge task config. `finalize()` validates the verdicts
-strictly onto the solver's trace — `judge/<name>` metrics plus a weighted-mean
-`judge` reward, composed with the taskset's own rewards via `[env.score]`
-(judge-only by default).
-
-The environment id selects the runtime boundary; there is no mode boolean whose
-value can disagree with the environment's security and artifact semantics.
+The solver's ScoringConfig selects shared or isolated scoring. Task scoring and
+agentic judging run in that same workspace and share its timeout/retry boundary.
+The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -23,6 +13,8 @@ from pathlib import Path
 from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
@@ -104,11 +96,15 @@ are present. {_RECORD_NOTE}"""
 ISOLATED_WORKSPACE_NOTE = f"""\
 ## Your workspace
 
-This is a fresh sandbox built from the task's image. The task's published
-artifacts were restored at their original paths; other changes made by the
-graded agent are not present. The usual artifact location is
-`{vf.ARTIFACTS_DIR}/` (for code tasks, typically a patch to read or apply), plus
-any task-declared paths. {_RECORD_NOTE}"""
+This verification sandbox was initialized from the selected verifier image.
+The task's published artifacts were restored at their original paths; unpublished
+solver changes are not present. The usual artifact location is
+`{vf.ARTIFACTS_DIR}/`, plus task-declared paths. Task setup, verifier staging, and
+task scoring have already run here: hidden tests, reference material, generated
+files, and scoring side effects may also be present. Distinguish the submitted
+artifacts from verifier-provided material; verify the submission empirically,
+rather than treating a reference file or a recorded score as proof of success.
+{_RECORD_NOTE}"""
 
 HINT_SECTION = """\
 ## Hints
@@ -128,28 +124,24 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
-        artifacts: dict[str, bytes | None],
     ) -> None:
         super().__init__(data)
         self.files = files
-        self.artifacts = artifacts
 
     @classmethod
     def from_trace(
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        share_runtime: bool = True,
+        *,
+        isolated: bool = False,
     ) -> "JudgeTask":
-        """Mint the judge's task from the solver's finished trace.
-
-        `share_runtime` selects both the workspace note and artifact transport. In
-        the solver's box the published artifacts are already on disk, so none
-        travel; a fresh box gets the collected set, restored by `setup` at the
-        paths they had.
-        """
+        """Build the verdict task for the already prepared scoring workspace."""
         solved = solution.task.data
         record = solution.to_record()
+        # This snapshot is evidence for verification, not its final outcome.
+        # stop() marks the agent loop completed before rollout scoring finishes.
+        record.pop("ok", None)
         if not config.include_hidden_reasoning:
             for node in record["nodes"]:
                 message = node["message"]
@@ -161,9 +153,7 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        workspace_note = (
-            SHARED_WORKSPACE_NOTE if share_runtime else ISOLATED_WORKSPACE_NOTE
-        )
+        workspace_note = ISOLATED_WORKSPACE_NOTE if isolated else SHARED_WORKSPACE_NOTE
         sections = [body, _verdict_section(config.criteria()), workspace_note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
@@ -179,11 +169,9 @@ class JudgeTask(vf.Task):
                 network_block=solved.network_block,
             ),
             files=files,
-            artifacts={} if share_runtime else solution.state.artifacts,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        await vf.restore(runtime, self.artifacts)
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
@@ -273,22 +261,15 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime setting is ignored: both judging modes use the
-    solver's resolved runtime policy, either by borrowing its box or provisioning a
-    fresh equivalent one."""
+    """The judge program; it borrows the workspace selected by solver.scoring."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
-    """Common agentic-judge protocol; subclasses choose the runtime boundary."""
+    """Run an empirical judge during the solver's verification phase."""
 
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        # Both modes use the solver's policy. Shared judging borrows that exact box;
-        # isolated judging resolves the mirrored JudgeTask into a fresh equivalent.
-        config.judge = config.judge.model_copy(
-            update={"runtime": config.solver.runtime}
-        )
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
@@ -307,21 +288,16 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
-        if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
-            raise TypeError(
-                "agentic-judge requires the solver to run in a container, but it "
-                "resolves to the subprocess runtime; use "
-                "--env.solver.runtime.type docker or prime"
+        if self.config.judge.scoring.model_fields_set:
+            raise ValueError(
+                "configure scoring placement on solver.scoring, not judge.scoring"
             )
-        validate_pairing(judge, JudgeTask, self.config.judge.runtime)
 
     async def setup(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent.name: t for t in episode.traces}
-        solution, verdict = by_agent["solver"], by_agent["judge"]
+    def _record_verdict(self, solution: vf.Trace, verdict: vf.Trace) -> None:
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
         scores = score_verdicts(verdicts, criteria, "the rubric's")
@@ -335,28 +311,47 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
 
-
-class SharedAgenticJudgeEnv(AgenticJudgeEnv):
-    """Judge the solver in its runtime, preserving the complete mutable workspace."""
-
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
-            if not solution.ok:
-                raise RuntimeError(
-                    "the solver's rollout failed, so the judge never ran"
+        policy = resolve_scoring(task.scoring, self.config.solver.scoring)
+        workspace = (
+            policy.runtime if policy.mode == "isolated" else None
+        ) or self.config.solver.runtime
+        if isinstance(workspace, vf.SubprocessConfig):
+            raise TypeError("agentic judging requires a container scoring workspace")
+        validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
+
+        async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
+            isolated = policy.mode == "isolated"
+            judge_task = JudgeTask.from_trace(
+                solution,
+                self.config.task,
+                isolated=isolated,
+            )
+            # The workspace already has the verifier's image and network policy.
+            # Do not reapply the solver's requirements to an overridden verifier.
+            updates = {
+                "image": runtime.config.image,
+                "workdir": runtime.config.workdir,
+            }
+            if isinstance(runtime.config, NetworkPolicyConfig):
+                updates.update(
+                    network_allow=runtime.config.allow,
+                    network_block=runtime.config.block,
                 )
-            judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+            judge_task = judge_task.with_data(**updates)
+            # A per-invocation view retains episode accounting and concurrency while
+            # binding placement to the already provisioned scoring workspace.
+            judge_agent = copy.copy(agents.judge)
+            judge_agent.runtime_config = runtime.config
+            judge_agent.config = judge_agent.config.model_copy(
+                update={"runtime": runtime.config}
+            )
+            verdict = await judge_agent.run(judge_task, runtime=runtime)
+            if not verdict.ok:
+                raise RuntimeError(
+                    "agentic judge failed: "
+                    + "; ".join(error.message for error in verdict.errors)
+                )
+            self._record_verdict(solution, verdict)
 
-
-class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
-    """Judge only collected artifacts in a fresh box with the solver's policy."""
-
-    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task, collect_artifacts=True)
-        if not solution.ok:
-            raise RuntimeError("the solver's rollout failed, so the judge never ran")
-        await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
-        )
+        await agents.solver.run(task, on_score=judge)

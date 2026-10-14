@@ -375,7 +375,7 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
-        sampling_params = sampling.wire_args()
+        sampling_params = sampling.model_dump(exclude_none=True)
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         cache_salt = sampling_params.pop("cache_salt", None)
         pool = ElasticRendererPool(

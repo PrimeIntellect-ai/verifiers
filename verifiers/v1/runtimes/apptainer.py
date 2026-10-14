@@ -16,7 +16,7 @@ from pydantic import model_validator
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, parse_gpu
-from verifiers.v1.runtimes.container import ContainerConfig, ContainerRuntime, cli
+from verifiers.v1.runtimes.container import ContainerBackend, ContainerConfig, cli
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class ApptainerRuntimeInfo(ApptainerConfig, BaseRuntimeInfo):
     pass
 
 
-class ApptainerRuntime(ContainerRuntime):
+class ApptainerBackend(ContainerBackend):
     _pulls: ClassVar[
         WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock]
     ] = WeakValueDictionary()
@@ -62,7 +62,9 @@ class ApptainerRuntime(ContainerRuntime):
         self._dir: Path | None = None  # host backing for the workspace, /tmp and $HOME
         self._stopped = False
 
-    def _exec(self, env: dict[str, str], *, stdin: bool = False) -> list[str]:
+    def _exec(
+        self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
+    ) -> list[str]:
         # `--env` is a comma-separated map flag, so values pass through `env` inside.
         return [
             "apptainer",

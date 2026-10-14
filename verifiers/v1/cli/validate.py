@@ -31,7 +31,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import make_runtime
+from verifiers.v1.runtimes import make_backend
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
@@ -266,7 +266,7 @@ CHECKS = {"setup": _setup_only, "gold": _gold, "noop": _score_untouched}
 
 async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow:
     start = time.time()
-    runtime = make_runtime(
+    backend = make_backend(
         resolve_runtime_config(config.runtime, task),
         name=f"validate-{mode}-{task.data.idx}-{uuid4().hex[:8]}",
     )
@@ -279,7 +279,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
     exc = None
     trace: Trace | None = None
     try:
-        runtime.env = dict(task.runtime_env())
+        backend.env = dict(task.runtime_env())
         trace = Trace(
             task=TraceTask(
                 type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -292,7 +292,8 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
                 trainable=False,
             ),
         )
-        await runtime.start()
+        await backend.start()
+        runtime = backend.bind()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
@@ -304,7 +305,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
         exc = e
     finally:
         try:
-            await runtime.stop()
+            await backend.stop()
         except Exception:
             logger.warning(
                 "runtime teardown failed (task %s)", task.data.idx, exc_info=True

@@ -1,9 +1,16 @@
+import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 from typing_extensions import TypedDict
 
 
@@ -202,7 +209,16 @@ class SamplingMask:
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls, sampling_mask: list[list[int]] | dict[str, Any]
+    ) -> "SamplingMask":
+        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        if isinstance(sampling_mask, dict):
+            return cls(
+                ids=_decode_packed(sampling_mask["ids"], np.int32),
+                counts=_decode_packed(sampling_mask["counts"], np.int32),
+            )
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -214,6 +230,11 @@ class SamplingMask:
             else np.empty(0, dtype=np.int32)
         )
         return cls(ids=ids, counts=counts)
+
+
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
+    return array.astype(dtype, copy=False)
 
 
 class TurnTokens(BaseModel):
@@ -276,17 +297,20 @@ class SamplingConfig(BaseModel):
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
 
-    def wire_args(self) -> dict[str, Any]:
-        """Flatten OpenAI-style ``extra_body`` before building a provider request."""
-        args = self.model_dump(exclude_none=True)
-        extra_body = {
-            key: value
-            for key, value in (args.pop("extra_body", None) or {}).items()
-            if value is not None
-        }
-        if "max_tokens" in args:
-            extra_body.pop("max_completion_tokens", None)
-        return {**extra_body, **args}
+    @model_validator(mode="before")
+    @classmethod
+    def normalize(cls, data: Any) -> Any:
+        """Use one key per parameter before merging overrides, retaining null clears."""
+        if not isinstance(data, dict):
+            return data
+        normalized = {}
+        for layer in (data.get("extra_body") or {}, data):
+            layer = dict(layer)
+            if "max_completion_tokens" in layer:
+                layer.setdefault("max_tokens", layer.pop("max_completion_tokens"))
+            layer.pop("extra_body", None)
+            normalized.update(layer)
+        return normalized
 
 
 Sampling = SamplingConfig

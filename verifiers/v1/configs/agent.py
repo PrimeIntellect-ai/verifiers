@@ -2,15 +2,24 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    SerializeAsAny,
+    field_serializer,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes.deployment import DeploymentConfig
 from verifiers.v1.types import SamplingConfig
-from verifiers.v1.utils.generic import deep_merge
+from verifiers.v1.utils.generic import merge_defaults
 
 
 class TimeoutConfig(BaseConfig):
@@ -25,15 +34,22 @@ class TimeoutConfig(BaseConfig):
     finalize: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
+    """Combined budget (in seconds) for harness metrics and task scoring, including
+    isolated verifier setup and retries. Finalization has its own budget."""
 
 
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = PrimeConfig()
-    """Runtime for the harness program — the policy each run provisions its box
+    """Runtime configuration for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
+
+    scoring: ScoringConfig = ScoringConfig()
+    """Scoring overrides; unset fields inherit the task’s scoring defaults."""
+
+    deployment: DeploymentConfig = DeploymentConfig()
+    """Workspace and service placement, including trust for local Compose tasks."""
 
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
@@ -53,6 +69,23 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+
+    network_notice: bool = True
+    """Include the runtime's network restrictions in the agent's prompt."""
+
+    @field_serializer("scoring")
+    def _scoring_overrides(
+        self, scoring: ScoringConfig, info: SerializationInfo
+    ) -> dict:
+        # Preserve unset fields across env-server and trace roundtrips so they
+        # continue to inherit from the task instead of becoming explicit overrides.
+        return scoring.model_dump(mode=info.mode, exclude_unset=True)
+
+    @field_serializer("sampling")
+    def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:
+        # An unresolved agent carries only overrides across env-server boundaries.
+        # resolve_agent fills every field before the config is recorded on a trace.
+        return sampling.model_dump(exclude_unset=True) if sampling is not None else None
 
     @model_validator(mode="before")
     @classmethod
@@ -96,9 +129,7 @@ def merge_agent_defaults(config: type[BaseModel], data: Any) -> Any:
             if isinstance(field.default, AgentConfig) and isinstance(
                 data.get(name), dict
             ):
-                data[name] = deep_merge(
-                    field.default.model_dump(exclude_none=True), data[name]
-                )
+                data[name] = merge_defaults(field.default, data[name])
     return data
 
 
@@ -113,19 +144,14 @@ def resolve_agent(
     """`spec` with what it leaves unset filled from the run's defaults; its own
     sampling values merge over the run's. The one place a seat's identity resolves,
     for configured agent roles."""
-    merged = spec.sampling if sampling is None else sampling
-    if sampling is not None and spec.sampling is not None:
-        merged = sampling.model_copy(
-            update=deep_merge(
-                sampling.model_dump(exclude_unset=True),
-                spec.sampling.model_dump(exclude_unset=True),
-            )
-        )
+    defaults = sampling or SamplingConfig()
+    overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
+    merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,
             "model": spec.model if spec.model is not None else model,
             "client": spec.client if spec.client is not None else client,
-            "sampling": merged,
+            "sampling": SamplingConfig.model_validate(merged),
         }
     )

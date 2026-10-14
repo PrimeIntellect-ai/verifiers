@@ -53,6 +53,9 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
+from openai.types.chat.completion_create_params import (
+    CompletionCreateParamsNonStreaming,
+)
 from pydantic import BaseModel
 from typing_extensions import TypeVar
 
@@ -62,8 +65,8 @@ from verifiers.v1.configs.judge import (
     judge_key,
 )
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.types import Messages, Usage
-from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.types import Messages, SamplingConfig, Usage
+from verifiers.v1.utils.generic import concrete_type, merge_defaults
 from verifiers.v1.utils.score import parse_judge_choice
 
 if TYPE_CHECKING:
@@ -176,8 +179,24 @@ class Judge(Generic[ParsedT, ConfigT]):
             else [message_to_wire(m) for m in messages]
         )
         kwargs: dict[str, Any] = {"model": self.config.model, "messages": wire}
-        kwargs.update(self.config.sampling.model_dump(exclude_none=True))
-        kwargs.update(sampling)
+        # Transport options are SDK arguments, not model sampling parameters.
+        request_options = {
+            key: sampling.pop(key)
+            for key in ("extra_headers", "extra_query", "timeout")
+            if key in sampling
+        }
+        params = SamplingConfig.model_validate(
+            merge_defaults(self.config.sampling, sampling)
+        ).model_dump(exclude_none=True)
+        sdk_fields = CompletionCreateParamsNonStreaming.__annotations__
+        kwargs.update(
+            {key: value for key, value in params.items() if key in sdk_fields}
+        )
+        # The SDK accepts provider-specific parameters only through extra_body.
+        kwargs["extra_body"] = {
+            key: value for key, value in params.items() if key not in sdk_fields
+        }
+        kwargs.update(request_options)
 
         response: JudgeResponse[Any] | None = None
         try:

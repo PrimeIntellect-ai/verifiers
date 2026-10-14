@@ -45,6 +45,7 @@ from verifiers.v1.configs.client import (
     BaseClientConfig,
     TrainClientConfig,
     resolve_api_key,
+    resolve_headers,
 )
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
@@ -588,7 +589,19 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         session.adopt(asyncio.current_task())
-        raw = await request.read()
+        started = time.monotonic()
+        try:
+            raw = await request.read()
+        except ConnectionError:
+            # Client dropped mid-upload.
+            logger.warning(
+                "intercept: request body cut off: id=%s received=%d/%s bytes after=%.1fs",
+                session.trace.id,
+                request.content.total_bytes,
+                request.content_length or "?",
+                time.monotonic() - started,
+            )
+            raise
         try:
             body = from_json(raw)
         except ValueError:
@@ -950,7 +963,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept models: id=%s", session.trace.id)
         config = session.ctx.client
-        headers = dict(config.headers or {})
+        headers = httpx.Headers(resolve_headers(config))
         headers.update(dialect.auth_headers(resolve_api_key(config)))
         try:
             # Finite read timeout: a hung provider must not stall threshold discovery

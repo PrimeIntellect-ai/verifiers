@@ -104,7 +104,7 @@ class Harness(ABC, Generic[ConfigT]):
         return system, prompt
 
     async def setup(self, runtime: Runtime) -> None:
-        """Provision this harness in `runtime` before its execution timeout starts."""
+        """Provision this harness through `runtime` before its execution timeout starts."""
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
@@ -225,7 +225,11 @@ copy_failed=$(
         """Run this harness's `@metric` methods over the finished trace, recording
         each into `trace.metrics`. Metrics declare what they need (`task`, `trace`,
         `runtime`) and can read what the harness left behind in the runtime."""
-        available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
+        available = {
+            "task": trace.task.data,
+            "trace": trace,
+            "runtime": runtime,
+        }
         fns = discover_decorated(self, "metric")
         seed(trace.metrics, (fn.__name__ for fn in fns))
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
@@ -302,7 +306,7 @@ copy_failed=$(
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        """Run the harness program in `runtime` to completion and return its result.
+        """Run the harness program through `runtime` to completion and return its result.
         `data` is this segment's wire view of the task (`resolve_prompt(data)` — for
         a resumed exchange its prompt is the accreted conversation, and it may
         differ from `trace.task.data`, the run's recorded view); model calls must
