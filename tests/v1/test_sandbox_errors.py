@@ -402,19 +402,29 @@ class _CheckpointClient:
         return await self.wait(checkpoint_id)
 
 
-async def test_prime_checkpoint_that_never_becomes_restorable_is_deleted(runtime):
+@pytest.fixture
+def own_client(monkeypatch) -> FakeSandboxClient:
+    """The client an abandoned checkpoint's background delete opens for itself."""
+    own = FakeSandboxClient([{}])
+    monkeypatch.setattr(prime_sandboxes, "AsyncSandboxClient", lambda **_: own)
+    return own
+
+
+async def test_prime_checkpoint_that_never_becomes_restorable_is_deleted(
+    runtime, own_client
+):
     async def refused(checkpoint_id):
         raise APIError("HTTP 500: checkpoint failed")
 
     runtime.info.id = "sb1"
-    runtime._client = client = _CheckpointClient(refused)
+    runtime._client = _CheckpointClient(refused)
     with pytest.raises(SandboxError, match="prime checkpoint failed"):
         await runtime.checkpoint()
     await asyncio.gather(*prime._discards)
-    assert client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")]
+    assert own_client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")]
 
 
-async def test_prime_checkpoint_cancelled_while_waiting_is_deleted(runtime):
+async def test_prime_checkpoint_cancelled_while_waiting_is_deleted(runtime, own_client):
     waiting = asyncio.Event()
 
     async def hang(checkpoint_id):
@@ -422,14 +432,44 @@ async def test_prime_checkpoint_cancelled_while_waiting_is_deleted(runtime):
         await asyncio.Event().wait()
 
     runtime.info.id = "sb1"
-    runtime._client = client = _CheckpointClient(hang)
+    runtime._client = _CheckpointClient(hang)
     task = asyncio.create_task(runtime.checkpoint())
     await waiting.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     await asyncio.gather(*prime._discards)
-    assert client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")]
+    assert own_client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")]
+
+
+async def test_an_abandoned_checkpoint_is_deleted_after_the_box_tears_down(
+    runtime, own_client, monkeypatch
+):
+    """The background delete waits out 409s on a client of its own, so the teardown
+    that closes the shared client meanwhile does not stop it."""
+
+    async def refused(checkpoint_id):
+        raise APIError("HTTP 500: checkpoint failed")
+
+    real_sleep = asyncio.sleep
+
+    async def backoff(delay):  # the box tears down while the delete waits out a 409
+        runtime._client = None  # the last lease closes the shared client
+        shared.client.answers = [RuntimeError("the client has been closed")] * 5
+        await real_sleep(0)
+
+    monkeypatch.setattr(prime.asyncio, "sleep", backoff)
+    shared = _CheckpointClient(refused)
+    shared.client.answers = [APIError("HTTP 409: in use"), {}]
+    own_client.client.answers = [APIError("HTTP 409: in use"), {}]
+    runtime.info.id = "sb1"
+    runtime._client = shared
+    with pytest.raises(SandboxError, match="prime checkpoint failed"):
+        await runtime.checkpoint()
+    await asyncio.gather(*prime._discards)
+    assert shared.client.calls == []
+    assert own_client.client.calls == [("DELETE", "/sandbox/checkpoints/ck1")] * 2
+    assert own_client.closed
 
 
 class Probed(Runtime):

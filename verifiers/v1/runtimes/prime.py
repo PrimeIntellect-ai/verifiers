@@ -693,7 +693,8 @@ class PrimeRuntime(Runtime):
 
         async def discard() -> None:
             try:
-                await self.delete_checkpoint(checkpoint_id)
+                # On a client of its own: a teardown meanwhile closes the shared one.
+                await self.delete_checkpoint(checkpoint_id, own_client=True)
             except Exception as e:  # noqa: BLE001 - best effort; the platform expires it
                 logger.warning(
                     "prime: failed to delete abandoned checkpoint %s: %s",
@@ -705,13 +706,15 @@ class PrimeRuntime(Runtime):
         _discards.add(task)
         task.add_done_callback(_discards.discard)
 
-    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+    async def delete_checkpoint(
+        self, checkpoint_id: str, *, own_client: bool = False
+    ) -> None:
         """`DELETE /sandbox/checkpoints/{id}`: an empty body or a 404 is success; a 409
         (the checkpoint is in use or still being created) is retried with backoff for up
         to `_CHECKPOINT_DELETE_DEADLINE_SECONDS`. Uses the live client when this runtime
-        holds one, else a short-lived client of its own."""
+        holds one, else (or with `own_client`) a short-lived client of its own."""
         async with contextlib.AsyncExitStack() as stack:
-            client = self._client
+            client = None if own_client else self._client
             if client is None:
                 from prime_sandboxes import AsyncSandboxClient
 
