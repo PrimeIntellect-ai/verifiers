@@ -246,3 +246,51 @@ async def test_a_box_restores_from_where_a_run_started_before_it_saved(
     assert kept.kept
     assert box.source == first.checkpoints[-1].id
     assert rerun.ok and rerun.resumed_from is None
+
+
+async def test_a_continuation_on_a_borrowed_box_starts_from_its_latest_checkpoint(
+    model,
+):
+    """A box restored from one checkpoint and moved on by a run: a continuation on it
+    records where the box is (its latest checkpoint, with that checkpoint's time), not
+    where it was first restored from."""
+    agent = make(model, save="per_call")
+    FakeRuntime.store["X"] = {}
+    async with agent.provision(task(), checkpoint="X") as box:
+        owner = vf.box_of(box)
+        first = await agent.run(task(), runtime=box)
+        assert first.ok, first.errors
+        moved = owner.latest
+        assert owner.restored.id == "X" and moved.id == first.checkpoints[-1].id
+        second = await make(model).run(resume=first, note="again", runtime=box)
+    start = second.checkpoints[0]
+    assert start.restored and start.turns == 0
+    assert (start.id, start.time) == (moved.id, moved.time)
+
+
+async def test_a_continuation_that_never_saves_keeps_the_boxs_latest_checkpoint(
+    model, store
+):
+    """After a crash, a durable box comes back from its latest checkpoint even when the
+    last run on it, a continuation, failed before saving: its start does not stand in
+    for a newer checkpoint than it is."""
+    from verifiers.v1.durable import box_checkpoint
+
+    agent = make(model, save="per_call")
+    durable = vf.Durable(store, match={"job": "j"})
+    with vf.use_durable(durable):
+        async with agent.provision(task(), key="box") as box:
+            await agent.run(task(), runtime=box, key="first")
+    with vf.use_durable(durable):
+        async with agent.provision(task(), key="box") as box:
+            owner = vf.box_of(box)
+            other = await agent.run(task(), runtime=box, key="other")
+            assert other.ok, other.errors
+            moved = owner.latest
+            assert moved.id != owner.restored.id
+            model.refuse.add(len(model.requests))
+            failed = await make(model).run(
+                resume=other, note="again", runtime=box, key="second"
+            )
+            assert not failed.ok
+            assert box_checkpoint(durable, owner.ref).id == moved.id

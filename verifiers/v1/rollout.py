@@ -161,18 +161,15 @@ class Rollout:
             # continues and carries its info, as one session's would.
             self.trace.resumed_from = resumes.id
             self.trace.info = copy.deepcopy(resumes.info)
-        restored_from = (
-            getattr(runtime_config, "checkpoint", None)
-            if runtime is None
-            else restored.id
-            if restored is not None
-            else None
-        )
-        if restored_from is not None:
-            # The box starts from this checkpoint, matching the opening conversation
-            # (a borrowed box: its owner restored it for this continuation).
+        if runtime is None and (start := getattr(runtime_config, "checkpoint", None)):
+            # An owned box starts from its config's checkpoint.
+            restored = Checkpoint(id=start, turns=0, time=time.time())
+        if restored is not None:
+            # The box starts from this checkpoint, matching the opening conversation.
+            # A borrowed box's (`restored`) keeps the time it was taken at, so it
+            # orders among the box's other checkpoints as what it is.
             self.trace.checkpoints.append(
-                Checkpoint(id=restored_from, turns=0, restored=True, time=time.time())
+                restored.model_copy(update={"turns": 0, "restored": True})
             )
         if on_trace is not None:
             on_trace(self.trace)

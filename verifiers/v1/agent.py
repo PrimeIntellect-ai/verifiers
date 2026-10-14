@@ -1332,9 +1332,11 @@ def _plan_durable(
 
 
 def _box_start(runtime: Runtime | None, resumes: Trace | None) -> Checkpoint | None:
-    """The checkpoint a borrowed box was restored from, for a continuation on it."""
+    """Where a continuation on a borrowed box starts: the box's latest checkpoint
+    (`Box.latest`), not the one it was first restored from, which other runs on it may
+    have moved past."""
     box = box_of(runtime)
-    return box.restored if box is not None and resumes is not None else None
+    return box.latest if box is not None and resumes is not None else None
 
 
 class Agent:
