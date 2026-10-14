@@ -1,7 +1,7 @@
 """The standalone Agent: one agent, one task, one trace — subprocess runtime.
 
 `PRIME_API_KEY` in the environment, then: uv run python examples/agent.py
-Multi-agent interactions belong in an `Environment` (see docs/v1/environments.md);
+Multi-agent interactions belong in an `Environment` (see docs/env.md);
 this is the primitive underneath.
 """
 
