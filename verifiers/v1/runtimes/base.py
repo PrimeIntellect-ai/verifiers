@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -136,6 +137,9 @@ class BaseRuntimeInfo(BaseConfig):
     borrowed: bool = False
     """Whether the run was placed into a live box owned by someone else
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
+    image_digest: str | None = Field(default=None, exclude=True)
+    """Read from records written while verifiers recorded each box's image digest, so
+    they still load; never set or written."""
 
 
 class Runtime(ABC):

@@ -767,3 +767,14 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
     )
 
     assert len(edge_set.edges) == 2_000
+
+
+def test_a_record_with_an_image_digest_still_loads():
+    """Traces written while verifiers recorded `image_digest` load; it is not written back."""
+    from verifiers.v1.runtimes import RuntimeInfo
+    from pydantic import TypeAdapter
+
+    info = TypeAdapter(RuntimeInfo).validate_python(
+        {"type": "docker", "image_digest": "sha256:abc"}
+    )
+    assert "image_digest" not in info.model_dump()
