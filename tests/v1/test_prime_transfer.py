@@ -235,6 +235,29 @@ async def test_a_large_read_crosses_in_parts_and_leaves_only_the_file(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["large.bin"]
 
 
+async def test_a_file_that_grows_while_read_gives_the_size_it_had(
+    runtime, tmp_path, monkeypatch
+):
+    """A log appended to during a chunked read returns the bytes it had when the read
+    began, instead of failing as changed."""
+    target = tmp_path / "large.log"
+    target.write_bytes(DATA)
+    real_download = LocalBoxClient.download_file
+
+    async def append_after_each(
+        self, sandbox_id, file_path, local_file_path, timeout=None
+    ):
+        await real_download(self, sandbox_id, file_path, local_file_path, timeout)
+        with target.open("ab") as log:
+            log.write(b"more log lines\n")
+
+    monkeypatch.setattr(LocalBoxClient, "download_file", append_after_each)
+    assert await runtime.read(str(target)) == DATA
+    parts = [path for path, _ in runtime._client.downloads]
+    assert all(path.startswith("/tmp/vf-read-") for path in parts)
+    assert not any(Path(path).exists() for path in parts)
+
+
 async def test_reading_a_missing_file_fails_before_any_download(runtime, tmp_path):
     with pytest.raises(SandboxError) as caught:
         await runtime.read(str(tmp_path / "missing.txt"))

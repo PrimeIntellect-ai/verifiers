@@ -942,10 +942,12 @@ class PrimeRuntime(Runtime):
                 await root.run(["sh", "-c", 'rm -f -- "$1".*', "sh", stem], {})
 
     async def _read_parts(self, target: str, size: int) -> bytes:
-        """Download `target` (`size` bytes) as `_TRANSFER_PART_BYTES` parts cut in the
-        box one at a time, so the box holds at most one extra part (a failed read removes
-        it). A file that changes size while it is read fails the read."""
-        stem = f"{target}.vf-part-{uuid.uuid4().hex[:12]}"
+        """Download `target`'s first `size` bytes as `_TRANSFER_PART_BYTES` parts cut
+        into `/tmp` in the box one at a time (the target's directory may be read-only),
+        so the box holds at most one extra part (a failed read removes it). A file that
+        grows while it is read (a log) gives its first `size` bytes; one that shrinks
+        fails the read."""
+        stem = f"/tmp/vf-read-{uuid.uuid4().hex[:12]}"
         root = self.with_user(None)
         chunks: list[bytes] = []
         try:
@@ -959,7 +961,7 @@ class PrimeRuntime(Runtime):
                         "sh",
                         target,
                         str(offset + 1),
-                        str(_TRANSFER_PART_BYTES),
+                        str(min(_TRANSFER_PART_BYTES, size - offset)),
                         part,
                     ],
                     {},
