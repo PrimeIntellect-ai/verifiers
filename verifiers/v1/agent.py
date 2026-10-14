@@ -10,7 +10,6 @@ server; un-entered, each run brings its own."""
 import asyncio
 import inspect
 import logging
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import (
     AbstractAsyncContextManager,
@@ -2239,7 +2238,8 @@ class Agent:
         checkpoint those runs recorded, so their durable calls resume against it. Its
         fingerprint is the task, the runtime policy, the durable's parts and
         `depends`; a changed one starts fresh. A box started from `checkpoint` is
-        durable only with `key`."""
+        durable only with `key`; the checkpoint is then part of its fingerprint, and the
+        box starts from it only until its runs record a later one."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
@@ -2250,18 +2250,24 @@ class Agent:
         ref: str | None = None
         start: Checkpoint | None = None
         if checkpoint is not None:
-            start = Checkpoint(id=checkpoint, turns=0, time=time.time())
+            # When it was taken is unknown: time 0 orders it before every checkpoint
+            # recorded on the box, so a durable call on it continues none of them but
+            # this one (`Agent._continuation`).
+            start = Checkpoint(id=checkpoint, turns=0, time=0.0)
         if key is None and checkpoint is not None:
             durable = False
         found, key = plan_call(self.name, key, durable)
         if key is not None:
-            box_fingerprint = fingerprint(box_parts(task, self, found, depends))
+            parts = box_parts(task, self, found, depends)
+            if checkpoint is not None:
+                parts["checkpoint"] = checkpoint
+            box_fingerprint = fingerprint(parts)
             scope = found.scope if found is not None else {}
             ref = box_ref(scope, key, box_fingerprint)
-            if start is None:
-                start = box_checkpoint(found, ref)
-                if start is not None:
-                    logger.info("box %r restores from checkpoint %s", key, start.id)
+            # The box's runs moved it past where it started: they restore it.
+            start = box_checkpoint(found, ref) or start
+            if start is not None and start.id != checkpoint:
+                logger.info("box %r restores from checkpoint %s", key, start.id)
         if start is not None:
             restore_config(config, start.id)  # raises when the runtime cannot
         async with provision_box(

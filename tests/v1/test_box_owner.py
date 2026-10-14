@@ -294,3 +294,43 @@ async def test_a_continuation_that_never_saves_keeps_the_boxs_latest_checkpoint(
             )
             assert not failed.ok
             assert box_checkpoint(durable, owner.ref).id == moved.id
+
+
+async def test_a_keyed_box_from_a_checkpoint_comes_back_where_its_runs_left_it(
+    model, store
+):
+    """`provision(checkpoint=, key=)` after a crash: the box starts from the latest
+    checkpoint its runs recorded, not from the given one, so the cut-off run resumes on
+    a box that matches its conversation."""
+    agent = make(model, save="per_call")
+    FakeRuntime.store["X"] = {}
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.provision(task(), checkpoint="X", key="box") as box:
+            model.refuse.add(len(model.requests) + 2)  # cut off at the third call
+            failed = await agent.run(task(), runtime=box, key="solve")
+        assert not failed.ok
+        latest = failed.checkpoints[-1]
+        async with agent.provision(task(), checkpoint="X", key="box") as box:
+            assert box.source == latest.id
+            again = await agent.run(task(), runtime=box, key="solve")
+        assert again.ok and again.resumed_from == failed.id
+        assert box.files() == FakeRuntime.store[latest.id]
+        # Another starting checkpoint is another box.
+        FakeRuntime.store["Y"] = {}
+        async with agent.provision(task(), checkpoint="Y", key="box") as box:
+            assert box.source == "Y"
+
+
+async def test_a_box_from_a_checkpoint_continues_no_later_checkpoint(model, store):
+    """A durable call on a box started from a given checkpoint does not continue a
+    later checkpoint of its trace: the box holds none of that work."""
+    agent = make(model, save="per_call")
+    FakeRuntime.store["X"] = {}
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.provision(task(), checkpoint="X") as box:
+            model.refuse.add(len(model.requests) + 2)
+            failed = await agent.run(task(), runtime=box, key="solve")
+        assert not failed.ok and failed.checkpoints
+        async with agent.provision(task(), checkpoint="X") as box:
+            fresh = await agent.run(task(), runtime=box, key="solve")
+    assert fresh.ok and fresh.resumed_from is None
