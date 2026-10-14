@@ -142,17 +142,13 @@ digest per owner (hillclimb salts with the episode id) or do not delete.
 ## What the pipelines can delete afterwards (separate changes)
 
 - hillclimb: `launch.sweep_sandboxes` (use `verifiers.v1.runtimes.sweep.sweep`, which also
-  sweeps tunnels) in `launch.run` and `cli._teardown`. `scoring/images.py` keeps its
-  per-episode event and retain bookkeeping but drops `publish`, `_wait_vm_ready`,
-  `_artifact_status`, `_published_reference`, `_run`, `push_argv`, `list_argv` and the CLI
-  delete for `ensure_image(context, name, salt=episode_id)` and `delete_image`, and with them
-  the venv-last PATH workaround if nothing else needs the host CLI. The
-  `HILLCLIMB_SANDBOX_LABEL` plumbing stays unless hillclimb moves to a stable prime-rl run
-  name with `--resume`.
+  sweeps tunnels) in `launch.run` and `cli._teardown`. The image builds in
+  `scoring/images.py` were meant to move to `ensure_image`; that never happened, and
+  `ensure_image` was removed. The `HILLCLIMB_SANDBOX_LABEL` plumbing stays unless
+  hillclimb moves to a stable prime-rl run name with `--resume`.
 - repoforge: all of `repoforge/tunnels.py` except a two-line dead-run sweep
   (`sweep([run_label(root)])` under the lock); the `tunnels.install()` and
-  `sweep_label(self.label)` calls in `pipeline.py` and `worlds.py`; `world.prime_status`
-  and `world.push_prime` become `ensure_image(ctx, name, tag=fingerprint)`.
+  `sweep_label(self.label)` calls in `pipeline.py` and `worlds.py`.
 
 ## Integration notes
 
