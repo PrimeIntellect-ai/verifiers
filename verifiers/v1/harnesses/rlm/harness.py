@@ -68,7 +68,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="707405f430a08ac0ccf8c5402f6c890bc52e2cb7", min_length=1
+        default="d6d52c50935d70b4bd1826fb206fdd7650f4836c", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -150,12 +150,14 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
-        skills_dir = self._skills_dir()
-        await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
+        # install.sh installs the Python skill packages under $RLM_HOME/skills.
+        home = self._skills_home()
+        home_env = f"RLM_HOME={home} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
             f"rm -f {ready} && "
@@ -163,8 +165,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
-            f"RLM_SKILLS_DIR={skills_dir} "
-            f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
@@ -263,11 +264,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
-            env={
-                **self.config.resolved_env,
-                "RLM_HOME": self._home(trace),
-                "RLM_SKILLS_DIR": self._skills_dir(),
-            },
+            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
@@ -299,14 +296,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 runtime, self._skills_install_dir, "RLM skill installation"
             )
 
-    @staticmethod
-    def _home(trace: Trace) -> str:
-        return f"{RLM_STATE_DIR}/{trace.id}/home"
+    def _home(self, trace: Trace) -> str:
+        return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
 
-    def _skills_dir(self) -> str:
-        """The one skills root rlm installs Python skill packages from and lists
-        SKILL.md skills under."""
-        return f"{self._install_dir()}/skills"
+    def _skills_home(self) -> str | None:
+        """rlm's home for a run that carries skills: they sit in its `skills/`, where
+        rlm installs and lists them, so the install and the process share it."""
+        if self._skills_install_dir is None:
+            return None
+        return f"{self._skills_install_dir}/home"
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
