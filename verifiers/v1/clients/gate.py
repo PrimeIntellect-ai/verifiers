@@ -10,12 +10,25 @@ client is a `GatedAsyncClient`, and each request first takes a permit of the gat
 Permits are `flock`s on slot files in a shared directory, so every process on the host
 (env-server workers, concurrent runs) draws from one budget, and a process that dies
 releases its permits with its file descriptors. A state file beside the slots, `flock`ed
-around each admission, holds the adaptive limit and running counters as JSON (readable
-while a run is live). Every process using a gate holds a shared `flock` on its users file;
-the first one in, finding no other user, starts the state afresh, so a limit learned by an
-earlier run does not carry over to the next. The limit is AIMD: a 429/529 multiplies it by `decrease_factor` (at
-most once per `decrease_cooldown`), each success adds `1/limit`, bounded by
-`[min_concurrent, max_concurrent]`. A rejected request returns its permit, waits for
+around each admission, holds the cap, the adaptive limit and running counters as JSON
+(readable while a run is live). Every process using a gate holds a shared `flock` on its
+users file; the first one in, finding no other user, starts the state afresh, so what an
+earlier run learned or was set to does not carry over to the next.
+
+The cap (`max_concurrent` in the state) is shared: the first admission after a fresh start
+writes its config's `max_concurrent`, and from then on every process admits under the
+shared cap, whatever its own config says. `resize` moves the cap of live gates (an
+operator, e.g. prime-rl's `eval control resize-requests`): a raise takes effect at the
+next admission, a lower sheds nothing and admits no one until fewer than the new cap are
+in flight. Admission scans the slots up to the cap and any held above it (`slots`), so
+requests admitted under a higher cap count until they finish.
+
+The limit is AIMD: a 429/529 multiplies it by `decrease_factor` (at most once per
+`decrease_cooldown`), each success adds `1/limit`, bounded by `[min_concurrent, cap]`.
+A raise of the cap restarts the limit at the new cap (additive growth would take
+thousands of requests to get there); a lower keeps a learned limit already below it.
+
+A rejected request returns its permit, waits for
 `Retry-After` (else exponential backoff) and queues again, up to `max_rejections` times;
 after that the provider's response reaches the caller unchanged, as final: the
 interception server does not retry it.
@@ -67,6 +80,11 @@ def default_gate_dir() -> Path:
     return Path(tempfile.gettempdir()) / f"verifiers-request-gates-{os.getuid()}"
 
 
+def gate_dir(config: RequestGateConfig) -> Path:
+    """The directory of the shared gate state `config` uses."""
+    return Path(config.dir) if config.dir else default_gate_dir()
+
+
 def gate_key(url: httpx.URL, credential: str, model: str) -> str:
     """The gate a request belongs to: one per endpoint origin, credential and model, since
     providers limit per key and model. The credential is only hashed."""
@@ -76,6 +94,34 @@ def gate_key(url: httpx.URL, credential: str, model: str) -> str:
 
 def _slug(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", model)[:64]
+
+
+def _count(value: Any) -> int:
+    """A positive count from the shared state, else 0."""
+    return value if type(value) is int and value > 0 else 0
+
+
+@contextlib.contextmanager
+def _locked_state(fd: int) -> Iterator[dict[str, Any]]:
+    """The state in file `fd` under its exclusive `flock`, written back on exit if
+    changed."""
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        raw = os.pread(fd, 1 << 16, 0)
+        try:
+            state = json.loads(raw) if raw else {}
+        except ValueError:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        before = dict(state)
+        yield state
+        if state != before:
+            data = json.dumps(state, sort_keys=True).encode()
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, data, 0)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class ModelGate:
@@ -123,58 +169,55 @@ class ModelGate:
         hold `_mutex` (an `flock` does not exclude threads sharing the descriptor)."""
         if self._state_fd is None:
             self._state_fd = os.open(self.state_path, os.O_RDWR | os.O_CREAT, 0o600)
-        fd = self._state_fd
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            raw = os.pread(fd, 1 << 16, 0)
-            try:
-                state = json.loads(raw) if raw else {}
-            except ValueError:
-                state = {}
-            if not isinstance(state, dict):
-                state = {}
+        with _locked_state(self._state_fd) as state:
             yield state
-            data = json.dumps(state, sort_keys=True).encode()
-            os.ftruncate(fd, 0)
-            os.pwrite(fd, data, 0)
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
 
     @staticmethod
-    def _limit(state: dict[str, Any], config: RequestGateConfig) -> float:
+    def _cap(state: dict[str, Any], config: RequestGateConfig) -> int:
+        """The shared cap; the first admission after a fresh start sets it from `config`."""
+        cap = _count(state.get("max_concurrent"))
+        if not cap:
+            cap = state["max_concurrent"] = config.max_concurrent
+        return cap
+
+    @staticmethod
+    def _limit(state: dict[str, Any], config: RequestGateConfig, cap: int) -> float:
         limit = state.get("limit")
         if not isinstance(limit, int | float) or not config.adaptive:
-            limit = config.max_concurrent
-        return min(max(float(limit), config.min_concurrent), config.max_concurrent)
+            limit = cap
+        return _clamp(limit, config, cap)
 
     def try_admit(self, config: RequestGateConfig) -> int | None:
         """Take a free slot if fewer than the limit are held host-wide, else None."""
         try:
             with self._mutex, self._state() as state:
-                limit = int(self._limit(state, config))
-                held, free = 0, None
-                for slot in range(config.max_concurrent):
+                cap = self._cap(state, config)
+                limit = self._limit(state, config, cap)
+                held, free, top = 0, None, 0
+                for slot in range(max(cap, _count(state.get("slots")))):
                     if slot in self._held:
-                        held += 1
+                        held, top = held + 1, slot + 1
                         continue
                     fd = self._slot_fd(slot)
                     try:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
-                        held += 1
+                        held, top = held + 1, slot + 1
                         continue
                     if free is None:
                         free = slot
                     else:
                         fcntl.flock(fd, fcntl.LOCK_UN)
-                if free is not None and held >= limit:
+                if free is not None and held >= int(limit):
                     fcntl.flock(self._fds[free], fcntl.LOCK_UN)
                     free = None
                 if free is not None:
                     self._held.add(free)
                     state["admitted"] = state.get("admitted", 0) + 1
-                state.update(model=self.model, cap=config.max_concurrent)
-                state["limit"] = self._limit(state, config)
+                    top = max(top, free + 1)
+                # slots above the cap stay scanned while a request admitted under a
+                # higher cap holds one; admission only takes the lowest free slot
+                state.update(model=self.model, slots=max(cap, top), limit=limit)
                 state["in_flight"] = held + (free is not None)
                 return free
         finally:
@@ -208,17 +251,18 @@ class ModelGate:
         if outcome == "other":
             return
         with self._state() as state:
-            limit = self._limit(state, config)
+            cap = self._cap(state, config)
+            limit = self._limit(state, config, cap)
             now = time.time()
             if outcome == "ok":
-                state["limit"] = min(config.max_concurrent, limit + 1 / limit)
+                state["limit"] = _clamp(limit + 1 / limit, config, cap)
                 return
             state["rejections"] = state.get("rejections", 0) + 1
             if (
                 config.adaptive
                 and now - state.get("decreased_at", 0.0) >= config.decrease_cooldown
             ):
-                lowered = max(config.min_concurrent, limit * config.decrease_factor)
+                lowered = _clamp(limit * config.decrease_factor, config, cap)
                 state.update(limit=lowered, decreased_at=now)
                 logger.warning(
                     "request gate %s: provider rejected a request, limit %d -> %d",
@@ -251,6 +295,86 @@ class ModelGate:
         self._releases.clear()
         self._state_fd = self._users_fd = None
         self._mutex = threading.Lock()
+
+
+def _clamp(limit: float, config: RequestGateConfig, cap: int) -> float:
+    """`limit` within `[min_concurrent, cap]`; the cap wins over a higher floor."""
+    return min(max(float(limit), config.min_concurrent), cap)
+
+
+def _summary(state: dict[str, Any], updated: float) -> dict[str, Any]:
+    cap = _count(state.get("max_concurrent")) or None
+    limit = state.get("limit")
+    if cap is not None and isinstance(limit, int | float):
+        limit = int(min(limit, cap))
+    else:
+        limit = cap
+    return {
+        "model": state.get("model"),
+        "max_concurrent": cap,
+        "limit": limit,
+        "in_flight": state.get("in_flight"),
+        "admitted": state.get("admitted", 0),
+        "rejections": state.get("rejections", 0),
+        "updated": updated,
+    }
+
+
+def gate_states(directory: Path) -> list[dict[str, Any]]:
+    """The gates under `directory`: each one's model, cap (`max_concurrent`), effective
+    `limit`, `in_flight` (as of its last admission attempt), counters, and `updated`, the
+    time its state last changed. Gates of finished runs stay listed until a run reuses
+    them (their `updated` tells)."""
+    states = []
+    for path in sorted(directory.glob("*.state.json")):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH)
+            raw = os.pread(fd, 1 << 16, 0)
+            updated = os.fstat(fd).st_mtime
+        finally:
+            os.close(fd)
+        try:
+            state = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        if isinstance(state, dict):
+            states.append(_summary(state, updated))
+    return states
+
+
+def resize(
+    directory: Path, max_concurrent: int, model: str | None = None
+) -> list[dict[str, Any]]:
+    """Set the shared cap of the gates under `directory` (only `model`'s, if given) to
+    `max_concurrent`, for every process using them; returns their states as
+    `gate_states` does. A raise restarts the adaptive limit at the new cap, a lower keeps
+    a learned limit already below it (module doc). It holds until the gate's users are
+    gone: the next run starts from its own config."""
+    if max_concurrent < 1:
+        raise ValueError(f"a request cap must be at least 1, not {max_concurrent}")
+    states = []
+    for path in sorted(directory.glob("*.state.json")):
+        try:
+            fd = os.open(path, os.O_RDWR)
+        except FileNotFoundError:
+            continue
+        try:
+            with _locked_state(fd) as state:
+                if model is not None and state.get("model") != model:
+                    continue
+                old = _count(state.get("max_concurrent"))
+                if max_concurrent > old:
+                    state.pop("limit", None)
+                state["max_concurrent"] = max_concurrent
+                state["slots"] = max(max_concurrent, old, _count(state.get("slots")))
+                states.append(_summary(state, time.time()))
+        finally:
+            os.close(fd)
+    return states
 
 
 _GATES: dict[tuple[Path, str], ModelGate] = {}
@@ -340,7 +464,7 @@ class GatedAsyncClient(httpx.AsyncClient):
     def __init__(self, gate: RequestGateConfig, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.gate_config = gate
-        self.gate_dir = Path(gate.dir) if gate.dir else default_gate_dir()
+        self.gate_dir = gate_dir(gate)
 
     async def send(
         self, request: httpx.Request, *, stream: bool = False, **kwargs: Any

@@ -66,7 +66,9 @@ class RequestGateConfig(BaseConfig):
     `max_concurrent` or shared with other users of the key."""
 
     max_concurrent: int = Field(ge=1)
-    """Most requests in flight at once, per model."""
+    """Most requests in flight at once, per model: the cap a gate starts with. The first
+    process to use a gate sets its cap; processes joining a live gate share that cap, and
+    an operator can move it (`clients.gate.resize`)."""
     min_concurrent: int = Field(1, ge=1)
     """Lowest limit the adaptive gate shrinks to."""
     adaptive: bool = True

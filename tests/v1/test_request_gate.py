@@ -585,3 +585,142 @@ def test_a_forked_child_drops_the_parents_permits_but_keeps_the_learned_limit(tm
     assert os.waitstatus_to_exitcode(status) == 0
     parent.release(held, config, "other")
     assert parent.try_admit(config) is not None, "the child took nothing with it"
+
+
+def admit_all(gate: ModelGate, config: RequestGateConfig) -> list[int]:
+    slots = []
+    while (slot := gate.try_admit(config)) is not None:
+        slots.append(slot)
+    return slots
+
+
+def test_an_operator_raises_the_cap_of_a_live_gate_for_every_user(tmp_path):
+    config = RequestGateConfig(max_concurrent=2, adaptive=False)
+    first, second = ModelGate(tmp_path, "k", "m"), ModelGate(tmp_path, "k", "m")
+    assert len(admit_all(first, config) + admit_all(second, config)) == 2
+    (raised,) = gate_module.resize(tmp_path, 5)
+    assert (raised["max_concurrent"], raised["limit"]) == (5, 5)
+    taken = admit_all(second, config) + admit_all(first, config)
+    assert sorted(taken) == [2, 3, 4], "the raise reached both, under one shared cap"
+    (status,) = gate_module.gate_states(tmp_path)
+    assert (status["model"], status["max_concurrent"]) == ("m", 5)
+    assert (status["limit"], status["in_flight"]) == (5, 5)
+
+
+def test_a_lowered_cap_sheds_nothing_and_admits_once_below_it(tmp_path):
+    config = RequestGateConfig(max_concurrent=4, adaptive=False)
+    first, second = ModelGate(tmp_path, "k", "m"), ModelGate(tmp_path, "k", "m")
+    low = [first.try_admit(config), first.try_admit(config)]
+    high = admit_all(second, config)
+    assert (low, high) == ([0, 1], [2, 3])
+    gate_module.resize(tmp_path, 2)
+    assert first.try_admit(config) is None and second.try_admit(config) is None
+    for slot in low:
+        first.release(slot, config, "ok")
+    assert first.try_admit(config) is None, "the two left above the cap still count"
+    second.release(high[0], config, "ok")
+    assert first.try_admit(config) == 0, "one in flight: below the cap of 2"
+    assert second.try_admit(config) is None
+    second.release(high[1], config, "ok")
+    assert second.try_admit(config) == 1
+    assert json.loads(first.state_path.read_text())["slots"] == 2, "back to the cap"
+
+
+def test_a_joining_user_admits_under_the_shared_cap_and_a_fresh_one_under_its_config(
+    tmp_path,
+):
+    first = ModelGate(tmp_path, "k", "m")
+    assert len(admit_all(first, RequestGateConfig(max_concurrent=2))) == 2
+    gate_module.resize(tmp_path, 3)
+    joining = ModelGate(tmp_path, "k", "m")
+    assert admit_all(joining, RequestGateConfig(max_concurrent=8)) == [2]
+    first.close_inherited()
+    joining.close_inherited()
+    fresh = ModelGate(tmp_path, "k", "m")  # no user left: the operator's cap is gone
+    assert len(admit_all(fresh, RequestGateConfig(max_concurrent=6))) == 6
+
+
+def test_the_adaptive_limit_follows_the_cap(tmp_path):
+    config = RequestGateConfig(max_concurrent=8, decrease_cooldown=0)
+    gate = ModelGate(tmp_path, "k", "m")
+
+    def limit() -> float:
+        return json.loads(gate.state_path.read_text())["limit"]
+
+    slot = gate.try_admit(config)
+    assert slot is not None
+    gate.release(slot, config, "rejected")
+    assert limit() == 6
+    gate_module.resize(tmp_path, 7)
+    assert len(admit_all(gate, config)) == 6, "a lower keeps a learned limit below it"
+    for slot in range(6):
+        gate.release(slot, config, "rejected")
+    assert limit() < 6, "429s still shrink the limit"
+    (raised,) = gate_module.resize(tmp_path, 16)
+    assert raised["limit"] == 16, "a raise restarts the limit at the new cap"
+    gate_module.resize(tmp_path, 2)
+    for _ in range(20):
+        slot = gate.try_admit(config)
+        assert slot is not None
+        gate.release(slot, config, "ok")
+    assert limit() == 2, "successes grow the limit only up to the cap"
+
+
+def test_resize_picks_gates_by_model_and_refuses_a_zero_cap(tmp_path):
+    config = RequestGateConfig(max_concurrent=4)
+    for model in ("a", "b"):
+        ModelGate(tmp_path, model, model).try_admit(config)
+    (resized,) = gate_module.resize(tmp_path, 9, model="b")
+    assert resized["model"] == "b"
+    caps = {s["model"]: s["max_concurrent"] for s in gate_module.gate_states(tmp_path)}
+    assert caps == {"a": 4, "b": 9}
+    assert gate_module.resize(tmp_path / "none", 9) == []
+    with pytest.raises(ValueError):
+        gate_module.resize(tmp_path, 0)
+
+
+RESIZED_CHILD = textwrap.dedent(
+    f"""
+    import asyncio, sys
+    from verifiers.v1.clients.base import build_async_httpx
+    from verifiers.v1.configs.client import EvalClientConfig, RequestGateConfig
+
+    async def main(url, gates):
+        config = EvalClientConfig(
+            base_url=url,
+            api_key_var="FAKE_KEY",
+            request_gate=RequestGateConfig(max_concurrent=2, adaptive=False, dir=gates),
+        )
+        async with build_async_httpx(config) as http:
+            responses = await asyncio.gather(*(
+                http.post(url + "/chat/completions", json={{"model": "{MODEL}", "messages": []}},
+                          headers={{"Authorization": "Bearer k"}})
+                for _ in range(30)
+            ))
+        assert all(r.status_code == 200 for r in responses), [r.status_code for r in responses]
+
+    asyncio.run(main(sys.argv[1], sys.argv[2]))
+    """
+)
+
+
+async def test_a_resize_reaches_running_processes(tmp_path):
+    """Two processes started with a cap of 2 share a raise to 4 made while they run."""
+    gates = tmp_path / "gates"
+    async with FakeProvider(limit=10, latency=0.1) as provider:
+        children = [
+            await asyncio.create_subprocess_exec(
+                sys.executable, "-c", RESIZED_CHILD, provider.url, str(gates)
+            )
+            for _ in range(2)
+        ]
+        while provider.served < 4:
+            await asyncio.sleep(0.02)
+        assert provider.peak == 2
+        (resized,) = gate_module.resize(gates, 4)
+        assert resized["max_concurrent"] == 4
+        codes = await asyncio.wait_for(
+            asyncio.gather(*(child.wait() for child in children)), 60
+        )
+    assert codes == [0, 0]
+    assert provider.served == 60 and provider.peak == 4 and provider.rejected == 0
