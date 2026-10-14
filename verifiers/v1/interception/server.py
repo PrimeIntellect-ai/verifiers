@@ -24,10 +24,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import random
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -82,6 +83,12 @@ KEEPALIVE_INTERVAL_SECONDS = 3
 # its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
 # well inside the tunnel's response-header timeout.
 KEEPALIVE_GRACE_SECONDS = 60
+# A committed stream can report a failure only as an SSE error event, which harness SDKs do
+# not retry, so a retryable failure (5xx/429) after commit is rerun here, up to this many
+# attempts in all, waiting longer before each (keepalives hold the stream meanwhile).
+COMMITTED_TURN_ATTEMPTS = 5
+COMMITTED_TURN_BACKOFF_SECONDS = 2.0
+COMMITTED_TURN_BACKOFF_MAX_SECONDS = 30.0
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -236,11 +243,19 @@ async def _collect_stream(
         await reply.close()
 
 
+async def _after(
+    delay: float, call: Callable[[], Awaitable[web.Response]]
+) -> web.Response:
+    await asyncio.sleep(delay)
+    return await call()
+
+
 async def _buffered_stream(
     request: web.Request,
     dialect: Dialect,
     pending: Awaitable[web.Response],
     trace_id: str,
+    rerun: Callable[[], Awaitable[web.Response]] | None = None,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
@@ -266,10 +281,31 @@ async def _buffered_stream(
         try:
             await stream.prepare(request)
             first = True
-            while not task.done():
-                await stream.write(dialect.stream_keepalive(first))
-                first = False
-                await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+            for attempt in range(1, COMMITTED_TURN_ATTEMPTS + 1):
+                while not task.done():
+                    await stream.write(dialect.stream_keepalive(first))
+                    first = False
+                    await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+                status = task.result().status
+                if (
+                    rerun is None
+                    or attempt == COMMITTED_TURN_ATTEMPTS
+                    or (status < 500 and status != 429)
+                ):
+                    break
+                delay = min(
+                    COMMITTED_TURN_BACKOFF_SECONDS * 2 ** (attempt - 1),
+                    COMMITTED_TURN_BACKOFF_MAX_SECONDS,
+                ) * random.uniform(0.5, 1.0)
+                logger.warning(
+                    "intercept stream: rerunning failed committed turn in %.1fs: "
+                    "id=%s status=%d attempt=%d",
+                    delay,
+                    trace_id,
+                    status,
+                    attempt,
+                )
+                task = asyncio.ensure_future(_after(delay, rerun))
         except ConnectionResetError:
             # A reader that goes away mid-turn is the failure a tunnel or proxy drop looks
             # like from here; its retry (if any) coalesces onto this turn.
@@ -911,7 +947,9 @@ class InterceptionServer(Interception):
             return serve(call_response, events)
 
         if streaming:
-            return await _buffered_stream(request, dialect, sample(), session.trace.id)
+            return await _buffered_stream(
+                request, dialect, sample(), session.trace.id, rerun=sample
+            )
         return await sample()
 
     async def handle_aux(
