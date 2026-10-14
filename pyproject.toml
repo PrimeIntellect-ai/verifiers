@@ -191,7 +191,6 @@ include = [
 exclude = [
     "/wandb",
     "/scratch",
-    "/configs",
     "/environments",
 ]
 
