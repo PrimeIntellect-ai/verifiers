@@ -36,6 +36,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -258,7 +259,15 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(
+        self, runtime: Runtime, deployment: Deployment | None = None
+    ) -> None:
+        if deployment is not None:
+            declared = {
+                entry.service for entry in (*self.data.collect, *self.data.artifacts)
+            }
+            if missing := declared - deployment.target_backends.keys():
+                raise TaskError(f"Unknown Compose services: {sorted(missing)}")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
