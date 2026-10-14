@@ -426,10 +426,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 )
                 scores = {"reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))}
             except (SandboxError, OSError, ValueError) as exc:
+                # The trace of a failed grading may not survive it: the error carries
+                # the logs the verifier left (a service's own log names the cause).
+                logs = trace.info.get("verifier", {}).get("files", "")
                 raise TaskError(
                     "Harbor verifier produced no reward.json and no valid reward.txt "
                     f"(exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
+                    + (f"\nverifier logs:\n{logs[-3000:]}" if logs else "")
                 ) from exc
         key = self.config.reward_key
         if key not in scores:
