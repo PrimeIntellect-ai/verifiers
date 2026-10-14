@@ -952,7 +952,9 @@ class DurableInteraction:
     exchange whose every recorded turn was given back is kept too (it was cut after
     its last turn, before it closed): when it closes, its trace is a copy of the
     recorded one, closed as the live exchange would close it (`user_closed`, ok), its
-    finalize and scoring not run.
+    finalize and scoring not run. A failed exchange (closed with an error after its
+    turns: a failed finalize, a driver that raised) was not cut off: its last turn runs
+    again live, from its latest checkpoint in it, and the live exchange closes as usual.
 
     The box. An exchange on a borrowed box (`runtime=`) has that box throughout. One
     that owns its box has none while it replays: `runtime` is then a `ReplayBox`, and
@@ -1023,16 +1025,23 @@ class DurableInteraction:
         )
         self._complete = len(self._turns)
         """The recorded turns that finished: a cut-off exchange's last turn did not
-        unless it ends on a reply with no tool calls."""
+        unless it ends on a reply with no tool calls, and a failed exchange's last turn
+        never did (it runs again live)."""
         if not self._done and self._turns:
             final = self._conversation[self._turns[-1].end - 1]
-            if final.role != "assistant" or getattr(final, "tool_calls", None):
+            if (
+                recorded.is_completed
+                or final.role != "assistant"
+                or getattr(final, "tool_calls", None)
+            ):
                 self._complete -= 1
 
     @property
     def kept(self) -> bool:
         """Every turn so far came from the recorded exchange, and the exchange either
-        finished or was given back every recorded turn: nothing ran."""
+        finished or was cut off (never closed) and given back every recorded turn:
+        nothing ran. A failed exchange is never kept whole: its last turn is not
+        complete (`_complete`), so it goes live."""
         if self._live is not None or self._recorded is None:
             return False
         return self._done or (bool(self._turns) and self._next == len(self._turns))

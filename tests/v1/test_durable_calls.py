@@ -383,6 +383,41 @@ async def test_a_cut_off_exchange_replays_then_continues_at_its_checkpoint(
         assert exchange.kept and model.requests == []
 
 
+class FinalizeOnce(NotesTask):
+    """Its finalize fails while `failures` lasts, then succeeds."""
+
+    failures: ClassVar[int] = 0
+    finalized: ClassVar[int] = 0
+
+    async def finalize(self, trace, runtime) -> None:
+        if FinalizeOnce.failures:
+            FinalizeOnce.failures -= 1
+            raise RuntimeError("finalize broke")
+        FinalizeOnce.finalized += 1
+
+
+async def test_a_failed_finished_exchange_goes_live_instead_of_kept(model, store):
+    FinalizeOnce.failures, FinalizeOnce.finalized = 1, 0
+    agent = make(model, save="per_call")
+    talk = FinalizeOnce(vf.TaskData(idx=0, prompt=None))
+    with vf.use_durable(vf.Durable(store)):
+        async with agent.interaction(talk, key="talk") as exchange:
+            await exchange.turn("hello")
+        failed = exchange.trace
+        assert failed.is_completed and not failed.ok
+        model.requests.clear()
+        async with agent.interaction(talk, key="talk") as exchange:
+            segment = await exchange.turn("hello")
+    # Not given back as an ok, unscored copy: the last turn ran again from its
+    # checkpoint, and the live exchange finalized.
+    again = exchange.trace
+    assert not exchange.kept and not again.kept
+    assert again.ok and again.errors == [], again.errors
+    assert again.resumed_from == failed.id
+    assert len(model.requests) == 1 and segment.last_reply == f"done: {RETRY_NOTE}"
+    assert FinalizeOnce.finalized == 1
+
+
 async def test_a_replaying_exchange_steers_only_when_live(model, store):
     agent = make(model)
     with vf.use_durable(vf.Durable(store)):
