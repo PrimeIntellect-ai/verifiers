@@ -105,7 +105,10 @@ must follow.
   checkpoint covers and continues live from there. A driver that sends something else
   continues live from the checkpoint at the end of the turns it got (with per-call saves,
   every final reply has one); without one, the turn raises (before any turn was
-  replayed, the exchange runs fresh).
+  replayed, the exchange runs fresh). An exchange that never goes live is kept
+  (`trace.kept`) and joins its episode, as a kept `run` does; so is a cut-off one whose
+  every recorded turn was given back before it closed: its trace is the record, closed
+  as the live exchange would close it (`user_closed`, ok) without finalize or scoring.
 - **The box during a replay.** An exchange that owns its box has no live box while it
   replays, so `exchange.runtime` is a `vf.ReplayBox`: the first awaited method on it
   (`await exchange.runtime.read(path)`), or `await exchange.box()`, restores the box from

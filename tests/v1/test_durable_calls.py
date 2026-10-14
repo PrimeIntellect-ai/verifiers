@@ -708,6 +708,67 @@ async def test_an_episode_run_again_skips_its_finished_calls(
     assert all(t.kept for t in again.traces) and model.requests == []
 
 
+class TalkEnv(vf.Env[PairConfig]):
+    """One exchange of two turns; crashes after its last turn, before it closes,
+    while `crash` is set. The driver notes a verdict on the trace once it closed."""
+
+    root: Path
+    crash = True
+
+    def trace_labels(self, task):
+        return {"job": "j1"}
+
+    def durable(self, task):
+        return vf.Durable(vf.TraceDir(self.root), match=self.trace_labels(task))
+
+    async def run(self, task, agents):
+        async with agents.solver.interaction(task) as exchange:
+            for message in ("first", "second"):
+                await exchange.turn(message)
+            if TalkEnv.crash:
+                raise RuntimeError("the env server died")
+        exchange.trace.info["verdict"] = "pass"
+
+
+async def test_an_exchange_cut_after_its_last_turn_replays_into_the_episode(
+    model, tmp_path, monkeypatch
+):
+    from verifiers.v1.utils import loaders
+
+    load = loaders.load_harness
+    monkeypatch.setattr(
+        loaders,
+        "load_harness",
+        lambda config: ScriptHarness(config) if config.id == "null" else load(config),
+    )
+    TalkEnv.root, TalkEnv.crash = tmp_path / "traces", True
+    env = TalkEnv(PairConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    ctx = ModelContext(
+        model="scripted",
+        client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
+    )
+    crashed = await env.run_episode(task(None), ctx)
+    [cut] = crashed.traces
+    assert not crashed.ok and not cut.ok
+    TalkEnv.crash = False
+    model.requests.clear()
+    # The driver gives back exactly the recorded turns, then closes: nothing goes live.
+    episode = await env.run_episode(task(None), ctx)
+    assert episode.ok, episode.errors
+    assert model.requests == []
+    [kept] = episode.traces
+    assert kept.kept and kept.id == cut.id
+    assert kept.is_completed and kept.ok and kept.stop_condition == "user_closed"
+    [landed] = episode.to_record()["traces"]
+    assert landed["id"] == cut.id and landed["info"]["verdict"] == "pass"
+    # The store holds it closed: the next episode replays it as a finished exchange.
+    stored = vf.TraceDir(TalkEnv.root).get(kept.labels["call"]["ref"])
+    assert stored is not None and stored.is_completed and stored.ok
+    again = await env.run_episode(task(None), ctx)
+    assert again.ok and model.requests == []
+    assert [t.id for t in again.traces] == [cut.id] and again.traces[0].kept
+
+
 # -- a multi-agent episode, crashed and run again ---------------------------------
 
 

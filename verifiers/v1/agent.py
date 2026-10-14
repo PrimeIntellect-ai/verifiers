@@ -948,6 +948,12 @@ class DurableInteraction:
     act on the live exchange only. Without anything recorded, the exchange is live from
     the start, as a plain `interaction()`.
 
+    An exchange that never goes live ran nothing: its trace is `kept`. A cut-off
+    exchange whose every recorded turn was given back is kept too (it was cut after
+    its last turn, before it closed): when it closes, its trace is a copy of the
+    recorded one, closed as the live exchange would close it (`user_closed`, ok), its
+    finalize and scoring not run.
+
     The box. An exchange on a borrowed box (`runtime=`) has that box throughout. One
     that owns its box has none while it replays: `runtime` is then a `ReplayBox`, and
     the first use of it (or `await box()`) restores the box from the checkpoint
@@ -996,6 +1002,9 @@ class DurableInteraction:
         """Where the turns given so far end in the recorded conversation; a
         continuation's starts after its origin's conversation (`skip`)."""
         self._done = False
+        self._ended = False
+        """A cut-off recorded exchange was given back whole and closed: `_recorded` is
+        now its closed copy."""
         self._horizon = 0
         self._complete = 0
         if recorded is None:
@@ -1022,8 +1031,17 @@ class DurableInteraction:
 
     @property
     def kept(self) -> bool:
-        """Every turn so far came from the recorded exchange: nothing ran."""
-        return self._live is None and self._recorded is not None and self._done
+        """Every turn so far came from the recorded exchange, and the exchange either
+        finished or was given back every recorded turn: nothing ran."""
+        if self._live is not None or self._recorded is None:
+            return False
+        return self._done or (bool(self._turns) and self._next == len(self._turns))
+
+    @property
+    def ended(self) -> bool:
+        """A cut-off recorded exchange was given back whole and closed: `trace` is a
+        closed copy of the record, which the store does not hold yet."""
+        return self._ended
 
     @property
     def live(self) -> Interaction | None:
@@ -1246,6 +1264,16 @@ class DurableInteraction:
     async def close(self) -> Trace:
         if self._live is not None:
             return await self._live.close()
+        if self.kept and not self._done:
+            # Cut off after its last turn: close the record as the live exchange
+            # would have, without running anything.
+            assert self._recorded is not None
+            closed = self._recorded.model_copy(deep=True)
+            closed.stop("user_closed")
+            closed.ok = True
+            closed._kept = True
+            self._recorded = closed
+            self._done = self._ended = self._over = True
         return self.trace
 
 
@@ -2105,8 +2133,13 @@ class Agent:
             if recorded is None:
                 await exchange.go_live()
             yield exchange
-        if exchange.live is not None and found is not None:
-            found.write(exchange.live.trace)
+            if exchange.live is None:
+                await exchange.close()
+        if found is not None:
+            if exchange.live is not None:
+                found.write(exchange.live.trace)
+            elif exchange.ended:
+                found.write(exchange.trace)
 
     def _rollout_params(
         self,
