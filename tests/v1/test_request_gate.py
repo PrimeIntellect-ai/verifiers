@@ -280,7 +280,7 @@ HOLDER = textwrap.dedent(
     from verifiers.v1.configs.client import RequestGateConfig
 
     gate = ModelGate(Path(sys.argv[1]), "k", "m")
-    slot, _ = gate.try_admit(RequestGateConfig(max_concurrent=1))
+    slot = gate.try_admit(RequestGateConfig(max_concurrent=1))
     assert slot == 0
     print("held", flush=True)
     time.sleep(60)
@@ -297,12 +297,11 @@ def test_a_killed_process_returns_its_permits(tmp_path):
         assert holder.stdout is not None and holder.stdout.readline() == "held\n"
         gate = ModelGate(gates, "k", "m")
         config = RequestGateConfig(max_concurrent=1)
-        assert gate.try_admit(config) == (None, 1)
+        assert gate.try_admit(config) is None
     finally:
         os.kill(holder.pid, signal.SIGKILL)
         holder.wait()
-    slot, _ = gate.try_admit(config)
-    assert slot == 0
+    assert gate.try_admit(config) == 0
 
 
 def test_gates_are_keyed_by_endpoint_credential_and_model():
@@ -449,8 +448,7 @@ async def test_a_rejection_cancelled_while_closing_returns_its_permit(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await sending
     gate = ModelGate(tmp_path / "gates", gate_key(request.url, "", MODEL), MODEL)
-    slot, _ = gate.try_admit(config)
-    assert slot == 0, "the only slot is free again"
+    assert gate.try_admit(config) == 0, "the only slot is free again"
 
 
 def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(
@@ -508,7 +506,7 @@ def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
 
     first = ModelGate(tmp_path, "k", "m")
     for _ in range(15):
-        slot, _ = first.try_admit(config)
+        slot = first.try_admit(config)
         assert slot is not None
         first.release(slot, config, "rejected")
     assert limit() == 1
@@ -518,7 +516,7 @@ def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
     joining.close_inherited()
     later = ModelGate(tmp_path, "k", "m")
     slots = []
-    while (slot := later.try_admit(config)[0]) is not None:
+    while (slot := later.try_admit(config)) is not None:
         slots.append(slot)
     assert len(slots) == 32, "a later run starts from max_concurrent"
 
@@ -552,3 +550,31 @@ async def test_a_gate_that_absorbs_no_rejections_leaves_429s_to_the_harness_sdk(
         trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="go")))
     assert trace.ok, trace.errors
     assert provider.rejected == 2, "both 429s reached the SDK, which retried them"
+
+
+def test_a_forked_child_drops_the_parents_permits_but_keeps_the_learned_limit(tmp_path):
+    config = RequestGateConfig(max_concurrent=2, decrease_cooldown=0)
+    parent = gate_module.model_gate(tmp_path, "fork", "m")
+    rejected = parent.try_admit(config)
+    assert rejected is not None
+    parent.release(rejected, config, "rejected")
+    held = parent.try_admit(config)
+    assert held is not None
+    pid = os.fork()
+    if pid == 0:  # the child: report through the exit code, never return into pytest
+        ok = False
+        try:
+            child = gate_module.model_gate(tmp_path, "fork", "m")
+            limit = json.loads(child.state_path.read_text())["limit"]
+            ok = (
+                child is not parent
+                and not child._held
+                and limit == 1.5  # not started afresh: the parent still uses the gate
+                and child.try_admit(config) is None  # the parent's permit still counts
+            )
+        finally:
+            os._exit(0 if ok else 1)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    parent.release(held, config, "other")
+    assert parent.try_admit(config) is not None, "the child took nothing with it"

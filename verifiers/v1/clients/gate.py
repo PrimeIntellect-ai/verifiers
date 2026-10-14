@@ -147,9 +147,8 @@ class ModelGate:
             limit = config.max_concurrent
         return min(max(float(limit), config.min_concurrent), config.max_concurrent)
 
-    def try_admit(self, config: RequestGateConfig) -> tuple[int | None, int]:
-        """Take a free slot if fewer than the limit are held host-wide: (slot or None,
-        the integer limit it was checked against)."""
+    def try_admit(self, config: RequestGateConfig) -> int | None:
+        """Take a free slot if fewer than the limit are held host-wide, else None."""
         try:
             with self._mutex, self._state() as state:
                 limit = int(self._limit(state, config))
@@ -177,7 +176,7 @@ class ModelGate:
                 state.update(model=self.model, cap=config.max_concurrent)
                 state["limit"] = self._limit(state, config)
                 state["in_flight"] = held + (free is not None)
-                return free, limit
+                return free
         finally:
             self._apply_releases()
 
@@ -236,7 +235,7 @@ class ModelGate:
             lock = self._loop_locks[loop] = asyncio.Lock()
         async with lock:
             while True:
-                slot, _ = self.try_admit(config)
+                slot = self.try_admit(config)
                 if slot is not None:
                     return slot
                 await asyncio.sleep(random.uniform(*POLL_SECONDS))
