@@ -130,11 +130,12 @@ def _running(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    # A killed child of an exited shell may linger as a zombie until init reaps it.
+    # A killed child of an exited shell may linger as a zombie until init reaps it, and
+    # a reap between the open and the read fails the read with ESRCH.
     try:
         with open(f"/proc/{pid}/stat") as stat:
             return stat.read().split(") ", 1)[1][0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
 
 
