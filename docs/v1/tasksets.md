@@ -178,6 +178,28 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 
 Two rules follow from infinity: a run over an infinite taskset must be bounded with `take` (`-n` on the CLI) or an `include` of only closed `idx` ranges — omitting both is an error — and `shuffle` needs a bound before it: there is no whole set to sample from otherwise. `select` applies `limit` after the shuffle, so on the CLI only closed `include.idx` ranges can bound it (`--select.include.idx 0:1000 -s -n 50`); in Python, `take(n).shuffle()` works too. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
+## Feedback from the runner
+
+A taskset that adapts what it yields (a curriculum, a work queue) can hear back about the
+tasks it handed out. The runner that dispatched a task calls exactly one hook per task, on
+the taskset object it iterates (possibly a view, which shares the taskset's attributes),
+from its event loop:
+
+- `observe(task, episode)`: the task finished as `episode`, its final attempt after
+  retries and `finalize()`, failed or not;
+- `on_failed(task, error)`: the task produced no episode at all (the env server died,
+  dispatch failed);
+- `on_cancelled(task)`: the task was stopped because the taskset asked for it.
+
+`cancel(key)` asks the runner to stop the dispatched task with that `Task.key`; it is safe
+from any thread, including the one iterating `load()`, and the runner collects the keys
+with `cancelled()`. Keep the hooks quick and non-blocking: an exception in one stops the
+run.
+
+Only an external runner honours these: prime-rl's eval runner calls them. `vf-eval`
+(and the other entrypoints in verifiers) never calls them, so under `vf-eval` a taskset
+gets no feedback and `cancel()` stops nothing.
+
 ## Adding Tools
 
 Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
