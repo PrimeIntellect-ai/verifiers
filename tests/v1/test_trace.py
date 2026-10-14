@@ -771,8 +771,9 @@ def test_semantic_edge_set_accepts_deep_acyclic_chain():
 
 def test_a_record_with_an_image_digest_still_loads():
     """Traces written while verifiers recorded `image_digest` load; it is not written back."""
-    from verifiers.v1.runtimes import RuntimeInfo
     from pydantic import TypeAdapter
+
+    from verifiers.v1.runtimes import RuntimeInfo
 
     info = TypeAdapter(RuntimeInfo).validate_python(
         {"type": "docker", "image_digest": "sha256:abc"}
