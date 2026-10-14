@@ -36,13 +36,32 @@ class RolloutError(Exception):
 
 class ProviderError(RolloutError):
     """A model-provider call failed (transport, HTTP status, timeout, or malformed response).
-    `status_code` is the HTTP status surfaced to the harness so its SDK retries transient faults
-    (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
-    transport fault."""
+    `status_code` is the provider's HTTP status, or one chosen for a fault without one (503 for
+    a dropped connection, 504 for a timeout, 502 for a malformed or truncated response); it says
+    whether the failure is transient (`transient`). `retry_after` is the wait in seconds the
+    provider asked for, if any."""
 
-    def __init__(self, message: str = "", *, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        status_code: int = 502,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after = retry_after
+
+
+def transient(error: BaseException) -> bool:
+    """Whether `error` is a provider failure that sending the same call again can get past:
+    a 5xx (which includes a dropped connection, a timeout, and a truncated or malformed
+    response), a 408 or a 429. Every other 4xx (an invalid request, a context overflow,
+    auth) fails the same way again."""
+    if not isinstance(error, ProviderError):
+        return False
+    status = error.status_code
+    return status >= 500 or status in (408, 429)
 
 
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
@@ -384,15 +403,18 @@ def _provider_status(e: OpenAIError | str) -> int:
 
 
 def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
+    e: OpenAIError | str,
+    *,
+    status_code: int | None = None,
+    retry_after: float | None = None,
 ) -> ProviderError:
-    """Map a provider failure to a `ProviderError`. `status_code` is the HTTP status surfaced to
-    the harness (whose SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error
-    when not given. Accepts an SDK error (the renderer) or the provider's raw error body (the
-    httpx proxy)."""
+    """Map a provider failure to a `ProviderError`. `status_code` (whether it is `transient`)
+    is derived from an SDK error when not given. Accepts an SDK error (the renderer) or the
+    provider's raw error body (the httpx proxy)."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
+        retry_after=retry_after,
     )

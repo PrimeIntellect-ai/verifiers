@@ -9,7 +9,7 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import build_async_httpx, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.clients.gate import MODEL_EXTENSION
+from verifiers.v1.clients.gate import MODEL_EXTENSION, retry_after
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     resolve_api_key,
@@ -91,8 +91,8 @@ class EvalClient(Client):
         )
         # A corrupted response (e.g. an HTML error page or a truncated body on a
         # flaky tunnel) surfaces as a JSON parse failure or a schema validation
-        # failure — map these to a retryable 502 so the harness SDK retries the
-        # call instead of crashing the whole rollout on one bad response.
+        # failure — map these to a transient 502 so the interception server retries
+        # the call instead of crashing the whole rollout on one bad response.
         try:
             raw = from_json(resp.content)
             response = dialect.parse_response(dialect.validate_response(raw))
@@ -146,12 +146,13 @@ class EvalClient(Client):
         )
         try:
             response = await self.client.send(request, stream=stream)
+        # httpx's timeouts stringify empty: name the error so the record says what failed.
         except httpx.TimeoutException as e:
-            raise model_error(str(e), status_code=504) from e
+            raise model_error(str(e) or type(e).__name__, status_code=504) from e
         except httpx.HTTPError as e:
-            raise model_error(str(e), status_code=503) from e
+            raise model_error(str(e) or type(e).__name__, status_code=503) from e
         except ConnectionResetError as e:
-            raise model_error(str(e), status_code=503) from e
+            raise model_error(str(e) or type(e).__name__, status_code=503) from e
         if not stream:
             try:
                 response.raise_for_status()
@@ -159,6 +160,7 @@ class EvalClient(Client):
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
                     status_code=e.response.status_code,
+                    retry_after=retry_after(e.response),
                 ) from e
             return response
         if response.status_code < 400:
@@ -168,7 +170,9 @@ class EvalClient(Client):
         finally:
             await response.aclose()
         raise model_error(
-            f"upstream {response.status_code}: {text}", status_code=response.status_code
+            f"upstream {response.status_code}: {text}",
+            status_code=response.status_code,
+            retry_after=retry_after(response),
         )
 
     async def relay(

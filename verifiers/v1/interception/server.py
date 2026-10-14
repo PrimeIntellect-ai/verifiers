@@ -28,7 +28,7 @@ import random
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -45,6 +45,7 @@ from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.clients.gate import REJECTION_STATUSES
 from verifiers.v1.configs.client import (
     BaseClientConfig,
+    ProviderRetryConfig,
     TrainClientConfig,
     resolve_api_key,
     resolve_headers,
@@ -58,6 +59,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     TaskError,
+    transient,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
@@ -86,17 +88,13 @@ logger = logging.getLogger(__name__)
 MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 KEEPALIVE_INTERVAL_SECONDS = 3
 # A streamed turn commits its SSE stream only after this long: a result within it keeps
-# its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
-# well inside the tunnel's response-header timeout.
+# its HTTP status, and a longer one is kept alive well inside the tunnel's response-header
+# timeout.
 KEEPALIVE_GRACE_SECONDS = 60
-# A committed stream can report a failure only as an SSE error event, which harness SDKs do
-# not retry, so a retryable failure (5xx/429) after commit is rerun here, up to this many
-# attempts in all, waiting longer before each (keepalives hold the stream meanwhile). With a
-# request gate that absorbs rejections (`max_rejections > 0`), a 429/529 has already used
-# the gate's retries: it is final.
-COMMITTED_TURN_ATTEMPTS = 5
-COMMITTED_TURN_BACKOFF_SECONDS = 2.0
-COMMITTED_TURN_BACKOFF_MAX_SECONDS = 30.0
+# A model call the provider failed transiently is sent again in place (`sample`), first
+# after about this long, doubling per failure up to `ProviderRetryConfig.max_backoff`,
+# until `ProviderRetryConfig.budget` runs out.
+RETRY_BACKOFF_SECONDS = 2.0
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -108,18 +106,27 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 SHOULD_RETRY_HEADER = "x-should-retry"
 
 
-RERUNNABLE = web.ResponseKey("rerunnable", bool)
-"""Set on a failed turn's response that is safe to sample again: the provider failed it
-before anything committed (`sample`). A committed stream reruns only such a turn."""
-
-
-def _retryable(status: int, gated: bool) -> bool:
-    """Whether a failed turn's status is worth another try: a 5xx or a 429, except a
-    rejection (429/529) on a gated endpoint, which the request gate already retried
-    (`RequestGateConfig.max_rejections`) — the gate is the one retry layer for those."""
-    if gated and status in REJECTION_STATUSES:
-        return False
-    return status >= 500 or status == 429
+def _retry_wait(
+    error: ProviderError,
+    failures: int,
+    failing_for: float,
+    retry: ProviderRetryConfig,
+    gated: bool,
+) -> float | None:
+    """How long to wait before sending a failed model call again, or None when the
+    failure is final: it is not `transient`, it is a rejection (429/529) the request gate
+    already retried (`RequestGateConfig.max_rejections`), or the wait would end past the
+    retry budget, counted from the call's first failure (`failing_for` seconds ago).
+    Exponential backoff with jitter, or the provider's `Retry-After` when longer."""
+    if not transient(error) or (gated and error.status_code in REJECTION_STATUSES):
+        return None
+    wait = min(RETRY_BACKOFF_SECONDS * 2**failures, retry.max_backoff)
+    wait *= random.uniform(0.5, 1.0)
+    if error.retry_after is not None:
+        wait = max(wait, min(error.retry_after, retry.max_backoff))
+    if failing_for + wait > retry.budget:
+        return None
+    return wait
 
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
@@ -269,28 +276,18 @@ async def _collect_stream(
         await reply.close()
 
 
-async def _after(
-    delay: float, call: Callable[[], Awaitable[web.Response]]
-) -> web.Response:
-    await asyncio.sleep(delay)
-    return await call()
-
-
 async def _buffered_stream(
     request: web.Request,
     dialect: Dialect,
     pending: Awaitable[web.Response],
     trace_id: str,
-    rerun: Callable[[], Awaitable[web.Response]] | None = None,
-    gated: bool = False,
 ) -> web.StreamResponse:
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
     stream is committed and sent the dialect's keepalives, so neither a proxy's timeout
-    nor a client's own idle timeout cuts a long turn. Once committed, a turn the provider
-    failed before it committed (`RERUNNABLE`) is sampled again, and any other failure is
-    framed as the dialect's SSE error. A reader that goes away leaves the turn running for its
-    retries to coalesce onto."""
+    nor a client's own idle timeout cuts a long turn (provider retries included), and a
+    failure is framed as the dialect's SSE error. A reader that goes away leaves the turn
+    running, retries and all, for the harness's retry to coalesce onto."""
     task = asyncio.ensure_future(pending)
     started = time.monotonic()
     try:
@@ -309,33 +306,10 @@ async def _buffered_stream(
         try:
             await stream.prepare(request)
             first = True
-            for attempt in range(1, COMMITTED_TURN_ATTEMPTS + 1):
-                while not task.done():
-                    await stream.write(dialect.stream_keepalive(first))
-                    first = False
-                    await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
-                result = task.result()
-                status = result.status
-                if (
-                    rerun is None
-                    or attempt == COMMITTED_TURN_ATTEMPTS
-                    or not result.get(RERUNNABLE)
-                    or not _retryable(status, gated)
-                ):
-                    break
-                delay = min(
-                    COMMITTED_TURN_BACKOFF_SECONDS * 2 ** (attempt - 1),
-                    COMMITTED_TURN_BACKOFF_MAX_SECONDS,
-                ) * random.uniform(0.5, 1.0)
-                logger.warning(
-                    "intercept stream: rerunning failed committed turn in %.1fs: "
-                    "id=%s status=%d attempt=%d",
-                    delay,
-                    trace_id,
-                    status,
-                    attempt,
-                )
-                task = asyncio.ensure_future(_after(delay, rerun))
+            while not task.done():
+                await stream.write(dialect.stream_keepalive(first))
+                first = False
+                await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
         except ConnectionResetError:
             # A reader that goes away mid-turn is the failure a tunnel or proxy drop looks
             # like from here; its retry (if any) coalesces onto this turn.
@@ -712,6 +686,7 @@ class InterceptionServer(Interception):
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
+        retry = session.ctx.client.retry
         # The gate is the one retry layer for 429/529 only if it absorbs some.
         gate = session.ctx.client.request_gate
         gated = gate is not None and gate.max_rejections > 0
@@ -898,6 +873,27 @@ class InterceptionServer(Interception):
             idempotent.completed_at = time.monotonic()
             return served
 
+        async def exchange() -> tuple[Response, bytes | None]:
+            """One provider exchange. What actually goes upstream: the native body with
+            the rollout's model + sampling imposed — recorded raw on the trace, per call."""
+            if relay:
+                reply = await session.client.relay(
+                    dialect,
+                    body,
+                    headers=upstream_headers,
+                    session_id=session.trace.id,
+                )
+                return await _collect_stream(dialect, reply)
+            response = await session.client.get_response(
+                dialect,
+                body,
+                session.ctx.sampling,
+                headers=upstream_headers,
+                session_id=session.trace.id,
+                turn=turn,
+            )
+            return response, None
+
         async def sample() -> web.Response:
             session.error = None
             call_response: Response | None = None
@@ -907,25 +903,51 @@ class InterceptionServer(Interception):
             started = time.time()
             try:
                 try:
-                    # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
+                    # A transient provider failure is retried here, in place: nothing of
+                    # the turn is committed until an exchange succeeds, and the harness's
+                    # own request (or its retry, coalesced onto this one) waits throughout.
+                    failures = 0
+                    first_failure = 0.0
+                    while True:
+                        try:
+                            call_response, events = await exchange()
+                            break
+                        except ProviderError as e:
+                            now = time.monotonic()
+                            if not failures:
+                                first_failure = now
+                            wait = (
+                                None
+                                if session.released or session.stopped
+                                else _retry_wait(
+                                    e, failures, now - first_failure, retry, gated
+                                )
+                            )
+                            if wait is None:
+                                raise
+                            # The failed exchange keeps its own record.
+                            self.record_call(
+                                session,
+                                dialect,
+                                body,
+                                started,
+                                error=e,
+                                policy_paths=policy_paths,
+                                acp=acp,
+                            )
+                            failures += 1
+                            logger.warning(
+                                "model call failed, retrying in %.1fs: id=%s "
+                                "failures=%d failing_for=%.0fs %s: %s",
+                                wait,
+                                session.trace.id,
+                                failures,
+                                now - first_failure,
+                                type(e).__name__,
+                                e,
+                            )
+                            await asyncio.sleep(wait)
+                            started = time.time()
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -977,8 +999,8 @@ class InterceptionServer(Interception):
                         )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
-                    # Relay the provider's status so the harness SDK retries 5xx/429 and not
-                    # 4xx, and tells it not to retry one the request gate already retried.
+                    # The failure is final: a transient one was retried above, so the
+                    # harness SDK is told not to retry it on top.
                     error = e
                     session.error = e
                     logger.warning(
@@ -987,19 +1009,11 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    status = getattr(e, "status_code", 502)
-                    failed = web.json_response(
+                    return web.json_response(
                         dialect.error_body(str(e)),
-                        status=status,
-                        headers={SHOULD_RETRY_HEADER: "false"}
-                        if gated and status in REJECTION_STATUSES
-                        else None,
+                        status=getattr(e, "status_code", 502),
+                        headers={SHOULD_RETRY_HEADER: "false"},
                     )
-                    # Only a provider failure before the turn committed is sampled
-                    # again; a hook's failure after the commit would commit another
-                    # assistant turn, and fail the same way.
-                    failed[RERUNNABLE] = isinstance(e, ProviderError) and node is None
-                    return failed
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
@@ -1038,9 +1052,7 @@ class InterceptionServer(Interception):
             return serve(call_response, events)
 
         if streaming:
-            return await _buffered_stream(
-                request, dialect, sample(), session.trace.id, rerun=sample, gated=gated
-            )
+            return await _buffered_stream(request, dialect, sample(), session.trace.id)
         return await sample()
 
     async def handle_aux(

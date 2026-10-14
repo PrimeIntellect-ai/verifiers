@@ -1,6 +1,7 @@
-"""Whole-rollout retries (per-call model/runtime retries are owned by the SDKs, not us).
+"""Whole-rollout retries (per-call retries are owned by the layer making the call).
 
-Transient model-call and runtime faults are retried by the harness/runtime SDKs; the
+A model call the provider fails transiently is retried in place by the interception
+server (`ProviderRetryConfig`); transient runtime faults by the runtime SDKs; the
 framework adds targeted retries only where no SDK sits underneath (`retrying()`).
 Two opt-in whole-run retry atoms sit above that: `Agent.run` reruns ITS OWN rollout
 while the trace ends with a retryable error (`--env.<agent>.retries` — a flaky

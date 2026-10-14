@@ -13,8 +13,8 @@ from verifiers.v1.configs.client import (
 
 DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 MAX_RETRIES = 0
-"""No client-side retries: failures surface to the harness SDK and the trace instead of
-being silently reattempted."""
+"""No SDK retries: a rollout's model call is retried in one place, the interception
+server (`ProviderRetryConfig`), which records every failed attempt on the trace."""
 
 # An API version path segment (`v1`, `v2`, ...) — the only kind `join_url` dedups.
 VERSION_SEGMENT = re.compile(r"v\d+")

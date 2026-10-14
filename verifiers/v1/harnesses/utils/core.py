@@ -514,9 +514,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
-    # Client retries per model call; the interception relays a pre-commit 429/5xx for
-    # the program's SDK to retry. A 429/529 a request gate already retried comes back
-    # with `x-should-retry: false`, which the SDK obeys.
+    # Client retries per model call. The interception retries provider failures itself
+    # and returns the one it gives up on with `x-should-retry: false`, which the SDK
+    # obeys; what is left for these is a dropped connection to the interception, whose
+    # marked retry coalesces onto the call still in flight there.
     parser.add_argument("--max-retries", type=int, default=2)
     parser.add_argument("--command-timeout", type=int, default=3600)
     args = parser.parse_args()

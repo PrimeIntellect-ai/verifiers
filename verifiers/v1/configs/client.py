@@ -42,6 +42,22 @@ class ClientTimeoutConfig(BaseConfig):
     """Time to acquire a connection from the pool."""
 
 
+class ProviderRetryConfig(BaseConfig):
+    """How long a model call is retried in place when the provider fails it transiently:
+    a 5xx, 408 or 429, a connection reset or timeout, or a truncated or malformed
+    response. The interception server sends the call again, before anything of it is
+    committed to the trace, with exponential backoff (or the provider's `Retry-After`),
+    until it succeeds or `budget` seconds have passed since it first failed. Any other
+    failure (a 4xx such as an invalid request or a context overflow) is final at once.
+    The failure it gives up on reaches the harness marked not retryable."""
+
+    budget: float = Field(900.0, ge=0)
+    """Seconds since the call first failed in which it is retried; 0 retries nothing.
+    An attempt in flight when it runs out is not cut short."""
+    max_backoff: float = Field(60.0, gt=0)
+    """Longest wait between attempts, `Retry-After` included."""
+
+
 class RequestGateConfig(BaseConfig):
     """A per-model cap on concurrent requests to this endpoint, shared by every process on
     the host that uses the same endpoint, API key and model (see `clients.gate`). With
@@ -63,8 +79,8 @@ class RequestGateConfig(BaseConfig):
     burst of rejections is one signal."""
     max_rejections: int = Field(10, ge=0)
     """Rejections absorbed per request (each waits, then queues again). The next one is
-    final: it reaches the caller marked not retryable, and the interception server does
-    not rerun it. 0 absorbs none and leaves 429s to the usual retries, as without a gate."""
+    final: the interception server does not retry it (`ProviderRetryConfig`). 0 absorbs
+    none and leaves 429s to those retries, as without a gate."""
     backoff: float = Field(1.0, gt=0)
     """Base wait in seconds after a rejection without `Retry-After`; doubles per rejection."""
     max_backoff: float = Field(60.0, gt=0)
@@ -92,6 +108,8 @@ class BaseClientConfig(BaseConfig):
     """Header names mapped to environment variables, resolved when building a client.
     Set environment values override static headers."""
     timeout: ClientTimeoutConfig = ClientTimeoutConfig()
+    retry: ProviderRetryConfig = ProviderRetryConfig()
+    """In-place retries of a rollout's model calls the provider failed transiently."""
     request_gate: RequestGateConfig | None = None
     """Per-model concurrent-request gate for every request sent through this endpoint
     config (harness turns, nested agents, judges). None = no gate."""

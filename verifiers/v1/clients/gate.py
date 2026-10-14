@@ -18,7 +18,7 @@ most once per `decrease_cooldown`), each success adds `1/limit`, bounded by
 `[min_concurrent, max_concurrent]`. A rejected request returns its permit, waits for
 `Retry-After` (else exponential backoff) and queues again, up to `max_rejections` times;
 after that the provider's response reaches the caller unchanged, as final: the
-interception server neither reruns it nor lets the harness SDK retry it.
+interception server does not retry it.
 
 A streamed response holds its permit until it is closed.
 """

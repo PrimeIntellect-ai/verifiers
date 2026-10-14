@@ -76,12 +76,11 @@ class BashHarnessConfig(HarnessConfig):
     program in its launch file, never its argv, so the agent cannot read it."""
 
     model_retries: NonNegativeInt = 10
-    """Retries of a failed model call (429, 5xx, a dropped connection or stream), with
-    the OpenAI SDK's backoff capped at 8 s: 10 rides out about a minute of provider
-    errors. The interception relays a failure before its stream commits for the program
-    to retry, so this is the retry budget for those. With a request gate on the client,
-    the gate alone retries a 429/529: the interception marks one it relays as final
-    (`x-should-retry: false`), and the program does not retry it."""
+    """Retries of a model call whose connection to the interception dropped (a tunnel or
+    proxy cut, a stream cut short), with the OpenAI SDK's backoff capped at 8 s. Each
+    retry coalesces onto the call still in flight at the interception. Provider failures
+    are not these: the interception retries them in place (`ProviderRetryConfig`) and
+    marks the one it gives up on as final (`x-should-retry: false`)."""
 
     command_timeout: PositiveInt = 3600
     """Seconds one `bash` command may run. On expiry its whole process group is killed

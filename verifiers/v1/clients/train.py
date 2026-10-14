@@ -457,7 +457,7 @@ class TrainClient(Client):
                 )
             except OverlongPromptError as e:
                 # The renderer's pre-flight overflow never reached the provider: a
-                # deterministic 400, so the harness SDK never retries it.
+                # deterministic 400, so it is never retried.
                 raise ProviderError(str(e), status_code=400) from e
             except OpenAIError as e:
                 raise model_error(e) from e

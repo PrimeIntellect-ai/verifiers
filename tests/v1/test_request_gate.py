@@ -27,6 +27,7 @@ from verifiers.v1.clients.gate import GatedAsyncClient, ModelGate, gate_key
 from verifiers.v1.configs.client import EvalClientConfig, RequestGateConfig
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.harnesses.null.harness import NullHarness
+from verifiers.v1.interception import server
 from verifiers.v1.runtimes import ProgramResult
 from verifiers.v1.types import Sampling
 
@@ -384,19 +385,24 @@ async def test_absorbed_429s_never_reach_the_harness(tmp_path, monkeypatch):
 
 
 def test_a_gated_rejection_is_not_retried_again():
-    from verifiers.v1.interception.server import _retryable
+    from verifiers.v1.interception.server import _retry_wait
 
-    assert _retryable(429, gated=False) and _retryable(529, gated=False)
-    assert not _retryable(429, gated=True) and not _retryable(529, gated=True)
-    assert _retryable(502, gated=True) and _retryable(503, gated=False)
-    assert not _retryable(400, gated=False)
+    def wait(status: int, gated: bool) -> float | None:
+        error = vf.ProviderError("x", status_code=status)
+        return _retry_wait(error, 0, 0.0, vf.ProviderRetryConfig(), gated)
+
+    assert wait(429, gated=False) and wait(529, gated=False)
+    assert wait(429, gated=True) is None and wait(529, gated=True) is None
+    assert wait(502, gated=True) and wait(503, gated=False)
+    assert wait(400, gated=False) is None
 
 
 async def test_the_harness_sdk_does_not_retry_a_429_the_gate_gave_up_on(
     tmp_path, monkeypatch
 ):
-    """The gate is the only 429 retry layer: its final rejection reaches the harness
-    marked `x-should-retry: false`, so a retrying SDK makes no further attempt."""
+    """The gate is the only 429 retry layer: the interception does not retry its final
+    rejection, which reaches the harness marked `x-should-retry: false`, so a retrying
+    SDK makes no further attempt."""
     monkeypatch.setenv("FAKE_KEY", "k")
     async with FakeProvider(limit=2, reject_first=100) as provider:
         agent = vf.Agent(
@@ -521,12 +527,13 @@ def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
     assert len(slots) == 32, "a later run starts from max_concurrent"
 
 
-async def test_a_gate_that_absorbs_no_rejections_leaves_429s_to_the_harness_sdk(
+async def test_a_gate_that_absorbs_no_rejections_leaves_429s_to_the_interception(
     tmp_path, monkeypatch
 ):
-    """With `max_rejections = 0` the gate retries no 429, so the harness SDK still does:
-    a gated run never retries 429s less than an ungated one."""
+    """With `max_rejections = 0` the gate retries no 429, so the interception still
+    does: a gated run never retries 429s less than an ungated one."""
     monkeypatch.setenv("FAKE_KEY", "k")
+    monkeypatch.setattr(server, "RETRY_BACKOFF_SECONDS", 0.01)
     async with FakeProvider(limit=2, reject_first=2, retry_after="0.01") as provider:
         agent = vf.Agent(
             vf.AgentConfig(
@@ -546,10 +553,10 @@ async def test_a_gate_that_absorbs_no_rejections_leaves_429s_to_the_harness_sdk(
             )
         )
         agent.harness = OneCallHarness(agent.harness.config)
-        agent.harness.sdk_retries = 3
         trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="go")))
     assert trace.ok, trace.errors
-    assert provider.rejected == 2, "both 429s reached the SDK, which retried them"
+    assert provider.rejected == 2, "both 429s were retried in place"
+    assert [call.error is None for call in trace.calls] == [False, False, True]
 
 
 def test_a_forked_child_drops_the_parents_permits_but_keeps_the_learned_limit(tmp_path):
