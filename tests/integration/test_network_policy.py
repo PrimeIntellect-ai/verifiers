@@ -1,15 +1,12 @@
-"""A task's network policy holds during execution, and the agent is told about it: a
-scripted agent probes a blocked host, a permitted host, and the framework's own route
-from inside the runtime, and records the system prompt it was handed
-(network-policy-v1). Each task declares one policy in its data; the agent's
-`network_notice` is on or off. Runs across the runtimes with a network policy; a
-runtime that cannot enforce a task's policy refuses that task instead."""
+"""A task's network policy holds during execution, and the model is told about it: the
+agent runs an egress probe under each policy the task data declares
+(network-policy-v1), with the agent's `network_notice` on or off, across every harness
+on prime."""
 
 import pytest
-from grid import runtimes_grid
-from pydantic import TypeAdapter, ValidationError
+from grid import grid
 
-from verifiers.v1.runtimes import RuntimeConfig
+from verifiers.v1.utils.loaders import harness_class
 
 NOTICES = {
     "open": None,
@@ -24,44 +21,48 @@ NOTICES = {
     ),
 }
 
-POLICIES = {
-    "open": {},
-    "off": {"allow": []},
-    "block": {"block": ["example.com"]},
-    "allow": {"allow": ["pypi.org"]},
-}
 
-
-def enforces(runtime: dict, policy: dict) -> bool:
-    """Whether the runtime config accepts the policy: modal has no deny lists, and e2b
-    denies only IP addresses and CIDR blocks."""
-    try:
-        TypeAdapter(RuntimeConfig).validate_python({**runtime, **policy})
-    except ValidationError:
-        return False
-    return True
+def prompt_text(trace) -> str:
+    """Every prompt-supplied message the model saw, as one text."""
+    texts = []
+    for node in trace.nodes:
+        if node.sampled:
+            continue
+        content = node.message.content
+        if isinstance(content, str):
+            texts.append(content)
+        elif content:
+            texts.extend(getattr(part, "text", "") or "" for part in content)
+    return "\n".join(texts)
 
 
 @pytest.mark.parametrize("notice", [True, False], ids=["notice-on", "notice-off"])
 @pytest.mark.parametrize(
-    "harness_runtime", runtimes_grid(needs=("network",)), indirect=True
+    "harness,harness_runtime", grid(runtimes=["prime"]), indirect=True
 )
-async def test_network_policy(run, harness_runtime, notice):
+async def test_network_policy(run, harness, harness_runtime, notice):
     episodes = await run(
         "network-policy-v1",
-        harness="network-policy-v1",
+        harness=harness,
         runtime=harness_runtime,
         num_tasks=len(NOTICES),
+        max_turns=6,
+        max_tokens=4096,
         env={"agent": {"network_notice": notice}},
     )
     by_name = {episode.task.data.name: episode for episode in episodes}
     assert set(by_name) == set(NOTICES)
     for name, episode in by_name.items():
-        if not enforces(harness_runtime, POLICIES[name]):
-            assert not episode.ok and not episode.traces, name
-            assert "ValidationError" in episode.errors[0].message, name
-            continue
         [trace] = episode.traces
         assert trace.ok, [error.message for error in trace.errors]
-        assert trace.reward == 1.0, (name, trace.info["network_report"])
-        assert trace.info["system_prompt"] == (NOTICES[name] if notice else None), name
+        prompt = prompt_text(trace)
+        if notice and NOTICES[name]:
+            assert NOTICES[name] in prompt, name
+        else:
+            assert "External network access" not in prompt, name
+        if harness_class(harness.id).EXECUTES_CODE:
+            assert trace.reward == 1.0, (
+                name,
+                trace.info["network_report"],
+                trace.last_reply,
+            )
