@@ -24,6 +24,7 @@ from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
     RuntimeBackend,
+    TargetStatus,
     parse_gpu,
 )
 from verifiers.v1.runtimes.container import ContainerBackend, ContainerConfig, cli
@@ -154,6 +155,44 @@ class DockerBackend(ContainerBackend):
     @property
     def published_port(self) -> int:
         return SERVICE_PORT
+
+    async def execution_status(self) -> TargetStatus:
+        if self._container is None:
+            return TargetStatus("unknown")
+        try:
+            import asyncio
+
+            async with asyncio.timeout(10):
+                result = await self._run_host(
+                    self.engine,
+                    "inspect",
+                    "--format",
+                    "{{json .State}}",
+                    self._container,
+                )
+            if result.exit_code:
+                return TargetStatus(
+                    "unknown", evidence={"detail": result.stderr[-1000:]}
+                )
+            state = json.loads(result.stdout)
+            if state.get("Running"):
+                return TargetStatus("running")
+            return TargetStatus(
+                "lost",
+                "oom" if state.get("OOMKilled") else "container_exited",
+                {
+                    key: state.get(key)
+                    for key in (
+                        "Status",
+                        "ExitCode",
+                        "OOMKilled",
+                        "Error",
+                        "FinishedAt",
+                    )
+                },
+            )
+        except Exception:  # noqa: BLE001 - retain uncertainty on transport failure
+            return TargetStatus("unknown")
 
     async def start(self) -> None:
         try:

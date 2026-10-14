@@ -12,7 +12,7 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
@@ -60,6 +60,14 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class TargetStatus:
+    state: Literal["running", "lost", "unknown"]
+    cause: str = "unknown"
+    evidence: dict | None = None
+    attribution: Literal["agent", "infra", "unknown"] = "unknown"
 
 
 class RuntimeProcess(ABC):
@@ -244,6 +252,10 @@ class RuntimeBackend(ABC):
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         pass
+
+    async def execution_status(self) -> TargetStatus:
+        """Observed lifecycle state; a failed transport is not proof of target death."""
+        return TargetStatus("unknown")
 
     async def _run_program(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]

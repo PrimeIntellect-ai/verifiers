@@ -105,3 +105,18 @@ restores collected artifacts into a fresh runtime before task scoring.
 `agent.scoring.retries` uses `RetryConfig` for isolated scoring, with a default
 `max_retries = 2`. Its rules select retryable errors; retries reuse the completed
 submission in a fresh scoring environment. Shared scoring is not retried.
+
+Execution-target loss can be scored as a terminal training sample:
+
+```toml
+[env.agent.execution_failure]
+workspace_loss = "zero"
+agent_timeout = "zero"
+```
+
+Workspace loss is confirmed through container or Prime lifecycle state; an unreachable Docker daemon
+is not proof of loss. The trace records the cause, evidence, and selected policy
+without treating unknown attribution as agent fault. A zero policy preserves a
+valid trace with reward zero and skips unavailable workspace grading. Agent deadlines
+include model latency; use this policy only when that is the intended task budget.
+Provider/transport failures remain errors. Recovery is not implemented.

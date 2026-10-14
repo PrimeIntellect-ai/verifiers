@@ -9,8 +9,10 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import BaseModel, Field
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeBackend,
@@ -18,6 +20,7 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import (
+    TargetStatus,
     register,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
@@ -46,6 +49,31 @@ class DeploymentConfig(BaseConfig):
     """Shared workspace, or a container workspace inside a Prime VM."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""
+
+
+class ExecutionFailurePolicy(BaseConfig):
+    workspace_loss: Literal["error", "zero"] = "error"
+    """How to score confirmed workspace loss during execution, with unknown cause."""
+    agent_timeout: Literal["error", "zero", "grade"] = "grade"
+    """Whole-agent deadline policy; includes model latency, unlike command timeouts."""
+
+
+class Termination(BaseModel):
+    kind: Literal["target_lost", "timeout"]
+    target: str = "main"
+    attribution: Literal["agent", "infra", "unknown"] = "unknown"
+    cause: str = "unknown"
+    evidence: dict = Field(default_factory=dict)
+    policy: str
+    valid_sample: bool
+    reward: float | None = None
+    rule: str = "execution-v1"
+
+
+class TargetLost(SandboxError):
+    def __init__(self, status: TargetStatus):
+        super().__init__(f"workspace terminated during execution ({status.cause})")
+        self.status = status
 
 
 class _DeploymentStrategy:
@@ -227,6 +255,46 @@ class Deployment:
         self, source_runtime: Runtime, target_runtime: Runtime
     ) -> ExecutionConnection:
         return await self._strategy.connect(self, source_runtime, target_runtime)
+
+    async def status(self, backend: RuntimeBackend | None = None) -> TargetStatus:
+        backend = backend or self.execution_backend
+        return (
+            await backend.execution_status()
+            if backend is not None
+            else TargetStatus("unknown")
+        )
+
+    async def watch(self, backend: RuntimeBackend | None = None) -> None:
+        while True:
+            status = await self.status(backend)
+            if status.state == "lost":
+                raise TargetLost(status)
+            await asyncio.sleep(1)
+
+    async def run(self, operation, *, backend: RuntimeBackend | None = None):
+        """Supervise an operation on any target, including a fresh verifier."""
+        work = asyncio.create_task(operation)
+        watcher = asyncio.create_task(self.watch(backend))
+        try:
+            done, _ = await asyncio.wait(
+                (work, watcher), return_when=asyncio.FIRST_COMPLETED
+            )
+            # A completed operation owns its result, even if the target exits
+            # at the same time. Supervision only interrupts unfinished work.
+            if work not in done:
+                await watcher
+            try:
+                result = await work
+            except Exception:
+                status = await self.status(backend)
+                if status.state == "lost":
+                    raise TargetLost(status) from None
+                raise
+            return result
+        finally:
+            work.cancel()
+            watcher.cancel()
+            await asyncio.gather(work, watcher, return_exceptions=True)
 
     @asynccontextmanager
     async def verifier(
