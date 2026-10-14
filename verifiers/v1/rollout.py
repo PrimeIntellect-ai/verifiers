@@ -366,13 +366,8 @@ class Rollout:
                         connection = await self.deployment.connection(
                             harness_runtime, self._agent_runtime
                         )
-                        await invoke(
-                            self.harness.setup_execution,
-                            {
-                                "runtime": harness_runtime,
-                                "task_runtime": self._agent_runtime,
-                                "connection": connection,
-                            },
+                        await self.harness.setup_execution(
+                            harness_runtime, self._agent_runtime, connection
                         )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
