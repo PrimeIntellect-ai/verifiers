@@ -37,7 +37,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
-    provision_runtime,
+    provision_backend,
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
@@ -850,16 +850,16 @@ class Agent:
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
+        policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
-        async with provision_runtime(config) as runtime:
+        async with provision_backend(config) as backend:
             # Keep sandbox startup task-neutral: this box may later host another task.
-            runtime.env = dict(task.runtime_env()) if task is not None else {}
-            yield runtime
+            backend.env = dict(task.runtime_env()) if task is not None else {}
+            yield backend.bind()
 
 
 class _EpisodeAgent(Agent):

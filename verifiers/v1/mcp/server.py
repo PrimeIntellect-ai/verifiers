@@ -142,6 +142,10 @@ class ServerBase(Generic[ConfigT, StateT]):
         self._state_client: AsyncClient | None = None
         self._exit_stack = contextlib.AsyncExitStack()
 
+    def runtime_env(self) -> dict[str, str]:
+        """Live-only credentials/settings needed by this trusted tool server."""
+        return {}
+
     @property
     def state(self) -> StateT:
         current = _call_state.get()

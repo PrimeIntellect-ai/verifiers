@@ -340,14 +340,14 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
     """Judge the solver in its runtime, preserving the complete mutable workspace."""
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
+        async with agents.solver.provision(task) as runtime:
+            solution = await agents.solver.run(task, runtime=runtime)
             if not solution.ok:
                 raise RuntimeError(
                     "the solver's rollout failed, so the judge never ran"
                 )
             judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+            await agents.judge.run(judge_task, runtime=runtime)
 
 
 class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):

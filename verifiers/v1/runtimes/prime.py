@@ -1,5 +1,7 @@
 """Remote Prime VM sandbox runtime."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import io
@@ -22,11 +24,12 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
-    Runtime,
+    RuntimeBackend,
     RuntimeProcess,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
@@ -107,7 +110,7 @@ class PrimeConfig(NetworkPolicyConfig):
     — see interception.tunnel.prime.tunnel_limiter.)"""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "PrimeConfig":
+    def _validate_egress(self) -> PrimeConfig:
         if not self.network_restricted:
             return self
         if not self.allow:
@@ -147,7 +150,7 @@ class PrimeProcess(RuntimeProcess):
         await self._process.kill()
 
 
-class PrimeRuntime(Runtime):
+class PrimeBackend(RuntimeBackend):
     supports_user: ClassVar[bool] = True
     supports_expose: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
@@ -296,15 +299,17 @@ class PrimeRuntime(Runtime):
             policy.get("deny"),
         )
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
             delay = 0.1
             output_retries = 0
@@ -339,16 +344,16 @@ class PrimeRuntime(Runtime):
             stderr=result.stderr or "",
         )
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
             process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
@@ -360,8 +365,8 @@ class PrimeRuntime(Runtime):
             "with its consumer, or use a docker or modal service runtime"
         )
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
         try:
@@ -369,15 +374,17 @@ class PrimeRuntime(Runtime):
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
-        if max_bytes is not None or self.user is not None:
+        if max_bytes is not None or runtime.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
             try:
                 # Stream binary output: execute_command buffers base64 text for the
@@ -386,8 +393,8 @@ class PrimeRuntime(Runtime):
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
-                    env=self.process_env({}),
-                    user=self.user,
+                    env=runtime.process_env({}),
+                    user=runtime.user,
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
@@ -423,7 +430,7 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
@@ -431,7 +438,7 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        if self.user is None:
+        if runtime.user is None:
             try:
                 await self._client.upload_bytes(
                     self.info.id, target, data, filename=PurePosixPath(target).name
@@ -440,13 +447,13 @@ class PrimeRuntime(Runtime):
                 raise SandboxError(f"write {path!r}: {e}") from e
             return
         # Uploads act as the default user: stage the bytes, then copy them in as the user.
-        root = self.with_user(None)
+        root = runtime.with_user(None)
         staged = f"/tmp/vf-write-{uuid.uuid4().hex}"
         try:
             await root.write(staged, data)
             await root.run(["chmod", "644", staged], {})
             copy = 'mkdir -p "$(dirname "$1")" && cat -- "$2" > "$1"'
-            result = await self.run(["sh", "-c", copy, "sh", target, staged], {})
+            result = await runtime.run(["sh", "-c", copy, "sh", target, staged], {})
         finally:
             await root.run(["rm", "-f", staged], {})
         if result.exit_code != 0:

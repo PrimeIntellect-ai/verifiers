@@ -26,7 +26,7 @@ from verifiers.v1.runtimes import (
     ModalConfig,
     Runtime,
     RuntimeConfig,
-    make_runtime,
+    make_backend,
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
@@ -60,7 +60,7 @@ _HOME_PROBE = (
 
 
 async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
-    """The runtime the harness runs on: `runtime` itself, or a view running as `user`
+    """The runtime the harness runs through: `runtime` itself, or a view running as `user`
     with `HOME` set to its home. `user` must exist with a home directory it can write
     (task authors ship it in the image), and the view must really run as it, so a
     runtime ignoring the user never runs the agent as root."""
@@ -77,7 +77,7 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     effective, *rest = probe.stdout.split() or [""]
     if effective != user:
         raise SandboxError(
-            f"{type(runtime).__name__} ran as {effective!r} instead of agent_user "
+            f"{type(runtime.backend).__name__} ran as {effective!r} instead of agent_user "
             f"{user!r}; refusing to run the agent"
         )
     if rest != ["writable"]:
@@ -193,7 +193,10 @@ class Rollout:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
         itself couldn't see, e.g. its user raising between segments."""
-        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
+        if (
+            self._borrowed_runtime is not None
+            and self._borrowed_runtime.backend.stopped
+        ):
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
             # misattributed error onto the trace.
@@ -223,8 +226,11 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
-        elif self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
+            self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
+        elif (
+            self._borrowed_runtime is not None
+            and self._borrowed_runtime.backend.stopped
+        ):
             # A lifetime bug in the borrowing program: raise to the caller instead
             # of capturing onto the trace.
             raise ValueError(
@@ -234,7 +240,7 @@ class Rollout:
             )
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
-        self.trace.agent.runtime = runtime.info
+        self.trace.agent.runtime = runtime.info.model_copy()
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             self.trace.id,
@@ -247,7 +253,8 @@ class Rollout:
         try:
             runtime_env = dict(self.task.runtime_env())
             if self._borrowed_runtime is None:
-                runtime.env = runtime_env
+                runtime.backend.env = runtime_env
+                runtime = self.runtime = runtime.with_env(runtime_env)
             else:
                 runtime = runtime.with_env(runtime_env)
                 self.runtime = runtime
@@ -257,9 +264,13 @@ class Rollout:
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
-            if self._borrowed_runtime is None:
-                await runtime.start()
-            await runtime.prepare_setup()
+            try:
+                if self._borrowed_runtime is None:
+                    await runtime.backend.start()
+            finally:
+                # Providers may assign an ID before startup fails; retain it for diagnostics.
+                self.trace.agent.runtime = runtime.info.model_copy()
+            await runtime.backend.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -280,8 +291,8 @@ class Rollout:
                 boundary(HarnessError, "harness setup"),
             ):
                 # The harness, its colocated tools, and its session run as the task's
-                # `agent_user` (just `runtime` when unset). Task setup and scoring,
-                # interception, and the execution policy keep the default `runtime`.
+                # `agent_user` (just `handle` when unset). Task setup and scoring,
+                # interception, and the execution policy keep the default handle.
                 self._agent_runtime = await resolve_agent_runtime(
                     runtime, self.task.data.agent_user
                 )
@@ -319,7 +330,9 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            await runtime.backend.prepare_execution(
+                [self._endpoint, *self._urls.values()]
+            )
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,
                 boundary(HarnessError, "opening harness session"),
@@ -551,7 +564,7 @@ class Rollout:
                 await self.harness.cleanup(self.trace, self.runtime)
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self.runtime.stop()
+                await self.runtime.backend.stop()
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
@@ -590,7 +603,8 @@ class Rollout:
                         boundary(TaskError, "task finalize"),
                     ):
                         await invoke(
-                            self.task.finalize, {"trace": trace, "runtime": runtime}
+                            self.task.finalize,
+                            {"trace": trace, "runtime": runtime},
                         )
                         if self._collect_artifacts and not trace.state.artifacts:
                             trace.state.artifacts = await collect(
@@ -651,7 +665,7 @@ class Rollout:
             # not this rollout's.
             if self._borrowed_runtime is None and runtime is not None:
                 try:
-                    await runtime.stop()
+                    await runtime.backend.stop()
                 except Exception:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True

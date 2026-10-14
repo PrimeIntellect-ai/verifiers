@@ -32,7 +32,7 @@ class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = PrimeConfig()
-    """Runtime for the harness program — the policy each run provisions its box
+    """Runtime configuration for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
 
     model: str | None = None

@@ -220,6 +220,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             for text in (system_prompt, self.config.append_to_system_prompt)
             if text
         ]
+        if skills_home := self._skills_home():
+            appends.append(
+                f"Task skills live under {skills_home}/skills. "
+                "Read their SKILL.md files when helpful."
+            )
         payload = {
             "session_id": trace.id,
             "model": ctx.model,
@@ -245,7 +250,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": runtime.env,
+            "kernel_env": dict(runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if self.config.builtin_tools is not None:
@@ -300,8 +305,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
 
     def _skills_home(self) -> str | None:
-        """rlm's home for a run that carries skills: they sit in its `skills/`, where
-        rlm installs and lists them, so the install and the process share it."""
+        """Per-run home shared by skill installation and the RLM process.
+
+        The runtime prompt advertises its task-skill directory explicitly.
+        """
         if self._skills_install_dir is None:
             return None
         return f"{self._skills_install_dir}/home"
