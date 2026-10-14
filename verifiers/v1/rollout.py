@@ -287,7 +287,7 @@ class Rollout:
         """Clear a model-side failure (a provider or interception error) so the next
         segment can run on the same, still-live box: the error stays on the trace,
         the run is no longer failed. False, and nothing changes, for any other
-        failure, a borrowed box, or a box that is no longer alive."""
+        failure or a box that is no longer alive."""
         failure = self._failure
         if (
             not self._failed

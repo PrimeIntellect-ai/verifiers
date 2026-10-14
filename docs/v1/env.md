@@ -2,15 +2,27 @@
 
 An `Env` defines the control flow between `Agents`. In the simplest case, it is just a `SingleAgentEnv` where a single agent solves a task from a taskset.
 
-Its core signature is `Env.run(task: Task, agents: Agents)` -> None — it is passed an initial task and pre-initialized agents and then programs the full multi-agent control flow; every finished agent run automatically joins the resulting `Episode`, which holds all the traces of all the agents.
+Its core signature is `Env.run(task: Task, agents: Agents) -> BaseModel | None` — it is passed an initial task and pre-initialized agents and then programs the full multi-agent control flow; every finished agent run automatically joins the resulting `Episode`, which holds all the traces of all the agents.
 
 ```python
 class Env(ABC):
     @abstractmethod
-    async def run(self, task: Task, agents: Agents) -> None:
+    async def run(self, task: Task, agents: Agents) -> BaseModel | None:
         """Run a single multi-agent episode."""
         ...
 ```
+
+The other hooks an env may override:
+
+- `run()` may return a pydantic model, the episode's outcome: the episode keeps it dumped
+  as JSON in `episode.outcome`, and `episode.outcome_as(Model)` reads it back typed. Any
+  other return value, a `Trace` included, is ignored. `finalize(task, episode)` may set
+  or replace it, as a JSON dict (`model.model_dump(mode="json")`).
+- `trace_labels(task)` returns labels every trace of the episode carries in
+  `trace.info["labels"]` (`trace.labels`), stamped at mint, before any observer sees the
+  trace: a job id, a stage, a rollout index.
+- An episode whose `run()` ran no agent fails, unless the env sets
+  `REQUIRES_AGENT = False` (a `run()` that may decide on host work alone).
 
 verifiers comes with different pre-built `Env`s to use:
 

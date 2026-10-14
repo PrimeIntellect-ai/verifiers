@@ -388,3 +388,16 @@ async def test_a_durable_call_on_a_durable_box_is_written_once_per_save(
     # One write per per-call save and one when it finished, not one per path.
     assert store.writes[ran.id] == len(ran.checkpoints) + 1
     assert store.writes[talk.trace.id] == len(talk.trace.checkpoints) + 1
+
+
+async def test_a_model_failure_on_a_borrowed_box_continues_on_it(model):
+    """`Rollout.recover` holds for a borrowed box too: a failed model call continues on
+    the same box, which the owner neither restores nor replaces."""
+    model.refuse.add(1)
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.provision(task()) as box:
+        async with agent.interaction(task(), runtime=box) as interaction:
+            segment = await interaction.turn()
+        assert interaction.failed_attempts == [] and interaction.trace.ok
+        assert segment.last_reply.startswith("done")
+        assert vf.box_of(box).generation == 0

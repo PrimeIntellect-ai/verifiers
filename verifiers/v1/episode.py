@@ -111,8 +111,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every agent's trace, in completion order."""
     outcome: dict[str, JsonValue] | None = None
     """The pydantic model the env's `run()` returned (not a `Trace`), dumped as JSON;
-    `finalize()` may set or replace it. Each retry attempt starts with None. An episode
-    can carry an outcome and still have failed (in `finalize()`, say): check `ok`."""
+    `finalize()` may set or replace it, with a JSON dict (`model.model_dump(mode="json")`:
+    nothing dumps a model assigned here). Each retry attempt starts with None. An
+    episode can carry an outcome and still have failed (in `finalize()`, say): check
+    `ok`."""
 
     def outcome_as(self, model: type[ModelT]) -> ModelT | None:
         """`outcome` validated into `model`; None when the episode has none."""

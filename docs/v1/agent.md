@@ -59,24 +59,34 @@ same scope and key is looked up in the run's trace store:
 
 Without a durable installed, calls are plain, exactly as before: RL rollouts stay fresh.
 
-```python
-durable = vf.Durable(vf.TraceDir("traces"), match={"job": "j1"})
-with vf.use_durable(durable):
-    trace = await solver.run(task)                      # solver/0
-    async with solver.interaction(task) as exchange:    # solver/1
-        reply = await exchange.turn("hello")
-    async with solver.provision(task) as box:           # solver/2 (the box)
-        await solver.run(task, runtime=box)             # solver/3
-        await reviewer.run(review_task, runtime=box)    # reviewer/0
-    await solver.run(task, key="lookup")                # solver/lookup: no position
-    await solver.run(resume=trace, note="and now?")     # solver/4: continues solver/0
+An agent's name is its seat in an episode (`agents.solver` is `solver`); outside one,
+every agent is named `agent`, so agents share one count of positions there. In an
+episode's `run()`, with the env's `durable(task)` installed:
 
-with vf.use_durable(durable):                           # a crashed attempt, run again
-    trace = await solver.run(task)                      # solver/0: kept, nothing runs
-    async with solver.interaction(task) as exchange:    # solver/1: replays
-        reply = await exchange.turn("hello")            #   the recorded segment
-        notes = await exchange.runtime.read("notes.md") #   restores the box at this turn
+```python
+solver, reviewer = agents.solver, agents.reviewer
+trace = await solver.run(task)                      # solver/0
+async with solver.interaction(task) as exchange:    # solver/1
+    reply = await exchange.turn("hello")
+async with solver.provision(task) as box:           # solver/2 (the box)
+    await solver.run(task, runtime=box)             # solver/3
+    await reviewer.run(review_task, runtime=box)    # reviewer/0
+await solver.run(task, key="lookup")                # solver/lookup: no position
+await solver.run(resume=trace, note="and now?")     # solver/4: continues solver/0
 ```
+
+Run again after a crash, the same `run()` makes the same calls:
+
+```python
+trace = await solver.run(task)                      # solver/0: kept, nothing runs
+async with solver.interaction(task) as exchange:    # solver/1: replays
+    reply = await exchange.turn("hello")            #   the recorded segment
+    notes = await exchange.runtime.read("notes.md") #   restores the box at this turn
+```
+
+Outside an episode, `vf.use_durable(durable)` installs one for the calls made in its
+context; with `durable = vf.Durable(vf.TraceDir("traces"), match={"job": "j1"})`, the
+same calls are keyed `agent/0`, `agent/1`, ..., the reviewer's run included.
 
 See [Durable episodes](env.md#durable-episodes) for the rule host code between the calls
 must follow.
@@ -109,6 +119,10 @@ must follow.
   (`trace.kept`) and joins its episode, as a kept `run` does; so is a cut-off one whose
   every recorded turn was given back before it closed: its trace is the record, closed
   as the live exchange would close it (`user_closed`, ok) without finalize or scoring.
+  A failed one (closed with an error after its turns: a failed finalize, a driver that
+  raised) is not: its last turn runs again live from its latest checkpoint in it, on
+  `RETRY_NOTE`, and the exchange closes as usual. Its trace is written whatever way the
+  driver leaves it.
 - **The box during a replay.** An exchange that owns its box has no live box while it
   replays, so `exchange.runtime` is a `vf.ReplayBox`: the first awaited method on it
   (`await exchange.runtime.read(path)`), or `await exchange.box()`, restores the box from

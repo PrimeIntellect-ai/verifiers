@@ -90,9 +90,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CALL_LABEL = "call"
-"""The label a durable call stamps: `{"key", "fingerprint", "parts"}`."""
+"""The label a durable call stamps: `{"key", "fingerprint", "parts", "ref"}`."""
 BOX_LABEL = "box"
-"""The label every run on a durable box carries: `{"key", "fingerprint"}`."""
+"""The label every run on a durable box carries: `{"key", "fingerprint", "ref"}`, and
+`"checkpoint": {"id", "time"}` once the box has one (`Box.labels`)."""
 
 FRAMEWORK_PACKAGES = ("verifiers", "pydantic", "builtins", "typing", "abc")
 """Packages whose classes are framework code: a task class's code hash skips them, so

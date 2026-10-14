@@ -317,11 +317,11 @@ class Interaction:
         return checkpoints[-1] if checkpoints else None
 
     async def checkpoint(self) -> Checkpoint:
-        """Checkpoint the box this interaction owns, between turns, and record it on
-        the trace (`trace.checkpoints`), matching the conversation so far: what
+        """Checkpoint the interaction's box, between turns, and record it on the
+        trace (`trace.checkpoints`), matching the conversation so far: what
         `agent.run(resume=trace)` / `agent.interaction(resume=trace)` continue from.
-        Waits for a running turn to finish. A borrowed box raises (its owner
-        checkpoints it)."""
+        Waits for a running turn to finish. A borrowed box is checkpointed through its
+        owner (`box.Box`); one with no owner raises."""
         async with self._lock:
             run = self._run
             if run.closed:
@@ -350,7 +350,6 @@ class Interaction:
         wait tool inside the active turn. Messages arriving after the batch is
         drained wait for the following turn.
         Both resume an idle session. Queue mode also works without ACP steering.
-        Unsupported steering raises; it never silently changes to queue mode.
         Sends return on acceptance, not turn completion. For queued sends and
         idle wake-ups, the first model request acknowledges the resumed input.
         Cancellation withdraws a queued message that has not started. After a batch starts, cancelling
@@ -1601,7 +1600,8 @@ class Agent:
 
     def _check_saves(self, runtime: Runtime | None) -> None:
         """`save = "per_call"` on a box the run owns needs a runtime that restores
-        checkpoints (a borrowed box is never checkpointed)."""
+        checkpoints (a borrowed box is checkpointed through its owner, when it has
+        one: `Rollout` decides)."""
         if self.config.save != "per_call" or runtime is not None:
             return
         if (refusal := self._restore_refusal()) is not None:
@@ -1946,7 +1946,9 @@ class Agent:
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
         apply here; `config.interaction_retries` runs a turn that fails on
-        infrastructure again on a fresh box (never into a borrowed one).
+        infrastructure again: on the same box after a model-side failure, else on a
+        fresh box restored from the trace's latest checkpoint (a borrowed box: its
+        owner restores it, `box.Box.replace`; one with no owner is not retried).
 
         `resume`, `at` and `note` continue a trace (see `run`); without `note`, a
         conversation that ends on the agent's reply waits for the first

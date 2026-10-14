@@ -107,6 +107,17 @@ async def test_every_call_is_durable_by_its_position(model, store):
     assert len(model.requests) == 6
 
 
+async def test_outside_an_episode_agents_share_one_count(model, store):
+    """As docs/v1/agent.md says: every agent outside an episode is named "agent", so
+    two agents' calls take positions from one count."""
+    solver, reviewer = make(model), make(model)
+    with vf.use_durable(vf.Durable(store)):
+        first = await solver.run(task("one"))
+        second = await reviewer.run(task("two"))
+    keys = [t.labels["call"]["key"] for t in (first, second)]
+    assert keys == ["agent/0", "agent/1"]
+
+
 async def test_positions_are_taken_when_calls_start(model, store):
     agent = make(model)
     with vf.use_durable(vf.Durable(store)):
