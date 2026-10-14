@@ -323,8 +323,10 @@ class GatedAsyncClient(httpx.AsyncClient):
             status = response.status_code
             if status in REJECTION_STATUSES and rejections < config.max_rejections:
                 hinted = retry_after(response)
-                await response.aclose()
-                gate.release(slot, config, "rejected")
+                try:
+                    await response.aclose()
+                finally:  # a cancel or error while closing must not keep the permit
+                    gate.release(slot, config, "rejected")
                 wait = (
                     min(hinted, config.max_backoff)
                     if hinted is not None

@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 import verifiers.v1 as vf
 from verifiers.v1.clients.base import build_async_httpx
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.gate import ModelGate, gate_key
+from verifiers.v1.clients.gate import GatedAsyncClient, ModelGate, gate_key
 from verifiers.v1.configs.client import EvalClientConfig, RequestGateConfig
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.harnesses.null.harness import NullHarness
@@ -419,3 +419,31 @@ async def test_the_harness_sdk_does_not_retry_a_429_the_gate_gave_up_on(
         trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="go")))
     assert not trace.ok
     assert provider.rejected == 2, "one absorbed by the gate, one returned, no more"
+
+
+async def test_a_rejection_cancelled_while_closing_returns_its_permit(tmp_path):
+    """A retried 429 whose close is cancelled (a rollout timeout) still frees its slot."""
+    closing = asyncio.Event()
+
+    class SlowClose(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"busy"
+
+        async def aclose(self):
+            closing.set()
+            await asyncio.Event().wait()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": "0"}, stream=SlowClose())
+
+    config = gate_config(tmp_path, max_concurrent=1)
+    http = GatedAsyncClient(config, transport=httpx.MockTransport(handler))
+    request = http.build_request("POST", "http://x/v1", json={"model": MODEL})
+    sending = asyncio.create_task(http.send(request, stream=True))
+    await closing.wait()
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    gate = ModelGate(tmp_path / "gates", gate_key(request.url, "", MODEL), MODEL)
+    slot, _ = gate.try_admit(config)
+    assert slot == 0, "the only slot is free again"
