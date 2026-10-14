@@ -10,6 +10,7 @@
         "tasksets",
         "evaluation",
         "harnesses",
+        "runtime",
         "env",
         "harbor",
         "gepa"

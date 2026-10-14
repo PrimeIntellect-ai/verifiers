@@ -40,7 +40,6 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
-from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -119,11 +118,13 @@ class Rollout:
         self.task = task
         self.harness = harness
         self.ctx = ctx
+        self.runtime_config = runtime_config
         self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
         self._grading_config = None
         self._scoring_task = task
         self._grader = None
-        self.runtime_config = runtime_config
+        self.deployment = None
+        self._deployment_config = agent_config.deployment
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
@@ -151,15 +152,16 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        execution_policy = runtime_config
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
             network_policy=(
                 NetworkPolicyConfig(allow=[])
-                if isinstance(runtime_config, ModalConfig)
-                and not runtime_config.network_access
-                else runtime_config
-                if isinstance(runtime_config, NetworkPolicyConfig)
+                if isinstance(execution_policy, ModalConfig)
+                and not execution_policy.network_access
+                else execution_policy
+                if isinstance(execution_policy, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
@@ -178,12 +180,13 @@ class Rollout:
         self._failed = False
         self._failure: Exception | None = None
         self._opened = False
+        self._deployment_started = False
         self._closed = False
+        self._harness_cleaned = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
-        self._harness_cleaned = False
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -266,219 +269,233 @@ class Rollout:
         )
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
+        setup_deadline = (
+            None if self._timeouts.setup is None else loop.time() + self._timeouts.setup
+        )
         try:
-            runtime_env = dict(self.task.runtime_env())
-            if self._borrowed_runtime is None:
-                runtime.backend.env = runtime_env
-                runtime = self.runtime = runtime.with_env(runtime_env)
-            else:
-                runtime = runtime.with_env({**runtime.env, **runtime_env})
-                self.runtime = runtime
-            if self.task.data.prompt is None and not self._has_user:
-                raise TaskError(
-                    "task has no prompt and no user to open the conversation; set "
-                    "task.prompt, or drive the run through agent.interaction() and open "
-                    "it with the first turn(message)"
-                )
-            try:
+            # Provisioning, hooks, and service setup share one budget.
+            async with asyncio.timeout_at(setup_deadline) as setup_timeout:
+                runtime_env = dict(self.task.runtime_env())
                 if self._borrowed_runtime is None:
-                    await runtime.backend.start()
-            finally:
-                # Providers may assign an ID before startup fails; retain it for diagnostics.
-                self.trace.agent.runtime = runtime.info.model_copy()
-            if not self.task.scoring_deferred:
-                isolated = self._scoring_policy.mode == "isolated"
-                self._scoring_task = self.task.grading_task(
-                    runtime, scoring=self._scoring_policy
-                )
-                if isolated:
-                    self._grader = self._scoring_task
-                    self._grading_config = verifier_runtime(
-                        self._grader,
-                        runtime,
-                        self.runtime_config,
-                        self._scoring_policy,
-                    )
-                elif self._scoring_policy.runtime is not None:
+                    runtime.backend.env = runtime_env
+                    runtime = self.runtime = runtime.with_env(runtime_env)
+                else:
+                    runtime = runtime.with_env({**runtime.env, **runtime_env})
+                    self.runtime = runtime
+                if self.task.data.prompt is None and not self._has_user:
                     raise TaskError(
-                        "verifier runtime overrides require isolated verification"
+                        "task has no prompt and no user to open the conversation; set "
+                        "task.prompt, or drive the run through agent.interaction() and open "
+                        "it with the first turn(message)"
                     )
-            await runtime.backend.prepare_setup()
-            now = time.time()
-            self.trace.timing.boot.end = now
-            self.trace.timing.setup.start = now
-            self.trace.notify()
-            # Setup hooks and harness session preparation share one deadline.
-            setup_deadline = (
-                None
-                if self._timeouts.setup is None
-                else loop.time() + self._timeouts.setup
-            )
-            async with (
-                asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(TaskError, "task setup"),
-            ):
-                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
-            async with (
-                asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(HarnessError, "harness setup"),
-            ):
-                # The harness, its colocated tools, and its session run as the task's
-                # `agent_user` (just `handle` when unset). Task setup and scoring,
-                # interception, and the execution policy keep the default handle.
-                self._agent_runtime = await resolve_agent_runtime(
-                    runtime, self.task.data.agent_user
+                self.deployment = runtime.backend.deploy(
+                    spec=self.task.deployment_spec(),
+                    env=runtime.env,
+                    config=self._deployment_config,
+                    borrowed_runtime=self._borrowed_runtime,
                 )
-                await self.harness.setup(self._agent_runtime)
-            async with boundary(ToolsetError, "building tool servers"):
-                toolsets = self.task.toolsets(self.task.config)
-            # `base_url` is the interception server's reachable URL for this rollout.
-            # The harness reaches the model at `{base_url}/v1`; tool servers reach this
-            # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-            # (the interception is exposed whenever any consumer is remote).
-            (
-                base_url,
-                model_secret,
-                state_secret,
-            ) = await self._stack.enter_async_context(
-                serve_interception(
-                    self._interception,
-                    runtime,
-                    self._session,
-                    toolsets,
-                    self._shared_tools,
-                )
-            )
-            self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
-            self._secret = model_secret
-            self._urls = await self._stack.enter_async_context(
-                serve_tools(
-                    toolsets,
-                    self._agent_runtime,
-                    shared=self._shared_tools,
-                    state_secret=state_secret,
-                    state_route=self.trace.id,
-                    state_base=base_url,
-                )
-            )
-            # Setup and service provisioning are complete. Apply the runtime's
-            # execution policy while preserving the framework routes the agent uses.
-            await runtime.backend.prepare_execution(
-                [self._endpoint, *self._urls.values()]
-            )
-            async with (
-                asyncio.timeout_at(setup_deadline) as setup_timeout,
-                boundary(HarnessError, "opening harness session"),
-            ):
-                harness_data = self.trace.task.data
-                policy = self._session.network_policy
-                if self.trace.agent.config.network_notice and policy.network_restricted:
-                    if not policy.allow:
-                        network_prompt = "External network access is disabled."
-                    elif policy.block:
-                        network_prompt = (
-                            "External network access is allowed except for these blocked "
-                            f"destinations: {', '.join(policy.block)}. "
-                            "Do not circumvent this selection of domains."
-                        )
-                    else:
-                        network_prompt = (
-                            "External network access is limited to these destinations: "
-                            f"{', '.join(policy.allow)}. "
-                            "Do not circumvent this selection of domains."
-                        )
-                    network_prompt = "\n\n".join(
-                        text
-                        for text in (harness_data.system_prompt, network_prompt)
-                        if text
+                try:
+                    await self.deployment.start()
+                    self._deployment_started = True
+                    runtime = self.runtime = self.deployment.workspace
+                finally:
+                    # Providers may assign an ID before startup fails; retain it for diagnostics.
+                    self.trace.agent.runtime = runtime.info.model_copy()
+                if not self.task.scoring_deferred:
+                    isolated = self._scoring_policy.mode == "isolated"
+                    self._scoring_task = self.task.grading_task(
+                        runtime, scoring=self._scoring_policy
                     )
-                    # Keep existing transcript system messages intact on resume;
-                    # user-only lists must stay user-only for ACP harnesses.
+                    if isolated:
+                        self._grader = self._scoring_task
+                        self._grading_config = verifier_runtime(
+                            self._grader,
+                            runtime,
+                            self.deployment.verifier_config(),
+                            self._scoring_policy,
+                        )
+                    elif self._scoring_policy.runtime is not None:
+                        raise TaskError(
+                            "verifier runtime overrides require isolated verification"
+                        )
+                await runtime.backend.prepare_setup()
+                now = time.time()
+                self.trace.timing.boot.end = now
+                self.trace.timing.setup.start = now
+                self.trace.notify()
+                async with (
+                    boundary(TaskError, "task setup"),
+                ):
+                    await invoke(
+                        self.task.setup,
+                        {
+                            "trace": self.trace,
+                            "runtime": runtime,
+                            "deployment": self.deployment,
+                        },
+                    )
+                async with (
+                    boundary(HarnessError, "harness setup"),
+                ):
+                    self._agent_runtime = await resolve_agent_runtime(
+                        runtime, self.task.data.agent_user
+                    )
+                    await self.harness.setup(self._agent_runtime)
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                # `base_url` is the interception server's reachable URL for this rollout.
+                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
+                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
+                # (the interception is exposed whenever any consumer is remote).
+                (
+                    base_url,
+                    model_secret,
+                    state_secret,
+                ) = await self._stack.enter_async_context(
+                    serve_interception(
+                        self._interception,
+                        runtime,
+                        self._session,
+                        toolsets,
+                        self._shared_tools,
+                    )
+                )
+                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                self._secret = model_secret
+                self._urls = await self._stack.enter_async_context(
+                    serve_tools(
+                        toolsets,
+                        self._agent_runtime,
+                        shared=self._shared_tools,
+                        state_secret=state_secret,
+                        state_route=self.trace.id,
+                        state_base=base_url,
+                    )
+                )
+                # Setup and service provisioning are complete. Apply the runtime's
+                # execution policy while preserving the framework routes the agent uses.
+                await self.deployment.prepare_execution(
+                    [self._endpoint, *self._urls.values()]
+                )
+                async with (
+                    boundary(HarnessError, "opening harness session"),
+                ):
+                    harness_data = self.trace.task.data
+                    policy = self._session.network_policy
                     if (
-                        harness_data.system_prompt is None
-                        and isinstance(harness_data.prompt, list)
-                        and any(m.role == "system" for m in harness_data.prompt)
+                        self.trace.agent.config.network_notice
+                        and policy.network_restricted
                     ):
+                        if not policy.allow:
+                            network_prompt = "External network access is disabled."
+                        elif policy.block:
+                            network_prompt = (
+                                "External network access is allowed except for these blocked "
+                                f"destinations: {', '.join(policy.block)}. "
+                                "Do not circumvent this selection of domains."
+                            )
+                        else:
+                            network_prompt = (
+                                "External network access is limited to these destinations: "
+                                f"{', '.join(policy.allow)}. "
+                                "Do not circumvent this selection of domains."
+                            )
+                        network_prompt = "\n\n".join(
+                            text
+                            for text in (harness_data.system_prompt, network_prompt)
+                            if text
+                        )
+                        # Keep existing transcript system messages intact on resume;
+                        # user-only lists must stay user-only for ACP harnesses.
+                        if (
+                            harness_data.system_prompt is None
+                            and isinstance(harness_data.prompt, list)
+                            and any(m.role == "system" for m in harness_data.prompt)
+                        ):
+                            harness_data = harness_data.model_copy(
+                                update={
+                                    "prompt": [
+                                        SystemMessage(content=network_prompt),
+                                        *harness_data.prompt,
+                                    ]
+                                }
+                            )
+                        else:
+                            harness_data = harness_data.model_copy(
+                                update={"system_prompt": network_prompt}
+                            )
+                    if (
+                        self._session.request_interceptors
+                        and harness_data.prompt is not None
+                    ):
+                        prompt = harness_data.prompt
+                        system_prompt = harness_data.system_prompt
+                        if isinstance(prompt, str):
+                            system_prompt, prompt = self.harness.resolve_prompt(
+                                harness_data
+                            )
+                        messages = (
+                            [UserMessage(content=prompt)]
+                            if isinstance(prompt, str)
+                            else list(prompt)
+                        )
+                        has_system = system_prompt is not None
+                        if has_system:
+                            messages.insert(0, SystemMessage(content=system_prompt))
+                        prepared, rewrites = await self._session.prepare_users(
+                            Request(messages=messages)
+                        )
+                        messages = prepared.messages
+                        self.trace.request_rewrites.extend(rewrites)
+                        if has_system:
+                            messages = messages[1:]
+                        rewritten_prompt = (
+                            messages[0].content
+                            if isinstance(prompt, str)
+                            and len(messages) == 1
+                            and isinstance(messages[0], UserMessage)
+                            and isinstance(messages[0].content, str)
+                            else messages
+                        )
                         harness_data = harness_data.model_copy(
                             update={
-                                "prompt": [
-                                    SystemMessage(content=network_prompt),
-                                    *harness_data.prompt,
-                                ]
+                                "prompt": rewritten_prompt,
+                                "system_prompt": system_prompt,
                             }
                         )
-                    else:
-                        harness_data = harness_data.model_copy(
-                            update={"system_prompt": network_prompt}
-                        )
-                if (
-                    self._session.request_interceptors
-                    and harness_data.prompt is not None
-                ):
-                    prompt = harness_data.prompt
-                    system_prompt = harness_data.system_prompt
-                    if isinstance(prompt, str):
-                        system_prompt, prompt = self.harness.resolve_prompt(
-                            harness_data
-                        )
-                    messages = (
-                        [UserMessage(content=prompt)]
-                        if isinstance(prompt, str)
-                        else list(prompt)
-                    )
-                    has_system = system_prompt is not None
-                    if has_system:
-                        messages.insert(0, SystemMessage(content=system_prompt))
-                    prepared, rewrites = await self._session.prepare_users(
-                        Request(messages=messages)
-                    )
-                    messages = prepared.messages
-                    self.trace.request_rewrites.extend(rewrites)
-                    if has_system:
-                        messages = messages[1:]
-                    rewritten_prompt = (
-                        messages[0].content
-                        if isinstance(prompt, str)
-                        and len(messages) == 1
-                        and isinstance(messages[0], UserMessage)
-                        and isinstance(messages[0].content, str)
-                        else messages
-                    )
-                    harness_data = harness_data.model_copy(
-                        update={
-                            "prompt": rewritten_prompt,
-                            "system_prompt": system_prompt,
-                        }
-                    )
-                if not self._session.stopped:
-                    session_kwargs = (
-                        {
-                            "tool_interception_url": runtime.host_url(
-                                f"{base_url.rstrip('/')}/tool"
+                    if not self._session.stopped:
+                        session_kwargs = (
+                            {
+                                "tool_interception_url": runtime.host_url(
+                                    f"{base_url.rstrip('/')}/tool"
+                                )
+                            }
+                            if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                            and (
+                                self._session.request_interceptors
+                                or self._session.request_stops
                             )
-                        }
-                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                        and (
-                            self._session.request_interceptors
-                            or self._session.request_stops
+                            else {}
                         )
-                        else {}
-                    )
-                    self._harness_session = await self.harness.session(
-                        self.ctx,
-                        self.trace,
-                        self._agent_runtime,
-                        self._endpoint,
-                        self._secret,
-                        self._urls,
-                        harness_data,
-                        **session_kwargs,
-                    )
+                        self._harness_session = await self.harness.session(
+                            self.ctx,
+                            self.trace,
+                            self._agent_runtime,
+                            self._endpoint,
+                            self._secret,
+                            self._urls,
+                            harness_data,
+                            **session_kwargs,
+                        )
         except TimeoutError as e:
-            # Only an expired setup context owns the timeout; I/O between these
-            # contexts can time out independently after the deadline passes.
+            # Only our expired setup budget owns the timeout; a provider can
+            # raise its own TimeoutError before the overall deadline.
             if setup_timeout is not None and setup_timeout.expired():
                 self.timeout("setup")
+                if not self._deployment_started:
+                    self.fail(
+                        SandboxError("deployment provisioning exceeded setup timeout")
+                    )
             else:
                 self.fail(e)
             return False
@@ -543,6 +560,7 @@ class Rollout:
                     if self._session.stopped:
                         return False
                 self._session.on_turn_input = on_input
+                assert self.deployment is not None
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
@@ -606,13 +624,19 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self._cleanup_harness(self.runtime)
-        if self._borrowed_runtime is None and self.runtime is not None:
+        if self.deployment is not None:
+            with contextlib.suppress(Exception):
+                await self.deployment.close()
+        elif (
+            self._borrowed_runtime is None
+            and self.runtime is not None
+            and not self.runtime.backend.stopped
+        ):
             with contextlib.suppress(Exception):
                 await self.runtime.backend.stop()
 
     async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
         """Collect best-effort metrics without replacing a task failure."""
-        started = asyncio.get_running_loop().time()
         try:
             async with asyncio.timeout_at(deadline):
                 await self.harness.score(self.trace, self._agent_runtime or runtime)
@@ -622,10 +646,6 @@ class Rollout:
                 "message": str(error),
             }
             logger.warning("harness scoring failed", exc_info=True)
-        finally:
-            self.trace.info["harness_scoring_seconds"] = (
-                asyncio.get_running_loop().time() - started
-            )
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
@@ -657,6 +677,7 @@ class Rollout:
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
+                assert self.deployment is not None
                 grader = self._grader
                 isolated = self._scoring_policy.mode == "isolated"
                 trace.timing.finalize.start = time.time()
@@ -705,6 +726,7 @@ class Rollout:
                             {
                                 "trace": trace,
                                 "runtime": runtime,
+                                "deployment": self.deployment,
                             },
                         )
                         if (
@@ -715,6 +737,17 @@ class Rollout:
                                 runtime,
                                 self.task.data.artifacts,
                                 max_bytes=self.task.data.artifact_max_bytes,
+                            )
+                        if grader is not None:
+                            finalize_phase = "service finalization"
+                            await self._cleanup_harness(runtime)
+                            await self.deployment.stop_execution()
+                            await self.task.finalize_services(
+                                trace,
+                                {
+                                    name: self.deployment.target(name)
+                                    for name in self.deployment.target_backends
+                                },
                             )
                 except TimeoutError:
                     self.timeout("finalize")
@@ -731,16 +764,6 @@ class Rollout:
                         raise TaskError(
                             f"{finalize_phase} exceeded its finalize deadline"
                         ) from None
-                if grader is not None and self._borrowed_runtime is None:
-                    # Submission and metrics are captured. Release exclusive solver
-                    # resources before provisioning or retrying a fresh verifier.
-                    await self._cleanup_harness(runtime)
-                    try:
-                        await run_shielded(runtime.backend.stop())
-                    except Exception:
-                        logger.warning(
-                            "solver teardown failed before grading", exc_info=True
-                        )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
@@ -782,6 +805,7 @@ class Rollout:
                                     self._grading_config,
                                     self._timeouts,
                                     self._scoring_policy,
+                                    self.deployment,
                                     on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
                                 )
@@ -811,7 +835,9 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
-                                await self._scoring_task.score(trace, scoring_runtime)
+                                await self._scoring_task.score(
+                                    trace, scoring_runtime, self.deployment
+                                )
                                 if self._on_score is not None:
                                     await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
@@ -848,11 +874,18 @@ class Rollout:
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
-            if self._borrowed_runtime is None and runtime is not None:
-                try:
+            try:
+                if self.deployment is not None:
+                    await self.deployment.close()
+                elif (
+                    self._borrowed_runtime is None
+                    and runtime is not None
+                    and not runtime.backend.stopped
+                ):
+                    # Setup can fail before a deployment takes ownership.
                     await runtime.backend.stop()
-                except Exception:
-                    logger.warning("runtime teardown failed", exc_info=True)
+            except Exception:
+                logger.warning("runtime teardown failed", exc_info=True)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

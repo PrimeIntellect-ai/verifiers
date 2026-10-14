@@ -13,7 +13,6 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
-    provision_backend,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -94,10 +93,12 @@ async def grade_task(
     config: RuntimeConfig,
     timeouts,
     policy: ScoringConfig,
+    deployment,
     *,
     scoring_elapsed: float = 0.0,
     on_score=None,
 ) -> None:
+    await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
     deadline = (
@@ -120,14 +121,14 @@ async def grade_task(
                     asyncio.timeout(timeouts.setup),
                     boundary(TaskError, "verifier setup"),
                 ):
-                    backend = await stack.enter_async_context(
-                        provision_backend(
+                    runtime = await stack.enter_async_context(
+                        deployment.verifier(
                             config,
                             env=grader.runtime_env(),
                         )
                     )
-                    runtime = bind_scoring_env(backend.bind(), policy)
-                    await backend.prepare_setup()
+                    runtime = bind_scoring_env(runtime, policy)
+                    await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
                     await runtime.backend.prepare_execution([])
                 try:
@@ -135,7 +136,7 @@ async def grade_task(
                         asyncio.timeout_at(deadline),
                         boundary(TaskError, "verifier scoring"),
                     ):
-                        await grader.score(result, runtime)
+                        await grader.score(result, runtime, deployment)
                         if on_score is not None:
                             await on_score(result, runtime)
                 finally:
@@ -167,3 +168,38 @@ async def grade_task(
             logger.warning(
                 "verifier attempt %d failed; retrying", attempt + 1, exc_info=True
             )
+
+
+async def grade_submission(
+    task: Task,
+    trace: Trace,
+    runtime: Runtime,
+    *,
+    scoring: ScoringConfig | None = None,
+) -> None:
+    """Grade captured artifacts in a fresh verifier, leaving the borrowed solver alive.
+
+    The caller finalizes the submission and collects artifacts into the trace first.
+    Uses the task's grader, scoring policy, and timeouts, including retry behavior.
+    """
+    from verifiers.v1.runtimes.deployment import Deployment
+
+    policy = scoring if scoring is not None else task.scoring
+    if policy.mode != "isolated":
+        raise ValueError("grade_submission requires isolated scoring")
+    grader = task.grading_task(runtime, scoring=policy)
+    config = verifier_runtime(grader, runtime, runtime.config, policy)
+    deployment = Deployment(
+        runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
+    )
+    await deployment.start()
+    try:
+        await grade_task(grader, trace, config, task.data.timeout, policy, deployment)
+    except TimeoutError:
+        trace.record_timeout("scoring")
+        raise
+    except Exception as error:
+        trace.record_error(error)
+        raise
+    finally:
+        await deployment.close()

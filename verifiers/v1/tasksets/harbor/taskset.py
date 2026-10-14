@@ -36,6 +36,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -209,6 +210,17 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             for server in config.mcp_servers
         ]
 
+    def deployment_spec(self):
+        from verifiers.v1.runtimes.compose import ComposeSpec
+
+        if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
+            return ComposeSpec(
+                self.data.task_dir,
+                host_image=self.data.compose_host_image,
+                image_override=self.data.image is not None,
+            )
+        return super().deployment_spec()
+
     @property
     def scoring(self) -> ScoringConfig:
         # Keep tasksets that populate verifier_env compatible with the common policy.
@@ -232,10 +244,30 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         return type(self)(verifier_box_data(task.data), self.config)
 
+    async def finalize_services(
+        self, trace: Trace, targets: dict[str, Runtime]
+    ) -> None:
+        declared = dict.fromkeys(
+            entry.service for entry in (*self.data.collect, *self.data.artifacts)
+        )
+        if missing := declared.keys() - targets.keys():
+            raise TaskError(f"Unknown Compose services: {sorted(missing)}")
+        sidecars = {name: targets[name] for name in declared if name != "main"}
+        if sidecars:
+            await self.finalize(trace, targets["main"], sidecars)
+
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
-    async def setup(self, runtime: Runtime) -> None:
+    async def setup(
+        self, runtime: Runtime, deployment: Deployment | None = None
+    ) -> None:
+        if deployment is not None:
+            declared = {
+                entry.service for entry in (*self.data.collect, *self.data.artifacts)
+            }
+            if missing := declared - deployment.target_backends.keys():
+                raise TaskError(f"Unknown Compose services: {sorted(missing)}")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -298,7 +330,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         main or, when given, the named sidecars.
 
         Harbor runs main's after the agent phase, which is exactly what `finalize`
-        means. The Harbor env collects sidecars once main has stopped.
+        means. The rollout collects sidecars once main has stopped.
 
         Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
         output is observability, here it is a grading input, and a silently absent file
@@ -384,7 +416,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+    async def solved(
+        self, runtime: Runtime, trace: Trace, deployment=None
+    ) -> float | dict[str, float]:
         if self.data.verifier is not None:
             if not self.verifier_staged:
                 raise TaskError(
@@ -396,7 +430,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         else:
             # Grading is trusted: a shared-box verifier must not inherit the agent
             # phase's network restrictions (Harbor test scripts install their tools).
-            await runtime.backend.prepare_execution(None)
+            if deployment is not None:
+                await deployment.prepare_grading()
+            else:
+                await runtime.backend.prepare_execution(None)
             if not self.verifier_staged:
                 await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
