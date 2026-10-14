@@ -15,7 +15,6 @@ async def test_skills(run, harness, harness_runtime):
         runtime=harness_runtime,
         max_turns=8,
         max_tokens=8192,
-        reasoning_effort="none" if harness.id == "rlm" else None,
     )
     (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
