@@ -437,7 +437,7 @@ def recency(trace: Trace) -> float:
     """When a trace last moved: its start or its latest checkpoint, whichever is later
     (the order `TraceLookup.get` picks by)."""
     times = [trace.timing.boot.start or 0.0]
-    times.extend(c.time for c in trace.checkpoints)
+    times.extend(c.time for c in trace.checkpoints if c.time is not None)
     return max(times)
 
 
@@ -497,11 +497,13 @@ def box_checkpoint(durable: Durable | None, ref: str) -> Checkpoint | None:
     trace = durable.get(ref)
     if trace is None:
         return None
-    found = list(trace.checkpoints)
+    found = [c for c in trace.checkpoints if c.time is not None]
     at = (trace.labels.get(BOX_LABEL) or {}).get("checkpoint")
     if isinstance(at, Mapping) and at.get("id"):
-        found.append(Checkpoint(id=at["id"], turns=0, restored=True, time=at["time"]))
-    return max(found, key=lambda c: c.time, default=None)
+        found.append(
+            Checkpoint(id=at["id"], turns=0, restored=True, time=at.get("time") or 0.0)
+        )
+    return max(found, key=lambda c: c.time or 0.0, default=None)
 
 
 def episode_random(*salt: Any) -> random.Random:

@@ -193,10 +193,11 @@ async def test_an_interaction_checkpoint_is_recorded_with_its_turns(model):
     assert sorted(FakeRuntime.store["ckpt-1"]) == ["segment-0.txt"]
     record = vf.WireTrace.model_validate(interaction.trace.to_record())
     assert record.checkpoints == [checkpoint]
-    assert checkpoint.time > 0
-    # Every checkpoint is recorded with its time: one without is no record.
-    with pytest.raises(ValidationError):
-        vf.Checkpoint.model_validate({"id": "ckpt-1", "turns": 1})
+    assert checkpoint.time is not None
+    # A record written before checkpoints carried their time still loads.
+    old = {"id": "ckpt-1", "turns": 1}
+    assert vf.Checkpoint.model_validate(old).time is None
+    assert "time" not in vf.Checkpoint.model_validate(old).model_dump(mode="json")
 
 
 async def test_a_continuation_from_a_checkpoint_restores_its_files_and_skips_setup(
