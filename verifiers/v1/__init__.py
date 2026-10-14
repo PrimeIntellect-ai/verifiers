@@ -403,12 +403,16 @@ from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.deployment import (
     Deployment,
     DeploymentConfig,
+    ExecutionFailurePolicy,
+    Termination,
 )
 
 __all__ += [
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "ExecutionFailurePolicy",
+    "Termination",
 ]
 
 from verifiers.v1.configs.scoring import ScoringConfig

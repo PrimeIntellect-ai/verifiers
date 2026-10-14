@@ -129,16 +129,26 @@ async def grade_task(
                     )
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
-                    await stage_verifier(grader, result, runtime)
+                    await deployment.run(
+                        stage_verifier(grader, result, runtime),
+                        backend=runtime.backend,
+                    )
                     await runtime.backend.prepare_execution([])
                 try:
                     async with (
                         asyncio.timeout_at(deadline),
                         boundary(TaskError, "verifier scoring"),
                     ):
-                        await grader.score(result, runtime, deployment)
+                        await deployment.run(
+                            grader.score(result, runtime, deployment),
+                            backend=runtime.backend,
+                        )
+                        # A required judge is part of verification: task rewards
+                        # alone are not authoritative until its verdict succeeds.
                         if on_score is not None:
-                            await on_score(result, runtime)
+                            await deployment.run(
+                                on_score(result, runtime), backend=runtime.backend
+                            )
                 finally:
                     # Model-backed judges are billed even when an attempt fails.
                     # Preserve their accounting without committing partial rewards/state.

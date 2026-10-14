@@ -35,6 +35,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.deployment import TargetLost, Termination
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -128,6 +129,8 @@ class Rollout:
         self.harness_runtime: Runtime | None = None
         self.deployment = None
         self._deployment_config = agent_config.deployment
+        self._failure_policy = agent_config.execution_failure
+        self._terminal_execution = False
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
@@ -363,8 +366,13 @@ class Rollout:
                         connection = await self.deployment.connection(
                             harness_runtime, self._agent_runtime
                         )
-                        await self.harness.setup_execution(
-                            harness_runtime, self._agent_runtime, connection
+                        await invoke(
+                            self.harness.setup_execution,
+                            {
+                                "runtime": harness_runtime,
+                                "task_runtime": self._agent_runtime,
+                                "connection": connection,
+                            },
                         )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
@@ -592,13 +600,19 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                await self._harness_session.turn(messages)
+                await self.deployment.run(self._harness_session.turn(messages))
+        except TargetLost as error:
+            self.execution_terminated(error)
+            return False
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
             # timeout stop. A TimeoutError from the harness's own I/O with no
             # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.timeout("agent")
+                if self._failure_policy.agent_timeout == "grade":
+                    self.timeout("agent")
+                else:
+                    self.execution_terminated(None)
             else:
                 self.fail(e)
             return False
@@ -640,6 +654,37 @@ class Rollout:
                 "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
             )
         self._harness_cleaned = True
+
+    def execution_terminated(self, error: TargetLost | None) -> None:
+        if self._terminal_execution or self._failed:
+            return
+        policy = (
+            self._failure_policy.workspace_loss
+            if error
+            else self._failure_policy.agent_timeout
+        )
+        if error is not None and error.status.attribution == "infra":
+            policy = "error"
+        self.trace.termination = Termination(
+            kind="target_lost" if error else "timeout",
+            target=self.deployment.execution_name if self.deployment else "main",
+            attribution=error.status.attribution if error else "unknown",
+            cause=error.status.cause if error else "agent_deadline",
+            evidence=error.status.evidence or {} if error else {},
+            policy=policy,
+            valid_sample=policy == "zero",
+            reward=0 if policy == "zero" else None,
+        )
+        self._terminal_execution = True
+        if error is None:
+            self.trace.is_timeout = True
+        self.trace.stop("execution_failed", override=True)
+        self._session.release()
+        if policy == "zero":
+            self.trace.rewards.clear()
+            self.trace.record_reward("execution_failure", 0.0)
+        else:
+            self.fail(error or SandboxError("agent execution deadline exceeded"))
 
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned
@@ -698,6 +743,10 @@ class Rollout:
                 try:
                     await self._harness_session.close()
                 except Exception:
+                    if not self._terminal_execution and self.deployment is not None:
+                        status = await self.deployment.status()
+                        if status.state == "lost":
+                            self.execution_terminated(TargetLost(status))
                     # Generation already completed. A transport teardown failure
                     # must not discard its otherwise scoreable trajectory.
                     logger.warning(
@@ -707,11 +756,33 @@ class Rollout:
                     )
             try:
                 await self._stack.aclose()
+            except Exception:
+                if (
+                    not self._failed
+                    and not self._terminal_execution
+                    and self.deployment is not None
+                ):
+                    status = await self.deployment.status()
+                    if status.state == "lost":
+                        self.execution_terminated(TargetLost(status))
+                if not self._terminal_execution:
+                    raise
+                logger.warning(
+                    "service teardown failed after workspace termination", exc_info=True
+                )
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
                 trace.notify()
-            if not self._failed and self._opened:
+            if (
+                not self._failed
+                and not self._terminal_execution
+                and self.deployment is not None
+            ):
+                status = await self.deployment.status()
+                if status.state == "lost":
+                    self.execution_terminated(TargetLost(status))
+            if not self._failed and not self._terminal_execution and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
                 grader = self._grader
