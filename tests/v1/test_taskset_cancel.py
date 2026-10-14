@@ -61,3 +61,14 @@ def test_on_cancelled_defaults_to_a_no_op() -> None:
     taskset = Stream(vf.TasksetConfig())
     task = next(iter(taskset))
     assert taskset.on_cancelled(task) is None
+
+
+def test_a_taskset_whose_init_skips_super_still_cancels() -> None:
+    class Bare(Stream):
+        def __init__(self, config: vf.TasksetConfig) -> None:
+            self.config = config  # no super().__init__()
+
+    taskset = Bare(vf.TasksetConfig())
+    assert taskset.cancelled() == []
+    taskset.cancel("a")
+    assert taskset.cancelled() == ["a"]

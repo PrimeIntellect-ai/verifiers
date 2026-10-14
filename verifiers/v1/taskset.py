@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 
+_CANCELS_LOCK = threading.Lock()
+"""Guards every taskset's `cancel` keys (`Taskset.cancel`, `Taskset.cancelled`)."""
+
 Transform = Callable[[Iterator[Any]], Iterator[Any]]
 
 
@@ -63,8 +66,9 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.config = config
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
+        # Made here so the views share it; `cancel` makes it for a subclass whose
+        # `__init__` skips this one.
         self._cancels: list[str] = []
-        self._cancels_lock = threading.Lock()
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
@@ -207,15 +211,16 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         any thread, including the one iterating `load()`. Best effort: a task whose
         episode lands first is reported as it finished, and a runner that does not poll
         `cancelled()` lets every task finish."""
-        with self._cancels_lock:
-            self._cancels.append(key)
+        with _CANCELS_LOCK:
+            self.__dict__.setdefault("_cancels", []).append(key)
 
     def cancelled(self) -> list[str]:
         """The keys `cancel` asked for since the last call, oldest first. Called by
         the runner that dispatched the tasks; each key is returned once."""
-        with self._cancels_lock:
-            keys = list(self._cancels)
-            self._cancels.clear()
+        with _CANCELS_LOCK:
+            cancels = self.__dict__.get("_cancels", [])
+            keys = list(cancels)
+            cancels.clear()
         return keys
 
     @classmethod
