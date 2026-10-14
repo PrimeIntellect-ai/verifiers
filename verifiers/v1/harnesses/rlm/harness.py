@@ -31,7 +31,6 @@ BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
-SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
@@ -69,7 +68,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="fd24d3ff4591d568792fb6174e9c5c9c87250feb", min_length=1
+        default="707405f430a08ac0ccf8c5402f6c890bc52e2cb7", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -306,8 +305,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
 
     def _skills_dir(self) -> str:
         """The one skills root rlm installs Python skill packages from and lists
-        SKILL.md skills under: run-scoped when this run carries skills."""
-        return f"{self._install_dir()}/skills" if self.config.skills else SKILLS_DIR
+        SKILL.md skills under."""
+        return f"{self._install_dir()}/skills"
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
