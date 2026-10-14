@@ -5,6 +5,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -51,14 +52,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--task", required=True)
+    parser.add_argument("--prompt-file", required=True)
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
-    model, system_prompt, task = args.model, args.system_prompt, args.task
+    # The prompts come in a file, never argv (see the harness's `launch`).
+    path = Path(args.prompt_file)
+    prompts = json.loads(path.read_bytes())
+    path.unlink()
+    model, system_prompt, task = args.model, prompts["system_prompt"], prompts["task"]
     logs_dir = Path(os.environ["TMUX_TMPDIR"])
     logs_dir.mkdir(mode=0o700, exist_ok=True)
     EnvironmentPaths.agent_dir = PurePosixPath(logs_dir)

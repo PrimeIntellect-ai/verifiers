@@ -11,10 +11,12 @@ import pytest
 
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import SandboxError
+from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
 from verifiers.v1.harnesses.utils.launch import launch_chat_program
 from verifiers.v1.runtimes import prime
 from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
+from verifiers.v1.task import TaskData
 from verifiers.v1.types import UserMessage
 
 # --- the chat program's conversation goes in a file -----------------------------------
@@ -33,6 +35,9 @@ class RecordingRuntime:
 
     async def run_program(self, argv, env):
         self.argv = argv
+        return ProgramResult(exit_code=0, stdout="", stderr="")
+
+    async def run(self, argv, env):
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
 
@@ -62,6 +67,27 @@ async def test_the_conversation_reaches_the_program_in_a_file_not_argv(prompt):
         {"role": "system", "content": "system needle"},
         {"role": "user", "content": "pkill -f needle"},
     ]
+
+
+async def test_terminus_2_gets_its_prompts_in_a_file_not_argv():
+    runtime = RecordingRuntime()
+    harness = Terminus2Harness(Terminus2HarnessConfig(id="terminus-2"))
+    await harness.launch(
+        SimpleNamespace(model="m"),
+        SimpleNamespace(id="t1"),
+        runtime,
+        "http://e",
+        "secret",
+        {},
+        TaskData(idx=0, prompt="pkill -f needle", system_prompt="system needle"),
+    )
+    assert runtime.argv and not any("needle" in arg for arg in runtime.argv)
+    (path,) = runtime.files
+    assert f"--prompt-file={path}" in runtime.argv
+    assert json.loads(runtime.files[path]) == {
+        "system_prompt": "system needle",
+        "task": "pkill -f needle",
+    }
 
 
 # --- Prime jobs, gateway errors, restored boxes ---------------------------------------

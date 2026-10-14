@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -47,14 +48,21 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
+        # The prompts go in a file, never argv: an agent command such as
+        # `pkill -f <word from the task>` would otherwise match, and kill, its own
+        # harness (as with `launch_chat_program`).
+        prompt_file = f".vf-terminus-2-prompt-{trace.id}.json"
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--system-prompt={system_prompt or ''}",
-            f"--task={prompt}",
+            f"--prompt-file={prompt_file}",
         ]
         try:
+            await runtime.write(
+                prompt_file,
+                json.dumps({"system_prompt": system_prompt, "task": prompt}).encode(),
+            )
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
             return await runtime.run_program([*program, *args], env)
