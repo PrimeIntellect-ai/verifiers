@@ -158,7 +158,6 @@ vf-eval = "verifiers.v1.cli.eval.main:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"
-vf-init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration

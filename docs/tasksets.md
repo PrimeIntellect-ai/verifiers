@@ -2,28 +2,6 @@
 
 A taskset defines the work to be done, which will be solved by the agent in a _harness_ running in a _runtime_.
 
-You can scaffold a new taskset with the following:
-
-```bash
-uv run vf-init addition-v1
-```
-
-The generated package has two important files:
-
-```text
-environments/addition_v1/addition_v1/
-├── __init__.py  # exports the taskset entry point
-└── taskset.py   # defines the data, tasks, and taskset
-```
-
-The command also supports:
-
-- `-p`, `--path <dir>` — parent directory, default: `./environments`
-- `-T`, `--add-tool` — also scaffold a `vf.Toolset` tool server at `servers/tool.py`
-  - Use this to create custom tools which are installed into supported harnesses via MCP.
-- `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--env.agent.harness.id <name>`
-  - Prefer a built-in harness unless the model needs to run inside a custom program.
-
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
 ## An example taskset
@@ -172,7 +150,7 @@ Two rules follow from infinity: a run over an infinite taskset must be bounded w
 
 Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-You can create them like this (remember the bootstrapping with `uv run vf-init MY_ENV -T`):
+You can create them like this:
 
 ```python
 DATABASE = None
