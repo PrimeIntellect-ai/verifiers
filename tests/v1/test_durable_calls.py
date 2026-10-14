@@ -418,6 +418,26 @@ async def test_a_failed_finished_exchange_goes_live_instead_of_kept(model, store
     assert FinalizeOnce.finalized == 1
 
 
+async def test_a_driver_that_raises_leaves_its_failed_trace(model, store):
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(store)):
+        with pytest.raises(KeyError):
+            async with agent.interaction(task(None), key="talk") as exchange:
+                await exchange.turn("hello")
+                raise KeyError("driver bug")
+        failed = exchange.trace
+        stored = store.get(failed.labels["call"]["ref"])
+        # The store holds the failed exchange, not its last per-call save (which a
+        # rerun would take for one cut off after its last turn, and keep).
+        assert stored is not None and stored.id == failed.id
+        assert stored.is_completed and not stored.ok
+        model.requests.clear()
+        async with agent.interaction(task(None), key="talk") as exchange:
+            await exchange.turn("hello")
+    assert not exchange.kept and exchange.trace.ok
+    assert exchange.trace.resumed_from == failed.id and len(model.requests) == 1
+
+
 async def test_a_replaying_exchange_steers_only_when_live(model, store):
     agent = make(model)
     with vf.use_durable(vf.Durable(store)):
@@ -745,7 +765,8 @@ async def test_an_episode_run_again_skips_its_finished_calls(
 
 class TalkEnv(vf.Env[PairConfig]):
     """One exchange of two turns; crashes after its last turn, before it closes,
-    while `crash` is set. The driver notes a verdict on the trace once it closed."""
+    while `crash` is set (its server dies: the episode is cancelled). The driver notes
+    a verdict on the trace once it closed."""
 
     root: Path
     crash = True
@@ -761,7 +782,7 @@ class TalkEnv(vf.Env[PairConfig]):
             for message in ("first", "second"):
                 await exchange.turn(message)
             if TalkEnv.crash:
-                raise RuntimeError("the env server died")
+                raise asyncio.CancelledError()
         exchange.trace.info["verdict"] = "pass"
 
 
@@ -782,9 +803,10 @@ async def test_an_exchange_cut_after_its_last_turn_replays_into_the_episode(
         model="scripted",
         client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
     )
-    crashed = await env.run_episode(task(None), ctx)
-    [cut] = crashed.traces
-    assert not crashed.ok and not cut.ok
+    with pytest.raises(asyncio.CancelledError):
+        await env.run_episode(task(None), ctx)
+    cut = vf.TraceDir(TalkEnv.root).get(call_ref({"job": "j1"}, "solver/0"))
+    assert cut is not None and not cut.is_completed
     TalkEnv.crash = False
     model.requests.clear()
     # The driver gives back exactly the recorded turns, then closes: nothing goes live.

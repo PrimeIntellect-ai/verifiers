@@ -2128,27 +2128,32 @@ class Agent:
             """A box restored from `checkpoint`, for the replay to read."""
             return self.provision(base, checkpoint=checkpoint.id, durable=False)
 
-        async with AsyncExitStack() as stack:
-            exchange = DurableInteraction(
-                base,
-                open_live,
-                stack,
-                recorded=recorded,
-                checkpoints=checkpoints,
-                skip=skip,
-                runtime=runtime,
-                provision=provision,
-            )
-            if recorded is None:
-                await exchange.go_live()
-            yield exchange
-            if exchange.live is None:
-                await exchange.close()
-        if found is not None:
-            if exchange.live is not None:
-                found.write(exchange.live.trace)
-            elif exchange.ended:
-                found.write(exchange.trace)
+        exchange: DurableInteraction | None = None
+        try:
+            async with AsyncExitStack() as stack:
+                exchange = DurableInteraction(
+                    base,
+                    open_live,
+                    stack,
+                    recorded=recorded,
+                    checkpoints=checkpoints,
+                    skip=skip,
+                    runtime=runtime,
+                    provision=provision,
+                )
+                if recorded is None:
+                    await exchange.go_live()
+                yield exchange
+                if exchange.live is None:
+                    await exchange.close()
+        finally:
+            # Also when the driver raised: its live trace is closed failed (or, when
+            # cancelled, cut off), and a rerun must see that, not the last save.
+            if found is not None and exchange is not None:
+                if exchange.live is not None:
+                    found.write(exchange.live.trace)
+                elif exchange.ended:
+                    found.write(exchange.trace)
 
     def _rollout_params(
         self,
