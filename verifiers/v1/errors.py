@@ -117,8 +117,8 @@ _BOX_LOST_TYPES = frozenset(
     {"SandboxNotRunningError", "SandboxOOMError", "SandboxTimeoutError"}
 )
 _BOX_LOST_MARKERS = ("sandbox_not_found", "sandbox_terminated")
-_COMING_UP = frozenset({"PENDING", "PROVISIONING", "PAUSED"})
-"""`SandboxNotRunningError.status` values of a box that is not up (yet, or again)."""
+_STOPPED = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
+"""`SandboxNotRunningError.status` values of a box that stopped for good."""
 _IO_TYPES = frozenset(
     {
         "ConnectionError",
@@ -262,9 +262,13 @@ def _typed_kind(error: BaseException) -> SandboxErrorKind | None:
     if name in _ACCOUNT_TYPES:
         return "account"
     if name in _BOX_LOST_TYPES:
+        # A box that stopped is gone (an OOM kill or the box's own timeout is a stop).
+        # One coming up, running but not yet reachable through the gateway, or whose
+        # boot wait ran out with no status (the SDK's creation timeouts) is not.
         status = getattr(error, "status", None)
-        # A box not running yet is coming up; one that stopped is gone.
-        return "io" if status in _COMING_UP else "box_lost"
+        if name == "SandboxNotRunningError" and status not in _STOPPED:
+            return "io"
+        return "box_lost"
     if name in _MISSING_FILE_TYPES:
         return "missing"
     if isinstance(error, OSError) and error.errno in _ERRNO_KINDS:

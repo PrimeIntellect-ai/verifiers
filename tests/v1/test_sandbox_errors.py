@@ -77,6 +77,28 @@ def connect_error(code: str) -> Exception:
         (SandboxFileNotFoundError("HTTP 404: missing"), "missing"),
         (FileNotFoundError("/app/out.txt"), "missing"),
         (SandboxNotRunningError("sb1", status="PENDING"), "io"),
+        (SandboxNotRunningError("sb1", status="ERROR", error_type="X"), "box_lost"),
+        (SandboxNotRunningError("sb1", status="TIMEOUT"), "box_lost"),
+        # The SDK's boot-wait timeouts: no status, or RUNNING but not reachable.
+        (
+            SandboxNotRunningError("sb1", message="did not reach RUNNING within 355s"),
+            "io",
+        ),
+        (
+            SandboxNotRunningError(
+                "sb1", message="Timeout waiting for the VM image build"
+            ),
+            "io",
+        ),
+        (
+            SandboxNotRunningError(
+                "sb1",
+                status="RUNNING",
+                error_type="GATEWAY_REACHABILITY_TIMEOUT",
+                message="reached RUNNING but did not become reachable",
+            ),
+            "io",
+        ),
         (OSError(errno.ENOSPC, "No space left on device"), "disk_full"),
         (OSError(errno.ENOENT, "gone"), "missing"),
         (status_error(507), "disk_full"),

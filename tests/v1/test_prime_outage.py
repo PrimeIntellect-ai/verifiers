@@ -205,6 +205,25 @@ async def test_a_create_whose_reply_was_lost_is_resent_with_its_idempotency_key(
     assert client.deleted == ["sb1"]
 
 
+async def test_a_boot_wait_that_ran_out_is_held_not_a_lost_box(monkeypatch, sleeps):
+    """The SDK's boot-wait timeouts (no status, or RUNNING but unreachable through the
+    gateway) are an outage the boot hold rides out, not a lost box."""
+    from prime_sandboxes.exceptions import SandboxNotRunningError
+
+    boot = Flaky(
+        SandboxNotRunningError("sb1", message="did not reach RUNNING within 355s"),
+        SandboxNotRunningError(
+            "sb1", status="RUNNING", error_type="GATEWAY_REACHABILITY_TIMEOUT"
+        ),
+    )
+    client = Client(boot=boot)
+    install(monkeypatch, client)
+    runtime = make(monkeypatch, outage_budget_s=300)
+    await runtime.start()
+    assert boot.calls == 3 and runtime.placed
+    await runtime.teardown()
+
+
 async def test_provisioning_past_its_bound_fails_and_the_late_box_is_deleted(
     monkeypatch,
 ):
