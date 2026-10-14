@@ -642,9 +642,11 @@ class Interaction:
         # Only a failure of this turn is retried, never one a past turn left; a
         # replacement that failed to open is this turn's failure.
         was_ok = self._run.ok
+        # Where this turn's segment starts: kept across a same-box retry, whose failed
+        # attempt's committed messages are the segment's too; reset on a new trace.
+        turns_before = self.trace.num_turns
+        nodes_before = len(self.trace.nodes)
         while True:
-            turns_before = self.trace.num_turns
-            nodes_before = len(self.trace.nodes)
             await self._run.step(step_messages, on_input=on_input)
             if retries_left == 0 or self._run.ok or not was_ok:
                 break
@@ -679,6 +681,8 @@ class Interaction:
                 turn_input=turn_input,
                 mark=mark,
             )
+            turns_before = self.trace.num_turns
+            nodes_before = len(self.trace.nodes)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.

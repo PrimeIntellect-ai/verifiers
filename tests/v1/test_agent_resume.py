@@ -715,6 +715,15 @@ async def test_a_failed_model_call_is_retried_on_the_same_box(model):
     assert trace.ok, trace.errors
     assert [error.type for error in trace.errors] == ["ProviderError"]
     assert segment.last_reply.startswith("done")
+    # The segment holds what the failed attempt committed too: its first tool call
+    # (whose result never reached the trace, so the retry made it again).
+    written = [
+        json.loads(call.arguments)["path"]
+        for message in segment.messages
+        if message.role == "assistant"
+        for call in message.tool_calls or []
+    ]
+    assert written == ["a.txt", "a.txt", "b.txt"]
 
 
 async def test_task_error_is_not_retried(model):
