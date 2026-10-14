@@ -16,7 +16,7 @@ from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.scoring import ScoringConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes import DockerConfig, PrimeConfig, RuntimeConfig
 from verifiers.v1.runtimes.deployment import DeploymentConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
@@ -44,6 +44,10 @@ class AgentConfig(BaseConfig):
     runtime: RuntimeConfig = PrimeConfig()
     """Runtime configuration for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
+
+    execution: DockerConfig | None = None
+    """Optional container settings for split deployment. Task image, resources,
+    workdir and network policy apply to this workspace."""
 
     scoring: ScoringConfig = ScoringConfig()
     """Scoring overrides; unset fields inherit the task’s scoring defaults."""
@@ -80,6 +84,15 @@ class AgentConfig(BaseConfig):
         # Preserve unset fields across env-server and trace roundtrips so they
         # continue to inherit from the task instead of becoming explicit overrides.
         return scoring.model_dump(mode=info.mode, exclude_unset=True)
+
+    @model_validator(mode="after")
+    def _validate_deployment(self):
+        if self.deployment.mode == "split":
+            if not isinstance(self.runtime, PrimeConfig):
+                raise ValueError("split deployment is only supported by Prime VMs")
+        elif self.execution is not None:
+            raise ValueError("agent.execution requires deployment.mode = 'split'")
+        return self
 
     @field_serializer("sampling")
     def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:

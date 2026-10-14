@@ -414,3 +414,7 @@ __all__ += [
 from verifiers.v1.configs.scoring import ScoringConfig
 
 __all__ += ["ScoringConfig"]
+
+from verifiers.v1.runtimes.deployment import ExecutionConnection
+
+__all__ += ["ExecutionConnection"]

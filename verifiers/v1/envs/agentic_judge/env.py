@@ -288,6 +288,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
+        if self.config.judge.deployment.mode != "colocated":
+            raise ValueError(
+                "the judge must use colocated deployment to borrow the verifier workspace"
+            )
         if self.config.judge.scoring.model_fields_set:
             raise ValueError(
                 "configure scoring placement on solver.scoring, not judge.scoring"
@@ -314,8 +318,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)
         workspace = (
-            policy.runtime if policy.mode == "isolated" else None
-        ) or self.config.solver.runtime
+            (policy.runtime if policy.mode == "isolated" else None)
+            or self.config.solver.execution
+            or self.config.solver.runtime
+        )
         if isinstance(workspace, vf.SubprocessConfig):
             raise TypeError("agentic judging requires a container scoring workspace")
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)

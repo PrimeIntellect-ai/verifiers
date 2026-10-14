@@ -5,6 +5,7 @@ import atexit
 import io
 import json
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -86,6 +87,7 @@ async def compose_services(
     config: RuntimeConfig,
     spec: ComposeSpec,
     environment: dict[str, str],
+    execution: DockerConfig | None = None,
     *,
     trust_compose: bool = False,
     setup_timeout: float | None = None,
@@ -184,7 +186,7 @@ async def compose_services(
             base = {
                 "services": {
                     spec.workspace: {
-                        "image": config.image,
+                        "image": (execution or config).image,
                         "command": [
                             "sh",
                             "-c",
@@ -203,28 +205,37 @@ async def compose_services(
 
             root = str(directory)
             if not local:
-                host_config = VM_HOST[type(config)]
+                host_config = (
+                    {"workdir": "/"} if execution is not None else VM_HOST[type(config)]
+                )
                 if spec.host_image is not None:
                     host_config = {**host_config, "image": spec.host_image}
                 host_backend = await stack.enter_async_context(
                     provision_backend(config.model_copy(update=host_config))
                 )
-                if isinstance(config, PrimeConfig):
-                    install = await host_backend.bind().run(
-                        ["sh", "-c", INSTALL_DOCKER], {}
+                if isinstance(config, PrimeConfig) and execution is not None:
+                    from verifiers.v1.runtimes.docker_host import prepare_docker_host
+
+                    await prepare_docker_host(
+                        host_backend, execution.disk or config.disk * 0.6
                     )
-                    if install.exit_code:
-                        raise SandboxError(
-                            f"Docker bootstrap failed: {install.stderr} {install.stdout}"
+                else:
+                    if isinstance(config, PrimeConfig):
+                        install = await host_backend.bind().run(
+                            ["sh", "-c", INSTALL_DOCKER], {}
                         )
-                await host_backend.bind().run_background(
-                    ["dockerd", "--host=unix:///var/run/docker.sock"],
-                    {},
-                    "/tmp/dockerd.log",
-                )
-                async with asyncio.timeout(60):
-                    while (await run_host("docker", "info")).exit_code:
-                        await asyncio.sleep(1)
+                        if install.exit_code:
+                            raise SandboxError(
+                                f"Docker bootstrap failed: {install.stderr} {install.stdout}"
+                            )
+                    await host_backend.bind().run_background(
+                        ["dockerd", "--host=unix:///var/run/docker.sock"],
+                        {},
+                        "/tmp/dockerd.log",
+                    )
+                    async with asyncio.timeout(60):
+                        while (await run_host("docker", "info")).exit_code:
+                            await asyncio.sleep(1)
                 loaded = await run_host("sh", "-c", LOAD_IMAGES)
                 if loaded.exit_code:
                     raise SandboxError(
@@ -268,14 +279,39 @@ async def compose_services(
                 {
                     "MAIN_IMAGE_NAME": project[-1],
                     "CONTEXT_DIR": project_dir,
-                    "PREBUILT_IMAGE_NAME": config.image,
+                    "PREBUILT_IMAGE_NAME": (execution or config).image,
                 }
             )
 
             # Validate authored services after interpolation, before adding our own.
             resolved = json.loads(await compose("config", "--format", "json"))
             services = resolved["services"]
+            if execution is not None:
+                for volume in resolved.get("volumes", {}).values():
+                    if (
+                        volume.get("driver_opts")
+                        or volume.get("driver", "local") != "local"
+                        or volume.get("external")
+                    ):
+                        raise SandboxError(
+                            "split Compose requires managed local volumes without driver options"
+                        )
             for service in services.values():
+                if execution is not None and (
+                    service.get("privileged")
+                    or service.get("cap_add")
+                    or service.get("devices")
+                    or service.get("pid") == "host"
+                    or service.get("ipc") == "host"
+                    or service.get("network_mode")
+                    or any(
+                        volume.get("type") == "bind"
+                        for volume in service.get("volumes", [])
+                    )
+                ):
+                    raise SandboxError(
+                        "split Compose does not permit privileged services, namespace sharing, or host bind mounts"
+                    )
                 if service.get("network_mode") == "host":
                     raise SandboxError("Compose requires an isolated service network")
                 if service.get("gpus") or (
@@ -303,20 +339,120 @@ async def compose_services(
             ):
                 owner = mode.removeprefix("service:")
 
-            main = config.model_dump(
+            main = (execution or config).model_dump(
                 include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
             )
             if spec.image_override:
-                main["image"] = config.image
+                main["image"] = (execution or config).image
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
+            if execution is not None:
+                budget = int(execution.memory * 1024**3)
+                authored_memory = {
+                    name: int(value)
+                    for name, service in services.items()
+                    if (
+                        value := service.get(
+                            "mem_limit",
+                            service.get("deploy", {})
+                            .get("resources", {})
+                            .get("limits", {})
+                            .get("memory"),
+                        )
+                    )
+                    is not None
+                }
+                remaining_memory = budget - sum(authored_memory.values())
+                unspecified_memory = services.keys() - authored_memory.keys()
+                if remaining_memory < 0 or (
+                    unspecified_memory and remaining_memory < len(unspecified_memory)
+                ):
+                    raise SandboxError(
+                        "Compose service memory exceeds the execution allocation"
+                    )
+                for name, service in services.items():
+                    memory = (
+                        authored_memory[name]
+                        if name in authored_memory
+                        else remaining_memory // len(unspecified_memory)
+                    )
+                    if memory <= 0 or service.get("restart", "no") != "no":
+                        raise SandboxError(
+                            "split services need positive memory limits and restart=no"
+                        )
+                    limits = (
+                        service.get("deploy", {}).get("resources", {}).get("limits")
+                    )
+                    pids = int(
+                        service.get("pids_limit", (limits or {}).get("pids")) or 512
+                    )
+                    overlay["services"].setdefault(name, {}).update(
+                        {
+                            "mem_limit": memory,
+                            "memswap_limit": memory,
+                            "pids_limit": min(pids if pids > 0 else 512, 512),
+                            "cap_drop": ["NET_RAW"],
+                            "logging": {
+                                "driver": "local",
+                                "options": {"max-size": "10m", "max-file": "2"},
+                            },
+                        }
+                    )
+                    if limits is not None:
+                        # Compose requires the short and deploy spellings to agree.
+                        configured = overlay["services"][name]
+                        configured["deploy"] = {
+                            "resources": {
+                                "limits": {
+                                    "memory": str(memory),
+                                    "pids": configured["pids_limit"],
+                                }
+                            }
+                        }
             # Port publication belongs to the service that owns main's network.
             publish = overlay["services"].setdefault(owner, {})
+            if execution is not None and execution.cpu is not None:
+                authored = {
+                    name: float(value)
+                    for name, service in services.items()
+                    if (
+                        value := service.get(
+                            "cpus",
+                            service.get("deploy", {})
+                            .get("resources", {})
+                            .get("limits", {})
+                            .get("cpus"),
+                        )
+                    )
+                    is not None
+                }
+                if any(
+                    not math.isfinite(value) or value <= 0
+                    for value in authored.values()
+                ):
+                    raise SandboxError("split services need positive finite CPU limits")
+                remaining = execution.cpu - sum(authored.values())
+                unspecified = services.keys() - authored.keys()
+                if remaining < 0 or (unspecified and remaining <= 0):
+                    raise SandboxError(
+                        "Compose service CPUs exceed the execution allocation"
+                    )
+                for name in services:
+                    overlay["services"].setdefault(name, {})["cpus"] = (
+                        authored[name]
+                        if name in authored
+                        else remaining / len(unspecified)
+                    )
+                    if "deploy" in overlay["services"][name]:
+                        configured = overlay["services"][name]
+                        configured["deploy"]["resources"]["limits"]["cpus"] = (
+                            configured["cpus"]
+                        )
             if local:
-                if config.cpu is not None:
+                if execution is None and config.cpu is not None:
                     main["cpus"] = config.cpu
-                if config.memory is not None:
+                if execution is None and config.memory is not None:
                     main["mem_limit"] = f"{config.memory}g"
                 publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
                 if sys.platform != "linux":
@@ -347,12 +483,15 @@ async def compose_services(
                     for address in published.splitlines()
                     if address.startswith("127.0.0.1:")
                 )
+            from verifiers.v1.runtimes.container_target import ContainerTarget
+
+            target_type = ContainerTarget if execution is not None else DockerBackend
             backends: dict[str, DockerBackend] = {}
             for line in containers.splitlines():
                 container, service = line.split()
                 backends[service] = await stack.enter_async_context(
-                    DockerBackend.attach(
-                        config,
+                    target_type.attach(
+                        execution if execution is not None else config,
                         container,
                         host_backend=host_backend,
                         service_url=service_url if service == spec.workspace else None,

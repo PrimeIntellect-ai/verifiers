@@ -35,6 +35,7 @@ from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
+    DockerConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -821,18 +822,34 @@ class Agent:
         interception — shared by `run` and `interaction`."""
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
-        if skills:
+        if skills or self.config.deployment.mode == "split":
             # Skill installations can hold run-specific state, such as RLM's package environment.
             harness = type(harness)(
                 harness.config.model_copy(update={"skills": skills})
             )
+        task_runtime_config = None
+        if self.config.deployment.mode == "split":
+            if runtime is not None:
+                raise ValueError("split execution cannot borrow a runtime")
+            harness.validate_split_execution()
+            task_runtime_config = resolve_runtime_config(
+                self.config.execution or DockerConfig(), task
+            )
+            if any(tool.config.colocated for tool in task.toolsets(task.config)):
+                raise ValueError(
+                    "split execution does not yet support colocated task tools"
+                )
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:
-            runtime_config = resolve_runtime_config(
-                self.runtime_config, task, self._warned_resources
+            runtime_config = (
+                self.runtime_config
+                if task_runtime_config is not None
+                else resolve_runtime_config(
+                    self.runtime_config, task, self._warned_resources
+                )
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
@@ -840,6 +857,7 @@ class Agent:
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
+            execution_config=task_runtime_config,
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -847,6 +865,7 @@ class Agent:
             "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
+            "task_runtime_config": task_runtime_config,
             "timeouts": replace(
                 timeouts,
                 agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
@@ -861,6 +880,10 @@ class Agent:
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
+        if self.config.deployment.mode == "split":
+            raise ValueError(
+                "split runtimes are owned by each rollout; provision() is unavailable"
+            )
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None

@@ -83,5 +83,6 @@ callback, before the selected verifier workspace is torn down. Set
 `--env.solver.scoring.mode shared|isolated`, or leave it unset to honor the task default.
 Task scores and the agentic verdict share the verifier's scoring budget; isolated
 retries start in fresh workspaces and commit rewards only after judging succeeds.
-The judge borrows that workspace. Judge model and harness settings live under
+The judge borrows that workspace with colocated deployment, including when the
+solver uses split deployment. Judge model and harness settings live under
 `env.judge`; workspace placement belongs to `env.solver.scoring`.
