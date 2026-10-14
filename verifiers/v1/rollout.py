@@ -156,6 +156,9 @@ class Rollout:
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
         )
+        self._continues = resumes is not None
+        """This run continues a trace: on a box started from a checkpoint, it restores
+        the task (`Task.restore`) instead of setting it up."""
         if resumes is not None:
             # A continuation (`resume=`, an interaction retry) links the trace it
             # continues and carries its info, as one session's would.
@@ -368,8 +371,10 @@ class Rollout:
                 if self._timeouts.setup is None
                 else loop.time() + self._timeouts.setup
             )
-            # A box started from a checkpoint already holds setup's files.
-            restored = runtime.restored
+            # A box started from a checkpoint already holds setup's files, but only for
+            # the run continuing the trace that took it: a fresh run on such a box (a
+            # task of another seat, a judge) sets its own task up.
+            restored = self._continues and runtime.restored
             setup = self.task.restore if restored else self.task.setup
             async with (
                 asyncio.timeout_at(setup_deadline) as setup_timeout,

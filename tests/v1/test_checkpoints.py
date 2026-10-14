@@ -1,6 +1,6 @@
 """Filesystem checkpoints: `Interaction.checkpoint` records a restorable checkpoint on
-the trace, `checkpoint=` starts a run's box from one, and a box started from a
-checkpoint runs `Task.restore` instead of `Task.setup`.
+the trace, `checkpoint=` starts a run's box from one, and a run continuing a trace on a
+box started from a checkpoint runs `Task.restore` instead of `Task.setup`.
 
 Deterministic, no API key: a scripted OpenAI-compatible endpoint answers every call,
 an in-process harness writes a file per segment and calls it through the real
@@ -16,7 +16,9 @@ from openai import AsyncOpenAI
 
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
+import verifiers.v1.box as box_module
 import verifiers.v1.rollout as rollout_module
+import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
@@ -197,7 +199,9 @@ async def test_an_interaction_checkpoint_is_recorded_with_its_turns(model):
     assert "time" not in vf.Checkpoint.model_validate(old).model_dump(mode="json")
 
 
-async def test_a_run_from_a_checkpoint_restores_its_files_and_skips_setup(model):
+async def test_a_continuation_from_a_checkpoint_restores_its_files_and_skips_setup(
+    model,
+):
     agent = make(model)
     async with agent.interaction(task()) as interaction:
         await interaction.turn("first")
@@ -205,13 +209,40 @@ async def test_a_run_from_a_checkpoint_restores_its_files_and_skips_setup(model)
     assert EVENTS == ["setup"]
 
     EVENTS.clear()
-    trace = await agent.run(
-        NotesTask(vf.TaskData(idx=0, prompt="again")), checkpoint=checkpoint.id
-    )
+    trace = await agent.run(resume=interaction.trace, note="again")
     assert trace.ok, trace.errors
     assert EVENTS == ["restore"]
-    assert FakeRuntime.made[-1].source == "ckpt-1"
+    assert FakeRuntime.made[-1].source == checkpoint.id
     assert SEEN[-1] == ["segment-0.txt"]
+
+
+async def test_a_fresh_run_on_a_box_from_a_checkpoint_sets_its_task_up(
+    model, monkeypatch
+):
+    """Whether a run restores its task is the run's, not the box's: a run that
+    continues no trace sets its task up, on its own box from a checkpoint or on a
+    provisioned one other runs share."""
+    agent = make(model)
+    async with agent.interaction(task()) as interaction:
+        await interaction.turn("first")
+        checkpoint = await interaction.checkpoint()
+
+    EVENTS.clear()
+    other = NotesTask(vf.TaskData(idx=1, prompt="a different task"))
+    trace = await agent.run(other, checkpoint=checkpoint.id)
+    assert trace.ok, trace.errors
+    assert EVENTS == ["setup"]
+    assert SEEN[-1] == ["segment-0.txt"]  # the box still holds the checkpoint's files
+
+    EVENTS.clear()
+    restore = agent_module.restore_config
+    monkeypatch.setattr(box_module, "restore_config", restore)
+    monkeypatch.setattr(runtimes_module, "make_runtime", rollout_module.make_runtime)
+    async with agent.provision(task(), checkpoint=checkpoint.id) as box:
+        trace = await agent.run(other, runtime=box)
+        assert trace.ok, trace.errors
+        await agent.run(resume=interaction.trace, note="again", runtime=box)
+    assert EVENTS == ["setup", "restore"]
 
 
 async def test_a_failed_checkpoint_leaves_no_record(model):
