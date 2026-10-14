@@ -7,6 +7,7 @@ import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -46,6 +47,10 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_CHECKPOINT_DURABLE_SECONDS = 300
+"""How long a checkpoint gets to become restorable (`DURABLE`): the platform captures
+and uploads it after the request returns, and only a durable one restores. A turn
+waits this long at most before it goes upstream."""
 
 
 BASE_LABELS: list[str] = []
@@ -151,6 +156,7 @@ class PrimeRuntime(Runtime):
     supports_user: ClassVar[bool] = True
     supports_expose: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
+    supports_checkpoints: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -164,7 +170,29 @@ class PrimeRuntime(Runtime):
         return True
 
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        if self.config.checkpoint:
+            await self._boot(checkpoint_id=self.config.checkpoint)
+        else:
+            await self._boot(
+                docker_image=self.config.image, disk_size_gb=self.config.disk
+            )
+
+    async def restore(self, checkpoint: str) -> None:
+        # The image and disk come with the checkpoint; the platform refuses them here.
+        self.info.restored_from = checkpoint
+        self._lease_client()
+        try:
+            await self._client.wait_for_checkpoint(
+                checkpoint, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {checkpoint}: {e}") from e
+        await self._boot(checkpoint_id=checkpoint)
+
+    def _lease_client(self) -> None:
+        if self._client is not None:
+            return
+        from prime_sandboxes import AsyncSandboxClient
 
         loop = asyncio.get_running_loop()
         shared = _shared_clients.get(loop)
@@ -174,6 +202,11 @@ class PrimeRuntime(Runtime):
             )
         shared.leases += 1
         self._client = shared.client
+
+    async def _boot(self, **source: Any) -> None:
+        from prime_sandboxes import CreateSandboxRequest
+
+        self._lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -193,13 +226,6 @@ class PrimeRuntime(Runtime):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
-        if self.config.checkpoint:
-            source = {"checkpoint_id": self.config.checkpoint}
-        else:
-            source = {
-                "docker_image": self.config.image,
-                "disk_size_gb": self.config.disk,
-            }
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -219,8 +245,8 @@ class PrimeRuntime(Runtime):
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            **source,
                             environment_vars=self.env,
+                            **source,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
@@ -243,7 +269,12 @@ class PrimeRuntime(Runtime):
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=180)
             logger.info(
-                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
+                "prime: sandbox %s up (image=%s%s)",
+                self.info.id,
+                self.config.image,
+                f", restored from {self.info.restored_from}"
+                if self.info.restored_from
+                else "",
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
@@ -252,6 +283,48 @@ class PrimeRuntime(Runtime):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def checkpoint(self) -> str:
+        # Blocking: the turn goes upstream only once the snapshot is durable, so it
+        # cannot include that turn's writes, and teardown (which fails pending
+        # checkpoints) never loses one. The POST is shielded through the id capture
+        # and a cancelled wait deletes the snapshot: a checkpoint the trace never
+        # records is one nothing would ever discard.
+        try:
+            checkpoint = await run_shielded(self._client.checkpoint(self.info.id))
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+        started = time.monotonic()
+        try:
+            await self._client.wait_for_checkpoint(
+                checkpoint.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except asyncio.CancelledError:
+            await run_shielded(self.discard_checkpoints([checkpoint.id]))
+            raise
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {checkpoint.id}: {e}") from e
+        logger.debug(
+            "prime: checkpoint %s durable after %.1fs on sandbox %s",
+            checkpoint.id,
+            time.monotonic() - started,
+            self.info.id,
+        )
+        return checkpoint.id
+
+    async def discard_checkpoints(self, ids: list[str]) -> None:
+        # Runs after teardown: the platform refuses to delete a checkpoint while a
+        # sandbox descends from it, and the rollout's own box is such a sandbox.
+        from prime_sandboxes import AsyncSandboxClient
+
+        async with AsyncSandboxClient() as client:
+            for checkpoint in ids:
+                try:
+                    await client.delete_checkpoint(checkpoint)
+                except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
+                    logger.warning(
+                        "prime: failed to delete checkpoint %s: %s", checkpoint, e
+                    )
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""

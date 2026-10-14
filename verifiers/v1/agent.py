@@ -42,7 +42,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Checkpoint, Error, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -632,15 +632,19 @@ class Agent:
             return self._server
         return None
 
-    def _check_resume_support(self) -> None:
-        # Multi-turn capability is derived: a harness needs transcript replay, a
-        # native resume implementation, or a rollout-scoped session implementation.
+    def _supports_resume(self) -> bool:
+        """Whether the harness can continue a conversation it is handed: transcript
+        replay, a native resume implementation, or a rollout-scoped session."""
         harness = self.harness
-        if (
-            type(harness).session is Harness.session
-            and type(harness).resume is Harness.resume
-            and not harness.SUPPORTS_RESUME
-        ):
+        return (
+            type(harness).session is not Harness.session
+            or type(harness).resume is not Harness.resume
+            or harness.SUPPORTS_RESUME
+        )
+
+    def _check_resume_support(self) -> None:
+        if not self._supports_resume():
+            harness = self.harness
             raise ValueError(
                 f"Harness {harness.config.id!r} cannot host a user: resuming an "
                 "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
@@ -665,18 +669,48 @@ class Agent:
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
-        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        alive. Retries while the trace ends with a retryable error (`config.retries`)
+        — never into a borrowed box. A retry resumes from the failed attempt's newest
+        checkpoint when it has one (`retries.checkpoint` on a runtime that supports
+        them, a harness that relaunches on a transcript), keeping that trace and
+        its turns up to there; otherwise it starts over. The final trace keeps every
+        attempt's errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         retry_state = RetryState(retry)
-        history: list = []
+        # A checkpoint resume relaunches the program on the trace's transcript; a
+        # harness with only a live-session resume (ACP) starts a fresh process that
+        # takes user turns, not a handed conversation.
+        can_resume = (
+            retry.checkpoint
+            and retry_state.max_retries > 0
+            and runtime is None
+            and self.harness.SUPPORTS_RESUME
+        )
+        history: list[Error] = []  # errors of the attempts started over from
+        trace: Trace | None = None
+        resume: Checkpoint | None = None
+        snapshots: set[str] = set()  # every checkpoint any attempt took
+        run: Rollout | None = None
         for attempt in range(retry_state.max_retries + 1):
-            trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+            resumed = trace if resume is not None else None
+            # This attempt's own errors decide — a resumed trace still carries
+            # the earlier attempts'.
+            seen = len(resumed.errors) if resumed is not None else 0
+            run = await self._run_once(
+                task,
+                runtime,
+                tools,
+                on_trace,
+                collect_artifacts,
+                resume=(resumed, resume) if resumed is not None else None,
+                checkpoints=can_resume,
+                attempt=attempt,
             )
+            trace = run.trace
+            snapshots.update(run.rewound_checkpoints)
+            snapshots.update(checkpoint.id for checkpoint in trace.checkpoints)
             if attempt == retry_state.max_retries or trace.ok:
                 break
             if runtime is not None:
@@ -685,23 +719,40 @@ class Agent:
                     "longer the task's start state); the error stands"
                 )
                 break
-            cause = retry_state.next_error(trace.errors)
+            cause = retry_state.next_error(trace.errors[seen:])
             if cause is None:
                 break
-            history.extend(trace.errors)
+            resume = trace.checkpoints[-1] if can_resume and trace.checkpoints else None
+            if resume is None:
+                history.extend(trace.errors)
             delay = backoff(attempt)
             logger.warning(
-                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
+                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s (%s)",
                 attempt + 1,
                 retry_state.max_retries,
                 delay,
                 cause.type,
+                f"resuming from checkpoint {resume.id}"
+                if resume is not None
+                else "from scratch",
             )
             await asyncio.sleep(delay)
+        assert trace is not None and run is not None
         if history:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
             trace.errors = history + trace.errors
+        # TODO: retain sandbox snapshots beyond the run (an episode's forks, later
+        # inspection); for now a final run frees every snapshot its attempts took.
+        if snapshots and run.runtime is not None:
+            try:
+                await run_shielded(run.runtime.discard_checkpoints(sorted(snapshots)))
+            except Exception:
+                logger.warning(
+                    "discarding checkpoints failed (rollout %s)",
+                    trace.id,
+                    exc_info=True,
+                )
         return trace
 
     async def _run_once(
@@ -711,7 +762,11 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
-    ) -> Trace:
+        *,
+        resume: tuple[Trace, Checkpoint] | None = None,
+        checkpoints: bool = False,
+        attempt: int = 0,
+    ) -> Rollout:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
             raise TypeError(
@@ -722,11 +777,17 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            resume=resume,
+            checkpoints=checkpoints,
+            attempt=attempt,
             **params,
         )
         try:
             if await run.open():
-                await run.step()
+                if resume is not None:
+                    await run.resume()
+                else:
+                    await run.step()
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
@@ -736,7 +797,7 @@ class Agent:
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
-        return trace
+        return run
 
     @asynccontextmanager
     async def interaction(
