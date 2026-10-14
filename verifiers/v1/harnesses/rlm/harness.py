@@ -18,7 +18,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, skill_destination
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -69,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="9d75a20105603f8e16818bf6fa06143e6eab7cfc", min_length=1
+        default="fd24d3ff4591d568792fb6174e9c5c9c87250feb", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -152,7 +152,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
         directory = self._install_dir()
-        skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
+        skills_dir = self._skills_dir()
         await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
@@ -264,19 +264,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
-            command=[
-                f"{self._install_dir()}/bin/rlm",
-                "--acp",
-                *(
-                    arg
-                    for skill in self.config.skills
-                    for arg in (
-                        "--skill",
-                        skill_destination(skill, f"{self._install_dir()}/skills"),
-                    )
-                ),
-            ],
+            env={
+                **self.config.resolved_env,
+                "RLM_HOME": self._home(trace),
+                "RLM_SKILLS_DIR": self._skills_dir(),
+            },
+            command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
                 ctx, trace, runtime, endpoint, secret, system_prompt
@@ -310,6 +303,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     @staticmethod
     def _home(trace: Trace) -> str:
         return f"{RLM_STATE_DIR}/{trace.id}/home"
+
+    def _skills_dir(self) -> str:
+        """The one skills root rlm installs Python skill packages from and lists
+        SKILL.md skills under: run-scoped when this run carries skills."""
+        return f"{self._install_dir()}/skills" if self.config.skills else SKILLS_DIR
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
