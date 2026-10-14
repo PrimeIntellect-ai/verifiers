@@ -110,6 +110,52 @@ async def test_failed_send_is_diffed_again():
 
 
 @pytest.mark.asyncio
+async def test_rewound_trace_streams_again_from_scratch():
+    """A retry resumed from a checkpoint rewinds its trace below what the client
+    holds; the stream drops the client's copy and resends the trace as it now is."""
+    traces: list[vf.Trace] = []
+    frames: list[bytes] = []
+    fail = {"on": False}
+
+    async def send(data: dict) -> None:
+        if fail["on"]:
+            raise OSError("host unreachable")
+        frames.append(pack(data))
+
+    async with DeltaStreamer(lambda: traces, send) as streamer:
+        trace = make_trace()
+        traces.append(trace)
+        streamer.watch(trace)
+        add_turn(trace, "a1")
+        add_turn(trace, "a2")
+        add_turn(trace, "a3")
+        await settle()
+        assert len(assembled(frames)[trace.id]["nodes"]) == 4
+        trace.record_error(RuntimeError("boom"))
+        trace.rewind(vf.Checkpoint(id="cp", node=1))
+        # the discard fails on the wire: the reopen must wait for it, not race ahead
+        fail["on"] = True
+        trace.notify()  # the resumed rollout's boot
+        await settle()
+        fail["on"] = False
+        add_turn(trace, "a2 again")
+        await settle()
+        traces = [trace]
+    assert sum(bool(unpack(f).get("discard")) for f in frames) == 1
+    record = assembled(frames)[trace.id]
+    assert [n["message"]["content"] for n in record["nodes"]] == ["q", "a1", "a2 again"]
+    assert len(record["calls"]) == 2
+    assert [e["type"] for e in record["errors"]] == ["RuntimeError"]
+
+
+def assembled(frames: list[bytes]) -> dict[str, dict]:
+    assembly = EpisodeAssembly()
+    for frame in frames:
+        assembly.apply(unpack(frame))
+    return assembly.traces
+
+
+@pytest.mark.asyncio
 async def test_pending_preview_streams_and_clears_on_commit():
     traces: list[vf.Trace] = []
     frames: list[bytes] = []

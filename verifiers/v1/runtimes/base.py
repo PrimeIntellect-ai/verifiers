@@ -136,6 +136,8 @@ class BaseRuntimeInfo(BaseConfig):
     borrowed: bool = False
     """Whether the run was placed into a live box owned by someone else
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
+    restored_from: str | None = None
+    """The checkpoint this box booted from (`Runtime.restore`); None for a fresh start."""
 
 
 class Runtime(ABC):
@@ -155,6 +157,11 @@ class Runtime(ABC):
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
+
+    supports_checkpoints: ClassVar[bool] = False
+    """Whether `checkpoint` snapshots the box's filesystem for `restore` to boot a new box
+    from. A rollout checkpoints before each model turn, so a retry resumes at the newest
+    turn instead of replaying the run (see `RetryConfig.checkpoint`)."""
 
     info: BaseRuntimeInfo
 
@@ -190,6 +197,26 @@ class Runtime(ABC):
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def restore(self, checkpoint: str) -> None:
+        """Boot this box from `checkpoint` — a snapshot another box of this config took
+        with `checkpoint()` — instead of `start()`."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def checkpoint(self) -> str:
+        """Snapshot the filesystem and return the checkpoint's id; the box keeps running.
+        A provider may store the snapshot asynchronously — `preserve_checkpoints` waits
+        for that before the box goes away."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def preserve_checkpoints(self, ids: list[str]) -> list[str]:
+        """Make the box's checkpoints (`ids`, oldest first) outlive its teardown, and return
+        the ones that are restorable. A retry resumes from the newest returned id."""
+        return list(ids)
+
+    async def discard_checkpoints(self, ids: list[str]) -> None:
+        """Free checkpoints nothing will restore from, once the box is gone (a provider
+        may refuse while a box descends from one). Best-effort and idempotent."""
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),
