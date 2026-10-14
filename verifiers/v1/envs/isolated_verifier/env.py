@@ -11,7 +11,7 @@ import copy
 import logging
 from contextlib import AsyncExitStack
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import Field, SerializationInfo, field_serializer
 
@@ -59,6 +59,10 @@ class IsolatedVerifierEnvConfig(vf.EnvConfig):
 
 class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
     """Run one solver, then its deterministic task scoring in a fresh runtime."""
+
+    restore_protected: ClassVar[tuple[str, ...]] = ()
+    """Paths the verifier stages after artifacts are restored. No restored symlink
+    may reach them, so a submission cannot read or replace the grader's own files."""
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if task.config.judges:
@@ -114,7 +118,7 @@ class IsolatedVerifierEnv(vf.Env[IsolatedVerifierEnvConfig]):
         artifacts = dict(solution.state.artifacts)
         async with boundary(TaskError, "verifier task setup"):
             await invoke(task.setup, {"trace": solution, "runtime": runtime})
-        await vf.restore(runtime, artifacts)
+        await vf.restore(runtime, artifacts, protected=self.restore_protected)
         async with boundary(TaskError, "verifier staging"):
             await invoke(task.stage_verifier, {"trace": solution, "runtime": runtime})
 

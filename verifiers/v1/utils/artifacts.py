@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 import logging
+import posixpath
 import shlex
 import tarfile
 import uuid
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -136,13 +138,24 @@ async def collect(
     return collected
 
 
-async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
+async def restore(
+    runtime: Runtime,
+    collected: dict[str, bytes | None],
+    *,
+    protected: Sequence[str] = (),
+) -> None:
     """Extract `collected` in `runtime` at the original absolute paths.
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
-    before the grading runtime is changed. Regular files, directories, and confined links
-    can travel; link chains and extraction through symlinks cannot.
+    before the grading runtime is changed. Regular files, directories, and links can
+    travel; extraction through a symlink (one any archive restores) cannot.
+
+    A link may point outside its root (a virtualenv's `bin/python` names the image's
+    interpreter): extraction never follows it, and the box it lands in is the grader's
+    own. `protected` names the paths the grader stages after restoring (its tests, its
+    report): no restored link may land in one or on an ancestor of one, so a
+    submission cannot read or replace the grader's files through its own paths.
     """
     if not collected:
         return
@@ -153,8 +166,33 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
+    links: dict[PurePosixPath, str] = {}
+    owners: dict[PurePosixPath, str] = {}
     for root, archive in collected.items():
-        _validate_restore(root, archive)
+        for member, target in _validate_restore(root, archive).items():
+            owners[member] = root
+            if target is not None:
+                links[member] = target
+    # Each archive is checked alone above. A link one archive restores must not
+    # redirect a path another archive extracts beneath it.
+    for member, root in owners.items():
+        for parent in member.parents:
+            if parent in links and owners[parent] != root:
+                raise RuntimeError(
+                    f"artifact member {str(member)!r} of {root!r} traverses the "
+                    f"symlink {str(parent)!r} restored by {owners[parent]!r}"
+                )
+    guarded = [PurePosixPath(posixpath.normpath(path)) for path in protected]
+    for link in links if guarded else ():
+        landing = _resolve(link, links)
+        if any(
+            landing.is_relative_to(path) or path.is_relative_to(landing)
+            for path in guarded
+        ):
+            raise RuntimeError(
+                f"artifact symlink {str(link)!r} -> {links[link]!r} reaches the "
+                "grader's own files"
+            )
     # Clear every root up front, not per entry: a later nested root would otherwise
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
@@ -237,8 +275,11 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _validate_restore(root: str, archive: bytes | None) -> None:
-    """Reject archive content that could restore outside its declared root."""
+def _validate_restore(
+    root: str, archive: bytes | None
+) -> dict[PurePosixPath, str | None]:
+    """Reject archive content that could restore outside its declared root. Returns
+    every member's absolute path and, for a symlink, its target."""
     root_path = PurePosixPath(root)
     if (
         root_path.anchor != "/"
@@ -249,7 +290,7 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
             f"artifact root {root!r} must be an absolute path below '/' with no '..'"
         )
     if archive is None:
-        return
+        return {}
 
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
@@ -303,33 +344,45 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                     raise RuntimeError(
                         f"artifact member {str(member_path)!r} traverses a symlink"
                     )
-            relative_root = root_path.relative_to("/")
             for member_path, linkname in symlinks.items():
-                target = PurePosixPath(linkname)
-                if not linkname or target.is_absolute():
+                if not linkname or PurePosixPath("/") / member_path == root_path:
                     raise RuntimeError(
                         f"artifact symlink {str(member_path)!r} has unsafe target "
                         f"{linkname!r}"
                     )
-                resolved = member_path.parent
-                if not resolved.is_relative_to(relative_root):
-                    raise RuntimeError(
-                        f"artifact symlink {str(member_path)!r} has unsafe target "
-                        f"{linkname!r}"
-                    )
-                # Walk before normalizing '..': a/../b is unsafe if a is itself
-                # a symlink. Missing internal targets are safe (e.g. build outputs).
-                for part in target.parts:
-                    resolved = resolved.parent if part == ".." else resolved / part
-                    if not resolved.is_relative_to(relative_root) or any(
-                        path in symlinks for path in (resolved, *resolved.parents)
-                    ):
-                        raise RuntimeError(
-                            f"artifact symlink {str(member_path)!r} has unsafe target "
-                            f"{linkname!r}"
-                        )
     except tarfile.TarError as exc:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
+    return {PurePosixPath("/") / path: symlinks.get(path) for path in sorted(members)}
+
+
+MAX_LINK_DEPTH = 40
+"""Links followed while resolving one path, as Linux's ELOOP limit."""
+
+
+def _resolve(
+    path: PurePosixPath, links: dict[PurePosixPath, str], depth: int = 0
+) -> PurePosixPath:
+    """Where `path` lands once the restored `links` are followed, the way the kernel
+    walks it: each component in turn, `..` after the link before it resolved. Paths
+    outside the restored trees are the grading image's own and resolve as written."""
+    resolved = PurePosixPath("/")
+    for part in path.parts[1:]:
+        if part == "..":
+            resolved = resolved.parent
+            continue
+        candidate = resolved / part
+        if candidate not in links:
+            resolved = candidate
+            continue
+        if depth >= MAX_LINK_DEPTH:
+            raise RuntimeError(f"artifact symlink {str(candidate)!r} loops")
+        target = PurePosixPath(links[candidate])
+        resolved = _resolve(
+            target if target.is_absolute() else candidate.parent / target,
+            links,
+            depth + 1,
+        )
+    return resolved
 
 
 async def _run(runtime: Runtime, command: str, action: str) -> str:

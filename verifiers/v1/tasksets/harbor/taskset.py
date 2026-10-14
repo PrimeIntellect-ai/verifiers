@@ -47,6 +47,9 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+GRADER_PATHS = ("/tests", "/logs/verifier")
+"""Where a Harbor verifier keeps its tests and writes its reward: grader-owned, so no
+restored submission may link into them."""
 MAX_REWARD_BYTES = 1024 * 1024
 # Booleans count as 1/0, as Harbor reads them (CyberGym's verifier writes flags alongside its reward).
 REWARD_JSON_ADAPTER = TypeAdapter(

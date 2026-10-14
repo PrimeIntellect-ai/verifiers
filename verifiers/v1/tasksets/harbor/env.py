@@ -25,6 +25,7 @@ from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import Runtime, RuntimeConfig
 from verifiers.v1.tasksets.harbor.compose import compose_services
 from verifiers.v1.tasksets.harbor.taskset import (
+    GRADER_PATHS,
     HarborTask,
     verifier_box_data,
 )
@@ -40,6 +41,8 @@ class HarborEnvConfig(IsolatedVerifierEnvConfig):
 
 
 class HarborEnv(IsolatedVerifierEnv, vf.Env[HarborEnvConfig]):
+    restore_protected = GRADER_PATHS
+
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if not isinstance(task, HarborTask):
             raise TypeError(
