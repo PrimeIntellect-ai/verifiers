@@ -12,8 +12,8 @@ from typing import ClassVar
 
 import pytest
 from aiohttp import web
-from pydantic import ValidationError
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
