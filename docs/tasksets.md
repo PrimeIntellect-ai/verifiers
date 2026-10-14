@@ -84,6 +84,64 @@ __all__ = ["AdditionTaskset"]
 
 The exported `AdditionTaskset` is what verifiers loads and makes discoverable for evaluation.
 
+## Testing graders
+
+Use `vf.make_trace` when testing a task's rewards or metrics. It builds the trace envelope,
+links message parents, and marks assistant messages as sampled, so `trace.last_reply` sees
+the synthetic model response just as it would in an eval. A bare `MessageNode` defaults to
+`sampled=False`, which is useful for prompt context but not for a model reply.
+
+For example, an exact-match grader can be tested without repeating trace construction:
+
+```python
+import verifiers.v1 as vf
+
+
+async def test_addition_grader():
+    task = AdditionTask(
+        AdditionData(prompt="What is 2 + 2?", answer=4),
+    )
+    trace = vf.make_trace(
+        "4",
+        task=vf.TraceTask(type="AdditionTask", data=task.data),
+    )
+
+    await task.score(trace)
+
+    assert trace.last_reply == "4"
+    assert trace.rewards["exact_match"].score == 1.0
+```
+
+For a multi-turn or tool-using grader, pass the typed messages and let the helper mark only
+the assistant turns as sampled. Tool results and user follow-ups stay in the transcript, while
+the final sampled assistant message becomes `last_reply`:
+
+```python
+async def test_tool_grader():
+    task = AdditionTask(
+        AdditionData(prompt="What is 2 + 2?", answer=4),
+    )
+    trace = vf.make_trace(
+        [
+            vf.UserMessage(content="What is 2 + 2?"),
+            vf.AssistantMessage(
+                content=None,
+                tool_calls=[
+                    vf.ToolCall(id="call-1", name="calculator", arguments='{"x": 2}')
+                ],
+            ),
+            vf.ToolMessage(tool_call_id="call-1", content="4"),
+            vf.AssistantMessage(content="4"),
+        ],
+        task=vf.TraceTask(type="AdditionTask", data=task.data),
+    )
+
+    await task.score(trace)
+
+    assert trace.last_reply == "4"
+    assert trace.rewards["exact_match"].score == 1.0
+```
+
 ## Data and configuration
 
 Keep values on the narrowest object that needs them:

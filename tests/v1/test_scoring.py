@@ -42,6 +42,44 @@ class HookTask(vf.Task[HookData]):
         return 1.0
 
 
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "cba",
+        [
+            UserMessage(content="Reverse abc"),
+            AssistantMessage(content="Let me reverse it."),
+            UserMessage(content="Give just the answer."),
+            AssistantMessage(content="cba"),
+        ],
+    ],
+    ids=["reply", "multiple-turns"],
+)
+async def test_make_trace_passes_sampled_last_reply_to_grader(messages) -> None:
+    seen_replies = []
+
+    class ExactMatchTask(vf.Task[HookData]):
+        @vf.reward
+        async def exact_match(self, trace: vf.Trace) -> float:
+            reply = trace.last_reply
+            seen_replies.append(reply)
+            return float(reply == self.data.answer)
+
+    task = ExactMatchTask(HookData(prompt="Reverse abc", answer="cba"))
+    trace_task = vf.TraceTask(type="ExactMatchTask", data=task.data)
+    trace = vf.make_trace(messages, task=trace_task)
+    await task.score(trace)
+
+    assert seen_replies == ["cba"]
+    assert trace.rewards["exact_match"].score == trace.reward == 1.0
+
+    # Context-only assistants must still be ignored: identical text, no sampled reply.
+    context = vf.make_trace(messages, task=trace_task, sampled=[])
+    await task.score(context)
+    assert seen_replies == ["cba", ""]
+    assert context.rewards["exact_match"].score == context.reward == 0.0
+
+
 async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     fns = tmp_path / "fns.py"
     fns.write_text(PLUGGED_FNS_PY)
