@@ -46,8 +46,14 @@ class RetryConfig(BaseConfig):
     """Default budget for errors that match no rule. Matching rules override it."""
     rules: list[RetryRule] = Field(default_factory=list)
     """Ordered overrides; a matching rule may enable retries or deny them with zero."""
-    from_checkpoint: bool = True
-    """Resume a retry from the run's newest checkpoint when it has one (the agent's
-    `checkpoint` takes them): the trace keeps its turns up to there, its typed state
-    as of then, and the harness continues the conversation in a box restored to that
-    state. False retries from scratch."""
+    checkpoint: bool = True
+    """Experimental. With a retry budget, checkpoint the runtime's filesystem before
+    every model turn (on a runtime that supports it: prime; the turn waits a few
+    seconds for the snapshot to be durable) and resume a retry from the newest one:
+    the trace keeps its turns up to there, its typed state as of then, and the
+    harness continues the conversation in a box restored to that state. False takes
+    no checkpoints and retries from scratch; so does a run with no retry budget.
+    Snapshots are freed when the run is final. Known limits: a harness with
+    concurrent sub-agents can snapshot while one of them is mid-tool, processes the
+    agent left running are not restored (a restore cold boots), and the harness must
+    be able to continue a conversation it is handed."""

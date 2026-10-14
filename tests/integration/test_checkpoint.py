@@ -27,7 +27,7 @@ async def test_retry_resumes_from_checkpoint(run, harness, harness_runtime):
         "checkpoint-resume-v1",
         harness=harness,
         runtime=harness_runtime,
-        env={"agent": {"checkpoint": True, "retries": RETRIES}},
+        env={"agent": {"retries": RETRIES}},
         max_turns=8,
         max_tokens=4096,
     )
