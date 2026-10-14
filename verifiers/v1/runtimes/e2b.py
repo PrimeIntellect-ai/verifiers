@@ -123,19 +123,26 @@ def _egress_update(config: E2BConfig, routes: list[str] | None) -> dict:
     """The complete egress policy for `update_network`, which replaces all rules
     atomically. None restores unrestricted egress for another trusted setup phase;
     otherwise `routes` (the interception and MCP endpoints) stay reachable alongside
-    the configured allowlist. E2B resolves an `allow_out` entry over a same-host
-    `deny_out` one and requires the deny-everything floor whenever `allow_out` names
-    domains, so an allowlist is expressed as allow + deny-everything and a blocklist
-    as deny only (everything else, framework routes included, stays reachable)."""
-    if routes is None:
+    the configured policy. E2B gives `allow_out` precedence over `deny_out`, so
+    framework hosts are explicit exceptions to blocklists. Concrete allowlists
+    also deny all other destinations. Hostname exceptions require E2B's exact
+    deny-all rule; partial blocklists can exempt only IP-based framework routes."""
+    if routes is None or not config.network_restricted:
         return {"allow_internet_access": True}
-    if config.allow == ["*"]:
-        return {"deny_out": list(config.block)}
     hosts = list(
         dict.fromkeys(
             host for route in routes if (host := urlsplit(route).hostname) is not None
         )
     )
+    if config.allow == ["*"]:
+        if "0.0.0.0/0" not in config.block and any(
+            not _is_address(host) for host in hosts
+        ):
+            raise ValueError(
+                "E2B cannot exempt framework hostnames from partial blocklists; "
+                "use an allowlist or block=['0.0.0.0/0']"
+            )
+        return {"allow_out": hosts, "deny_out": list(config.block)}
     entries = list(dict.fromkeys([*hosts, *config.allow]))
     if not entries:
         return {"allow_internet_access": False}
@@ -395,7 +402,8 @@ class E2BBackend(RuntimeBackend):
             from e2b import AsyncSandbox
         except ModuleNotFoundError as e:
             raise ModuleNotFoundError(
-                "E2BBackend requires the E2B SDK; install `verifiers[e2b]`."
+                "E2BBackend requires the E2B SDK; run with "
+                "`uv run --with 'e2b>=2.35.0,<3' vf-eval ...`."
             ) from e
 
         try:

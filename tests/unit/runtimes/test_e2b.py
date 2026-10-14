@@ -60,8 +60,17 @@ def test_e2b_egress_update_states_the_complete_policy() -> None:
     unrestricted = _egress_update(E2BConfig(), None)
     assert unrestricted == {"allow_internet_access": True}
 
-    blocklist = _egress_update(E2BConfig(block=["203.0.113.0/24"]), routes)
-    assert blocklist == {"deny_out": ["203.0.113.0/24"]}
+    blocklist = _egress_update(E2BConfig(block=["0.0.0.0/0"]), routes)
+    assert blocklist == {
+        "allow_out": ["tunnel.example.com"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+    for blocked in (["203.0.113.0/24"], ["::/0"]):
+        with pytest.raises(ValueError, match="framework hostnames"):
+            _egress_update(E2BConfig(block=blocked), routes)
+        assert _egress_update(
+            E2BConfig(block=blocked), ["http://203.0.113.42:8080/mcp"]
+        ) == {"allow_out": ["203.0.113.42"], "deny_out": blocked}
 
     allowlist = _egress_update(E2BConfig(allow=["api.example.com"]), routes)
     assert allowlist == {
