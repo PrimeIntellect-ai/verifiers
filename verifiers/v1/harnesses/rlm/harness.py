@@ -18,7 +18,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -69,7 +69,7 @@ class CompactionConfig(BaseConfig):
 
 class RLMHarnessConfig(HarnessConfig):
     version: str = Field(
-        default="c38e20b60c90bbf625274d3fde2b2a384f390a66", min_length=1
+        default="ac37c685b7bf0343e7f302d6ea6de75e929c9012", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -164,7 +164,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
-            f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
+            f"RLM_SKILLS_DIR={skills_dir} "
             f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
@@ -265,7 +265,18 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
-            command=[f"{self._install_dir()}/bin/rlm", "--acp"],
+            command=[
+                f"{self._install_dir()}/bin/rlm",
+                "--acp",
+                *(
+                    arg
+                    for skill in self.config.skills
+                    for arg in (
+                        "--skill",
+                        skill_destination(skill, f"{self._install_dir()}/skills"),
+                    )
+                ),
+            ],
             prompt=prompt,
             session_meta=self._runtime_metadata(
                 ctx, trace, runtime, endpoint, secret, system_prompt
