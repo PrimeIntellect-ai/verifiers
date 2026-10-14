@@ -653,3 +653,68 @@ async def test_native_steering_stays_the_fast_path(model, monkeypatch):
         0,
         None,
     )
+
+
+class _DeadDealer:
+    """A dead worker's socket: what it sent before it died, then nothing."""
+
+    def __init__(self, *messages: list[bytes]) -> None:
+        self.messages = [[zmq.Frame(part) for part in m] for m in messages]
+        self.closed = False
+
+    async def recv_multipart(self, flags=0, copy=True):
+        if not self.messages:
+            raise zmq.Again()
+        return self.messages.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _DeadProcess:
+    sentinel = -1
+    exitcode = -9
+
+    def join(self, timeout=None) -> None:
+        pass
+
+
+async def test_a_dead_worker_answers_what_it_held(tmp_path):
+    """A worker dies holding a run, a steer's share and a reply it sent first: the
+    reply is relayed, the run answered as failed and the steer as not queued, and the
+    worker leaves the pool."""
+    pool = EnvServerPool.__new__(EnvServerPool)
+    pool.frontend = _Frontend()
+    pool._poller = None
+    pool._ipc_dir = str(tmp_path)
+    done = msgpack.packb({"success": True})
+    dead = {
+        "index": 0,
+        "active": 2,
+        "dealer": _DeadDealer([b"r-done", b"reply", done]),
+        "process": _DeadProcess(),
+    }
+    alive = {"index": 1, "active": 0}
+    pool.workers = [dead, alive]
+    pending = {
+        b"r-done": {"client_id": b"c", "worker": dead},
+        b"r-run": {"client_id": b"c", "worker": dead},
+    }
+    steers = {b"s": {"client_id": b"c", "waiting": 2, "answered": False}}
+    steer_parts = {b"s/0": b"s", b"s/1": b"s"}
+    closed = await pool._drop_worker(dead, pending, steer_parts, steers)
+    assert closed == 2 and pending == {}
+    assert pool.workers == [alive] and dead["dealer"].closed
+    replies = {bytes(frames[1]): frames for frames in pool.frontend.sent}
+    assert bytes(replies[b"r-done"][3]) == done
+    lost = msgpack.unpackb(replies[b"r-run"][3])
+    assert not lost["success"] and "died" in lost["error"]
+    # The steer still waits on the live worker's share, which answers the client.
+    assert steer_parts == {b"s/1": b"s"} and steers[b"s"]["waiting"] == 1
+    assert b"s" not in replies
+    # The last worker dies too: its share answers the steer, and the pool stops.
+    alive.update(dealer=_DeadDealer(), process=_DeadProcess())
+    with pytest.raises(RuntimeError, match="every env worker died"):
+        await pool._drop_worker(alive, pending, steer_parts, steers)
+    assert steers == {} and steer_parts == {}
+    assert not msgpack.unpackb(pool.frontend.sent[-1][3])["queued"]

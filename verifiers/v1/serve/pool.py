@@ -15,9 +15,11 @@ holds the real client identity in `pending` and routes the reply back by `reques
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+broker dies. The broker watches each worker process in turn: when one dies, what it
+held is answered (its requests as failed, its share of a steer as not queued) and nothing
+is routed to it again; when the last one dies, the broker stops. TODO: downscale idle
+workers, restart a dead worker, stats/lag monitors (v0 had them; omitted here — rollout
+errors are returned as data, not crashes, so worker death is rare).
 """
 
 import asyncio
@@ -36,13 +38,27 @@ import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import CancelResponse, HealthResponse
+from verifiers.v1.serve.types import (
+    BaseResponse,
+    CancelResponse,
+    HealthResponse,
+    SteerResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(
     CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True
+)
+_WORKER_DIED = "the env worker serving it died"
+_LOST = msgpack.packb(
+    BaseResponse(success=False, error=_WORKER_DIED).model_dump(mode="json"),
+    use_bin_type=True,
+)
+_STEER_LOST = msgpack.packb(
+    SteerResponse(queued=False, reason=_WORKER_DIED).model_dump(mode="json"),
+    use_bin_type=True,
 )
 
 
@@ -95,6 +111,8 @@ class EnvServerPool:
         self.log_setup = log_setup
         self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-", dir="/tmp")
         self.workers: list[dict] = []
+        self._spawned = 0
+        """Workers spawned so far: the next one's index (a dead one's is never reused)."""
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
 
@@ -111,7 +129,8 @@ class EnvServerPool:
         return f"{self._ipc_dir}/{i}"
 
     def _spawn_worker(self) -> None:
-        i = len(self.workers)  # upscale-only, so the next index is the current count
+        i = self._spawned
+        self._spawned += 1
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
@@ -141,6 +160,8 @@ class EnvServerPool:
         )
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
+            # Readable once the process exits.
+            self._poller.register(proc.sentinel, zmq.POLLIN)
 
     def _maybe_scale_up(self, in_flight: int) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
@@ -173,8 +194,8 @@ class EnvServerPool:
         # request_id -> {client_id, worker}
         pending: dict[bytes, dict] = {}
         # A steer asks every worker (each holds its own rollouts' registry): its
-        # per-worker part ids -> the client's request id, and per request the client,
-        # the parts still out, and whether it was answered.
+        # per-worker part ids (`_steer_part`) -> the client's request id, and per
+        # request the client, the parts still out, and whether it was answered.
         steer_parts: dict[bytes, bytes] = {}
         steers: dict[bytes, dict] = {}
         logger.info(
@@ -210,7 +231,7 @@ class EnvServerPool:
                                 "answered": False,
                             }
                             for w in self.workers:
-                                part = request_id + b"/" + str(w["index"]).encode()
+                                part = _steer_part(request_id, w)
                                 steer_parts[part] = request_id
                                 await w["dealer"].send_multipart(
                                     [part, method, payload]
@@ -258,34 +279,95 @@ class EnvServerPool:
                                 self._maybe_scale_up(in_flight)
                 for w in self.workers:
                     if w["dealer"] in events:
-                        request_id, kind, data = await w["dealer"].recv_multipart(
-                            copy=False
-                        )
-                        parent = steer_parts.pop(request_id.bytes, None)
-                        if parent is not None:
-                            await self._answer_steer(steers, parent, data.bytes)
-                            continue
-                        # Copy only the routing key; relay the Frames unchanged. A
-                        # `delta` is one of many for its request — only the `reply`
-                        # closes the request out.
-                        if kind.bytes == b"reply":
-                            entry = pending.pop(request_id.bytes, None)
-                            if entry is None:
-                                continue
-                            entry["worker"]["active"] -= 1
+                        frames = await w["dealer"].recv_multipart(copy=False)
+                        if await self._relay(frames, pending, steer_parts, steers):
                             in_flight -= 1
-                        else:
-                            entry = pending.get(request_id.bytes)
-                            if entry is None:
-                                continue
-                        with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, kind, data], copy=False
-                            )
+                for w in list(self.workers):
+                    if w["process"].sentinel in events:
+                        in_flight -= await self._drop_worker(
+                            w, pending, steer_parts, steers
+                        )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
             self._shutdown()
+
+    async def _relay(
+        self,
+        frames: list,
+        pending: dict[bytes, dict],
+        steer_parts: dict[bytes, bytes],
+        steers: dict[bytes, dict],
+    ) -> bool:
+        """Route one worker message to its client. Returns whether it closed a request
+        out (its `reply`; a `delta` is one of many for its request)."""
+        request_id, kind, data = frames
+        parent = steer_parts.pop(request_id.bytes, None)
+        if parent is not None:
+            await self._answer_steer(steers, parent, data.bytes)
+            return False
+        # Copy only the routing key; relay the Frames unchanged.
+        closed = kind.bytes == b"reply"
+        if closed:
+            entry = pending.pop(request_id.bytes, None)
+            if entry is not None:
+                entry["worker"]["active"] -= 1
+        else:
+            entry = pending.get(request_id.bytes)
+        if entry is None:
+            return False
+        with contextlib.suppress(zmq.ZMQError):
+            await self.frontend.send_multipart(
+                [entry["client_id"], request_id, kind, data], copy=False
+            )
+        return closed
+
+    async def _drop_worker(
+        self,
+        w: dict,
+        pending: dict[bytes, dict],
+        steer_parts: dict[bytes, bytes],
+        steers: dict[bytes, dict],
+    ) -> int:
+        """A worker's process died: relay what it sent before it did, answer what it
+        still held (its requests as failed, its share of a steer as not queued), and
+        route nothing to it again. Returns how many requests that closed out. Raises
+        when no worker is left."""
+        closed = 0
+        while True:
+            try:
+                frames = await w["dealer"].recv_multipart(flags=zmq.NOBLOCK, copy=False)
+            except zmq.Again:
+                break
+            closed += await self._relay(frames, pending, steer_parts, steers)
+        w["process"].join()  # exited already: its sentinel is ready
+        logger.error(
+            "EnvServerPool: worker %d died (exit code %s)",
+            w["index"],
+            w["process"].exitcode,
+        )
+        for part, parent in list(steer_parts.items()):
+            if part == _steer_part(parent, w):
+                del steer_parts[part]
+                await self._answer_steer(steers, parent, _STEER_LOST)
+        for request_id, entry in list(pending.items()):
+            if entry["worker"] is w:
+                del pending[request_id]
+                closed += 1
+                with contextlib.suppress(zmq.ZMQError):
+                    await self.frontend.send_multipart(
+                        [entry["client_id"], request_id, b"reply", _LOST]
+                    )
+        self.workers.remove(w)
+        if self._poller is not None:
+            self._poller.unregister(w["dealer"])
+            self._poller.unregister(w["process"].sentinel)
+        w["dealer"].close()
+        with contextlib.suppress(OSError):
+            os.unlink(self._worker_path(w["index"]))
+        if not self.workers:
+            raise RuntimeError("EnvServerPool: every env worker died")
+        return closed
 
     async def _answer_steer(
         self, steers: dict[bytes, dict], request_id: bytes, data: bytes
@@ -337,6 +419,11 @@ def env_config_data(env: EnvConfig) -> dict:
     ship this across a process boundary, then rebuild via `resolve_env_config`
     (re-narrowing to the env's concrete config class)."""
     return env.model_dump(mode="json")
+
+
+def _steer_part(request_id: bytes, worker: dict) -> bytes:
+    """The id of one worker's share of a steer (`EnvServerPool.run`)."""
+    return request_id + b"/" + str(worker["index"]).encode()
 
 
 def serve_env(
