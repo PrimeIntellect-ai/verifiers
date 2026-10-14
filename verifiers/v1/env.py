@@ -110,6 +110,12 @@ class Env(ABC, Generic[ConfigT]):
     — the base owns everything else. Task x agent fit is validated per run, on the
     task the agent actually receives — an env-minted task carries its own needs."""
 
+    REQUIRES_AGENT: bool = True
+    """Whether every episode must run at least one agent: one whose `run()` ran none
+    fails. An env whose `run()` may finish on host work alone (returning its outcome
+    without a model call) sets it False; its episode is then judged on `run()` and
+    `finalize()` alone."""
+
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.utils.loaders import load_harness, load_taskset
 
@@ -332,10 +338,11 @@ class Env(ABC, Generic[ConfigT]):
                             outcome, Trace
                         ):
                             episode.outcome = outcome.model_dump(mode="json")
-                        if not episode.traces:
+                        if not episode.traces and self.REQUIRES_AGENT:
                             raise ValueError(
                                 f"{type(self).__name__}.run() ran no agent — every "
-                                "episode must carry at least one run"
+                                "episode must carry at least one run (an env whose "
+                                "episodes may not sets REQUIRES_AGENT = False)"
                             )
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.

@@ -243,3 +243,24 @@ class FinalizeOnlyOutcomeEnv(PlainEnv):
 async def test_finalize_may_set_the_outcome(stub_rollouts):
     episode = await env(FinalizeOnlyOutcomeEnv).run_episode(task(), ctx())
     assert episode.outcome_as(Outcome) == Outcome(verdict="judged")
+
+
+class HostOnlyEnv(PlainEnv):
+    """Its `run()` decides on host work alone, without any agent."""
+
+    async def run(self, task, agents):
+        return Outcome(verdict="host")
+
+
+async def test_an_episode_that_runs_no_agent_fails_unless_the_env_allows_it(
+    stub_rollouts,
+):
+    episode = await env(HostOnlyEnv).run_episode(task(), ctx())
+    assert not episode.ok and "ran no agent" in episode.errors[-1].message
+
+    class Allowed(HostOnlyEnv):
+        REQUIRES_AGENT = False
+
+    episode = await env(Allowed).run_episode(task(), ctx())
+    assert episode.ok and episode.errors == [] and episode.traces == []
+    assert episode.outcome_as(Outcome) == Outcome(verdict="host")
