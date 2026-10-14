@@ -1776,9 +1776,7 @@ class Agent:
         usable = [
             c
             for c in previous.checkpoints
-            if c.id == restored.id
-            or (c.time is not None and restored.time is not None)
-            and c.time <= restored.time
+            if c.id == restored.id or c.time <= restored.time
         ]
         return (previous, usable[-1].id) if usable else (None, None)
 

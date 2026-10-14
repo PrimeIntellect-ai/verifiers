@@ -528,7 +528,7 @@ def checkpointed(*checkpoints: vf.Checkpoint) -> vf.Trace:
 
 
 async def test_resume_impossible_raises_before_provisioning(model, monkeypatch):
-    trace = checkpointed(vf.Checkpoint(id="ckpt-9", turns=0))
+    trace = checkpointed(vf.Checkpoint(id="ckpt-9", turns=0, time=0.0))
     monkeypatch.setattr(
         agent_module, "restore_config", vf.runtimes.restore_config
     )  # the real one: subprocess runtimes cannot restore
