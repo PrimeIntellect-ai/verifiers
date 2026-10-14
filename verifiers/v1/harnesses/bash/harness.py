@@ -2,7 +2,7 @@ import os
 import secrets
 import shlex
 
-from pydantic import NonNegativeInt, PositiveInt
+from pydantic import NonNegativeInt, PositiveInt, field_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
@@ -69,6 +69,12 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program in its launch file (like the interception
     secret) so the agent's `bash` subprocesses don't inherit it."""
 
+    search_exclude: list[str] = []
+    """Sites the `search` tool never returns, each a host (its subdomains included) or a
+    host and path prefix such as `github.com/some-org`. Each also goes into the query as
+    a `-site:` term so excluded pages don't take the result slots. The list reaches the
+    program in its launch file, never its argv, so the agent cannot read it."""
+
     model_retries: NonNegativeInt = 10
     """Retries of a failed model call (429, 5xx, a dropped connection or stream), with
     the OpenAI SDK's backoff capped at 8 s: 10 rides out about a minute of provider
@@ -84,6 +90,18 @@ class BashHarnessConfig(HarnessConfig):
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
     for a fixed threshold, and `null` (`"None"` in TOML) to disable it."""
+
+    @field_validator("search_exclude")
+    @classmethod
+    def _sites(cls, sites: list[str]) -> list[str]:
+        """`host` or `host/path`, without scheme or trailing slash; hosts lowercased."""
+        normalized = []
+        for site in sites:
+            host, _, path = site.strip().split("://")[-1].strip("/").partition("/")
+            if not host:
+                raise ValueError(f"search_exclude entry {site!r} names no host")
+            normalized.append(f"{host.lower()}/{path}" if path else host.lower())
+        return list(dict.fromkeys(normalized))
 
 
 class BashHarness(Harness[BashHarnessConfig]):
@@ -178,6 +196,8 @@ class BashHarness(Harness[BashHarnessConfig]):
                 )
             args.append("--search")
             credentials["serper_key"] = serper_key
+            if self.config.search_exclude:
+                credentials["search_exclude"] = "\n".join(self.config.search_exclude)
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,

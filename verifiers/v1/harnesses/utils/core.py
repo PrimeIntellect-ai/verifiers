@@ -12,6 +12,7 @@ import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import certifi
 import httpx
@@ -131,8 +132,24 @@ def format_results(results, query: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def run_search(query: str, api_key: str, num_results: int = 5) -> str:
-    """Serper Google web search -> formatted organic results.
+def excluded(link: str, sites) -> bool:
+    """Whether `link` is on one of `sites` (`host` with its subdomains, or `host/path`
+    with the pages under that path)."""
+    url = urlsplit(link.strip())
+    host = (url.hostname or "").lower()
+    path = url.path.rstrip("/").lower()
+    for site in sites:
+        site_host, _, prefix = site.partition("/")
+        if host != site_host and not host.endswith("." + site_host):
+            continue
+        prefix = "/" + prefix.lower() if prefix else ""
+        if not prefix or path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def run_search(query: str, api_key: str, num_results: int = 5, exclude=()) -> str:
+    """Serper Google web search -> formatted organic results, without the `exclude` sites.
 
     The key arrives as an argument (read from the launch file, like the interception secret)
     instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
@@ -149,12 +166,16 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
     try:
         response = httpx.post(
             SERPER_URL,
-            json={"q": query},
+            json={"q": " ".join([query, *(f"-site:{site}" for site in exclude)])},
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             timeout=45,
         )
         response.raise_for_status()
-        organic = response.json().get("organic") or []
+        organic = [
+            result
+            for result in response.json().get("organic") or []
+            if not excluded(str(result.get("link") or ""), exclude)
+        ]
         return format_results(organic[:num_results], query)
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
@@ -460,6 +481,7 @@ async def run_chat_loop(
                         tool_args.get("query", ""),
                         args.serper_key,
                         tool_args.get("num_results", 5),
+                        args.search_exclude,
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
@@ -502,6 +524,7 @@ def parse_args() -> argparse.Namespace:
     args.base_url = launch["base_url"]
     args.api_key = launch["api_key"]
     args.serper_key = launch.get("serper_key", "")
+    args.search_exclude = [s for s in launch.get("search_exclude", "").split("\n") if s]
     args.initial_messages = launch.get("messages", [])
     return args
 

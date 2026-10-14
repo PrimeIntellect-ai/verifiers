@@ -31,6 +31,7 @@ class Launched:
 
     args: list[str]
     system_prompt: str | None
+    credentials: dict[str, str]
 
 
 async def launch(monkeypatch, runtime=None, **config) -> Launched:
@@ -41,6 +42,7 @@ async def launch(monkeypatch, runtime=None, **config) -> Launched:
     ):
         launched.system_prompt = rest[1]
         launched.args = list(kwargs["extra_args"])
+        launched.credentials = dict(kwargs.get("credentials") or {})
 
     monkeypatch.setattr(bash, "launch_chat_program", fake_launch)
     harness = bash.BashHarness(bash.BashHarnessConfig(**config))
@@ -113,6 +115,60 @@ async def test_program_reads_its_key_from_the_launch_file_and_deletes_it(
 async def test_program_keeps_the_sdk_default_without_the_flag(monkeypatch):
     # NullHarness passes no flag; its program keeps the OpenAI SDK's two retries.
     assert (await client_kwargs(monkeypatch))["max_retries"] == 2
+
+
+# --- search exclusions ----------------------------------------------------------------
+
+
+async def test_search_exclusions_reach_the_program_in_its_launch_file_not_argv(
+    monkeypatch, tmp_path
+):
+    launched = await launch(
+        monkeypatch,
+        search=True,
+        env={"SERPER_API_KEY": "s"},
+        search_exclude=["https://Bench.Example/", "github.com/some-org/"],
+    )
+    assert (
+        launched.credentials["search_exclude"] == "bench.example\ngithub.com/some-org"
+    )
+    assert not any("bench.example" in arg for arg in launched.args)
+    launch_file = tmp_path / "launch.json"
+    launch_file.write_text(
+        json.dumps({"base_url": "http://e", "api_key": "k", **launched.credentials})
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["prog", f"--launch-file={launch_file}", "--model=m"]
+    )
+    assert core.parse_args().search_exclude == ["bench.example", "github.com/some-org"]
+
+
+def test_search_drops_excluded_sites_and_names_them_in_the_query(monkeypatch):
+    sent: dict = {}
+    links = [
+        "https://www.bench.example/tasks/a",
+        "https://github.com/some-org/repo",
+        "https://github.com/some-org-fork/repo",
+        "https://docs.example.org/page",
+    ]
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"organic": [{"title": link, "link": link} for link in links]}
+
+    def post(url, json, **kwargs):
+        sent.update(json)
+        return Response()
+
+    monkeypatch.setattr(core.httpx, "post", post)
+    text = core.run_search("q", "key", 5, ["bench.example", "github.com/some-org"])
+    assert sent["q"] == "q -site:bench.example -site:github.com/some-org"
+    assert "bench.example" not in text and "some-org/repo" not in text
+    assert "some-org-fork/repo" in text and "docs.example.org" in text
+    assert core.run_search("q", "key", 5) and sent["q"] == "q"
 
 
 # --- bash command timeouts and output -----------------------------------------------
