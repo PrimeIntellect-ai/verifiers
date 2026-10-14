@@ -181,8 +181,8 @@ Two rules follow from infinity: a run over an infinite taskset must be bounded w
 ## Feedback from the runner
 
 A taskset that adapts what it yields (a curriculum, a work queue) can hear back about the
-tasks it handed out. The runner that dispatched a task calls exactly one hook per task, on
-the taskset object it iterates (possibly a view, which shares the taskset's attributes),
+tasks it handed out. The runner that dispatched a task calls exactly one hook per rollout
+of it (a runner may run a task several times), on the taskset object it iterates (possibly a view, which shares the taskset's attributes),
 from its event loop:
 
 - `observe(task, episode)`: the task finished as `episode`, its final attempt after
