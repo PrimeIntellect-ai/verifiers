@@ -5,24 +5,58 @@
       "group": "Verifiers",
       "pages": [
         "overview",
-        {
-          "group": "Verifiers v1",
-          "pages": [
-            "v1/overview",
-            "v1/getting_started",
-            "v1/architecture",
-            "v1/tasksets",
-            "v1/evaluation",
-            "v1/harnesses",
-            "v1/env",
-            "v1/harbor",
-            "v1/gepa"
-          ]
-        }
+        "getting_started",
+        "architecture",
+        "tasksets",
+        "evaluation",
+        "harnesses",
+        "env",
+        "harbor",
+        "gepa"
       ]
     }
   ],
   "redirects": [
+    {
+      "source": "/v1/overview",
+      "destination": "/overview"
+    },
+    {
+      "source": "/v1/getting_started",
+      "destination": "/getting_started"
+    },
+    {
+      "source": "/v1/architecture",
+      "destination": "/architecture"
+    },
+    {
+      "source": "/v1/tasksets",
+      "destination": "/tasksets"
+    },
+    {
+      "source": "/v1/evaluation",
+      "destination": "/evaluation"
+    },
+    {
+      "source": "/v1/harnesses",
+      "destination": "/harnesses"
+    },
+    {
+      "source": "/v1/agent",
+      "destination": "/agent"
+    },
+    {
+      "source": "/v1/env",
+      "destination": "/env"
+    },
+    {
+      "source": "/v1/harbor",
+      "destination": "/harbor"
+    },
+    {
+      "source": "/v1/gepa",
+      "destination": "/gepa"
+    },
     {
       "source": "/v0/overview",
       "destination": "/overview"
