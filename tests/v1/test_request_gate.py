@@ -498,3 +498,26 @@ def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(
         gc.enable()
     assert not thread.is_alive(), "the gate deadlocked on its own mutex"
     assert statuses == [200], "the collected stream's permit was returned"
+
+
+def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
+    config = RequestGateConfig(max_concurrent=32, decrease_cooldown=0)
+
+    def limit() -> float:
+        return json.loads(first.state_path.read_text())["limit"]
+
+    first = ModelGate(tmp_path, "k", "m")
+    for _ in range(15):
+        slot, _ = first.try_admit(config)
+        assert slot is not None
+        first.release(slot, config, "rejected")
+    assert limit() == 1
+    joining = ModelGate(tmp_path, "k", "m")  # a run that starts while the first is live
+    assert limit() == 1, "a live user's limit is shared"
+    first.close_inherited()  # both runs end: their descriptors close
+    joining.close_inherited()
+    later = ModelGate(tmp_path, "k", "m")
+    slots = []
+    while (slot := later.try_admit(config)[0]) is not None:
+        slots.append(slot)
+    assert len(slots) == 32, "a later run starts from max_concurrent"

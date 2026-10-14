@@ -11,7 +11,9 @@ Permits are `flock`s on slot files in a shared directory, so every process on th
 (env-server workers, concurrent runs) draws from one budget, and a process that dies
 releases its permits with its file descriptors. A state file beside the slots, `flock`ed
 around each admission, holds the adaptive limit and running counters as JSON (readable
-while a run is live). The limit is AIMD: a 429/529 multiplies it by `decrease_factor` (at
+while a run is live). Every process using a gate holds a shared `flock` on its users file;
+the first one in, finding no other user, starts the state afresh, so a limit learned by an
+earlier run does not carry over to the next. The limit is AIMD: a 429/529 multiplies it by `decrease_factor` (at
 most once per `decrease_cooldown`), each success adds `1/limit`, bounded by
 `[min_concurrent, max_concurrent]`. A rejected request returns its permit, waits for
 `Retry-After` (else exponential backoff) and queues again, up to `max_rejections` times;
@@ -90,6 +92,19 @@ class ModelGate:
         self._fds: dict[int, int] = {}
         self._held: set[int] = set()
         self._state_fd: int | None = None
+        self._users_fd: int | None = os.open(
+            self.prefix.with_name(self.prefix.name + ".users"),
+            os.O_RDWR | os.O_CREAT,
+            0o600,
+        )
+        try:
+            fcntl.flock(self._users_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass  # another live process uses the gate: keep what it learned
+        else:
+            with self._state() as state:
+                state.clear()
+        fcntl.flock(self._users_fd, fcntl.LOCK_SH)
         self._loop_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, asyncio.Lock
         ] = weakref.WeakKeyDictionary()
@@ -227,14 +242,14 @@ class ModelGate:
 
     def close_inherited(self) -> None:
         """Drop the descriptors a forked child inherited: their locks are the parent's."""
-        for fd in [*self._fds.values(), self._state_fd]:
+        for fd in [*self._fds.values(), self._state_fd, self._users_fd]:
             if fd is not None:
                 with contextlib.suppress(OSError):
                     os.close(fd)
         self._fds.clear()
         self._held.clear()
         self._releases.clear()
-        self._state_fd = None
+        self._state_fd = self._users_fd = None
         self._mutex = threading.Lock()
 
 
