@@ -44,6 +44,17 @@ async def test_retry_resumes_from_checkpoint(run, harness, harness_runtime):
     assert restored_from in [checkpoint.id for checkpoint in trace.checkpoints]
     assert trace.num_turns >= FAIL_AFTER_TURNS
     assert len(trace.checkpoints) >= trace.num_turns
+    # Two attempts: the first from scratch, the second resumed from the checkpoint
+    # with the turns it preserved; the error belongs to the first, in the agent stage.
+    assert trace.has_resumed
+    first, second = trace.attempts
+    assert first.resumed_from is None and first.stop_condition == "provider_error"
+    assert second.resumed_from == restored_from
+    assert second.turns_kept == FAIL_AFTER_TURNS - 1
+    assert second.stop_condition == "agent_completed"
+    assert second.runtime is not None and second.runtime.restored_from == restored_from
+    assert [(error.attempt, error.stage) for error in trace.errors] == [(0, "agent")]
+    assert all(checkpoint.attempt in (0, 1) for checkpoint in trace.checkpoints)
     # Every turn kept has its call; the failure never went upstream, so no call
     # records it.
     assert [call.node for call in trace.calls] == [

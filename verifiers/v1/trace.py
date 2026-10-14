@@ -86,6 +86,10 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    attempt: int = 0
+    """Index into `Trace.attempts` of the attempt that captured it."""
+    stage: str | None = None
+    """The rollout stage that failed (`setup`, `agent`, `finalize`, `scoring`), when known."""
 
 
 class VersionInfo(BaseModel):
@@ -206,6 +210,25 @@ class Checkpoint(BaseModel):
     state: Any = Field(None, exclude=True)
     """The trace's typed state as the snapshot was taken (tool servers write it over
     `/state`), restored with the box so a retry sees one consistent world. Live-only."""
+    attempt: int = 0
+    """Index into `Trace.attempts` of the attempt that took it."""
+
+
+class Attempt(BaseModel):
+    """One run of the rollout on one box: the first from scratch, a retry either from
+    scratch again or resumed from a checkpoint. `Trace.errors` and `Trace.checkpoints`
+    point back here by index; the last attempt is the one the trace's outcome is from."""
+
+    runtime: RuntimeInfo | None = None
+    """The box the attempt ran in (its `restored_from` names the checkpoint restored)."""
+    resumed_from: str | None = None
+    """The checkpoint the attempt resumed from; None for a start from scratch."""
+    turns_kept: int = 0
+    """Model turns the attempt started with (those the checkpoint preserved)."""
+    timing: Timing = Field(default_factory=Timing)
+    """The attempt's stage spans; `Trace.timing` is the final attempt's."""
+    stop_condition: str | None = None
+    """How the attempt ended."""
 
 
 class Branch(BaseModel):
@@ -425,6 +448,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     """Snapshots of the run's box, oldest first — one per model turn on a runtime that
     supports them; a retry resumes from the newest."""
+    attempts: list[Attempt] = Field(default_factory=list)
+    """Every run of the rollout, oldest first: the retries a trace went through and
+    where each resumed."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -690,6 +716,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return self.errors[-1] if self.errors else None
 
     @property
+    def num_attempts(self) -> int:
+        return len(self.attempts)
+
+    @property
+    def has_resumed(self) -> bool:
+        """Whether any attempt resumed from a checkpoint rather than starting over."""
+        return any(attempt.resumed_from is not None for attempt in self.attempts)
+
+    @property
     def transcript(self) -> str:
         """Text transcript of the last branch's messages; tool outputs are omitted."""
         branches = self.branches
@@ -788,8 +823,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.calls = [c for c in self.calls if c.node is None or c.node < keep]
         if checkpoint.state is not None:
             self.state = copy.deepcopy(checkpoint.state)
-        # The resumed rollout re-stamps every stage span; the run's start stays.
-        self.timing = Timing(start=self.timing.start)
+        # The resumed attempt gets its own stage spans (`attempts` keeps the earlier).
+        self.timing = Timing()
         dropped = [
             c.id for c in self.checkpoints if c.node is not None and c.node >= keep
         ]
@@ -803,7 +838,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_timeout = False
         return dropped
 
-    def record_error(self, error: Exception) -> None:
+    def record_error(self, error: Exception, stage: str | None = None) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
         self.errors.append(
@@ -811,6 +846,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                attempt=max(len(self.attempts) - 1, 0),
+                stage=stage,
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None

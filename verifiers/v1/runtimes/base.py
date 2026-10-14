@@ -204,15 +204,9 @@ class Runtime(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
 
     async def checkpoint(self) -> str:
-        """Snapshot the filesystem and return the checkpoint's id; the box keeps running.
-        A provider may store the snapshot asynchronously — `preserve_checkpoints` waits
-        for that before the box goes away."""
+        """Snapshot the filesystem and return the checkpoint's id, restorable from the
+        moment this returns; the box keeps running."""
         raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
-
-    async def preserve_checkpoints(self, ids: list[str]) -> list[str]:
-        """Make the box's checkpoints (`ids`, oldest first) outlive its teardown, and return
-        the ones that are restorable. A retry resumes from the newest returned id."""
-        return list(ids)
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
         """Free checkpoints nothing will restore from, once the box is gone (a provider

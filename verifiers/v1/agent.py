@@ -525,27 +525,6 @@ class Interaction:
             return await self._run.close()
 
 
-class _RetryVerdict:
-    """One attempt's retry verdict, decided once and reused: the rollout asks at
-    close whether to keep its checkpoints past the box, the retry loop asks after.
-    Asking consumes a rule budget (`RetryState.next_error`), so it happens once."""
-
-    def __init__(self, state: RetryState, *, seen: int, last: bool) -> None:
-        self._state = state
-        self._seen = seen
-        self._last = last
-        self._decided = False
-        self.cause: Error | None = None
-        """The error the retry answers, once decided."""
-
-    def __call__(self, trace: Trace) -> bool:
-        if not self._decided:
-            self._decided = True
-            if not self._last and not trace.ok:
-                self.cause = self._state.next_error(trace.errors[self._seen :])
-        return self.cause is not None
-
-
 class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
@@ -704,31 +683,35 @@ class Agent:
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
         resume: Checkpoint | None = None
+        snapshots: set[str] = set()  # every checkpoint any attempt took
+        run: Rollout | None = None
         for attempt in range(retry_state.max_retries + 1):
             resumed = trace if resume is not None else None
-            verdict = _RetryVerdict(
-                retry_state,
-                # This attempt's own errors decide — a resumed trace still carries
-                # the earlier attempts'.
-                seen=len(resumed.errors) if resumed is not None else 0,
-                last=attempt == retry_state.max_retries,
-            )
-            trace = await self._run_once(
+            # This attempt's own errors decide — a resumed trace still carries
+            # the earlier attempts'.
+            seen = len(resumed.errors) if resumed is not None else 0
+            run = await self._run_once(
                 task,
                 runtime,
                 tools,
                 on_trace,
                 collect_artifacts,
                 resume=(resumed, resume) if resumed is not None else None,
-                retry=verdict if can_resume and retry_state.max_retries else None,
+                checkpoints=can_resume and retry_state.max_retries > 0,
             )
-            if not verdict(trace):
+            trace = run.trace
+            snapshots.update(run.rewound_checkpoints)
+            snapshots.update(checkpoint.id for checkpoint in trace.checkpoints)
+            if attempt == retry_state.max_retries or trace.ok:
                 break
             if runtime is not None:
                 logger.warning(
                     "not retrying the rollout on a borrowed box (its state is no "
                     "longer the task's start state); the error stands"
                 )
+                break
+            cause = retry_state.next_error(trace.errors[seen:])
+            if cause is None:
                 break
             resume = trace.checkpoints[-1] if can_resume and trace.checkpoints else None
             if resume is None:
@@ -739,17 +722,28 @@ class Agent:
                 attempt + 1,
                 retry_state.max_retries,
                 delay,
-                verdict.cause.type if verdict.cause is not None else "?",
+                cause.type,
                 f"resuming from checkpoint {resume.id}"
                 if resume is not None
                 else "from scratch",
             )
             await asyncio.sleep(delay)
-        assert trace is not None
+        assert trace is not None and run is not None
         if history:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
             trace.errors = history + trace.errors
+        # TODO: retain sandbox snapshots beyond the run (an episode's forks, later
+        # inspection); for now a final run frees every snapshot its attempts took.
+        if snapshots and run.runtime is not None:
+            try:
+                await run_shielded(run.runtime.discard_checkpoints(sorted(snapshots)))
+            except Exception:
+                logger.warning(
+                    "discarding checkpoints failed (rollout %s)",
+                    trace.id,
+                    exc_info=True,
+                )
         return trace
 
     async def _run_once(
@@ -761,8 +755,8 @@ class Agent:
         collect_artifacts: bool,
         *,
         resume: tuple[Trace, Checkpoint] | None = None,
-        retry: Callable[[Trace], bool] | None = None,
-    ) -> Trace:
+        checkpoints: bool = False,
+    ) -> Rollout:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
             raise TypeError(
@@ -774,7 +768,7 @@ class Agent:
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             resume=resume,
-            retry=retry,
+            checkpoints=checkpoints,
             **params,
         )
         try:
@@ -792,7 +786,7 @@ class Agent:
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
-        return trace
+        return run
 
     @asynccontextmanager
     async def interaction(

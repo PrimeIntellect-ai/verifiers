@@ -33,7 +33,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Attempt, Checkpoint, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -107,14 +107,14 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         resume: tuple[Trace, Checkpoint] | None = None,
-        retry: Callable[[Trace], bool] | None = None,
+        checkpoints: bool = False,
     ) -> None:
         """`resume` continues a failed attempt's trace from one of its checkpoints:
         the trace rewinds to it and this run boots its box from the snapshot instead
-        of setting the task up again. `retry` says, at close, whether a retry will
-        resume this run: set, the run checkpoints its box before every turn (on a
-        runtime that supports it), and a failure bound for a retry keeps them past
-        teardown."""
+        of setting the task up again. `checkpoints` snapshots the box before every
+        turn (on a runtime that supports it) for a retry to resume from; the owner
+        of the retries frees them (`Runtime.discard_checkpoints`) once the run is
+        final — this rollout only frees them when it aborts."""
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -127,12 +127,13 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
-        self._retry = retry
+        self._checkpoints = checkpoints
         self._resume: Checkpoint | None = None
-        self._stale_checkpoints: list[str] = []
+        self.rewound_checkpoints: list[str] = []
+        """Checkpoints the resumed trace dropped (taken after the one resumed from)."""
         if resume is not None:
             self.trace, self._resume = resume
-            self._stale_checkpoints = self.trace.rewind(self._resume)
+            self.rewound_checkpoints = self.trace.rewind(self._resume)
         else:
             self.trace = Trace(
                 task=TraceTask(
@@ -148,6 +149,12 @@ class Rollout:
             )
             if on_trace is not None:
                 on_trace(self.trace)
+        self.attempt = Attempt(
+            resumed_from=self._resume.id if self._resume is not None else None,
+            turns_kept=self.trace.num_turns,
+            timing=self.trace.timing,
+        )
+        self.trace.attempts.append(self.attempt)
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
@@ -206,10 +213,11 @@ class Rollout:
         """The original exception most recently captured onto the trace."""
         return self._failure
 
-    def fail(self, error: Exception) -> None:
+    def fail(self, error: Exception, stage: str | None = None) -> None:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
-        itself couldn't see, e.g. its user raising between segments."""
+        itself couldn't see, e.g. its user raising between segments. `stage` names
+        the rollout stage it broke in, when known."""
         if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
             # borrowing program: raise to the caller instead of capturing a
@@ -223,7 +231,7 @@ class Rollout:
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
         self._failure = error
-        self.trace.record_error(error)
+        self.trace.record_error(error, stage=stage)
 
     def timeout(self, stage: str) -> None:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
@@ -252,8 +260,9 @@ class Rollout:
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info
+        self.attempt.runtime = runtime.info
         if (
-            self._retry is not None
+            self._checkpoints
             and self._borrowed_runtime is None
             and runtime.supports_checkpoints
         ):
@@ -475,10 +484,10 @@ class Rollout:
             if setup_timeout is not None and setup_timeout.expired():
                 self.timeout("setup")
             else:
-                self.fail(e)
+                self.fail(e, stage="setup")
             return False
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
-            self.fail(e)
+            self.fail(e, stage="setup")
             return False
         except BaseException:
             # A cancellation mid-setup kills the driver's await with it, so no
@@ -553,7 +562,7 @@ class Rollout:
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.timeout("agent")
             else:
-                self.fail(e)
+                self.fail(e, stage="agent")
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
@@ -561,9 +570,9 @@ class Rollout:
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
-                self.fail(real)
+                self.fail(real, stage="agent")
             else:
-                self.fail(e)
+                self.fail(e, stage="agent")
             return False
         finally:
             self._session.on_turn_input = None
@@ -614,44 +623,17 @@ class Rollout:
             return
         node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
         self.trace.checkpoints.append(
-            Checkpoint(id=checkpoint, node=node, tail=list(turn.tail), state=state)
+            Checkpoint(
+                id=checkpoint,
+                node=node,
+                tail=list(turn.tail),
+                state=state,
+                attempt=len(self.trace.attempts) - 1,
+            )
         )
         logger.debug(
             "checkpoint %s taken: id=%s node=%s", checkpoint, self.trace.id, node
         )
-
-    async def _keep_checkpoints(self) -> list[str]:
-        """Decide the fate of the run's snapshots before its box goes: a retry that
-        will resume from them keeps every restorable one. Returns what to free once
-        the box is gone."""
-        runtime = self.runtime
-        assert runtime is not None
-        ids = [c.id for c in self.trace.checkpoints]
-        kept: list[str] = []
-        if ids and self._failed and self._retry is not None and self._retry(self.trace):
-            try:
-                kept = await runtime.preserve_checkpoints(ids)
-            except Exception:
-                logger.warning(
-                    "preserving checkpoints failed (rollout %s)",
-                    self.trace.id,
-                    exc_info=True,
-                )
-            self.trace.checkpoints = [c for c in self.trace.checkpoints if c.id in kept]
-        return [*self._stale_checkpoints, *(i for i in ids if i not in kept)]
-
-    async def _discard_checkpoints(self, stale: list[str]) -> None:
-        if not stale:
-            return
-        assert self.runtime is not None
-        try:
-            await self.runtime.discard_checkpoints(stale)
-        except Exception:
-            logger.warning(
-                "discarding checkpoints failed (rollout %s)",
-                self.trace.id,
-                exc_info=True,
-            )
 
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned
@@ -670,9 +652,10 @@ class Rollout:
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
-            await self._discard_checkpoints(
-                [*self._stale_checkpoints, *(c.id for c in self.trace.checkpoints)]
-            )
+            with contextlib.suppress(Exception):
+                await self.runtime.discard_checkpoints(
+                    [*self.rewound_checkpoints, *(c.id for c in self.trace.checkpoints)]
+                )
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
@@ -740,7 +723,7 @@ class Rollout:
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
-            self.fail(e)
+            self.fail(e, stage="scoring" if trace.timing.scoring.start else "finalize")
         finally:
             if self._harness_session is not None:
                 with contextlib.suppress(Exception):
@@ -749,6 +732,7 @@ class Rollout:
                 await self._stack.aclose()
             trace.is_completed = True
             trace.ok = not self._failed
+            self.attempt.stop_condition = trace.stop_condition
             now = time.time()
             for span in (
                 trace.timing.boot,
@@ -771,14 +755,12 @@ class Rollout:
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             if self._borrowed_runtime is None and runtime is not None:
-                stale = await self._keep_checkpoints()
                 try:
                     await runtime.stop()
                 except Exception:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
-                await self._discard_checkpoints(stale)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
