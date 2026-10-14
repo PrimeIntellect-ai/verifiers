@@ -168,11 +168,18 @@ class Rollout:
             # An owned box starts from its config's checkpoint.
             restored = Checkpoint(id=start, turns=0, time=time.time())
         if restored is not None:
+            if resumes is not None:
+                # The continued trace's earlier checkpoints inside the opening
+                # conversation, so a replay of this trace restores the box wherever a
+                # replay of that one could. First: they are never its latest.
+                self.trace.checkpoints.extend(resumes.carried(restored.id))
             # The box starts from this checkpoint, matching the opening conversation.
             # A borrowed box's (`restored`) keeps the time it was taken at, so it
             # orders among the box's other checkpoints as what it is.
             self.trace.checkpoints.append(
-                restored.model_copy(update={"turns": 0, "restored": True})
+                restored.model_copy(
+                    update={"turns": 0, "restored": True, "position": None}
+                )
             )
         if on_trace is not None:
             on_trace(self.trace)

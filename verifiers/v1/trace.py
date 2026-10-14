@@ -243,7 +243,12 @@ class Checkpoint(BaseModel):
       tool calls, so the box is unchanged by it), `turns` counts the reply: the cut
       includes it;
     - a run started from a checkpoint (a resume, an interaction retry) records it at
-      `turns = 0` with `restored` set: its box matches the opening conversation.
+      `turns = 0` with `restored` set: its box matches the opening conversation;
+    - such a run also carries the checkpoints its predecessor recorded before that one
+      whose conversation its opening holds (`Trace.carried`), first in its list: each
+      at `turns = 0` with `position` set, its box matching the opening conversation's
+      first `position` messages. A replay of the run restores the box from them
+      wherever the predecessor's record could.
 
     The cut drops system messages and trims a trailing assistant message whose tool
     calls have no results."""
@@ -257,6 +262,12 @@ class Checkpoint(BaseModel):
     time: float | None = Field(default=None, exclude_if=lambda time: time is None)
     """When it was recorded (epoch seconds): orders the checkpoints of runs that share
     one box. None on records written before it existed."""
+    position: int | None = Field(
+        default=None, exclude_if=lambda position: position is None
+    )
+    """A carried checkpoint's place in the conversation the trace opens on: the box
+    matches its first `position` messages (`Trace.conversation_for`). None on the
+    trace's own checkpoints."""
 
 
 class Reward(BaseModel):
@@ -629,6 +640,38 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if checkpoint.id == at:
                 return checkpoint
         raise ValueError(f"trace {self.id} has no checkpoint {at!r}")
+
+    def conversation_for(self, checkpoint: Checkpoint | None) -> Messages:
+        """The conversation `checkpoint`'s box matches (None: the whole current one):
+        the cut at its `turns`, ending at its `position` when it is a carried one."""
+        if checkpoint is None:
+            return self.conversation_at(None)
+        messages = self.conversation_at(checkpoint.turns)
+        if checkpoint.position is not None:
+            messages = messages[: checkpoint.position]
+        return messages
+
+    def carried(self, at: str) -> list[Checkpoint]:
+        """The checkpoints a continuation of this trace from its checkpoint `at` carries
+        (`Checkpoint.position`): those recorded before it whose conversation is a
+        prefix of the one at `at`, which the continuation opens on, in order (none
+        `restored`: the continuation starts from `at`). Empty when the trace has no
+        checkpoint `at`."""
+        ids = [checkpoint.id for checkpoint in self.checkpoints]
+        if at not in ids:
+            return []
+        index = len(ids) - 1 - ids[::-1].index(at)
+        opening = self.conversation_for(self.checkpoints[index])
+        carried: list[Checkpoint] = []
+        for checkpoint in self.checkpoints[:index]:
+            held = self.conversation_for(checkpoint)
+            if len(held) <= len(opening) and held == opening[: len(held)]:
+                carried.append(
+                    checkpoint.model_copy(
+                        update={"turns": 0, "position": len(held), "restored": False}
+                    )
+                )
+        return carried
 
     def conversation_at(self, turns: int | None = None) -> Messages:
         """The conversation a continuation opens on, cut at `turns` (the rule on

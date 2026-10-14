@@ -133,7 +133,13 @@ must follow.
   since; it is moved first only when the live exchange continues from another checkpoint
   (a cut-off turn). A replay that never uses the box restores nothing, and the live
   exchange restores its own box at the hand-over, as before. An exchange on a borrowed
-  box (`runtime=`) has that box throughout.
+  box (`runtime=`) has that box throughout. A trace that continues a recorded one (the
+  live exchange of a cut-off replay, an interaction retry, a `resume=`) carries that
+  trace's earlier checkpoints inside the conversation it opens on, each at its place in
+  it (`Checkpoint.position`, `Trace.carried`), so a replay of the latest record restores
+  the box wherever a replay of the earlier one could, through any chain of cut-off
+  attempts. Before the first turn, when no recorded checkpoint is there, the box is the
+  one the call opened on (a continuation's origin checkpoint `at`).
 - **Boxes.** Every run on a durable box is labelled with the box's key and the checkpoint
   the box was at when the run started, and a later `provision` under the key starts the
   box from the latest checkpoint of the run on it that moved last. Durable runs on it then

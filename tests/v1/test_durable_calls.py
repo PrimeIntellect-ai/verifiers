@@ -30,6 +30,7 @@ from test_agent_resume import (  # noqa: F401 - fixtures
     task,
 )
 
+import test_agent_resume as resume_tests
 import verifiers.v1 as vf
 import verifiers.v1.box as box_module
 import verifiers.v1.runtimes as runtimes_module
@@ -706,6 +707,221 @@ async def test_a_replay_without_turn_end_checkpoints_cannot_read(
             await exchange.turn("first")
             with pytest.raises(RuntimeError, match="checkpoint"):
                 await exchange.runtime.read("a.txt")
+
+
+# -- a continuation cut off before it moved ----------------------------------------
+
+
+def tool_each_turn(messages: list[dict]) -> dict:
+    """The scripted model, one tool call per turn: each user turn writes
+    `<turn>.txt`, then answers it."""
+    users = [m["content"] for m in messages if m["role"] == "user"]
+    if messages[-1]["role"] == "user":
+        name = f"{len(users)}.txt"
+        arguments = json.dumps({"path": name, "text": name})
+        message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call_{len(messages)}",
+                    "type": "function",
+                    "function": {"name": "write", "arguments": arguments},
+                }
+            ],
+        }
+        finish = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": f"done: {users[-1]}"}
+        finish = "stop"
+    return {
+        "id": "scripted",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "scripted",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+class Records:
+    """The records a run saved (prime-rl's live writer), by trace: `saves` at each
+    per-call save, `minted` as each trace was minted."""
+
+    def __init__(self) -> None:
+        self.saves: list[dict] = []
+        self.minted: list[dict] = []
+
+    def on_save(self, trace, checkpoint) -> None:
+        self.saves.append(json.loads(json.dumps(trace.to_record())))
+
+    def on_trace(self, trace) -> None:
+        self.minted.append(json.loads(json.dumps(trace.to_record())))
+
+
+async def box_reading_driver(agent, messages, seen, records=None, **kwargs):
+    """Reads the log in the box before the first turn and after each turn, then logs
+    the turn there (hillclimb's driver sets its task up on the box first)."""
+    hooks = (
+        {"on_save": records.on_save, "on_trace": records.on_trace}
+        if records is not None
+        else {}
+    )
+    async with agent.interaction(key="talk", **hooks, **kwargs) as exchange:
+        seen.append(await read_or_none(exchange.runtime, "log.txt"))
+        for message in messages:
+            await exchange.turn(message)
+            seen.append(await read_or_none(exchange.runtime, "log.txt"))
+            await exchange.runtime.write("log.txt", f"after {message}".encode())
+    return exchange
+
+
+async def cut_twice(agent, messages, progress: bool) -> tuple[list, dict, dict]:
+    """A durable exchange cut off inside its third turn (at that turn's tool-call
+    save), continued, and cut off again: before its first model call finished, or,
+    with `progress`, after the continued turn's final reply was saved. Returns what
+    the uncut exchange read from its box, and the records of the two cuts."""
+    seen: list = []
+    first = Records()
+    with vf.use_durable(vf.Durable(Partial())):
+        await box_reading_driver(agent, messages, seen, first, task=task(None))
+    assert [r["checkpoints"][-1]["id"] for r in first.saves] == [
+        f"ckpt-{n}" for n in range(1, 7)
+    ]
+    cut = first.saves[4]  # the third turn's tool-call reply
+    assert not cut["is_completed"]
+    second = Records()
+    with vf.use_durable(vf.Durable(Partial(cut))):
+        await box_reading_driver(agent, messages, [], second, task=task(None))
+    [minted] = second.minted
+    again = second.saves[-1] if progress else minted
+    return seen, cut, again
+
+
+async def test_a_continuation_cut_before_it_moved_restores_the_box_anywhere(
+    model, restorable_boxes, monkeypatch
+):
+    """The production chain: a continuation minted from a cut-off exchange (its
+    conversation in its prompt, one checkpoint at its end) was cut off before its first
+    model call. Replaying it restores the box before the first turn and between the
+    replayed turns from the checkpoints it carried from the exchange it continued."""
+    monkeypatch.setattr(resume_tests, "reply", tool_each_turn)
+    agent = make(model, save="per_call")
+    messages = ("first", "second", "third")
+    seen, cut, minted = await cut_twice(agent, messages, progress=False)
+    assert minted["nodes"] == [] and minted["resumed_from"] == cut["id"]
+    # The cut exchange's checkpoints inside the minted conversation, at their places
+    # in it, then the one it continues from.
+    assert [
+        (c["id"], c.get("position"), c.get("restored", False))
+        for c in minted["checkpoints"]
+    ] == [
+        ("ckpt-1", 1, False),
+        ("ckpt-2", 5, False),
+        ("ckpt-3", 5, False),
+        ("ckpt-4", None, True),
+    ]
+    restorable_boxes.clear()
+    model.requests.clear()
+    replayed: list = []
+    with vf.use_durable(vf.Durable(Partial(cut, minted))):
+        exchange = await box_reading_driver(agent, messages, replayed, task=task(None))
+    # Each read saw the box as the uncut exchange had it there.
+    assert replayed == seen == [None, None, b"after first", b"after second"]
+    # Before the first turn, then after each replayed turn; the live turn continues
+    # on the box as the second turn left it, where the minted trace starts.
+    assert restorable_boxes == ["ckpt-1", "ckpt-2", "ckpt-4"]
+    assert exchange.live is not None and exchange.trace.ok
+    assert exchange.trace.resumed_from == minted["id"]
+
+
+async def test_a_continuation_that_moved_restores_the_box_anywhere(
+    model, restorable_boxes, monkeypatch
+):
+    monkeypatch.setattr(resume_tests, "reply", tool_each_turn)
+    agent = make(model, save="per_call")
+    seen, cut, saved = await cut_twice(
+        agent, ("first", "second", "third"), progress=True
+    )
+    assert saved["nodes"] and saved["resumed_from"] == cut["id"]
+    assert [(c["id"], c.get("position")) for c in saved["checkpoints"]] == [
+        ("ckpt-1", 1),
+        ("ckpt-2", 5),
+        ("ckpt-3", 5),
+        ("ckpt-4", None),
+        ("ckpt-7", None),
+        ("ckpt-8", None),
+    ]
+    restorable_boxes.clear()
+    model.requests.clear()
+    replayed: list = []
+    with vf.use_durable(vf.Durable(Partial(cut, saved))):
+        exchange = await box_reading_driver(
+            agent, ("first", "second", "third", "fourth"), replayed, task=task(None)
+        )
+    assert replayed == [*seen, b"after third"]
+    assert restorable_boxes == ["ckpt-1", "ckpt-2", "ckpt-4", "ckpt-8"]
+    # Live from the fourth turn only.
+    assert [m["messages"][-1]["content"] for m in model.requests] == ["fourth", "ok"]
+    assert exchange.trace.ok and exchange.trace.resumed_from == saved["id"]
+    # The next link of the chain carries what this record carried, and its own.
+    assert [(c.id, c.position) for c in exchange.trace.checkpoints] == [
+        ("ckpt-1", 1),
+        ("ckpt-2", 5),
+        ("ckpt-3", 5),
+        ("ckpt-4", 9),
+        ("ckpt-7", 9),
+        ("ckpt-8", None),
+        ("ckpt-9", None),
+        ("ckpt-10", None),
+    ]
+
+
+async def test_a_record_carrying_nothing_replays_from_the_calls_opening(
+    model, restorable_boxes, monkeypatch
+):
+    """A continuation recorded before checkpoints were carried (no `position`) loads
+    and replays as before; before its first turn the box is the one the call opened
+    on (its origin's checkpoint `at`)."""
+    monkeypatch.setattr(resume_tests, "reply", tool_each_turn)
+    agent = make(model, save="per_call")
+    with vf.use_durable(vf.Durable(Partial())):
+        async with agent.interaction(task(None), key="draft") as draft:
+            await draft.turn("draft")
+            await draft.runtime.write("log.txt", b"drafted")
+            opened_on = await draft.checkpoint()
+    origin = draft.trace
+    messages = ("first", "second")
+    first = Records()
+    with vf.use_durable(vf.Durable(Partial())):
+        await box_reading_driver(agent, messages, [], first, resume=origin)
+    # The second turn's tool-call reply (the call opened on `opened_on`).
+    cut = first.saves[2]
+    assert [c["id"] for c in cut["checkpoints"] if c.get("restored")] == [opened_on.id]
+    second = Records()
+    with vf.use_durable(vf.Durable(Partial(cut))):
+        await box_reading_driver(agent, messages, [], second, resume=origin)
+    [minted] = second.minted
+    # As written before checkpoints were carried: the one it continues from only.
+    old = {
+        **minted,
+        "checkpoints": [c for c in minted["checkpoints"] if "position" not in c],
+    }
+    assert len(old["checkpoints"]) == 1 and old["checkpoints"][0]["restored"]
+    assert vf.WireTrace.model_validate(old).checkpoints[0].position is None
+    restorable_boxes.clear()
+    model.requests.clear()
+    replayed: list = []
+    with vf.use_durable(vf.Durable(Partial(cut, old))):
+        async with agent.interaction(resume=origin, key="talk") as exchange:
+            replayed.append(await read_or_none(exchange.runtime, "log.txt"))
+            await exchange.turn("first")
+            await exchange.turn("second")
+    assert replayed == [b"drafted"]
+    assert restorable_boxes[0] == opened_on.id
+    # The first turn replayed; the second continued live from the cut, as before.
+    assert [m["messages"][-1]["content"] for m in model.requests] == ["second", "ok"]
+    assert exchange.trace.ok and exchange.trace.resumed_from == old["id"]
 
 
 # -- an episode -----------------------------------------------------------------

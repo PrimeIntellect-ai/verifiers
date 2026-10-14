@@ -112,8 +112,9 @@ async def test_an_interaction_retry_has_the_owner_restore_the_box_for_every_seat
         assert box.workdir != first_workdir
         assert not first_workdir.exists()  # the lost box was torn down
         assert vf.box_of(box).generation == 1
-        assert retried.checkpoints[0].restored
-        assert retried.checkpoints[0].id == "ckpt-2"
+        # Its own first checkpoint (after those carried from the failed attempt).
+        start = next(c for c in retried.checkpoints if c.position is None)
+        assert start.restored and start.id == "ckpt-2"
         assert box.files() == {"a.txt": b"a.txt"}
     assert box.stopped
 
@@ -176,7 +177,8 @@ async def test_two_seats_resume_on_the_box_their_owner_restores(
     assert resumed.resumed_from == failed.id
     # The box came back from the latest checkpoint either seat took.
     assert box.source == latest.id
-    assert resumed.checkpoints[0].restored and resumed.checkpoints[0].id == latest.id
+    start = next(c for c in resumed.checkpoints if c.position is None)
+    assert start.restored and start.id == latest.id
     assert model.requests[0]["messages"][-1]["content"] == RETRY_NOTE
     users = [m["content"] for m in model.requests[0]["messages"] if m["role"] == "user"]
     assert users[0] == "review"
@@ -263,7 +265,7 @@ async def test_a_continuation_on_a_borrowed_box_starts_from_its_latest_checkpoin
         moved = owner.latest
         assert owner.restored.id == "X" and moved.id == first.checkpoints[-1].id
         second = await make(model).run(resume=first, note="again", runtime=box)
-    start = second.checkpoints[0]
+    start = next(c for c in second.checkpoints if c.position is None)
     assert start.restored and start.turns == 0
     assert (start.id, start.time) == (moved.id, moved.time)
 

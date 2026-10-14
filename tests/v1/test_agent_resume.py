@@ -596,10 +596,13 @@ async def test_interaction_retry_continues_from_the_latest_checkpoint(model):
         (True, "ckpt-4"),
     ]
     assert interaction.latest_checkpoint is saves[-1][1]
-    assert [(c.id, c.turns, c.restored) for c in final.checkpoints] == [
-        ("ckpt-2", 0, True),
-        ("ckpt-3", 0, False),
-        ("ckpt-4", 2, False),
+    # The failed attempt's checkpoint inside the reopened conversation is carried at
+    # its place in it, first.
+    assert [(c.id, c.turns, c.restored, c.position) for c in final.checkpoints] == [
+        ("ckpt-1", 0, False, 1),
+        ("ckpt-2", 0, True, None),
+        ("ckpt-3", 0, False, None),
+        ("ckpt-4", 2, False, None),
     ]
 
 

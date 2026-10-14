@@ -10,7 +10,7 @@ server; un-entered, each run brings its own."""
 import asyncio
 import inspect
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -753,7 +753,7 @@ class Interaction:
         else:
             assert checkpoint is not None
             trace = self.trace
-            conversation = trace.conversation_at(checkpoint.turns)
+            conversation = trace.conversation_for(checkpoint)
             # The cut holds this turn's input once a call of this turn committed and
             # the cut reaches it.
             held = mark.in_prompt or (
@@ -869,15 +869,30 @@ def _recorded_turns(
     return turns
 
 
-def _cut_at(trace: Trace, checkpoint: Checkpoint, conversation: Messages) -> Trace:
+def _cut_at(
+    trace: Trace,
+    checkpoint: Checkpoint,
+    conversation: Messages,
+    earlier: Iterable[tuple[int, Checkpoint]] = (),
+) -> Trace:
     """`trace` as a continuation of `conversation` on `checkpoint`'s box: a copy whose
-    only checkpoint is it, at a conversation held in its task's prompt (a trace with
-    no nodes yet holds its conversation there, `Trace.conversation_at`)."""
+    latest checkpoint is it, at a conversation held in its task's prompt (a trace with
+    no nodes yet holds its conversation there, `Trace.conversation_at`), after the
+    `earlier` checkpoints inside that conversation at their positions, which the
+    continuation carries (`Trace.carried`)."""
     data = trace.task.data.model_copy(update={"prompt": list(conversation)})
+    carried = [
+        c.model_copy(update={"turns": 0, "position": length})
+        for length, c in earlier
+        if length <= len(conversation)
+    ]
     return trace.model_copy(
         update={
             "nodes": [],
-            "checkpoints": [checkpoint.model_copy(update={"turns": 0})],
+            "checkpoints": [
+                *carried,
+                checkpoint.model_copy(update={"turns": 0, "position": None}),
+            ],
             "task": trace.task.model_copy(update={"data": data}),
         }
     )
@@ -968,7 +983,10 @@ class DurableInteraction:
     kept box (borrowed from the exchange, with what the driver wrote to it since), moved
     first to the checkpoint it continues from when that is another one. A replay that
     never uses the box restores nothing; the live exchange then restores its own box
-    from the hand-over checkpoint, as before."""
+    from the hand-over checkpoint, as before. A record that continues an earlier one
+    carries its checkpoints (`Trace.carried`), so the box restores wherever the earlier
+    record's could; before the first turn with no checkpoint there, the box is the one
+    the call opened on (`opening`: a continuation's origin checkpoint)."""
 
     def __init__(
         self,
@@ -982,6 +1000,7 @@ class DurableInteraction:
         runtime: Runtime | None = None,
         provision: Callable[[Checkpoint], AbstractAsyncContextManager[Runtime]]
         | None = None,
+        opening: Checkpoint | None = None,
     ) -> None:
         self._task = task
         self._open_live = open_live
@@ -1005,6 +1024,10 @@ class DurableInteraction:
         self._position = skip
         """Where the turns given so far end in the recorded conversation; a
         continuation's starts after its origin's conversation (`skip`)."""
+        self._skip = skip
+        self._opening = opening
+        """The checkpoint the exchange opened on (a continuation's origin's, `at`):
+        the box before any turn when no recorded checkpoint is there."""
         self._done = False
         self._ended = False
         """A cut-off recorded exchange was given back whole and closed: `_recorded` is
@@ -1016,7 +1039,9 @@ class DurableInteraction:
         self._conversation = recorded.conversation_at(None)
         self._turns = _recorded_turns(self._conversation, recorded, task, skip)
         for checkpoint in checkpoints or []:
-            cut = recorded.conversation_at(checkpoint.turns)
+            cut = recorded.conversation_for(checkpoint)
+            if checkpoint.position is not None and len(cut) < checkpoint.position:
+                continue  # the conversation it was carried into is not recorded yet
             if _same_input(cut, self._conversation[: len(cut)]):
                 self._cuts.append((len(cut), checkpoint))
         self._done = recorded.is_completed and recorded.ok
@@ -1132,9 +1157,14 @@ class DurableInteraction:
         return [(n, c) for n, c in self._cuts if self._position <= n <= last]
 
     def _replay_point(self) -> Checkpoint | None:
-        """The first of the `_settled_cuts`' checkpoints."""
+        """The first of the `_settled_cuts`' checkpoints; before any turn with none,
+        the one the exchange opened on."""
         found = self._settled_cuts()
-        return min(found, key=lambda item: item[0])[1] if found else None
+        if found:
+            return min(found, key=lambda item: item[0])[1]
+        if self._next == 0 and self._position == self._skip:
+            return self._opening
+        return None
 
     @property
     def task(self) -> Task:
@@ -1254,8 +1284,9 @@ class DurableInteraction:
                 and any(c.id == at_box.id for c in boundary)
                 else boundary[-1]
             )
+            earlier = [(n, c) for n, c in self._cuts if c is not point]
             live = await self.go_live(
-                _cut_at(trace, point, self._conversation[:position]),
+                _cut_at(trace, point, self._conversation[:position], earlier),
                 None,
                 None,
                 start=point,
@@ -1555,7 +1586,7 @@ class Agent:
                     f"{e}"
                 ) from e
         task = task if task is not None else resume.task.rebuild()
-        messages = resume.conversation_at(start.turns if start is not None else None)
+        messages = resume.conversation_for(start)
         prefix: Messages | None = None
         prompt: Messages | None
         if note is not None:
@@ -2123,8 +2154,8 @@ class Agent:
                 checkpoints = list(again.checkpoints)
                 if runtime is not None:
                     # On a borrowed box, only those no newer than its restore point.
-                    limit = [c.id for c in checkpoints].index(again_at)
-                    checkpoints = checkpoints[: limit + 1]
+                    ids = [c.id for c in checkpoints]
+                    checkpoints = checkpoints[: len(ids) - ids[::-1].index(again_at)]
         elif recorded is not None and self.harness.SUPPORTS_RESUME:
             # A finished exchange goes live again only past its turns; on a borrowed
             # box nothing says the box matches, so it never does.
@@ -2172,6 +2203,11 @@ class Agent:
                     skip=skip,
                     runtime=runtime,
                     provision=provision,
+                    opening=(
+                        resume.checkpoint_at(at)
+                        if resume is not None and resume.checkpoints
+                        else None
+                    ),
                 )
                 if recorded is None:
                     await exchange.go_live()
