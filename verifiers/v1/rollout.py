@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -19,6 +20,7 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.grading import bind_scoring_env, grade_task, verifier_runtime
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
@@ -33,6 +35,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -50,7 +53,8 @@ class RolloutTimeouts:
     finalize: float | None = None
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
-    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
+    """Combined budget (in seconds) for harness metrics and task scoring, including
+    isolated verifier setup and retries. Finalization has its own budget."""
 
 
 _HOME_PROBE = (
@@ -108,6 +112,10 @@ class Rollout:
         self.task = task
         self.harness = harness
         self.ctx = ctx
+        self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
+        self._grading_config = None
+        self._scoring_task = task
+        self._grader = None
         self.runtime_config = runtime_config
         self._has_user = has_user
         self._timeouts = timeouts
@@ -168,6 +176,7 @@ class Rollout:
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
+        self._harness_cleaned = False
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -256,7 +265,7 @@ class Rollout:
                 runtime.backend.env = runtime_env
                 runtime = self.runtime = runtime.with_env(runtime_env)
             else:
-                runtime = runtime.with_env(runtime_env)
+                runtime = runtime.with_env({**runtime.env, **runtime_env})
                 self.runtime = runtime
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
@@ -270,6 +279,23 @@ class Rollout:
             finally:
                 # Providers may assign an ID before startup fails; retain it for diagnostics.
                 self.trace.agent.runtime = runtime.info.model_copy()
+            if not self.task.scoring_deferred:
+                isolated = self._scoring_policy.mode == "isolated"
+                self._scoring_task = self.task.grading_task(
+                    runtime, scoring=self._scoring_policy
+                )
+                if isolated:
+                    self._grader = self._scoring_task
+                    self._grading_config = verifier_runtime(
+                        self._grader,
+                        runtime,
+                        self.runtime_config,
+                        self._scoring_policy,
+                    )
+                elif self._scoring_policy.runtime is not None:
+                    raise TaskError(
+                        "verifier runtime overrides require isolated verification"
+                    )
             await runtime.backend.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
@@ -548,6 +574,17 @@ class Rollout:
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
 
+    async def _cleanup_harness(self, runtime: Runtime) -> None:
+        if self._harness_cleaned:
+            return
+        try:
+            await self.harness.cleanup(self.trace, runtime)
+        except Exception:
+            logger.warning(
+                "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
+            )
+        self._harness_cleaned = True
+
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned
         runtime — without finalizing or scoring: the escape path when an exception
@@ -561,10 +598,22 @@ class Rollout:
             await self._stack.aclose()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self.harness.cleanup(self.trace, self.runtime)
+                await self._cleanup_harness(self.runtime)
         if self._borrowed_runtime is None and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.backend.stop()
+
+    async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
+        """Collect best-effort metrics without replacing a task failure."""
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.harness.score(self.trace, self._agent_runtime or runtime)
+        except Exception as error:
+            self.trace.info["harness_scoring_error"] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            logger.warning("harness scoring failed", exc_info=True)
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
@@ -596,7 +645,41 @@ class Rollout:
                 trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None
+                grader = self._grader
+                isolated = self._scoring_policy.mode == "isolated"
                 trace.timing.finalize.start = time.time()
+                scoring_elapsed = 0.0
+                if isolated and grader is not None:
+                    scoring_started = asyncio.get_running_loop().time()
+                    # Metrics are best-effort: reserve at least 90% of a finite
+                    # scoring budget for verification, with a 30-second ceiling.
+                    # Capture harness metrics while its runtime is still live, before
+                    # quiescing or stopping a colocated Compose workspace.
+                    try:
+                        async with (
+                            asyncio.timeout(
+                                min(30.0, self._timeouts.scoring / 10)
+                                if self._timeouts.scoring is not None
+                                else 30.0
+                            ),
+                            boundary(HarnessError, "harness scoring"),
+                        ):
+                            await self.harness.score(
+                                trace,
+                                self._agent_runtime or runtime,
+                            )
+                    except Exception as error:
+                        # Metrics are best-effort; their failure must not prevent
+                        # collecting the submission and running its fresh verifier.
+                        trace.info["harness_scoring_error"] = {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                        logger.warning("harness scoring failed", exc_info=True)
+                    scoring_elapsed = (
+                        asyncio.get_running_loop().time() - scoring_started
+                    )
+                finalize_phase = "task finalization"
                 try:
                     async with (
                         asyncio.timeout(self._timeouts.finalize),
@@ -604,9 +687,15 @@ class Rollout:
                     ):
                         await invoke(
                             self.task.finalize,
-                            {"trace": trace, "runtime": runtime},
+                            {
+                                "trace": trace,
+                                "runtime": runtime,
+                            },
                         )
-                        if self._collect_artifacts and not trace.state.artifacts:
+                        if (
+                            self._collect_artifacts or grader is not None
+                        ) and not trace.state.artifacts:
+                            finalize_phase = "submission collection"
                             trace.state.artifacts = await collect(
                                 runtime,
                                 self.task.data.artifacts,
@@ -614,20 +703,89 @@ class Rollout:
                             )
                 except TimeoutError:
                     self.timeout("finalize")
+                    if isolated:
+                        if grader is None:
+                            # Deferred scoring normally captures metrics after finalize.
+                            # Keep them even when collection aborts before that point.
+                            deadline = (
+                                asyncio.get_running_loop().time()
+                                + self._timeouts.scoring
+                                if self._timeouts.scoring is not None
+                                else None
+                            )
+                            await self._score_harness(runtime, deadline)
+                        raise TaskError(
+                            f"{finalize_phase} exceeded its finalize deadline"
+                        ) from None
+                if grader is not None and self._borrowed_runtime is None:
+                    # Submission and metrics are captured. Release exclusive solver
+                    # resources before provisioning or retrying a fresh verifier.
+                    await self._cleanup_harness(runtime)
+                    try:
+                        await run_shielded(runtime.backend.stop())
+                    except Exception:
+                        logger.warning(
+                            "solver teardown failed before grading", exc_info=True
+                        )
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
                 trace.notify()
+                scoring_deadline = (
+                    asyncio.get_running_loop().time()
+                    + max(0.0, self._timeouts.scoring - scoring_elapsed)
+                    if self._timeouts.scoring is not None
+                    else None
+                )
+                if not isolated or grader is None:
+                    # Collect metrics before a shared verifier can exhaust the budget.
+                    metrics_budget = (
+                        min(30.0, self._timeouts.scoring / 10)
+                        if self._timeouts.scoring is not None
+                        else 30.0
+                    )
+                    await self._score_harness(
+                        runtime, asyncio.get_running_loop().time() + metrics_budget
+                    )
                 try:
+                    if (
+                        scoring_deadline is not None
+                        and asyncio.get_running_loop().time() >= scoring_deadline
+                    ):
+                        raise TimeoutError("scoring budget exhausted")
                     async with (
-                        asyncio.timeout(self._timeouts.scoring),
+                        asyncio.timeout_at(
+                            None if grader is not None else scoring_deadline
+                        ),
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        await asyncio.gather(
-                            self.task.score(trace, runtime),
-                            self.harness.score(trace, self._agent_runtime or runtime),
-                        )
+                        if grader is not None:
+                            try:
+                                await grade_task(
+                                    grader,
+                                    trace,
+                                    self._grading_config,
+                                    self._timeouts,
+                                    self._scoring_policy,
+                                    scoring_elapsed=scoring_elapsed,
+                                )
+                            except TimeoutError:
+                                self.timeout("scoring")
+                        else:
+                            scoring_runtime = runtime
+                            if not self._scoring_task.scoring_deferred:
+                                scoring_runtime = bind_scoring_env(
+                                    runtime, self._scoring_policy
+                                )
+                                await invoke(
+                                    self._scoring_task.stage_verifier,
+                                    {
+                                        "trace": trace,
+                                        "runtime": scoring_runtime,
+                                    },
+                                )
+                            await self._scoring_task.score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
                 trace.timing.scoring.end = time.time()
@@ -654,12 +812,7 @@ class Rollout:
                     span.end = now
             trace.split_agent_time()
             if runtime is not None:
-                try:
-                    await self.harness.cleanup(trace, runtime)
-                except Exception:
-                    logger.warning(
-                        "harness cleanup failed (rollout %s)", trace.id, exc_info=True
-                    )
+                await self._cleanup_harness(runtime)
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
@@ -667,9 +820,7 @@ class Rollout:
                 try:
                     await runtime.backend.stop()
                 except Exception:
-                    logger.warning(
-                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                    )
+                    logger.warning("runtime teardown failed", exc_info=True)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
