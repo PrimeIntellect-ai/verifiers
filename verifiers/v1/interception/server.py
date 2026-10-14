@@ -107,6 +107,11 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 SHOULD_RETRY_HEADER = "x-should-retry"
 
 
+RERUNNABLE = web.ResponseKey("rerunnable", bool)
+"""Set on a failed turn's response that is safe to sample again: the provider failed it
+before anything committed (`sample`). A committed stream reruns only such a turn."""
+
+
 def _retryable(status: int, gated: bool) -> bool:
     """Whether a failed turn's status is worth another try: a 5xx or a 429, except a
     rejection (429/529) on a gated endpoint, which the request gate already retried
@@ -281,8 +286,9 @@ async def _buffered_stream(
     """Serve a turn to an SSE client once it is committed, keeping the connection alive
     while it is produced. A result within the grace period is served as is; after it the
     stream is committed and sent the dialect's keepalives, so neither a proxy's timeout
-    nor a client's own idle timeout cuts a long turn. Once committed, a failure is framed
-    as the dialect's SSE error. A reader that goes away leaves the turn running for its
+    nor a client's own idle timeout cuts a long turn. Once committed, a turn the provider
+    failed before it committed (`RERUNNABLE`) is sampled again, and any other failure is
+    framed as the dialect's SSE error. A reader that goes away leaves the turn running for its
     retries to coalesce onto."""
     task = asyncio.ensure_future(pending)
     started = time.monotonic()
@@ -307,10 +313,12 @@ async def _buffered_stream(
                     await stream.write(dialect.stream_keepalive(first))
                     first = False
                     await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
-                status = task.result().status
+                result = task.result()
+                status = result.status
                 if (
                     rerun is None
                     or attempt == COMMITTED_TURN_ATTEMPTS
+                    or not result.get(RERUNNABLE)
                     or not _retryable(status, gated)
                 ):
                     break
@@ -977,13 +985,18 @@ class InterceptionServer(Interception):
                         e,
                     )
                     status = getattr(e, "status_code", 502)
-                    return web.json_response(
+                    failed = web.json_response(
                         dialect.error_body(str(e)),
                         status=status,
                         headers={SHOULD_RETRY_HEADER: "false"}
                         if gated and status in REJECTION_STATUSES
                         else None,
                     )
+                    # Only a provider failure before the turn committed is sampled
+                    # again; a hook's failure after the commit would commit another
+                    # assistant turn, and fail the same way.
+                    failed[RERUNNABLE] = isinstance(e, ProviderError) and node is None
+                    return failed
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
